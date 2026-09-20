@@ -594,9 +594,32 @@ pub fn le_bytes_from_words_64(words: &[u32; 16]) -> [u8; 64] {
 /// bits, the only length the SME2 kernels support. Detection is per
 /// platform: `hw.optional.arm.FEAT_SME2` on Apple systems and
 /// `HWCAP2_SME2` on Linux.
+///
+/// The answer is a property of the machine, so it is computed once and
+/// cached. The vector-length check enters and leaves streaming mode, which
+/// costs about as much as hashing 64 bytes; doing it on every call would
+/// slow small hashes by a third.
 #[cfg(blake3_sme2)]
 #[inline(always)]
 pub fn sme2_detected() -> bool {
+    use core::sync::atomic::{AtomicU8, Ordering};
+
+    // 0 = unknown, 1 = no, 2 = yes.
+    static CACHE: AtomicU8 = AtomicU8::new(0);
+
+    match CACHE.load(Ordering::Relaxed) {
+        2 => return true,
+        1 => return false,
+        _ => {}
+    }
+
+    let detected = sme2_detect_uncached();
+    CACHE.store(if detected { 2 } else { 1 }, Ordering::Relaxed);
+    detected
+}
+
+#[cfg(blake3_sme2)]
+fn sme2_detect_uncached() -> bool {
     if cfg!(miri) {
         return false;
     }
