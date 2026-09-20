@@ -51,12 +51,12 @@ pub unsafe fn hash_many<const N: usize>(
     let (kernel, packed_flags): (Option<Kernel>, u32) = if N == CHUNK_LEN && increment_counter.yes()
     {
         (
-            Some(ffi::blake3_hash16_chunks_sme2_512),
+            Some(ffi::blake3_sme2_hash16_chunks_512),
             flags as u32 | (flags_start as u32) << 8 | (flags_end as u32) << 16,
         )
     } else if N == BLOCK_LEN && !increment_counter.yes() {
         (
-            Some(ffi::blake3_hash16_parents_sme2_512),
+            Some(ffi::blake3_sme2_hash16_parents_512),
             (flags | flags_start | flags_end) as u32,
         )
     } else {
@@ -150,7 +150,7 @@ pub mod ffi {
         /// and increments per chunk; `flags` packs `flags | flags_start << 8
         /// | flags_end << 16`. Writes `16 * groups` 32-byte chaining values
         /// to `out`. Returns the streaming vector length in 32-bit lanes.
-        pub fn blake3_hash16_chunks_sme2_512(
+        pub fn blake3_sme2_hash16_chunks_512(
             inputs: *const u8,
             key: *const u32,
             counter: u64,
@@ -164,7 +164,7 @@ pub mod ffi {
         /// unchanged for every block; `flags` are the parent flags. Writes
         /// `16 * groups` 32-byte chaining values to `out`. Returns the
         /// streaming vector length in 32-bit lanes.
-        pub fn blake3_hash16_parents_sme2_512(
+        pub fn blake3_sme2_hash16_parents_512(
             pairs: *const u8,
             key: *const u32,
             counter: u64,

@@ -326,6 +326,10 @@ fn build_neon_c_intrinsics() {
     // for the single-instance compression function, but we expose
     // portable.rs over FFI instead. See ffi_neon.rs.
     build.file("c/blake3_neon.c");
+    // Prefix the two symbols shared with the crates.io blake3 crate, so this
+    // benchmark build links beside it.
+    build.define("blake3_hash_many_neon", "blake3_sme2_hash_many_neon");
+    build.define("blake3_compress_in_place_portable", "blake3_sme2_compress_in_place_portable");
     // ARMv7 platforms that support NEON generally need the following
     // flags. AArch64 supports NEON by default and does not support -mpfu.
     if is_armv7() {

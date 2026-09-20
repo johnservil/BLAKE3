@@ -613,7 +613,7 @@ pub fn sme2_detected() -> bool {
     // Vector length check: the kernel reports it without doing any work
     // when asked for zero groups.
     let lanes = unsafe {
-        crate::sme2::ffi::blake3_hash16_chunks_sme2_512(
+        crate::sme2::ffi::blake3_sme2_hash16_chunks_512(
             core::ptr::null(),
             core::ptr::null(),
             0,

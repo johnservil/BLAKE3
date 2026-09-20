@@ -21,7 +21,7 @@
  *
  * Chunk kernel:
  *
- * uint64_t blake3_hash16_chunks_sme2_512(
+ * uint64_t blake3_sme2_hash16_chunks_512(
  *     const uint8_t *const *inputs,
  *     const uint32_t key[8],
  *     uint64_t counter,
@@ -76,10 +76,10 @@
 
 .arch armv9-a+sme2
 
-.global _blake3_hash16_chunks_sme2_512
-.global blake3_hash16_chunks_sme2_512
-.global _blake3_hash16_parents_sme2_512
-.global blake3_hash16_parents_sme2_512
+.global _blake3_sme2_hash16_chunks_512
+.global blake3_sme2_hash16_chunks_512
+.global _blake3_sme2_hash16_parents_512
+.global blake3_sme2_hash16_parents_512
 
 #ifdef __APPLE__
 .text
@@ -423,8 +423,8 @@
 .endm
 
 .p2align 4
-_blake3_hash16_chunks_sme2_512:
-blake3_hash16_chunks_sme2_512:
+_blake3_sme2_hash16_chunks_512:
+blake3_sme2_hash16_chunks_512:
     /*
      * AAPCS64 preserves the low 64 bits of v8-v15.
      */
@@ -640,7 +640,7 @@ blake3_hash16_chunks_sme2_512:
 /*
  * Parent-node kernel: sixteen parent compressions per group.
  *
- * uint64_t blake3_hash16_parents_sme2_512(
+ * uint64_t blake3_sme2_hash16_parents_512(
  *     const uint8_t *pairs,
  *     const uint32_t key[8],
  *     uint64_t counter,
@@ -664,8 +664,8 @@ blake3_hash16_chunks_sme2_512:
  * current group's rounds.
  */
 .p2align 4
-_blake3_hash16_parents_sme2_512:
-blake3_hash16_parents_sme2_512:
+_blake3_sme2_hash16_parents_512:
+blake3_sme2_hash16_parents_512:
     sub     sp, sp, #64
     stp     d8,  d9,  [sp, #0]
     stp     d10, d11, [sp, #16]
