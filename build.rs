@@ -21,6 +21,10 @@ fn is_no_neon() -> bool {
     defined("CARGO_FEATURE_NO_NEON")
 }
 
+fn is_no_sme2() -> bool {
+    defined("CARGO_FEATURE_NO_SME2")
+}
+
 fn is_wasm32_simd() -> bool {
     defined("CARGO_FEATURE_WASM32_SIMD")
 }
@@ -278,6 +282,44 @@ fn build_avx512_assembly() {
     build.compile("blake3_avx512_assembly");
 }
 
+// The SME2 assembly implementation needs an assembler that understands
+// `.arch armv9-a+sme2` (Clang/LLVM 17+, Xcode 15+, or binutils 2.41+). Probe
+// for it the same way we probe for AVX-512 support, and skip the kernel when
+// the assembler can't handle it.
+fn c_compiler_supports_sme2() -> bool {
+    let build = new_build();
+    match build.is_flag_supported("-march=armv9-a+sme2") {
+        Ok(true) => true,
+        Ok(false) => {
+            warn(&format!(
+                "The C compiler {:?} does not support -march=armv9-a+sme2.",
+                build.get_compiler().path(),
+            ));
+            false
+        }
+        Err(e) => {
+            println!("{:?}", e);
+            warn(&format!(
+                "No C compiler {:?} detected.",
+                build.get_compiler().path()
+            ));
+            false
+        }
+    }
+}
+
+fn build_sme2_assembly() {
+    // The SME2 implementation is assembly only. It requires runtime
+    // detection (see platform.rs), and it requires a 512-bit streaming vector
+    // length, which the kernel checks for itself.
+    assert!(is_aarch64());
+    println!("cargo::rustc-cfg=blake3_sme2");
+    let mut build = new_build();
+    build.file("c/blake3_sme2_aarch64.S");
+    build.flag("-march=armv9-a+sme2");
+    build.compile("blake3_sme2_assembly");
+}
+
 fn build_neon_c_intrinsics() {
     let mut build = new_build();
     // Note that blake3_neon.c normally depends on the blake3_portable.c
@@ -325,6 +367,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "blake3_avx2_rust",
         "blake3_avx512_ffi",
         "blake3_neon",
+        "blake3_sme2",
         "blake3_wasm32_simd",
     ];
     for cfg_name in all_cfgs {
@@ -368,6 +411,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         println!("cargo::rustc-cfg=blake3_neon");
         build_neon_c_intrinsics();
+
+        // SME2 sits on top of NEON: the SME2 wrapper falls back to NEON for
+        // inputs that don't fill a group of sixteen. It is only built on
+        // little-endian AArch64 with NEON enabled and an assembler that
+        // supports it. Apple platforms and Linux have runtime detection.
+        if is_aarch64()
+            && !is_no_sme2()
+            && (target_components()[2] == "darwin" || target_components()[2] == "linux")
+            && c_compiler_supports_sme2()
+        {
+            build_sme2_assembly();
+        }
     }
 
     if is_wasm32() && is_wasm32_simd() {

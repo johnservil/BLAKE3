@@ -115,6 +115,9 @@ mod avx512;
 #[path = "ffi_neon.rs"]
 mod neon;
 mod portable;
+#[cfg(blake3_sme2)]
+#[path = "ffi_sme2.rs"]
+mod sme2;
 #[cfg(blake3_sse2_rust)]
 #[path = "rust_sse2.rs"]
 mod sse2;

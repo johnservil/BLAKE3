@@ -9,6 +9,9 @@ cfg_if::cfg_if! {
                 pub const MAX_SIMD_DEGREE: usize = 8;
             }
         }
+    } else if #[cfg(blake3_sme2)] {
+        // Eight sixteen-lane groups per hash_many call; see sme2::DEGREE.
+        pub const MAX_SIMD_DEGREE: usize = 128;
     } else if #[cfg(blake3_neon)] {
         pub const MAX_SIMD_DEGREE: usize = 4;
     } else if #[cfg(blake3_wasm32_simd)] {
@@ -31,6 +34,8 @@ cfg_if::cfg_if! {
                 pub const MAX_SIMD_DEGREE_OR_2: usize = 8;
             }
         }
+    } else if #[cfg(blake3_sme2)] {
+        pub const MAX_SIMD_DEGREE_OR_2: usize = 128;
     } else if #[cfg(blake3_neon)] {
         pub const MAX_SIMD_DEGREE_OR_2: usize = 4;
     } else if #[cfg(blake3_wasm32_simd)] {
@@ -54,6 +59,8 @@ pub enum Platform {
     AVX512,
     #[cfg(blake3_neon)]
     NEON,
+    #[cfg(blake3_sme2)]
+    SME2,
     #[cfg(blake3_wasm32_simd)]
     #[allow(non_camel_case_types)]
     WASM32_SIMD,
@@ -85,6 +92,14 @@ impl Platform {
                 return Platform::SSE2;
             }
         }
+        // SME2 is detected at runtime; the kernels also require a 512-bit
+        // streaming vector length, which sme2_detected() checks.
+        #[cfg(blake3_sme2)]
+        {
+            if sme2_detected() {
+                return Platform::SME2;
+            }
+        }
         // We don't use dynamic feature detection for NEON. If the "neon"
         // feature is on, NEON is assumed to be supported.
         #[cfg(blake3_neon)]
@@ -112,6 +127,8 @@ impl Platform {
             Platform::AVX512 => 16,
             #[cfg(blake3_neon)]
             Platform::NEON => 4,
+            #[cfg(blake3_sme2)]
+            Platform::SME2 => crate::sme2::DEGREE,
             #[cfg(blake3_wasm32_simd)]
             Platform::WASM32_SIMD => 4,
         };
@@ -148,6 +165,9 @@ impl Platform {
             // No NEON compress_in_place() implementation yet.
             #[cfg(blake3_neon)]
             Platform::NEON => portable::compress_in_place(cv, block, block_len, counter, flags),
+            // Single compressions stay on the portable path with SME2 too.
+            #[cfg(blake3_sme2)]
+            Platform::SME2 => portable::compress_in_place(cv, block, block_len, counter, flags),
             #[cfg(blake3_wasm32_simd)]
             Platform::WASM32_SIMD => {
                 crate::wasm32_simd::compress_in_place(cv, block, block_len, counter, flags)
@@ -184,6 +204,8 @@ impl Platform {
             // No NEON compress_xof() implementation yet.
             #[cfg(blake3_neon)]
             Platform::NEON => portable::compress_xof(cv, block, block_len, counter, flags),
+            #[cfg(blake3_sme2)]
+            Platform::SME2 => portable::compress_xof(cv, block, block_len, counter, flags),
             #[cfg(blake3_wasm32_simd)]
             Platform::WASM32_SIMD => {
                 crate::wasm32_simd::compress_xof(cv, block, block_len, counter, flags)
@@ -294,6 +316,20 @@ impl Platform {
                     out,
                 )
             },
+            // Safe because detect() checked for SME2 with a 512-bit vector length.
+            #[cfg(blake3_sme2)]
+            Platform::SME2 => unsafe {
+                crate::sme2::hash_many(
+                    inputs,
+                    key,
+                    counter,
+                    increment_counter,
+                    flags,
+                    flags_start,
+                    flags_end,
+                    out,
+                )
+            },
             // Assumed to be safe if the "wasm32_simd" feature is on.
             #[cfg(blake3_wasm32_simd)]
             Platform::WASM32_SIMD => unsafe {
@@ -393,6 +429,15 @@ impl Platform {
     pub fn neon() -> Option<Self> {
         // Assumed to be safe if the "neon" feature is on.
         Some(Self::NEON)
+    }
+
+    #[cfg(blake3_sme2)]
+    pub fn sme2() -> Option<Self> {
+        if sme2_detected() {
+            Some(Self::SME2)
+        } else {
+            None
+        }
     }
 
     #[cfg(blake3_wasm32_simd)]
@@ -543,4 +588,65 @@ pub fn le_bytes_from_words_64(words: &[u32; 16]) -> [u8; 64] {
     *<&mut [u8; 4]>::try_from(&mut out[14 * 4..][..4]).unwrap() = words[14].to_le_bytes();
     *<&mut [u8; 4]>::try_from(&mut out[15 * 4..][..4]).unwrap() = words[15].to_le_bytes();
     out
+}
+
+/// True when the CPU reports SME2 and the streaming vector length is 512
+/// bits, the only length the SME2 kernels support. Detection is per
+/// platform: `hw.optional.arm.FEAT_SME2` on Apple systems and
+/// `HWCAP2_SME2` on Linux.
+#[cfg(blake3_sme2)]
+#[inline(always)]
+pub fn sme2_detected() -> bool {
+    if cfg!(miri) {
+        return false;
+    }
+
+    // A testing-only short-circuit.
+    if cfg!(feature = "no_sme2") {
+        return false;
+    }
+
+    if !sme2_reported() {
+        return false;
+    }
+
+    // Vector length check: the kernel reports it without doing any work
+    // when asked for zero groups.
+    let lanes = unsafe {
+        crate::sme2::ffi::blake3_hash16_chunks_sme2_512(
+            core::ptr::null(),
+            core::ptr::null(),
+            0,
+            0,
+            core::ptr::null_mut(),
+            0,
+        )
+    };
+    lanes == crate::sme2::GROUP as u64
+}
+
+#[cfg(all(blake3_sme2, target_vendor = "apple"))]
+fn sme2_reported() -> bool {
+    let mut value: u32 = 0;
+    let mut size = core::mem::size_of::<u32>();
+    let rc = unsafe {
+        libc::sysctlbyname(
+            c"hw.optional.arm.FEAT_SME2".as_ptr(),
+            &mut value as *mut u32 as *mut libc::c_void,
+            &mut size,
+            core::ptr::null_mut(),
+            0,
+        )
+    };
+    rc == 0 && value != 0
+}
+
+#[cfg(all(blake3_sme2, target_os = "linux"))]
+fn sme2_reported() -> bool {
+    // AT_HWCAP2 from <elf.h> and HWCAP2_SME2 from <asm/hwcap.h> (Linux 6.4+).
+    // The libc crate doesn't expose either for glibc targets yet.
+    const AT_HWCAP2: libc::c_ulong = 26;
+    const HWCAP2_SME2: libc::c_ulong = 1 << 37;
+    let hwcap2 = unsafe { libc::getauxval(AT_HWCAP2) };
+    hwcap2 & HWCAP2_SME2 != 0
 }

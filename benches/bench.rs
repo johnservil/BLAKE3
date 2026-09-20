@@ -149,6 +149,14 @@ fn bench_many_chunks_neon(b: &mut Bencher) {
 }
 
 #[bench]
+#[cfg(blake3_sme2)]
+fn bench_many_chunks_sme2(b: &mut Bencher) {
+    if let Some(platform) = Platform::sme2() {
+        bench_many_chunks_fn(b, platform);
+    }
+}
+
+#[bench]
 #[cfg(blake3_wasm32_simd)]
 fn bench_many_chunks_wasm(b: &mut Bencher) {
     bench_many_chunks_fn(b, Platform::wasm32_simd().unwrap());
@@ -217,6 +225,14 @@ fn bench_many_parents_avx512(b: &mut Bencher) {
 #[cfg(blake3_neon)]
 fn bench_many_parents_neon(b: &mut Bencher) {
     bench_many_parents_fn(b, Platform::neon().unwrap());
+}
+
+#[bench]
+#[cfg(blake3_sme2)]
+fn bench_many_parents_sme2(b: &mut Bencher) {
+    if let Some(platform) = Platform::sme2() {
+        bench_many_parents_fn(b, platform);
+    }
 }
 
 #[bench]
