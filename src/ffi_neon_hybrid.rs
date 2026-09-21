@@ -25,10 +25,9 @@
 //! | 14     | k8 + k6       | p8 + p4 + p2   |
 //! | 15     | k9 + k6       | p8 + p4 + p2 + k1 |
 //!
-//! Longer input lists are hashed fifteen at a time. Inputs that are not
-//! back to back in memory are copied into a stack buffer first; every
-//! caller in this crate passes contiguous inputs, so the copy is for
-//! outside callers of `Platform::hash_many` only.
+//! Longer input lists are hashed fifteen at a time. Every caller in this
+//! crate passes inputs that sit back to back in memory. Scattered parents
+//! are copied into a stack buffer; scattered chunks go one per kernel call.
 
 use crate::{BLOCK_LEN, CHUNK_LEN, CVWords, IncrementCounter, OUT_LEN};
 
@@ -346,12 +345,10 @@ pub unsafe fn hash_many<const N: usize>(
                     group_out,
                 );
             }
-        } else {
+        } else if N == BLOCK_LEN {
+            // Parents assembled by a caller can arrive scattered; the copy
+            // fits a small buffer.
             let mut buf = [0u8; GROUP * BLOCK_LEN];
-            // Chunk inputs come from `input.chunks_exact()` in this crate and
-            // are always contiguous; only parents (assembled by callers) can
-            // arrive scattered, and their copy fits a small buffer.
-            assert_eq!(N, BLOCK_LEN, "scattered chunk inputs are not supported");
             for (i, input) in group.iter().enumerate() {
                 buf[i * N..][..N].copy_from_slice(&input[..]);
             }
@@ -368,6 +365,26 @@ pub unsafe fn hash_many<const N: usize>(
                     packed,
                     group_out,
                 );
+            }
+        } else {
+            // Scattered chunks (upstream's benches build them from separate
+            // buffers): one kernel call per chunk. Copying 15 KiB would cost
+            // more than the kernel saves.
+            for (i, input) in group.iter().enumerate() {
+                unsafe {
+                    run_plan(
+                        plans[1],
+                        kernels,
+                        input.as_ptr(),
+                        N,
+                        blocks,
+                        key,
+                        group_counter + i as u64 * counter_step,
+                        counter_step,
+                        packed,
+                        &mut group_out[i * OUT_LEN..],
+                    );
+                }
             }
         }
         done += count;
@@ -466,6 +483,46 @@ mod test {
                 );
             }
         }
+    }
+
+    #[test]
+    fn test_scattered_chunks() {
+        if !sha3_detected() {
+            return;
+        }
+        let mut input = [0u8; 8 * CHUNK_LEN];
+        crate::test::paint_test_input(&mut input);
+        // Chunks in reverse order: contiguous in memory, scattered as inputs.
+        let chunks: arrayvec::ArrayVec<&[u8; CHUNK_LEN], 8> = input
+            .chunks_exact(CHUNK_LEN)
+            .rev()
+            .map(|c| c.try_into().unwrap())
+            .collect();
+        let mut want = [0u8; 8 * OUT_LEN];
+        let mut got = [0u8; 8 * OUT_LEN];
+        crate::portable::hash_many(
+            &chunks,
+            IV,
+            3,
+            IncrementCounter::Yes,
+            0,
+            CHUNK_START,
+            CHUNK_END,
+            &mut want,
+        );
+        unsafe {
+            hash_many(
+                &chunks,
+                IV,
+                3,
+                IncrementCounter::Yes,
+                0,
+                CHUNK_START,
+                CHUNK_END,
+                &mut got,
+            )
+        };
+        assert_eq!(want, got);
     }
 
     #[test]
