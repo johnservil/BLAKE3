@@ -1,7 +1,7 @@
 //! `hash_many` for AArch64 with NEON and the SHA-3 extension, built from the
 //! kernels in c/blake3_neon_hybrid_aarch64.S.
 //!
-//! Each kernel hashes a fixed number of inputs laid out back to back. Chunk
+//! Each kernel hashes a fixed number of inputs given as a pointer table. Chunk
 //! kernels (`k<n>`) take whole 1024-byte chunks with a counter that
 //! increments per chunk; parent kernels (`p<n>`) take 64-byte blocks with
 //! one shared counter. This wrapper splits an input count into kernel calls
@@ -25,9 +25,7 @@
 //! | 14     | k8 + k6       | p8 + p4 + p2   |
 //! | 15     | k9 + k6       | p8 + p4 + p2 + k1 |
 //!
-//! Longer input lists are hashed fifteen at a time. Every caller in this
-//! crate passes inputs that sit back to back in memory. Scattered parents
-//! are copied into a stack buffer; scattered chunks go one per kernel call.
+//! Longer input lists are hashed fifteen at a time.
 
 use crate::{BLOCK_LEN, CHUNK_LEN, CVWords, IncrementCounter, OUT_LEN};
 
@@ -37,7 +35,7 @@ use crate::{BLOCK_LEN, CHUNK_LEN, CVWords, IncrementCounter, OUT_LEN};
 mod asm {
     unsafe extern "C" {
         pub fn blake3_hybrid_k1(
-            base: *const u8,
+            inputs: *const *const u8,
             blocks: u64,
             key: *const u32,
             counter: u64,
@@ -45,7 +43,7 @@ mod asm {
             out: *mut u8,
         );
         pub fn blake3_hybrid_k2(
-            base: *const u8,
+            inputs: *const *const u8,
             blocks: u64,
             key: *const u32,
             counter: u64,
@@ -53,7 +51,7 @@ mod asm {
             out: *mut u8,
         );
         pub fn blake3_hybrid_k3(
-            base: *const u8,
+            inputs: *const *const u8,
             blocks: u64,
             key: *const u32,
             counter: u64,
@@ -61,7 +59,7 @@ mod asm {
             out: *mut u8,
         );
         pub fn blake3_hybrid_k4(
-            base: *const u8,
+            inputs: *const *const u8,
             blocks: u64,
             key: *const u32,
             counter: u64,
@@ -69,7 +67,7 @@ mod asm {
             out: *mut u8,
         );
         pub fn blake3_hybrid_k5(
-            base: *const u8,
+            inputs: *const *const u8,
             blocks: u64,
             key: *const u32,
             counter: u64,
@@ -77,7 +75,7 @@ mod asm {
             out: *mut u8,
         );
         pub fn blake3_hybrid_k6(
-            base: *const u8,
+            inputs: *const *const u8,
             blocks: u64,
             key: *const u32,
             counter: u64,
@@ -85,7 +83,7 @@ mod asm {
             out: *mut u8,
         );
         pub fn blake3_hybrid_k8(
-            base: *const u8,
+            inputs: *const *const u8,
             blocks: u64,
             key: *const u32,
             counter: u64,
@@ -93,7 +91,7 @@ mod asm {
             out: *mut u8,
         );
         pub fn blake3_hybrid_k9(
-            base: *const u8,
+            inputs: *const *const u8,
             blocks: u64,
             key: *const u32,
             counter: u64,
@@ -101,7 +99,7 @@ mod asm {
             out: *mut u8,
         );
         pub fn blake3_hybrid_k10(
-            base: *const u8,
+            inputs: *const *const u8,
             blocks: u64,
             key: *const u32,
             counter: u64,
@@ -109,7 +107,7 @@ mod asm {
             out: *mut u8,
         );
         pub fn blake3_hybrid_p2(
-            base: *const u8,
+            inputs: *const *const u8,
             blocks: u64,
             key: *const u32,
             counter: u64,
@@ -117,7 +115,7 @@ mod asm {
             out: *mut u8,
         );
         pub fn blake3_hybrid_p4(
-            base: *const u8,
+            inputs: *const *const u8,
             blocks: u64,
             key: *const u32,
             counter: u64,
@@ -125,7 +123,7 @@ mod asm {
             out: *mut u8,
         );
         pub fn blake3_hybrid_p8(
-            base: *const u8,
+            inputs: *const *const u8,
             blocks: u64,
             key: *const u32,
             counter: u64,
@@ -135,9 +133,9 @@ mod asm {
     }
 }
 
-/// Every kernel shares one signature: `(base, blocks, key, counter,
-/// packed_flags, out)`. See the contract in `neon_hybrid_asm.rs`.
-type Kernel = unsafe extern "C" fn(*const u8, u64, *const u32, u64, u64, *mut u8);
+/// Every kernel shares one signature: `(inputs, blocks, key, counter,
+/// packed_flags, out)`. See the contract in that file.
+type Kernel = unsafe extern "C" fn(*const *const u8, u64, *const u32, u64, u64, *mut u8);
 
 /// Most inputs one `hash_many` call hands to the kernels at once.
 const GROUP: usize = 15;
@@ -244,9 +242,10 @@ pub unsafe fn compress_blocks(
     debug_assert!((1..=16).contains(&count));
     let packed = flags as u64 | (flags_start as u64) << 8;
     let mut out = [0u8; OUT_LEN];
+    let table = [blocks];
     unsafe {
         asm::blake3_hybrid_k1(
-            blocks,
+            table.as_ptr(),
             count as u64,
             cv.as_ptr(),
             counter,
@@ -257,21 +256,11 @@ pub unsafe fn compress_blocks(
     *cv = crate::platform::words_from_le_bytes_32(&out);
 }
 
-/// True when `inputs` are laid out back to back in memory.
-fn contiguous<const N: usize>(inputs: &[&[u8; N]]) -> bool {
-    let base = inputs[0].as_ptr();
-    inputs
-        .iter()
-        .enumerate()
-        .all(|(i, input)| input.as_ptr() == unsafe { base.add(i * N) })
-}
-
-/// Run the kernels of `plan` over `count` contiguous inputs at `base`.
+/// Run the kernels of `plan` over `inputs`.
 unsafe fn run_plan(
     plan: &[usize],
     kernels: &[Option<Kernel>],
-    base: *const u8,
-    stride: usize,
+    inputs: *const *const u8,
     blocks: usize,
     key: &CVWords,
     counter: u64,
@@ -284,7 +273,7 @@ unsafe fn run_plan(
         let kernel = kernels[size].expect("plan names an existing kernel");
         unsafe {
             kernel(
-                base.add(done * stride),
+                inputs.add(done),
                 blocks as u64,
                 key.as_ptr(),
                 counter + done as u64 * counter_step,
@@ -323,69 +312,24 @@ pub unsafe fn hash_many<const N: usize>(
         };
     let packed = flags as u64 | (flags_start as u64) << 8 | (flags_end as u64) << 16;
     let blocks = N / BLOCK_LEN;
+    // `&[&[u8; N]]` is a table of pointers, which is what the kernels take.
+    let table = inputs.as_ptr() as *const *const u8;
 
     let mut done = 0;
     while done < inputs.len() {
         let count = core::cmp::min(GROUP, inputs.len() - done);
-        let group = &inputs[done..done + count];
-        let group_counter = counter + done as u64 * counter_step;
-        let group_out = &mut out[done * OUT_LEN..];
-        if contiguous(group) {
-            unsafe {
-                run_plan(
-                    plans[count],
-                    kernels,
-                    group[0].as_ptr(),
-                    N,
-                    blocks,
-                    key,
-                    group_counter,
-                    counter_step,
-                    packed,
-                    group_out,
-                );
-            }
-        } else if N == BLOCK_LEN {
-            // Parents assembled by a caller can arrive scattered; the copy
-            // fits a small buffer.
-            let mut buf = [0u8; GROUP * BLOCK_LEN];
-            for (i, input) in group.iter().enumerate() {
-                buf[i * N..][..N].copy_from_slice(&input[..]);
-            }
-            unsafe {
-                run_plan(
-                    plans[count],
-                    kernels,
-                    buf.as_ptr(),
-                    N,
-                    blocks,
-                    key,
-                    group_counter,
-                    counter_step,
-                    packed,
-                    group_out,
-                );
-            }
-        } else {
-            // Scattered chunks (upstream's benches build them from separate
-            // buffers): one kernel call per chunk. Copying 15 KiB would cost
-            // more than the kernel saves.
-            for (i, input) in group.iter().enumerate() {
-                unsafe {
-                    run_plan(
-                        plans[1],
-                        kernels,
-                        input.as_ptr(),
-                        N,
-                        blocks,
-                        key,
-                        group_counter + i as u64 * counter_step,
-                        counter_step,
-                        packed,
-                        &mut group_out[i * OUT_LEN..],
-                    );
-                }
-            }
+        unsafe {
+            run_plan(
+                plans[count],
+                kernels,
+                table.add(done),
+                blocks,
+                key,
+                counter + done as u64 * counter_step,
+                counter_step,
+                packed,
+                &mut out[done * OUT_LEN..],
+            );
         }
         done += count;
     }

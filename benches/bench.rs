@@ -3,9 +3,9 @@
 extern crate test;
 
 use arrayvec::ArrayVec;
-use blake3::OUT_LEN;
-use blake3::platform::{MAX_SIMD_DEGREE, Platform};
-use blake3::{BLOCK_LEN, CHUNK_LEN};
+use blake3_sme2::OUT_LEN;
+use blake3_sme2::platform::{MAX_SIMD_DEGREE, Platform};
+use blake3_sme2::{BLOCK_LEN, CHUNK_LEN};
 use rand::prelude::*;
 use test::Bencher;
 
@@ -101,7 +101,7 @@ fn bench_many_chunks_fn(b: &mut Bencher, platform: Platform) {
             &input_arrays[..],
             &[0; 8],
             0,
-            blake3::IncrementCounter::Yes,
+            blake3_sme2::IncrementCounter::Yes,
             0,
             0,
             0,
@@ -180,7 +180,7 @@ fn bench_many_parents_fn(b: &mut Bencher, platform: Platform) {
             &input_arrays[..],
             &[0; 8],
             0,
-            blake3::IncrementCounter::No,
+            blake3_sme2::IncrementCounter::No,
             0,
             0,
             0,
@@ -243,7 +243,7 @@ fn bench_many_parents_wasm(b: &mut Bencher) {
 
 fn bench_atonce(b: &mut Bencher, len: usize) {
     let mut input = RandomInput::new(b, len);
-    b.iter(|| blake3::hash(input.get()));
+    b.iter(|| blake3_sme2::hash(input.get()));
 }
 
 #[bench]
@@ -308,7 +308,7 @@ fn bench_atonce_1024_kib(b: &mut Bencher) {
 
 fn bench_incremental(b: &mut Bencher, len: usize) {
     let mut input = RandomInput::new(b, len);
-    b.iter(|| blake3::Hasher::new().update(input.get()).finalize());
+    b.iter(|| blake3_sme2::Hasher::new().update(input.get()).finalize());
 }
 
 #[bench]
@@ -445,7 +445,7 @@ fn bench_reference_1024_kib(b: &mut Bencher) {
 #[cfg(feature = "rayon")]
 fn bench_rayon(b: &mut Bencher, len: usize) {
     let mut input = RandomInput::new(b, len);
-    b.iter(|| blake3::Hasher::new().update_rayon(input.get()).finalize());
+    b.iter(|| blake3_sme2::Hasher::new().update_rayon(input.get()).finalize());
 }
 
 #[bench]
@@ -531,7 +531,7 @@ fn bench_two_updates(b: &mut Bencher) {
     let len = 65536;
     let mut input = RandomInput::new(b, len);
     b.iter(|| {
-        let mut hasher = blake3::Hasher::new();
+        let mut hasher = blake3_sme2::Hasher::new();
         let input = input.get();
         hasher.update(&input[..1]);
         hasher.update(&input[1..]);
@@ -543,7 +543,7 @@ fn bench_xof(b: &mut Bencher, len: usize) {
     b.bytes = len as u64;
     let mut output = [0u8; 64 * BLOCK_LEN];
     let output_slice = &mut output[..len];
-    let mut xof = blake3::Hasher::new().finalize_xof();
+    let mut xof = blake3_sme2::Hasher::new().finalize_xof();
     b.iter(|| xof.fill(output_slice));
 }
 

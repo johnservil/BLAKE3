@@ -13,7 +13,7 @@ messages are pre-transposed onto the stack each block and one unit's d row
 lives on the stack too. Out-of-order renaming means one architectural temp
 serves every G in flight.
 
-Kernels: k<n> hashes n contiguous chunks. Composition per kernel:
+Kernels: k<n> hashes n chunks. Composition per kernel:
 
   k1: scalar
   k2: pair                       k3: scalar + pair
@@ -21,11 +21,11 @@ Kernels: k<n> hashes n contiguous chunks. Composition per kernel:
   k8: quad + quad                k9: scalar + quad + quad
 
 C ABI, every kernel:
-  fn(base: *const u8, blocks: u64, key: *const u32, counter: u64,
+  fn(inputs: *const *const u8, blocks: u64, key: *const u32, counter: u64,
      packed_flags: u64, out: *mut u8)
-  chunk i starts at base + 1024 * i; blocks in 1..=16 is the same for all;
-  the counter is counter + i for chunk i; packed_flags =
-  flags | flags_start << 8 | flags_end << 16; 32 bytes per chunk to out in
+  inputs[i] points at input i; blocks in 1..=16 is the same for all; the
+  counter is counter + i for chunk i (fixed for parents); packed_flags =
+  flags | flags_start << 8 | flags_end << 16; 32 bytes per input to out in
   input order. Requires NEON and the SHA-3 extension (`xar`). x18 untouched.
 
 Run from the repository root:
@@ -48,8 +48,6 @@ SCHEDULE = [
 ]
 COLS = [(0, 4, 8, 12), (1, 5, 9, 13), (2, 6, 10, 14), (3, 7, 11, 15)]
 DIAGS = [(0, 5, 10, 15), (1, 6, 11, 12), (2, 7, 8, 13), (3, 4, 9, 14)]
-CHUNK = 1024
-BLOCK = 64
 ROT8_TABLE = [1, 2, 3, 0, 5, 6, 7, 4, 9, 10, 11, 8, 13, 14, 15, 12]
 
 # Stack frame (offsets from sp once the frame is built). 16-byte alignment
@@ -68,10 +66,13 @@ UNIT_CONST = 32
 F_ROT8 = F_UNIT + 2 * UNIT_CONST      # tbl constant for rotate-right-8 (16 bytes)
 F_DSPILL = F_ROT8 + 16                # spilled d row of NEON unit 1 (64 bytes)
 F_MSG = F_DSPILL + 64                 # per unit: 16 transposed message vectors (256 bytes)
-FRAME = F_MSG + 2 * 256
+F_PTR = F_MSG + 2 * 256               # running input pointers, one per input (8 bytes each)
+MAX_INPUTS = 10
+F_REMAIN = F_PTR + 8 * MAX_INPUTS     # blocks remaining, for kernels whose x1 carries a pointer
+FRAME = F_REMAIN + 16
 # `stp q, q, [sp, #imm]` reaches 1008; every paired store must stay below.
 assert F_MSG + 2 * 256 - 32 <= 1008, F_MSG
-assert FRAME % 16 == 0
+assert FRAME % 16 == 0, FRAME
 
 
 def w(reg):
@@ -88,9 +89,10 @@ class Scalar:
     a G is short: read at `d ^= a`, dead after `c += d`). One message temp;
     with a spilled d row, one d temp. `w2`..`w5` are free during the rounds."""
 
-    def __init__(self, index, slot, state, mtemp, dtemp=None, stride=CHUNK, ctr_step=1):
+    def __init__(self, index, slot, state, mtemp, dtemp=None, ctr_step=1, preg=None):
         self.index, self.slot = index, slot
-        self.stride, self.ctr_step = stride, ctr_step
+        self.ctr_step = ctr_step
+        self.preg = preg  # x register holding this input's running pointer, or None (frame slot)
         self.state = state  # 12 or 16 w-registers: a0..3 b0..3 c0..3 [d0..3]
         self.mtemp, self.dtemp = mtemp, dtemp
         self.spill_d = len(state) == 12
@@ -110,22 +112,26 @@ class Scalar:
 
     def half_g(self, half, ai, bi, ci, di, word):
         """Half a G (one message word, one rotate pair) as a macro call. The
-        message load and, with a spilled d row, the d load/store are part of
-        the macro; see MACROS."""
-        a, b, c, d, m = self.r(ai), self.r(bi), self.r(ci), self.r(di), self.mtemp
-        off = self.stride * self.slot + 4 * word
+        message load (through the input's running pointer at [sp, #ptr])
+        is part of the macro; see MACROS."""
+        a, b, c, d, m = self.r(ai), self.r(bi), self.r(ci), self.r(di), self.mtemp[1:]
         assert not self.spill_d, "spilled scalars emit whole Gs"
         name = "SGA" if half == 0 else "SGB"
-        return [f"{name} {a}, {b}, {c}, {d}, {m}, {off}"]
+        if self.preg:
+            return [f"{name}_R {a}, {b}, {c}, {d}, w{m}, {self.preg}, {4 * word}"]
+        return [f"{name} {a}, {b}, {c}, {d}, {m}, {F_PTR + 8 * self.slot}, {4 * word}"]
 
     def half_step(self, quads, sched, base):
         out = []
         if self.spill_d:
             # Whole Gs: a spilled d word is loaded and stored once per G.
-            off = lambda word: self.stride * self.slot + 4 * word
             for (ai, bi, ci, di), k in zip(quads, range(0, 8, 2)):
-                a, b, c, d, m = self.r(ai), self.r(bi), self.r(ci), self.r(di), self.mtemp
-                out.append(f"SG_SPILL {a}, {b}, {c}, {d}, {m}, {off(sched[base + k])}, {off(sched[base + k + 1])}, {self.dmem + 4 * (di - 12)}")
+                a, b, c, d, m = self.r(ai), self.r(bi), self.r(ci), self.r(di), self.mtemp[1:]
+                mx, my, doff = 4 * sched[base + k], 4 * sched[base + k + 1], self.dmem + 4 * (di - 12)
+                if self.preg:
+                    out.append(f"SG_SPILL_R {a}, {b}, {c}, {d}, w{m}, {self.preg}, {mx}, {my}, {doff}")
+                else:
+                    out.append(f"SG_SPILL {a}, {b}, {c}, {d}, {m}, {F_PTR + 8 * self.slot}, {mx}, {my}, {doff}")
             return out
         # The four first halves, then the four second halves: independent
         # ops sit closer together in the instruction stream, which is worth
@@ -189,9 +195,9 @@ class Unit:
     the d row is spilled to F_DSPILL. Messages are read from the unit's
     F_MSG area, transposed there at block start."""
 
-    def __init__(self, index, slots, state, spill_d, mtemp, dtemp, msg_regs=None, stride=CHUNK, ctr_step=1):
+    def __init__(self, index, slots, state, spill_d, mtemp, dtemp, msg_regs=None, ctr_step=1):
         self.index, self.slots, self.state = index, slots, state
-        self.stride, self.ctr_step = stride, ctr_step
+        self.ctr_step = ctr_step
         self.spill_d, self.mtemp, self.dtemp = spill_d, mtemp, dtemp
         self.msg_regs = msg_regs  # 16 vector numbers, or None for stack-resident messages
         self.const = F_UNIT + UNIT_CONST * index
@@ -280,10 +286,11 @@ class Pair(Unit):
         sa, sb = self.slots
         t0, t1, t2, t3, t4, t5, t6, t7 = temps[:8]
         out = []
+        out += [f"ldr x3, [sp, #{F_PTR + 8 * sa}]", f"ldr x4, [sp, #{F_PTR + 8 * sb}]"]
         for q in range(4):
             out += [
-                f"ldr q{t0}, [x0, #{self.stride * sa + 16 * q}]",
-                f"ldr q{t1}, [x0, #{self.stride * sb + 16 * q}]",
+                f"ldr q{t0}, [x3, #{16 * q}]",
+                f"ldr q{t1}, [x4, #{16 * q}]",
                 f"zip1 v{t2}.4s, v{t0}.4s, v{t1}.4s",
                 f"zip2 v{t3}.4s, v{t0}.4s, v{t1}.4s",
             ]
@@ -349,9 +356,15 @@ class Quad(Unit):
     def transpose(self, temps):
         t = temps[:8]
         out = []
+        # Two pointers at a time through x3/x4.
         for q in range(4):
-            for j in range(4):
-                out.append(f"ldr q{t[j]}, [x0, #{self.stride * self.slots[j] + 16 * q}]")
+            for j in range(0, 4, 2):
+                out += [
+                    f"ldr x3, [sp, #{F_PTR + 8 * self.slots[j]}]",
+                    f"ldr x4, [sp, #{F_PTR + 8 * self.slots[j + 1]}]",
+                    f"ldr q{t[j]}, [x3, #{16 * q}]",
+                    f"ldr q{t[j + 1]}, [x4, #{16 * q}]",
+                ]
             out += [
                 f"trn1 v{t[4]}.4s, v{t[0]}.4s, v{t[1]}.4s",
                 f"trn2 v{t[5]}.4s, v{t[0]}.4s, v{t[1]}.4s",
@@ -391,8 +404,33 @@ MACROS = r"""
 // word's byte offset from x0. SGA is the first half (rotates 16, 12), SGB
 // the second (8, 7). The message add comes first so it overlaps the
 // previous half.
-.macro SGA a, b, c, d, m, mx
-    ldr \m, [x0, #\mx]
+.macro SGA a, b, c, d, m, p, mx
+    ldr x\m, [sp, #\p]
+    ldr w\m, [x\m, #\mx]
+    add \a, \a, w\m
+    add \a, \a, \b
+    eor \d, \d, \a
+    ror \d, \d, #16
+    add \c, \c, \d
+    eor \b, \b, \c
+    ror \b, \b, #12
+.endm
+
+.macro SGB a, b, c, d, m, p, mx
+    ldr x\m, [sp, #\p]
+    ldr w\m, [x\m, #\mx]
+    add \a, \a, w\m
+    add \a, \a, \b
+    eor \d, \d, \a
+    ror \d, \d, #8
+    add \c, \c, \d
+    eor \b, \b, \c
+    ror \b, \b, #7
+.endm
+
+// Same, with the input's running pointer in register p.
+.macro SGA_R a, b, c, d, m, p, mx
+    ldr \m, [\p, #\mx]
     add \a, \a, \m
     add \a, \a, \b
     eor \d, \d, \a
@@ -402,8 +440,8 @@ MACROS = r"""
     ror \b, \b, #12
 .endm
 
-.macro SGB a, b, c, d, m, mx
-    ldr \m, [x0, #\mx]
+.macro SGB_R a, b, c, d, m, p, mx
+    ldr \m, [\p, #\mx]
     add \a, \a, \m
     add \a, \a, \b
     eor \d, \d, \a
@@ -414,8 +452,31 @@ MACROS = r"""
 .endm
 
 // Whole G with the d word spilled at [sp, #doff]; d is a temp register.
-.macro SG_SPILL a, b, c, d, m, mx, my, doff
-    ldr \m, [x0, #\mx]
+.macro SG_SPILL a, b, c, d, m, p, mx, my, doff
+    ldr x\m, [sp, #\p]
+    ldr w\m, [x\m, #\mx]
+    ldr \d, [sp, #\doff]
+    add \a, \a, w\m
+    add \a, \a, \b
+    eor \d, \d, \a
+    ror \d, \d, #16
+    add \c, \c, \d
+    eor \b, \b, \c
+    ror \b, \b, #12
+    ldr x\m, [sp, #\p]
+    ldr w\m, [x\m, #\my]
+    add \a, \a, w\m
+    add \a, \a, \b
+    eor \d, \d, \a
+    ror \d, \d, #8
+    add \c, \c, \d
+    str \d, [sp, #\doff]
+    eor \b, \b, \c
+    ror \b, \b, #7
+.endm
+
+.macro SG_SPILL_R a, b, c, d, m, p, mx, my, doff
+    ldr \m, [\p, #\mx]
     ldr \d, [sp, #\doff]
     add \a, \a, \m
     add \a, \a, \b
@@ -424,7 +485,7 @@ MACROS = r"""
     add \c, \c, \d
     eor \b, \b, \c
     ror \b, \b, #12
-    ldr \m, [x0, #\my]
+    ldr \m, [\p, #\my]
     add \a, \a, \m
     add \a, \a, \b
     eor \d, \d, \a
@@ -548,6 +609,8 @@ def interleave(lists):
 
 
 def kernel(name, scalars, units):
+    n_inputs = len(scalars) + sum(len(u.slots) for u in units)
+    assert n_inputs <= MAX_INPUTS
     L = []
     e = L.append
     e(f"{name}:")
@@ -559,6 +622,15 @@ def kernel(name, scalars, units):
     e(f"str x4, [sp, #{F_PACKED}]")
     e(f"str x1, [sp, #{F_TOTAL}]")
     e(f"str x5, [sp, #{F_OUT}]")
+    # Running input pointers, advanced by one block per iteration: in a
+    # register where the scalar has one, in the frame otherwise.
+    pregs = {sc.slot: sc.preg for sc in scalars if sc.preg}
+    for i in range(n_inputs):
+        if i in pregs and pregs[i] not in ("x0", "x1"):
+            e(f"ldr {pregs[i]}, [x0, #{8 * i}]")
+        elif i not in pregs:
+            e(f"ldr x6, [x0, #{8 * i}]")
+            e(f"str x6, [sp, #{F_PTR + 8 * i}]")
     for i in range(0, 4, 2):
         e(f"mov w6, #{IV[i] & 0xffff}")
         e(f"movk w6, #{IV[i] >> 16}, lsl #16")
@@ -592,18 +664,33 @@ def kernel(name, scalars, units):
                 e("dup v0.4s, v0.s[0]")
     for sc in scalars:
         L += sc.prologue()
+    x1_is_pointer = "x1" in pregs.values()
+    if x1_is_pointer:
+        e(f"str x1, [sp, #{F_REMAIN}]")
+        for i in range(n_inputs):
+            if pregs.get(i) == "x1":
+                e(f"ldr x1, [x0, #{8 * i}]")
+    # x0 itself, when it carries a pointer, is loaded last: the table is dead after this.
+    for i in range(n_inputs):
+        if pregs.get(i) == "x0":
+            e(f"ldr x0, [x0, #{8 * i}]")
     e(f"{name}_loop:")
     e(f"ldr w3, [sp, #{F_PACKED}]")
     e(f"ldr x4, [sp, #{F_TOTAL}]")
+    if x1_is_pointer:
+        e(f"ldr x5, [sp, #{F_REMAIN}]")
+    rem = "x5" if x1_is_pointer else "x1"
+    # Block flags into w2 = flags | (first ? start : 0) | (last ? end : 0).
+    # w3 holds the packed flags and w4 the total; both are dead afterwards.
     e("and w2, w3, #0xff")
-    e("ubfx w5, w3, #8, #8")
-    e("cmp x1, x4")
-    e("csel w5, w5, wzr, eq")
-    e("orr w2, w2, w5")
-    e("ubfx w5, w3, #16, #8")
-    e("cmp x1, #1")
-    e("csel w5, w5, wzr, eq")
-    e("orr w2, w2, w5")
+    e(f"cmp {rem}, x4")
+    e("ubfx w4, w3, #8, #8")
+    e("csel w4, w4, wzr, eq")
+    e("orr w2, w2, w4")
+    e(f"cmp {rem}, #1")
+    e("ubfx w3, w3, #16, #8")
+    e("csel w3, w3, wzr, eq")
+    e("orr w2, w2, w3")
     if units:
         # c and d rows of every unit are dead here: use them as transposition temps.
         # c and d rows of every unit are dead here: use them as transposition
@@ -633,8 +720,19 @@ def kernel(name, scalars, units):
         L += sc.block_end()
     for u in units:
         L += u.block_end()
-    e("add x0, x0, #64")
-    e("subs x1, x1, #1")
+    for i in range(n_inputs):
+        if i in pregs:
+            e(f"add {pregs[i]}, {pregs[i]}, #64")
+        else:
+            e(f"ldr x3, [sp, #{F_PTR + 8 * i}]")
+            e("add x3, x3, #64")
+            e(f"str x3, [sp, #{F_PTR + 8 * i}]")
+    if x1_is_pointer:
+        e(f"ldr x3, [sp, #{F_REMAIN}]")
+        e("subs x3, x3, #1")
+        e(f"str x3, [sp, #{F_REMAIN}]")
+    else:
+        e("subs x1, x1, #1")
     e(f"b.ne {name}_loop")
     e(f"ldr x2, [sp, #{F_OUT}]")
     for sc in scalars:
@@ -655,13 +753,15 @@ def kernel(name, scalars, units):
 def build():
     # One scalar chunk: 16 state registers w6..w17, w19..w22; message temp w23.
     one = [f"w{i}" for i in list(range(6, 18)) + list(range(19, 23))]
-    sc1 = lambda slot: [Scalar(0, slot, one, "w23")]
+    sc1 = lambda slot: [Scalar(0, slot, one, "w23", preg="x24")]
     # Two scalar chunks with spilled d rows: 12 + 12 state registers in
     # w6..w17 and w19..w30; message temps w2/w3... those are flag temps at
     # block start only, so w2..w5 serve as message and d temps in the rounds.
     two_a = [f"w{i}" for i in range(6, 18)]
     two_b = [f"w{i}" for i in range(19, 31)]
-    sc2 = lambda s0, s1: [Scalar(0, s0, two_a, "w2", "w3"), Scalar(1, s1, two_b, "w4", "w5")]
+    # x0 (the pointer table, dead after the prologue) and x1 (the block
+    # count, moved to the frame) carry the two running pointers.
+    sc2 = lambda s0, s1: [Scalar(0, s0, two_a, "w2", "w3", preg="x0"), Scalar(1, s1, two_b, "w4", "w5", preg="x1")]
     # NEON unit 0 keeps all 16 rows; unit 1 spills its d row. v28 message
     # temp, v29 d temp, v30 rotate temp, v31 rot8 table.
     u0 = list(range(0, 16))
@@ -670,7 +770,7 @@ def build():
     # A lone pair keeps its messages in v16..v31 (no temps needed: xar is in place).
     lone_pair = lambda slots: Pair(0, slots, u0, False, "v28", "v29", msg_regs=list(range(16, 32)))
     quad = lambda idx, slots: Quad(idx, slots, u0 if idx == 0 else u1, idx == 1, "v28", "v29", rtemp="v30")
-    P = dict(stride=BLOCK, ctr_step=0)
+    P = dict(ctr_step=0)
     ppair = lambda idx, slots: Pair(idx, slots, u0 if idx == 0 else u1, idx == 1, "v28", "v29", **P)
     plone = lambda slots: Pair(0, slots, u0, False, "v28", "v29", msg_regs=list(range(16, 32)), **P)
     pquad = lambda idx, slots: Quad(idx, slots, u0 if idx == 0 else u1, idx == 1, "v28", "v29", rtemp="v30", **P)
@@ -711,14 +811,14 @@ HEADER = """\
 // which is what lets two units of state share 32 vector registers.
 //
 // Every kernel has the C signature
-//   void kernel(const uint8_t *base, uint64_t blocks, const uint32_t key[8],
-//               uint64_t counter, uint64_t packed_flags, uint8_t *out);
-// Input i starts at base + stride * i, stride 1024 for k and 64 for p;
-// blocks is in 1..=16 and the same for every input (1 for p); input i uses
-// counter + i (k) or counter (p); packed_flags is
-// flags | flags_start << 8 | flags_end << 16, applied per block; out
-// receives 32 bytes per input in input order. The CPU must have NEON and
-// the SHA-3 extension (xar). x18 is untouched; AAPCS64 otherwise.
+//   void kernel(const uint8_t *const *inputs, uint64_t blocks,
+//               const uint32_t key[8], uint64_t counter,
+//               uint64_t packed_flags, uint8_t *out);
+// inputs[i] points at input i (n entries); blocks is in 1..=16 and the same
+// for every input (1 for p); input i uses counter + i (k) or counter (p);
+// packed_flags is flags | flags_start << 8 | flags_end << 16, applied per
+// block; out receives 32 bytes per input in input order. The CPU must have
+// NEON and the SHA-3 extension (xar). x18 is untouched; AAPCS64 otherwise.
 
 #if defined(__ELF__) && defined(__linux__)
 .section .note.GNU-stack,"",%progbits
