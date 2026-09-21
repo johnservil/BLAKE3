@@ -1,0 +1,176 @@
+//! `hash_many` for two to fifteen whole chunks on AArch64 with NEON and the
+//! SHA-3 extension, built from the generated kernels in `neon_hybrid_asm.rs`.
+//!
+//! Each kernel hashes a fixed number of contiguous chunks. This wrapper
+//! splits an input count into kernel calls that keep every unit busy:
+//!
+//! | chunks | kernels          | chunks | kernels          |
+//! |--------|------------------|--------|------------------|
+//! | 2      | k2               | 9      | k9               |
+//! | 3      | k3               | 10     | k5 + k5          |
+//! | 4      | k4               | 11     | k8 + k3          |
+//! | 5      | k5               | 12     | k8 + k4          |
+//! | 6      | k3 + k3          | 13     | k8 + k5          |
+//! | 7      | k4 + k3          | 14     | k9 + k5          |
+//! | 8      | k8               | 15     | k9 + k3 + k3     |
+//!
+//! Anything the kernels do not cover (a lone chunk, partial chunks, parent
+//! blocks, non-contiguous inputs, `IncrementCounter::No`) goes to the
+//! caller's fallback via `Err`.
+
+use crate::{CHUNK_LEN, CVWords, IncrementCounter, OUT_LEN};
+
+#[path = "neon_hybrid_asm.rs"]
+mod asm;
+
+type Kernel = unsafe extern "C" fn(*const u8, u64, *const u32, u64, u64, *mut u8);
+
+/// Kernel table: index n holds the kernel for exactly n chunks, when one exists.
+const KERNELS: [Option<(Kernel, usize)>; 10] = [
+    None,
+    None,
+    Some((asm::blake3_hybrid_k2, 2)),
+    Some((asm::blake3_hybrid_k3, 3)),
+    Some((asm::blake3_hybrid_k4, 4)),
+    Some((asm::blake3_hybrid_k5, 5)),
+    None,
+    None,
+    Some((asm::blake3_hybrid_k8, 8)),
+    Some((asm::blake3_hybrid_k9, 9)),
+];
+
+/// Kernel sizes per chunk count 2..=15, largest first.
+const PLANS: [&[usize]; 16] = [
+    &[],
+    &[],
+    &[2],
+    &[3],
+    &[4],
+    &[5],
+    &[3, 3],
+    &[4, 3],
+    &[8],
+    &[9],
+    &[5, 5],
+    &[8, 3],
+    &[8, 4],
+    &[8, 5],
+    &[9, 5],
+    &[9, 3, 3],
+];
+
+/// True when `inputs` are laid out back to back in memory.
+fn contiguous<const N: usize>(inputs: &[&[u8; N]]) -> bool {
+    let base = inputs[0].as_ptr();
+    inputs
+        .iter()
+        .enumerate()
+        .all(|(i, input)| input.as_ptr() == unsafe { base.add(i * N) })
+}
+
+/// Hash `inputs` with the hybrid kernels. Returns `Err(())` when the call
+/// does not fit their contract; the caller then uses another path.
+///
+/// Unsafe because the CPU must have NEON and the SHA-3 extension.
+pub unsafe fn hash_many<const N: usize>(
+    inputs: &[&[u8; N]],
+    key: &CVWords,
+    counter: u64,
+    increment_counter: IncrementCounter,
+    flags: u8,
+    flags_start: u8,
+    flags_end: u8,
+    out: &mut [u8],
+) -> Result<(), ()> {
+    assert!(out.len() >= inputs.len() * OUT_LEN);
+    let n = inputs.len();
+    if N != CHUNK_LEN || !increment_counter.yes() || n < 2 || n > 15 || !contiguous(inputs) {
+        return Err(());
+    }
+    let packed = flags as u64 | (flags_start as u64) << 8 | (flags_end as u64) << 16;
+    let mut done = 0;
+    for &size in PLANS[n] {
+        let (kernel, _) = KERNELS[size].expect("plan names an existing kernel");
+        unsafe {
+            kernel(
+                inputs[done].as_ptr(),
+                (N / crate::BLOCK_LEN) as u64,
+                key.as_ptr(),
+                counter + done as u64,
+                packed,
+                out[done * OUT_LEN..].as_mut_ptr(),
+            );
+        }
+        done += size;
+    }
+    debug_assert_eq!(done, n);
+    Ok(())
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::{BLOCK_LEN, CHUNK_END, CHUNK_START, IV, KEYED_HASH};
+
+    #[test]
+    fn test_every_count_against_portable() {
+        if !crate::neon_dup::sha3_detected() {
+            return;
+        }
+        let mut input = [0u8; 15 * CHUNK_LEN];
+        crate::test::paint_test_input(&mut input);
+        for n in 2..=15 {
+            let chunks: arrayvec::ArrayVec<&[u8; CHUNK_LEN], 15> = input
+                .chunks_exact(CHUNK_LEN)
+                .take(n)
+                .map(|c| c.try_into().unwrap())
+                .collect();
+            for counter in [0u64, u32::MAX as u64, i32::MAX as u64, 1 << 40] {
+                let mut want = [0u8; 15 * OUT_LEN];
+                let mut got = [0u8; 15 * OUT_LEN];
+                crate::portable::hash_many(
+                    &chunks,
+                    IV,
+                    counter,
+                    IncrementCounter::Yes,
+                    KEYED_HASH,
+                    CHUNK_START,
+                    CHUNK_END,
+                    &mut want,
+                );
+                unsafe {
+                    hash_many(
+                        &chunks,
+                        IV,
+                        counter,
+                        IncrementCounter::Yes,
+                        KEYED_HASH,
+                        CHUNK_START,
+                        CHUNK_END,
+                        &mut got,
+                    )
+                }
+                .unwrap();
+                assert_eq!(
+                    &want[..n * OUT_LEN],
+                    &got[..n * OUT_LEN],
+                    "n = {n}, counter = {counter}"
+                );
+            }
+        }
+        // Partial last chunk (blocks < 16) via a smaller N is not the kernels'
+        // job; confirm the wrapper declines parents and single chunks.
+        let parents: [&[u8; BLOCK_LEN]; 2] = [
+            input[..BLOCK_LEN].try_into().unwrap(),
+            input[BLOCK_LEN..2 * BLOCK_LEN].try_into().unwrap(),
+        ];
+        let mut out = [0u8; 2 * OUT_LEN];
+        assert!(
+            unsafe { hash_many(&parents, IV, 0, IncrementCounter::No, 0, 0, 0, &mut out) }.is_err()
+        );
+        let one: [&[u8; CHUNK_LEN]; 1] = [input[..CHUNK_LEN].try_into().unwrap()];
+        assert!(
+            unsafe { hash_many(&one, IV, 0, IncrementCounter::Yes, 0, 0, 0, &mut out) }.is_err()
+        );
+    }
+}

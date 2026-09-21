@@ -128,6 +128,42 @@ pub unsafe fn hash_many<const N: usize>(
         } else {
             counter
         };
+        // The remainder is fewer than sixteen inputs. The dup-layout kernel
+        // beats upstream's four-lane NEON there (latency-bound, see
+        // rust_neon_dup.rs) and needs `xar` from the SHA-3 extension.
+        if crate::neon_dup::sha3_detected() {
+            let rest = &inputs[done..];
+            let rest_out = &mut out[done * OUT_LEN..];
+            if unsafe {
+                crate::neon_hybrid::hash_many(
+                    rest,
+                    key,
+                    rest_counter,
+                    increment_counter,
+                    flags,
+                    flags_start,
+                    flags_end,
+                    rest_out,
+                )
+            }
+            .is_ok()
+            {
+                return;
+            }
+            unsafe {
+                crate::neon_dup::hash_many(
+                    &inputs[done..],
+                    key,
+                    rest_counter,
+                    increment_counter,
+                    flags,
+                    flags_start,
+                    flags_end,
+                    &mut out[done * OUT_LEN..],
+                );
+            }
+            return;
+        }
         unsafe {
             crate::neon::hash_many(
                 &inputs[done..],
