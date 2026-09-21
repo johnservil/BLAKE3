@@ -10,8 +10,8 @@ cfg_if::cfg_if! {
             }
         }
     } else if #[cfg(blake3_sme2)] {
-        // Eight sixteen-lane groups per hash_many call; see sme2::DEGREE.
-        pub const MAX_SIMD_DEGREE: usize = 128;
+        // See sme2::DEGREE.
+        pub const MAX_SIMD_DEGREE: usize = crate::sme2::DEGREE;
     } else if #[cfg(blake3_neon)] {
         pub const MAX_SIMD_DEGREE: usize = 4;
     } else if #[cfg(blake3_wasm32_simd)] {
@@ -35,7 +35,7 @@ cfg_if::cfg_if! {
             }
         }
     } else if #[cfg(blake3_sme2)] {
-        pub const MAX_SIMD_DEGREE_OR_2: usize = 128;
+        pub const MAX_SIMD_DEGREE_OR_2: usize = crate::sme2::DEGREE;
     } else if #[cfg(blake3_neon)] {
         pub const MAX_SIMD_DEGREE_OR_2: usize = 4;
     } else if #[cfg(blake3_wasm32_simd)] {
