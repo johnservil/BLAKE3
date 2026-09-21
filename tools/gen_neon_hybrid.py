@@ -108,19 +108,31 @@ class Scalar:
     def d_store(self, di):
         return [f"str {self.dtemp}, [sp, #{self.dmem + 4 * (di - 12)}]"] if self.spill_d else []
 
-    def g(self, ai, bi, ci, di, mx, my):
-        """One G as a macro call; the two message loads and (with a spilled d
-        row) the d load/store are part of the macro, see SCALAR_MACROS."""
+    def half_g(self, half, ai, bi, ci, di, word):
+        """Half a G (one message word, one rotate pair) as a macro call. The
+        message load and, with a spilled d row, the d load/store are part of
+        the macro; see MACROS."""
         a, b, c, d, m = self.r(ai), self.r(bi), self.r(ci), self.r(di), self.mtemp
-        off = lambda word: self.stride * self.slot + 4 * word
-        if self.spill_d:
-            return [f"SG_SPILL {a}, {b}, {c}, {d}, {m}, {off(mx)}, {off(my)}, {self.dmem + 4 * (di - 12)}"]
-        return [f"SG {a}, {b}, {c}, {d}, {m}, {off(mx)}, {off(my)}"]
+        off = self.stride * self.slot + 4 * word
+        assert not self.spill_d, "spilled scalars emit whole Gs"
+        name = "SGA" if half == 0 else "SGB"
+        return [f"{name} {a}, {b}, {c}, {d}, {m}, {off}"]
 
     def half_step(self, quads, sched, base):
         out = []
-        for q, k in zip(quads, range(0, 8, 2)):
-            out += self.g(*q, sched[base + k], sched[base + k + 1])
+        if self.spill_d:
+            # Whole Gs: a spilled d word is loaded and stored once per G.
+            off = lambda word: self.stride * self.slot + 4 * word
+            for (ai, bi, ci, di), k in zip(quads, range(0, 8, 2)):
+                a, b, c, d, m = self.r(ai), self.r(bi), self.r(ci), self.r(di), self.mtemp
+                out.append(f"SG_SPILL {a}, {b}, {c}, {d}, {m}, {off(sched[base + k])}, {off(sched[base + k + 1])}, {self.dmem + 4 * (di - 12)}")
+            return out
+        # The four first halves, then the four second halves: independent
+        # ops sit closer together in the instruction stream, which is worth
+        # ~0.3 cycles per G-step to the out-of-order scheduler.
+        for half in (0, 1):
+            for q, k in zip(quads, range(0, 8, 2)):
+                out += self.half_g(half, *q, sched[base + k + half])
         return out
 
     def prologue(self):
@@ -375,9 +387,11 @@ class Quad(Unit):
 
 
 MACROS = r"""
-// Scalar G: a, b, c, d state words; m message temp; mx, my message byte
-// offsets from x0. The message add comes first so it overlaps the previous G.
-.macro SG a, b, c, d, m, mx, my
+// Scalar half-G: a, b, c, d state words; m message temp; mx the message
+// word's byte offset from x0. SGA is the first half (rotates 16, 12), SGB
+// the second (8, 7). The message add comes first so it overlaps the
+// previous half.
+.macro SGA a, b, c, d, m, mx
     ldr \m, [x0, #\mx]
     add \a, \a, \m
     add \a, \a, \b
@@ -386,7 +400,10 @@ MACROS = r"""
     add \c, \c, \d
     eor \b, \b, \c
     ror \b, \b, #12
-    ldr \m, [x0, #\my]
+.endm
+
+.macro SGB a, b, c, d, m, mx
+    ldr \m, [x0, #\mx]
     add \a, \a, \m
     add \a, \a, \b
     eor \d, \d, \a
@@ -396,7 +413,7 @@ MACROS = r"""
     ror \b, \b, #7
 .endm
 
-// Scalar G with the d word spilled at [sp, #doff]; d is a temp register.
+// Whole G with the d word spilled at [sp, #doff]; d is a temp register.
 .macro SG_SPILL a, b, c, d, m, mx, my, doff
     ldr \m, [x0, #\mx]
     ldr \d, [sp, #\doff]

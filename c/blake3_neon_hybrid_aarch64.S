@@ -63,9 +63,11 @@
 .section .text
 #endif
 
-// Scalar G: a, b, c, d state words; m message temp; mx, my message byte
-// offsets from x0. The message add comes first so it overlaps the previous G.
-.macro SG a, b, c, d, m, mx, my
+// Scalar half-G: a, b, c, d state words; m message temp; mx the message
+// word's byte offset from x0. SGA is the first half (rotates 16, 12), SGB
+// the second (8, 7). The message add comes first so it overlaps the
+// previous half.
+.macro SGA a, b, c, d, m, mx
     ldr \m, [x0, #\mx]
     add \a, \a, \m
     add \a, \a, \b
@@ -74,7 +76,10 @@
     add \c, \c, \d
     eor \b, \b, \c
     ror \b, \b, #12
-    ldr \m, [x0, #\my]
+.endm
+
+.macro SGB a, b, c, d, m, mx
+    ldr \m, [x0, #\mx]
     add \a, \a, \m
     add \a, \a, \b
     eor \d, \d, \a
@@ -84,7 +89,7 @@
     ror \b, \b, #7
 .endm
 
-// Scalar G with the d word spilled at [sp, #doff]; d is a temp register.
+// Whole G with the d word spilled at [sp, #doff]; d is a temp register.
 .macro SG_SPILL a, b, c, d, m, mx, my, doff
     ldr \m, [x0, #\mx]
     ldr \d, [sp, #\doff]
@@ -1320,62 +1325,118 @@ blake3_hybrid_k1_loop:
         lsr x20, x3, #32
         mov w21, w4
         lsr x22, x4, #32
-        SG w6, w10, w14, w19, w23, 0, 4
-        SG w7, w11, w15, w20, w23, 8, 12
-        SG w8, w12, w16, w21, w23, 16, 20
-        SG w9, w13, w17, w22, w23, 24, 28
-        SG w6, w11, w16, w22, w23, 32, 36
-        SG w7, w12, w17, w19, w23, 40, 44
-        SG w8, w13, w14, w20, w23, 48, 52
-        SG w9, w10, w15, w21, w23, 56, 60
-        SG w6, w10, w14, w19, w23, 8, 24
-        SG w7, w11, w15, w20, w23, 12, 40
-        SG w8, w12, w16, w21, w23, 28, 0
-        SG w9, w13, w17, w22, w23, 16, 52
-        SG w6, w11, w16, w22, w23, 4, 44
-        SG w7, w12, w17, w19, w23, 48, 20
-        SG w8, w13, w14, w20, w23, 36, 56
-        SG w9, w10, w15, w21, w23, 60, 32
-        SG w6, w10, w14, w19, w23, 12, 16
-        SG w7, w11, w15, w20, w23, 40, 48
-        SG w8, w12, w16, w21, w23, 52, 8
-        SG w9, w13, w17, w22, w23, 28, 56
-        SG w6, w11, w16, w22, w23, 24, 20
-        SG w7, w12, w17, w19, w23, 36, 0
-        SG w8, w13, w14, w20, w23, 44, 60
-        SG w9, w10, w15, w21, w23, 32, 4
-        SG w6, w10, w14, w19, w23, 40, 28
-        SG w7, w11, w15, w20, w23, 48, 36
-        SG w8, w12, w16, w21, w23, 56, 12
-        SG w9, w13, w17, w22, w23, 52, 60
-        SG w6, w11, w16, w22, w23, 16, 0
-        SG w7, w12, w17, w19, w23, 44, 8
-        SG w8, w13, w14, w20, w23, 20, 32
-        SG w9, w10, w15, w21, w23, 4, 24
-        SG w6, w10, w14, w19, w23, 48, 52
-        SG w7, w11, w15, w20, w23, 36, 44
-        SG w8, w12, w16, w21, w23, 60, 40
-        SG w9, w13, w17, w22, w23, 56, 32
-        SG w6, w11, w16, w22, w23, 28, 8
-        SG w7, w12, w17, w19, w23, 20, 12
-        SG w8, w13, w14, w20, w23, 0, 4
-        SG w9, w10, w15, w21, w23, 24, 16
-        SG w6, w10, w14, w19, w23, 36, 56
-        SG w7, w11, w15, w20, w23, 44, 20
-        SG w8, w12, w16, w21, w23, 32, 48
-        SG w9, w13, w17, w22, w23, 60, 4
-        SG w6, w11, w16, w22, w23, 52, 12
-        SG w7, w12, w17, w19, w23, 0, 40
-        SG w8, w13, w14, w20, w23, 8, 24
-        SG w9, w10, w15, w21, w23, 16, 28
-        SG w6, w10, w14, w19, w23, 44, 60
-        SG w7, w11, w15, w20, w23, 20, 0
-        SG w8, w12, w16, w21, w23, 4, 36
-        SG w9, w13, w17, w22, w23, 32, 24
-        SG w6, w11, w16, w22, w23, 56, 40
-        SG w7, w12, w17, w19, w23, 8, 48
-        SG w8, w13, w14, w20, w23, 12, 16
-        SG w9, w10, w15, w21, w23, 28, 52
+        SGA w6, w10, w14, w19, w23, 0
+        SGA w7, w11, w15, w20, w23, 8
+        SGA w8, w12, w16, w21, w23, 16
+        SGA w9, w13, w17, w22, w23, 24
+        SGB w6, w10, w14, w19, w23, 4
+        SGB w7, w11, w15, w20, w23, 12
+        SGB w8, w12, w16, w21, w23, 20
+        SGB w9, w13, w17, w22, w23, 28
+        SGA w6, w11, w16, w22, w23, 32
+        SGA w7, w12, w17, w19, w23, 40
+        SGA w8, w13, w14, w20, w23, 48
+        SGA w9, w10, w15, w21, w23, 56
+        SGB w6, w11, w16, w22, w23, 36
+        SGB w7, w12, w17, w19, w23, 44
+        SGB w8, w13, w14, w20, w23, 52
+        SGB w9, w10, w15, w21, w23, 60
+        SGA w6, w10, w14, w19, w23, 8
+        SGA w7, w11, w15, w20, w23, 12
+        SGA w8, w12, w16, w21, w23, 28
+        SGA w9, w13, w17, w22, w23, 16
+        SGB w6, w10, w14, w19, w23, 24
+        SGB w7, w11, w15, w20, w23, 40
+        SGB w8, w12, w16, w21, w23, 0
+        SGB w9, w13, w17, w22, w23, 52
+        SGA w6, w11, w16, w22, w23, 4
+        SGA w7, w12, w17, w19, w23, 48
+        SGA w8, w13, w14, w20, w23, 36
+        SGA w9, w10, w15, w21, w23, 60
+        SGB w6, w11, w16, w22, w23, 44
+        SGB w7, w12, w17, w19, w23, 20
+        SGB w8, w13, w14, w20, w23, 56
+        SGB w9, w10, w15, w21, w23, 32
+        SGA w6, w10, w14, w19, w23, 12
+        SGA w7, w11, w15, w20, w23, 40
+        SGA w8, w12, w16, w21, w23, 52
+        SGA w9, w13, w17, w22, w23, 28
+        SGB w6, w10, w14, w19, w23, 16
+        SGB w7, w11, w15, w20, w23, 48
+        SGB w8, w12, w16, w21, w23, 8
+        SGB w9, w13, w17, w22, w23, 56
+        SGA w6, w11, w16, w22, w23, 24
+        SGA w7, w12, w17, w19, w23, 36
+        SGA w8, w13, w14, w20, w23, 44
+        SGA w9, w10, w15, w21, w23, 32
+        SGB w6, w11, w16, w22, w23, 20
+        SGB w7, w12, w17, w19, w23, 0
+        SGB w8, w13, w14, w20, w23, 60
+        SGB w9, w10, w15, w21, w23, 4
+        SGA w6, w10, w14, w19, w23, 40
+        SGA w7, w11, w15, w20, w23, 48
+        SGA w8, w12, w16, w21, w23, 56
+        SGA w9, w13, w17, w22, w23, 52
+        SGB w6, w10, w14, w19, w23, 28
+        SGB w7, w11, w15, w20, w23, 36
+        SGB w8, w12, w16, w21, w23, 12
+        SGB w9, w13, w17, w22, w23, 60
+        SGA w6, w11, w16, w22, w23, 16
+        SGA w7, w12, w17, w19, w23, 44
+        SGA w8, w13, w14, w20, w23, 20
+        SGA w9, w10, w15, w21, w23, 4
+        SGB w6, w11, w16, w22, w23, 0
+        SGB w7, w12, w17, w19, w23, 8
+        SGB w8, w13, w14, w20, w23, 32
+        SGB w9, w10, w15, w21, w23, 24
+        SGA w6, w10, w14, w19, w23, 48
+        SGA w7, w11, w15, w20, w23, 36
+        SGA w8, w12, w16, w21, w23, 60
+        SGA w9, w13, w17, w22, w23, 56
+        SGB w6, w10, w14, w19, w23, 52
+        SGB w7, w11, w15, w20, w23, 44
+        SGB w8, w12, w16, w21, w23, 40
+        SGB w9, w13, w17, w22, w23, 32
+        SGA w6, w11, w16, w22, w23, 28
+        SGA w7, w12, w17, w19, w23, 20
+        SGA w8, w13, w14, w20, w23, 0
+        SGA w9, w10, w15, w21, w23, 24
+        SGB w6, w11, w16, w22, w23, 8
+        SGB w7, w12, w17, w19, w23, 12
+        SGB w8, w13, w14, w20, w23, 4
+        SGB w9, w10, w15, w21, w23, 16
+        SGA w6, w10, w14, w19, w23, 36
+        SGA w7, w11, w15, w20, w23, 44
+        SGA w8, w12, w16, w21, w23, 32
+        SGA w9, w13, w17, w22, w23, 60
+        SGB w6, w10, w14, w19, w23, 56
+        SGB w7, w11, w15, w20, w23, 20
+        SGB w8, w12, w16, w21, w23, 48
+        SGB w9, w13, w17, w22, w23, 4
+        SGA w6, w11, w16, w22, w23, 52
+        SGA w7, w12, w17, w19, w23, 0
+        SGA w8, w13, w14, w20, w23, 8
+        SGA w9, w10, w15, w21, w23, 16
+        SGB w6, w11, w16, w22, w23, 12
+        SGB w7, w12, w17, w19, w23, 40
+        SGB w8, w13, w14, w20, w23, 24
+        SGB w9, w10, w15, w21, w23, 28
+        SGA w6, w10, w14, w19, w23, 44
+        SGA w7, w11, w15, w20, w23, 20
+        SGA w8, w12, w16, w21, w23, 4
+        SGA w9, w13, w17, w22, w23, 32
+        SGB w6, w10, w14, w19, w23, 60
+        SGB w7, w11, w15, w20, w23, 0
+        SGB w8, w12, w16, w21, w23, 36
+        SGB w9, w13, w17, w22, w23, 24
+        SGA w6, w11, w16, w22, w23, 56
+        SGA w7, w12, w17, w19, w23, 8
+        SGA w8, w13, w14, w20, w23, 12
+        SGA w9, w10, w15, w21, w23, 28
+        SGB w6, w11, w16, w22, w23, 40
+        SGB w7, w12, w17, w19, w23, 48
+        SGB w8, w13, w14, w20, w23, 16
+        SGB w9, w10, w15, w21, w23, 52
         eor w6, w6, w14
         eor w7, w7, w15
         eor w8, w8, w16
@@ -1777,118 +1838,174 @@ blake3_hybrid_k3_loop:
         lsr x20, x3, #32
         mov w21, w4
         lsr x22, x4, #32
-        SG w6, w10, w14, w19, w23, 0, 4
+        SGA w6, w10, w14, w19, w23, 0
         PG_REG v0, v4, v8, v12, v16, v17
-        SG w7, w11, w15, w20, w23, 8, 12
+        SGA w7, w11, w15, w20, w23, 8
         PG_REG v1, v5, v9, v13, v18, v19
-        SG w8, w12, w16, w21, w23, 16, 20
+        SGA w8, w12, w16, w21, w23, 16
         PG_REG v2, v6, v10, v14, v20, v21
-        SG w9, w13, w17, w22, w23, 24, 28
+        SGA w9, w13, w17, w22, w23, 24
         PG_REG v3, v7, v11, v15, v22, v23
-        SG w6, w11, w16, w22, w23, 32, 36
+        SGB w6, w10, w14, w19, w23, 4
+        SGB w7, w11, w15, w20, w23, 12
+        SGB w8, w12, w16, w21, w23, 20
+        SGB w9, w13, w17, w22, w23, 28
+        SGA w6, w11, w16, w22, w23, 32
         PG_REG v0, v5, v10, v15, v24, v25
-        SG w7, w12, w17, w19, w23, 40, 44
+        SGA w7, w12, w17, w19, w23, 40
         PG_REG v1, v6, v11, v12, v26, v27
-        SG w8, w13, w14, w20, w23, 48, 52
+        SGA w8, w13, w14, w20, w23, 48
         PG_REG v2, v7, v8, v13, v28, v29
-        SG w9, w10, w15, w21, w23, 56, 60
+        SGA w9, w10, w15, w21, w23, 56
         PG_REG v3, v4, v9, v14, v30, v31
-        SG w6, w10, w14, w19, w23, 8, 24
+        SGB w6, w11, w16, w22, w23, 36
+        SGB w7, w12, w17, w19, w23, 44
+        SGB w8, w13, w14, w20, w23, 52
+        SGB w9, w10, w15, w21, w23, 60
+        SGA w6, w10, w14, w19, w23, 8
         PG_REG v0, v4, v8, v12, v18, v22
-        SG w7, w11, w15, w20, w23, 12, 40
+        SGA w7, w11, w15, w20, w23, 12
         PG_REG v1, v5, v9, v13, v19, v26
-        SG w8, w12, w16, w21, w23, 28, 0
+        SGA w8, w12, w16, w21, w23, 28
         PG_REG v2, v6, v10, v14, v23, v16
-        SG w9, w13, w17, w22, w23, 16, 52
+        SGA w9, w13, w17, w22, w23, 16
         PG_REG v3, v7, v11, v15, v20, v29
-        SG w6, w11, w16, w22, w23, 4, 44
+        SGB w6, w10, w14, w19, w23, 24
+        SGB w7, w11, w15, w20, w23, 40
+        SGB w8, w12, w16, w21, w23, 0
+        SGB w9, w13, w17, w22, w23, 52
+        SGA w6, w11, w16, w22, w23, 4
         PG_REG v0, v5, v10, v15, v17, v27
-        SG w7, w12, w17, w19, w23, 48, 20
+        SGA w7, w12, w17, w19, w23, 48
         PG_REG v1, v6, v11, v12, v28, v21
-        SG w8, w13, w14, w20, w23, 36, 56
+        SGA w8, w13, w14, w20, w23, 36
         PG_REG v2, v7, v8, v13, v25, v30
-        SG w9, w10, w15, w21, w23, 60, 32
+        SGA w9, w10, w15, w21, w23, 60
         PG_REG v3, v4, v9, v14, v31, v24
-        SG w6, w10, w14, w19, w23, 12, 16
+        SGB w6, w11, w16, w22, w23, 44
+        SGB w7, w12, w17, w19, w23, 20
+        SGB w8, w13, w14, w20, w23, 56
+        SGB w9, w10, w15, w21, w23, 32
+        SGA w6, w10, w14, w19, w23, 12
         PG_REG v0, v4, v8, v12, v19, v20
-        SG w7, w11, w15, w20, w23, 40, 48
+        SGA w7, w11, w15, w20, w23, 40
         PG_REG v1, v5, v9, v13, v26, v28
-        SG w8, w12, w16, w21, w23, 52, 8
+        SGA w8, w12, w16, w21, w23, 52
         PG_REG v2, v6, v10, v14, v29, v18
-        SG w9, w13, w17, w22, w23, 28, 56
+        SGA w9, w13, w17, w22, w23, 28
         PG_REG v3, v7, v11, v15, v23, v30
-        SG w6, w11, w16, w22, w23, 24, 20
+        SGB w6, w10, w14, w19, w23, 16
+        SGB w7, w11, w15, w20, w23, 48
+        SGB w8, w12, w16, w21, w23, 8
+        SGB w9, w13, w17, w22, w23, 56
+        SGA w6, w11, w16, w22, w23, 24
         PG_REG v0, v5, v10, v15, v22, v21
-        SG w7, w12, w17, w19, w23, 36, 0
+        SGA w7, w12, w17, w19, w23, 36
         PG_REG v1, v6, v11, v12, v25, v16
-        SG w8, w13, w14, w20, w23, 44, 60
+        SGA w8, w13, w14, w20, w23, 44
         PG_REG v2, v7, v8, v13, v27, v31
-        SG w9, w10, w15, w21, w23, 32, 4
+        SGA w9, w10, w15, w21, w23, 32
         PG_REG v3, v4, v9, v14, v24, v17
-        SG w6, w10, w14, w19, w23, 40, 28
+        SGB w6, w11, w16, w22, w23, 20
+        SGB w7, w12, w17, w19, w23, 0
+        SGB w8, w13, w14, w20, w23, 60
+        SGB w9, w10, w15, w21, w23, 4
+        SGA w6, w10, w14, w19, w23, 40
         PG_REG v0, v4, v8, v12, v26, v23
-        SG w7, w11, w15, w20, w23, 48, 36
+        SGA w7, w11, w15, w20, w23, 48
         PG_REG v1, v5, v9, v13, v28, v25
-        SG w8, w12, w16, w21, w23, 56, 12
+        SGA w8, w12, w16, w21, w23, 56
         PG_REG v2, v6, v10, v14, v30, v19
-        SG w9, w13, w17, w22, w23, 52, 60
+        SGA w9, w13, w17, w22, w23, 52
         PG_REG v3, v7, v11, v15, v29, v31
-        SG w6, w11, w16, w22, w23, 16, 0
+        SGB w6, w10, w14, w19, w23, 28
+        SGB w7, w11, w15, w20, w23, 36
+        SGB w8, w12, w16, w21, w23, 12
+        SGB w9, w13, w17, w22, w23, 60
+        SGA w6, w11, w16, w22, w23, 16
         PG_REG v0, v5, v10, v15, v20, v16
-        SG w7, w12, w17, w19, w23, 44, 8
+        SGA w7, w12, w17, w19, w23, 44
         PG_REG v1, v6, v11, v12, v27, v18
-        SG w8, w13, w14, w20, w23, 20, 32
+        SGA w8, w13, w14, w20, w23, 20
         PG_REG v2, v7, v8, v13, v21, v24
-        SG w9, w10, w15, w21, w23, 4, 24
+        SGA w9, w10, w15, w21, w23, 4
         PG_REG v3, v4, v9, v14, v17, v22
-        SG w6, w10, w14, w19, w23, 48, 52
+        SGB w6, w11, w16, w22, w23, 0
+        SGB w7, w12, w17, w19, w23, 8
+        SGB w8, w13, w14, w20, w23, 32
+        SGB w9, w10, w15, w21, w23, 24
+        SGA w6, w10, w14, w19, w23, 48
         PG_REG v0, v4, v8, v12, v28, v29
-        SG w7, w11, w15, w20, w23, 36, 44
+        SGA w7, w11, w15, w20, w23, 36
         PG_REG v1, v5, v9, v13, v25, v27
-        SG w8, w12, w16, w21, w23, 60, 40
+        SGA w8, w12, w16, w21, w23, 60
         PG_REG v2, v6, v10, v14, v31, v26
-        SG w9, w13, w17, w22, w23, 56, 32
+        SGA w9, w13, w17, w22, w23, 56
         PG_REG v3, v7, v11, v15, v30, v24
-        SG w6, w11, w16, w22, w23, 28, 8
+        SGB w6, w10, w14, w19, w23, 52
+        SGB w7, w11, w15, w20, w23, 44
+        SGB w8, w12, w16, w21, w23, 40
+        SGB w9, w13, w17, w22, w23, 32
+        SGA w6, w11, w16, w22, w23, 28
         PG_REG v0, v5, v10, v15, v23, v18
-        SG w7, w12, w17, w19, w23, 20, 12
+        SGA w7, w12, w17, w19, w23, 20
         PG_REG v1, v6, v11, v12, v21, v19
-        SG w8, w13, w14, w20, w23, 0, 4
+        SGA w8, w13, w14, w20, w23, 0
         PG_REG v2, v7, v8, v13, v16, v17
-        SG w9, w10, w15, w21, w23, 24, 16
+        SGA w9, w10, w15, w21, w23, 24
         PG_REG v3, v4, v9, v14, v22, v20
-        SG w6, w10, w14, w19, w23, 36, 56
+        SGB w6, w11, w16, w22, w23, 8
+        SGB w7, w12, w17, w19, w23, 12
+        SGB w8, w13, w14, w20, w23, 4
+        SGB w9, w10, w15, w21, w23, 16
+        SGA w6, w10, w14, w19, w23, 36
         PG_REG v0, v4, v8, v12, v25, v30
-        SG w7, w11, w15, w20, w23, 44, 20
+        SGA w7, w11, w15, w20, w23, 44
         PG_REG v1, v5, v9, v13, v27, v21
-        SG w8, w12, w16, w21, w23, 32, 48
+        SGA w8, w12, w16, w21, w23, 32
         PG_REG v2, v6, v10, v14, v24, v28
-        SG w9, w13, w17, w22, w23, 60, 4
+        SGA w9, w13, w17, w22, w23, 60
         PG_REG v3, v7, v11, v15, v31, v17
-        SG w6, w11, w16, w22, w23, 52, 12
+        SGB w6, w10, w14, w19, w23, 56
+        SGB w7, w11, w15, w20, w23, 20
+        SGB w8, w12, w16, w21, w23, 48
+        SGB w9, w13, w17, w22, w23, 4
+        SGA w6, w11, w16, w22, w23, 52
         PG_REG v0, v5, v10, v15, v29, v19
-        SG w7, w12, w17, w19, w23, 0, 40
+        SGA w7, w12, w17, w19, w23, 0
         PG_REG v1, v6, v11, v12, v16, v26
-        SG w8, w13, w14, w20, w23, 8, 24
+        SGA w8, w13, w14, w20, w23, 8
         PG_REG v2, v7, v8, v13, v18, v22
-        SG w9, w10, w15, w21, w23, 16, 28
+        SGA w9, w10, w15, w21, w23, 16
         PG_REG v3, v4, v9, v14, v20, v23
-        SG w6, w10, w14, w19, w23, 44, 60
+        SGB w6, w11, w16, w22, w23, 12
+        SGB w7, w12, w17, w19, w23, 40
+        SGB w8, w13, w14, w20, w23, 24
+        SGB w9, w10, w15, w21, w23, 28
+        SGA w6, w10, w14, w19, w23, 44
         PG_REG v0, v4, v8, v12, v27, v31
-        SG w7, w11, w15, w20, w23, 20, 0
+        SGA w7, w11, w15, w20, w23, 20
         PG_REG v1, v5, v9, v13, v21, v16
-        SG w8, w12, w16, w21, w23, 4, 36
+        SGA w8, w12, w16, w21, w23, 4
         PG_REG v2, v6, v10, v14, v17, v25
-        SG w9, w13, w17, w22, w23, 32, 24
+        SGA w9, w13, w17, w22, w23, 32
         PG_REG v3, v7, v11, v15, v24, v22
-        SG w6, w11, w16, w22, w23, 56, 40
+        SGB w6, w10, w14, w19, w23, 60
+        SGB w7, w11, w15, w20, w23, 0
+        SGB w8, w12, w16, w21, w23, 36
+        SGB w9, w13, w17, w22, w23, 24
+        SGA w6, w11, w16, w22, w23, 56
         PG_REG v0, v5, v10, v15, v30, v26
-        SG w7, w12, w17, w19, w23, 8, 48
+        SGA w7, w12, w17, w19, w23, 8
         PG_REG v1, v6, v11, v12, v18, v28
-        SG w8, w13, w14, w20, w23, 12, 16
+        SGA w8, w13, w14, w20, w23, 12
         PG_REG v2, v7, v8, v13, v19, v20
-        SG w9, w10, w15, w21, w23, 28, 52
+        SGA w9, w10, w15, w21, w23, 28
         PG_REG v3, v4, v9, v14, v23, v29
+        SGB w6, w11, w16, w22, w23, 40
+        SGB w7, w12, w17, w19, w23, 48
+        SGB w8, w13, w14, w20, w23, 16
+        SGB w9, w10, w15, w21, w23, 52
         eor w6, w6, w14
         eor w7, w7, w15
         eor w8, w8, w16
@@ -2562,173 +2679,229 @@ blake3_hybrid_k5_loop:
         lsr x20, x3, #32
         mov w21, w4
         lsr x22, x4, #32
-        SG w6, w10, w14, w19, w23, 0, 4
+        SGA w6, w10, w14, w19, w23, 0
         PG v0, v4, v8, v12, 28, 480, 496
-        SG w7, w11, w15, w20, w23, 8, 12
+        SGA w7, w11, w15, w20, w23, 8
         PG v1, v5, v9, v13, 28, 512, 528
-        SG w8, w12, w16, w21, w23, 16, 20
+        SGA w8, w12, w16, w21, w23, 16
         PG v2, v6, v10, v14, 28, 544, 560
-        SG w9, w13, w17, w22, w23, 24, 28
+        SGA w9, w13, w17, w22, w23, 24
         PG v3, v7, v11, v15, 28, 576, 592
+        SGB w6, w10, w14, w19, w23, 4
         PG_SPILL v16, v20, v24, 29, 28, 736, 752, 416
+        SGB w7, w11, w15, w20, w23, 12
         PG_SPILL v17, v21, v25, 29, 28, 768, 784, 432
+        SGB w8, w12, w16, w21, w23, 20
         PG_SPILL v18, v22, v26, 29, 28, 800, 816, 448
+        SGB w9, w13, w17, w22, w23, 28
         PG_SPILL v19, v23, v27, 29, 28, 832, 848, 464
-        SG w6, w11, w16, w22, w23, 32, 36
+        SGA w6, w11, w16, w22, w23, 32
         PG v0, v5, v10, v15, 28, 608, 624
-        SG w7, w12, w17, w19, w23, 40, 44
+        SGA w7, w12, w17, w19, w23, 40
         PG v1, v6, v11, v12, 28, 640, 656
-        SG w8, w13, w14, w20, w23, 48, 52
+        SGA w8, w13, w14, w20, w23, 48
         PG v2, v7, v8, v13, 28, 672, 688
-        SG w9, w10, w15, w21, w23, 56, 60
+        SGA w9, w10, w15, w21, w23, 56
         PG v3, v4, v9, v14, 28, 704, 720
+        SGB w6, w11, w16, w22, w23, 36
         PG_SPILL v16, v21, v26, 29, 28, 864, 880, 464
+        SGB w7, w12, w17, w19, w23, 44
         PG_SPILL v17, v22, v27, 29, 28, 896, 912, 416
+        SGB w8, w13, w14, w20, w23, 52
         PG_SPILL v18, v23, v24, 29, 28, 928, 944, 432
+        SGB w9, w10, w15, w21, w23, 60
         PG_SPILL v19, v20, v25, 29, 28, 960, 976, 448
-        SG w6, w10, w14, w19, w23, 8, 24
+        SGA w6, w10, w14, w19, w23, 8
         PG v0, v4, v8, v12, 28, 512, 576
-        SG w7, w11, w15, w20, w23, 12, 40
+        SGA w7, w11, w15, w20, w23, 12
         PG v1, v5, v9, v13, 28, 528, 640
-        SG w8, w12, w16, w21, w23, 28, 0
+        SGA w8, w12, w16, w21, w23, 28
         PG v2, v6, v10, v14, 28, 592, 480
-        SG w9, w13, w17, w22, w23, 16, 52
+        SGA w9, w13, w17, w22, w23, 16
         PG v3, v7, v11, v15, 28, 544, 688
+        SGB w6, w10, w14, w19, w23, 24
         PG_SPILL v16, v20, v24, 29, 28, 768, 832, 416
+        SGB w7, w11, w15, w20, w23, 40
         PG_SPILL v17, v21, v25, 29, 28, 784, 896, 432
+        SGB w8, w12, w16, w21, w23, 0
         PG_SPILL v18, v22, v26, 29, 28, 848, 736, 448
+        SGB w9, w13, w17, w22, w23, 52
         PG_SPILL v19, v23, v27, 29, 28, 800, 944, 464
-        SG w6, w11, w16, w22, w23, 4, 44
+        SGA w6, w11, w16, w22, w23, 4
         PG v0, v5, v10, v15, 28, 496, 656
-        SG w7, w12, w17, w19, w23, 48, 20
+        SGA w7, w12, w17, w19, w23, 48
         PG v1, v6, v11, v12, 28, 672, 560
-        SG w8, w13, w14, w20, w23, 36, 56
+        SGA w8, w13, w14, w20, w23, 36
         PG v2, v7, v8, v13, 28, 624, 704
-        SG w9, w10, w15, w21, w23, 60, 32
+        SGA w9, w10, w15, w21, w23, 60
         PG v3, v4, v9, v14, 28, 720, 608
+        SGB w6, w11, w16, w22, w23, 44
         PG_SPILL v16, v21, v26, 29, 28, 752, 912, 464
+        SGB w7, w12, w17, w19, w23, 20
         PG_SPILL v17, v22, v27, 29, 28, 928, 816, 416
+        SGB w8, w13, w14, w20, w23, 56
         PG_SPILL v18, v23, v24, 29, 28, 880, 960, 432
+        SGB w9, w10, w15, w21, w23, 32
         PG_SPILL v19, v20, v25, 29, 28, 976, 864, 448
-        SG w6, w10, w14, w19, w23, 12, 16
+        SGA w6, w10, w14, w19, w23, 12
         PG v0, v4, v8, v12, 28, 528, 544
-        SG w7, w11, w15, w20, w23, 40, 48
+        SGA w7, w11, w15, w20, w23, 40
         PG v1, v5, v9, v13, 28, 640, 672
-        SG w8, w12, w16, w21, w23, 52, 8
+        SGA w8, w12, w16, w21, w23, 52
         PG v2, v6, v10, v14, 28, 688, 512
-        SG w9, w13, w17, w22, w23, 28, 56
+        SGA w9, w13, w17, w22, w23, 28
         PG v3, v7, v11, v15, 28, 592, 704
+        SGB w6, w10, w14, w19, w23, 16
         PG_SPILL v16, v20, v24, 29, 28, 784, 800, 416
+        SGB w7, w11, w15, w20, w23, 48
         PG_SPILL v17, v21, v25, 29, 28, 896, 928, 432
+        SGB w8, w12, w16, w21, w23, 8
         PG_SPILL v18, v22, v26, 29, 28, 944, 768, 448
+        SGB w9, w13, w17, w22, w23, 56
         PG_SPILL v19, v23, v27, 29, 28, 848, 960, 464
-        SG w6, w11, w16, w22, w23, 24, 20
+        SGA w6, w11, w16, w22, w23, 24
         PG v0, v5, v10, v15, 28, 576, 560
-        SG w7, w12, w17, w19, w23, 36, 0
+        SGA w7, w12, w17, w19, w23, 36
         PG v1, v6, v11, v12, 28, 624, 480
-        SG w8, w13, w14, w20, w23, 44, 60
+        SGA w8, w13, w14, w20, w23, 44
         PG v2, v7, v8, v13, 28, 656, 720
-        SG w9, w10, w15, w21, w23, 32, 4
+        SGA w9, w10, w15, w21, w23, 32
         PG v3, v4, v9, v14, 28, 608, 496
+        SGB w6, w11, w16, w22, w23, 20
         PG_SPILL v16, v21, v26, 29, 28, 832, 816, 464
+        SGB w7, w12, w17, w19, w23, 0
         PG_SPILL v17, v22, v27, 29, 28, 880, 736, 416
+        SGB w8, w13, w14, w20, w23, 60
         PG_SPILL v18, v23, v24, 29, 28, 912, 976, 432
+        SGB w9, w10, w15, w21, w23, 4
         PG_SPILL v19, v20, v25, 29, 28, 864, 752, 448
-        SG w6, w10, w14, w19, w23, 40, 28
+        SGA w6, w10, w14, w19, w23, 40
         PG v0, v4, v8, v12, 28, 640, 592
-        SG w7, w11, w15, w20, w23, 48, 36
+        SGA w7, w11, w15, w20, w23, 48
         PG v1, v5, v9, v13, 28, 672, 624
-        SG w8, w12, w16, w21, w23, 56, 12
+        SGA w8, w12, w16, w21, w23, 56
         PG v2, v6, v10, v14, 28, 704, 528
-        SG w9, w13, w17, w22, w23, 52, 60
+        SGA w9, w13, w17, w22, w23, 52
         PG v3, v7, v11, v15, 28, 688, 720
+        SGB w6, w10, w14, w19, w23, 28
         PG_SPILL v16, v20, v24, 29, 28, 896, 848, 416
+        SGB w7, w11, w15, w20, w23, 36
         PG_SPILL v17, v21, v25, 29, 28, 928, 880, 432
+        SGB w8, w12, w16, w21, w23, 12
         PG_SPILL v18, v22, v26, 29, 28, 960, 784, 448
+        SGB w9, w13, w17, w22, w23, 60
         PG_SPILL v19, v23, v27, 29, 28, 944, 976, 464
-        SG w6, w11, w16, w22, w23, 16, 0
+        SGA w6, w11, w16, w22, w23, 16
         PG v0, v5, v10, v15, 28, 544, 480
-        SG w7, w12, w17, w19, w23, 44, 8
+        SGA w7, w12, w17, w19, w23, 44
         PG v1, v6, v11, v12, 28, 656, 512
-        SG w8, w13, w14, w20, w23, 20, 32
+        SGA w8, w13, w14, w20, w23, 20
         PG v2, v7, v8, v13, 28, 560, 608
-        SG w9, w10, w15, w21, w23, 4, 24
+        SGA w9, w10, w15, w21, w23, 4
         PG v3, v4, v9, v14, 28, 496, 576
+        SGB w6, w11, w16, w22, w23, 0
         PG_SPILL v16, v21, v26, 29, 28, 800, 736, 464
+        SGB w7, w12, w17, w19, w23, 8
         PG_SPILL v17, v22, v27, 29, 28, 912, 768, 416
+        SGB w8, w13, w14, w20, w23, 32
         PG_SPILL v18, v23, v24, 29, 28, 816, 864, 432
+        SGB w9, w10, w15, w21, w23, 24
         PG_SPILL v19, v20, v25, 29, 28, 752, 832, 448
-        SG w6, w10, w14, w19, w23, 48, 52
+        SGA w6, w10, w14, w19, w23, 48
         PG v0, v4, v8, v12, 28, 672, 688
-        SG w7, w11, w15, w20, w23, 36, 44
+        SGA w7, w11, w15, w20, w23, 36
         PG v1, v5, v9, v13, 28, 624, 656
-        SG w8, w12, w16, w21, w23, 60, 40
+        SGA w8, w12, w16, w21, w23, 60
         PG v2, v6, v10, v14, 28, 720, 640
-        SG w9, w13, w17, w22, w23, 56, 32
+        SGA w9, w13, w17, w22, w23, 56
         PG v3, v7, v11, v15, 28, 704, 608
+        SGB w6, w10, w14, w19, w23, 52
         PG_SPILL v16, v20, v24, 29, 28, 928, 944, 416
+        SGB w7, w11, w15, w20, w23, 44
         PG_SPILL v17, v21, v25, 29, 28, 880, 912, 432
+        SGB w8, w12, w16, w21, w23, 40
         PG_SPILL v18, v22, v26, 29, 28, 976, 896, 448
+        SGB w9, w13, w17, w22, w23, 32
         PG_SPILL v19, v23, v27, 29, 28, 960, 864, 464
-        SG w6, w11, w16, w22, w23, 28, 8
+        SGA w6, w11, w16, w22, w23, 28
         PG v0, v5, v10, v15, 28, 592, 512
-        SG w7, w12, w17, w19, w23, 20, 12
+        SGA w7, w12, w17, w19, w23, 20
         PG v1, v6, v11, v12, 28, 560, 528
-        SG w8, w13, w14, w20, w23, 0, 4
+        SGA w8, w13, w14, w20, w23, 0
         PG v2, v7, v8, v13, 28, 480, 496
-        SG w9, w10, w15, w21, w23, 24, 16
+        SGA w9, w10, w15, w21, w23, 24
         PG v3, v4, v9, v14, 28, 576, 544
+        SGB w6, w11, w16, w22, w23, 8
         PG_SPILL v16, v21, v26, 29, 28, 848, 768, 464
+        SGB w7, w12, w17, w19, w23, 12
         PG_SPILL v17, v22, v27, 29, 28, 816, 784, 416
+        SGB w8, w13, w14, w20, w23, 4
         PG_SPILL v18, v23, v24, 29, 28, 736, 752, 432
+        SGB w9, w10, w15, w21, w23, 16
         PG_SPILL v19, v20, v25, 29, 28, 832, 800, 448
-        SG w6, w10, w14, w19, w23, 36, 56
+        SGA w6, w10, w14, w19, w23, 36
         PG v0, v4, v8, v12, 28, 624, 704
-        SG w7, w11, w15, w20, w23, 44, 20
+        SGA w7, w11, w15, w20, w23, 44
         PG v1, v5, v9, v13, 28, 656, 560
-        SG w8, w12, w16, w21, w23, 32, 48
+        SGA w8, w12, w16, w21, w23, 32
         PG v2, v6, v10, v14, 28, 608, 672
-        SG w9, w13, w17, w22, w23, 60, 4
+        SGA w9, w13, w17, w22, w23, 60
         PG v3, v7, v11, v15, 28, 720, 496
+        SGB w6, w10, w14, w19, w23, 56
         PG_SPILL v16, v20, v24, 29, 28, 880, 960, 416
+        SGB w7, w11, w15, w20, w23, 20
         PG_SPILL v17, v21, v25, 29, 28, 912, 816, 432
+        SGB w8, w12, w16, w21, w23, 48
         PG_SPILL v18, v22, v26, 29, 28, 864, 928, 448
+        SGB w9, w13, w17, w22, w23, 4
         PG_SPILL v19, v23, v27, 29, 28, 976, 752, 464
-        SG w6, w11, w16, w22, w23, 52, 12
+        SGA w6, w11, w16, w22, w23, 52
         PG v0, v5, v10, v15, 28, 688, 528
-        SG w7, w12, w17, w19, w23, 0, 40
+        SGA w7, w12, w17, w19, w23, 0
         PG v1, v6, v11, v12, 28, 480, 640
-        SG w8, w13, w14, w20, w23, 8, 24
+        SGA w8, w13, w14, w20, w23, 8
         PG v2, v7, v8, v13, 28, 512, 576
-        SG w9, w10, w15, w21, w23, 16, 28
+        SGA w9, w10, w15, w21, w23, 16
         PG v3, v4, v9, v14, 28, 544, 592
+        SGB w6, w11, w16, w22, w23, 12
         PG_SPILL v16, v21, v26, 29, 28, 944, 784, 464
+        SGB w7, w12, w17, w19, w23, 40
         PG_SPILL v17, v22, v27, 29, 28, 736, 896, 416
+        SGB w8, w13, w14, w20, w23, 24
         PG_SPILL v18, v23, v24, 29, 28, 768, 832, 432
+        SGB w9, w10, w15, w21, w23, 28
         PG_SPILL v19, v20, v25, 29, 28, 800, 848, 448
-        SG w6, w10, w14, w19, w23, 44, 60
+        SGA w6, w10, w14, w19, w23, 44
         PG v0, v4, v8, v12, 28, 656, 720
-        SG w7, w11, w15, w20, w23, 20, 0
+        SGA w7, w11, w15, w20, w23, 20
         PG v1, v5, v9, v13, 28, 560, 480
-        SG w8, w12, w16, w21, w23, 4, 36
+        SGA w8, w12, w16, w21, w23, 4
         PG v2, v6, v10, v14, 28, 496, 624
-        SG w9, w13, w17, w22, w23, 32, 24
+        SGA w9, w13, w17, w22, w23, 32
         PG v3, v7, v11, v15, 28, 608, 576
+        SGB w6, w10, w14, w19, w23, 60
         PG_SPILL v16, v20, v24, 29, 28, 912, 976, 416
+        SGB w7, w11, w15, w20, w23, 0
         PG_SPILL v17, v21, v25, 29, 28, 816, 736, 432
+        SGB w8, w12, w16, w21, w23, 36
         PG_SPILL v18, v22, v26, 29, 28, 752, 880, 448
+        SGB w9, w13, w17, w22, w23, 24
         PG_SPILL v19, v23, v27, 29, 28, 864, 832, 464
-        SG w6, w11, w16, w22, w23, 56, 40
+        SGA w6, w11, w16, w22, w23, 56
         PG v0, v5, v10, v15, 28, 704, 640
-        SG w7, w12, w17, w19, w23, 8, 48
+        SGA w7, w12, w17, w19, w23, 8
         PG v1, v6, v11, v12, 28, 512, 672
-        SG w8, w13, w14, w20, w23, 12, 16
+        SGA w8, w13, w14, w20, w23, 12
         PG v2, v7, v8, v13, 28, 528, 544
-        SG w9, w10, w15, w21, w23, 28, 52
+        SGA w9, w10, w15, w21, w23, 28
         PG v3, v4, v9, v14, 28, 592, 688
+        SGB w6, w11, w16, w22, w23, 40
         PG_SPILL v16, v21, v26, 29, 28, 960, 896, 464
+        SGB w7, w12, w17, w19, w23, 48
         PG_SPILL v17, v22, v27, 29, 28, 768, 928, 416
+        SGB w8, w13, w14, w20, w23, 16
         PG_SPILL v18, v23, v24, 29, 28, 784, 800, 432
+        SGB w9, w10, w15, w21, w23, 52
         PG_SPILL v19, v20, v25, 29, 28, 848, 944, 448
         eor w6, w6, w14
         eor w7, w7, w15
@@ -4082,173 +4255,229 @@ blake3_hybrid_k9_loop:
         lsr x20, x3, #32
         mov w21, w4
         lsr x22, x4, #32
-        SG w6, w10, w14, w19, w23, 0, 4
+        SGA w6, w10, w14, w19, w23, 0
         QG v0, v4, v8, v12, 28, v30, 480, 496
-        SG w7, w11, w15, w20, w23, 8, 12
+        SGA w7, w11, w15, w20, w23, 8
         QG v1, v5, v9, v13, 28, v30, 512, 528
-        SG w8, w12, w16, w21, w23, 16, 20
+        SGA w8, w12, w16, w21, w23, 16
         QG v2, v6, v10, v14, 28, v30, 544, 560
-        SG w9, w13, w17, w22, w23, 24, 28
+        SGA w9, w13, w17, w22, w23, 24
         QG v3, v7, v11, v15, 28, v30, 576, 592
+        SGB w6, w10, w14, w19, w23, 4
         QG_SPILL v16, v20, v24, 29, 28, v30, 736, 752, 416
+        SGB w7, w11, w15, w20, w23, 12
         QG_SPILL v17, v21, v25, 29, 28, v30, 768, 784, 432
+        SGB w8, w12, w16, w21, w23, 20
         QG_SPILL v18, v22, v26, 29, 28, v30, 800, 816, 448
+        SGB w9, w13, w17, w22, w23, 28
         QG_SPILL v19, v23, v27, 29, 28, v30, 832, 848, 464
-        SG w6, w11, w16, w22, w23, 32, 36
+        SGA w6, w11, w16, w22, w23, 32
         QG v0, v5, v10, v15, 28, v30, 608, 624
-        SG w7, w12, w17, w19, w23, 40, 44
+        SGA w7, w12, w17, w19, w23, 40
         QG v1, v6, v11, v12, 28, v30, 640, 656
-        SG w8, w13, w14, w20, w23, 48, 52
+        SGA w8, w13, w14, w20, w23, 48
         QG v2, v7, v8, v13, 28, v30, 672, 688
-        SG w9, w10, w15, w21, w23, 56, 60
+        SGA w9, w10, w15, w21, w23, 56
         QG v3, v4, v9, v14, 28, v30, 704, 720
+        SGB w6, w11, w16, w22, w23, 36
         QG_SPILL v16, v21, v26, 29, 28, v30, 864, 880, 464
+        SGB w7, w12, w17, w19, w23, 44
         QG_SPILL v17, v22, v27, 29, 28, v30, 896, 912, 416
+        SGB w8, w13, w14, w20, w23, 52
         QG_SPILL v18, v23, v24, 29, 28, v30, 928, 944, 432
+        SGB w9, w10, w15, w21, w23, 60
         QG_SPILL v19, v20, v25, 29, 28, v30, 960, 976, 448
-        SG w6, w10, w14, w19, w23, 8, 24
+        SGA w6, w10, w14, w19, w23, 8
         QG v0, v4, v8, v12, 28, v30, 512, 576
-        SG w7, w11, w15, w20, w23, 12, 40
+        SGA w7, w11, w15, w20, w23, 12
         QG v1, v5, v9, v13, 28, v30, 528, 640
-        SG w8, w12, w16, w21, w23, 28, 0
+        SGA w8, w12, w16, w21, w23, 28
         QG v2, v6, v10, v14, 28, v30, 592, 480
-        SG w9, w13, w17, w22, w23, 16, 52
+        SGA w9, w13, w17, w22, w23, 16
         QG v3, v7, v11, v15, 28, v30, 544, 688
+        SGB w6, w10, w14, w19, w23, 24
         QG_SPILL v16, v20, v24, 29, 28, v30, 768, 832, 416
+        SGB w7, w11, w15, w20, w23, 40
         QG_SPILL v17, v21, v25, 29, 28, v30, 784, 896, 432
+        SGB w8, w12, w16, w21, w23, 0
         QG_SPILL v18, v22, v26, 29, 28, v30, 848, 736, 448
+        SGB w9, w13, w17, w22, w23, 52
         QG_SPILL v19, v23, v27, 29, 28, v30, 800, 944, 464
-        SG w6, w11, w16, w22, w23, 4, 44
+        SGA w6, w11, w16, w22, w23, 4
         QG v0, v5, v10, v15, 28, v30, 496, 656
-        SG w7, w12, w17, w19, w23, 48, 20
+        SGA w7, w12, w17, w19, w23, 48
         QG v1, v6, v11, v12, 28, v30, 672, 560
-        SG w8, w13, w14, w20, w23, 36, 56
+        SGA w8, w13, w14, w20, w23, 36
         QG v2, v7, v8, v13, 28, v30, 624, 704
-        SG w9, w10, w15, w21, w23, 60, 32
+        SGA w9, w10, w15, w21, w23, 60
         QG v3, v4, v9, v14, 28, v30, 720, 608
+        SGB w6, w11, w16, w22, w23, 44
         QG_SPILL v16, v21, v26, 29, 28, v30, 752, 912, 464
+        SGB w7, w12, w17, w19, w23, 20
         QG_SPILL v17, v22, v27, 29, 28, v30, 928, 816, 416
+        SGB w8, w13, w14, w20, w23, 56
         QG_SPILL v18, v23, v24, 29, 28, v30, 880, 960, 432
+        SGB w9, w10, w15, w21, w23, 32
         QG_SPILL v19, v20, v25, 29, 28, v30, 976, 864, 448
-        SG w6, w10, w14, w19, w23, 12, 16
+        SGA w6, w10, w14, w19, w23, 12
         QG v0, v4, v8, v12, 28, v30, 528, 544
-        SG w7, w11, w15, w20, w23, 40, 48
+        SGA w7, w11, w15, w20, w23, 40
         QG v1, v5, v9, v13, 28, v30, 640, 672
-        SG w8, w12, w16, w21, w23, 52, 8
+        SGA w8, w12, w16, w21, w23, 52
         QG v2, v6, v10, v14, 28, v30, 688, 512
-        SG w9, w13, w17, w22, w23, 28, 56
+        SGA w9, w13, w17, w22, w23, 28
         QG v3, v7, v11, v15, 28, v30, 592, 704
+        SGB w6, w10, w14, w19, w23, 16
         QG_SPILL v16, v20, v24, 29, 28, v30, 784, 800, 416
+        SGB w7, w11, w15, w20, w23, 48
         QG_SPILL v17, v21, v25, 29, 28, v30, 896, 928, 432
+        SGB w8, w12, w16, w21, w23, 8
         QG_SPILL v18, v22, v26, 29, 28, v30, 944, 768, 448
+        SGB w9, w13, w17, w22, w23, 56
         QG_SPILL v19, v23, v27, 29, 28, v30, 848, 960, 464
-        SG w6, w11, w16, w22, w23, 24, 20
+        SGA w6, w11, w16, w22, w23, 24
         QG v0, v5, v10, v15, 28, v30, 576, 560
-        SG w7, w12, w17, w19, w23, 36, 0
+        SGA w7, w12, w17, w19, w23, 36
         QG v1, v6, v11, v12, 28, v30, 624, 480
-        SG w8, w13, w14, w20, w23, 44, 60
+        SGA w8, w13, w14, w20, w23, 44
         QG v2, v7, v8, v13, 28, v30, 656, 720
-        SG w9, w10, w15, w21, w23, 32, 4
+        SGA w9, w10, w15, w21, w23, 32
         QG v3, v4, v9, v14, 28, v30, 608, 496
+        SGB w6, w11, w16, w22, w23, 20
         QG_SPILL v16, v21, v26, 29, 28, v30, 832, 816, 464
+        SGB w7, w12, w17, w19, w23, 0
         QG_SPILL v17, v22, v27, 29, 28, v30, 880, 736, 416
+        SGB w8, w13, w14, w20, w23, 60
         QG_SPILL v18, v23, v24, 29, 28, v30, 912, 976, 432
+        SGB w9, w10, w15, w21, w23, 4
         QG_SPILL v19, v20, v25, 29, 28, v30, 864, 752, 448
-        SG w6, w10, w14, w19, w23, 40, 28
+        SGA w6, w10, w14, w19, w23, 40
         QG v0, v4, v8, v12, 28, v30, 640, 592
-        SG w7, w11, w15, w20, w23, 48, 36
+        SGA w7, w11, w15, w20, w23, 48
         QG v1, v5, v9, v13, 28, v30, 672, 624
-        SG w8, w12, w16, w21, w23, 56, 12
+        SGA w8, w12, w16, w21, w23, 56
         QG v2, v6, v10, v14, 28, v30, 704, 528
-        SG w9, w13, w17, w22, w23, 52, 60
+        SGA w9, w13, w17, w22, w23, 52
         QG v3, v7, v11, v15, 28, v30, 688, 720
+        SGB w6, w10, w14, w19, w23, 28
         QG_SPILL v16, v20, v24, 29, 28, v30, 896, 848, 416
+        SGB w7, w11, w15, w20, w23, 36
         QG_SPILL v17, v21, v25, 29, 28, v30, 928, 880, 432
+        SGB w8, w12, w16, w21, w23, 12
         QG_SPILL v18, v22, v26, 29, 28, v30, 960, 784, 448
+        SGB w9, w13, w17, w22, w23, 60
         QG_SPILL v19, v23, v27, 29, 28, v30, 944, 976, 464
-        SG w6, w11, w16, w22, w23, 16, 0
+        SGA w6, w11, w16, w22, w23, 16
         QG v0, v5, v10, v15, 28, v30, 544, 480
-        SG w7, w12, w17, w19, w23, 44, 8
+        SGA w7, w12, w17, w19, w23, 44
         QG v1, v6, v11, v12, 28, v30, 656, 512
-        SG w8, w13, w14, w20, w23, 20, 32
+        SGA w8, w13, w14, w20, w23, 20
         QG v2, v7, v8, v13, 28, v30, 560, 608
-        SG w9, w10, w15, w21, w23, 4, 24
+        SGA w9, w10, w15, w21, w23, 4
         QG v3, v4, v9, v14, 28, v30, 496, 576
+        SGB w6, w11, w16, w22, w23, 0
         QG_SPILL v16, v21, v26, 29, 28, v30, 800, 736, 464
+        SGB w7, w12, w17, w19, w23, 8
         QG_SPILL v17, v22, v27, 29, 28, v30, 912, 768, 416
+        SGB w8, w13, w14, w20, w23, 32
         QG_SPILL v18, v23, v24, 29, 28, v30, 816, 864, 432
+        SGB w9, w10, w15, w21, w23, 24
         QG_SPILL v19, v20, v25, 29, 28, v30, 752, 832, 448
-        SG w6, w10, w14, w19, w23, 48, 52
+        SGA w6, w10, w14, w19, w23, 48
         QG v0, v4, v8, v12, 28, v30, 672, 688
-        SG w7, w11, w15, w20, w23, 36, 44
+        SGA w7, w11, w15, w20, w23, 36
         QG v1, v5, v9, v13, 28, v30, 624, 656
-        SG w8, w12, w16, w21, w23, 60, 40
+        SGA w8, w12, w16, w21, w23, 60
         QG v2, v6, v10, v14, 28, v30, 720, 640
-        SG w9, w13, w17, w22, w23, 56, 32
+        SGA w9, w13, w17, w22, w23, 56
         QG v3, v7, v11, v15, 28, v30, 704, 608
+        SGB w6, w10, w14, w19, w23, 52
         QG_SPILL v16, v20, v24, 29, 28, v30, 928, 944, 416
+        SGB w7, w11, w15, w20, w23, 44
         QG_SPILL v17, v21, v25, 29, 28, v30, 880, 912, 432
+        SGB w8, w12, w16, w21, w23, 40
         QG_SPILL v18, v22, v26, 29, 28, v30, 976, 896, 448
+        SGB w9, w13, w17, w22, w23, 32
         QG_SPILL v19, v23, v27, 29, 28, v30, 960, 864, 464
-        SG w6, w11, w16, w22, w23, 28, 8
+        SGA w6, w11, w16, w22, w23, 28
         QG v0, v5, v10, v15, 28, v30, 592, 512
-        SG w7, w12, w17, w19, w23, 20, 12
+        SGA w7, w12, w17, w19, w23, 20
         QG v1, v6, v11, v12, 28, v30, 560, 528
-        SG w8, w13, w14, w20, w23, 0, 4
+        SGA w8, w13, w14, w20, w23, 0
         QG v2, v7, v8, v13, 28, v30, 480, 496
-        SG w9, w10, w15, w21, w23, 24, 16
+        SGA w9, w10, w15, w21, w23, 24
         QG v3, v4, v9, v14, 28, v30, 576, 544
+        SGB w6, w11, w16, w22, w23, 8
         QG_SPILL v16, v21, v26, 29, 28, v30, 848, 768, 464
+        SGB w7, w12, w17, w19, w23, 12
         QG_SPILL v17, v22, v27, 29, 28, v30, 816, 784, 416
+        SGB w8, w13, w14, w20, w23, 4
         QG_SPILL v18, v23, v24, 29, 28, v30, 736, 752, 432
+        SGB w9, w10, w15, w21, w23, 16
         QG_SPILL v19, v20, v25, 29, 28, v30, 832, 800, 448
-        SG w6, w10, w14, w19, w23, 36, 56
+        SGA w6, w10, w14, w19, w23, 36
         QG v0, v4, v8, v12, 28, v30, 624, 704
-        SG w7, w11, w15, w20, w23, 44, 20
+        SGA w7, w11, w15, w20, w23, 44
         QG v1, v5, v9, v13, 28, v30, 656, 560
-        SG w8, w12, w16, w21, w23, 32, 48
+        SGA w8, w12, w16, w21, w23, 32
         QG v2, v6, v10, v14, 28, v30, 608, 672
-        SG w9, w13, w17, w22, w23, 60, 4
+        SGA w9, w13, w17, w22, w23, 60
         QG v3, v7, v11, v15, 28, v30, 720, 496
+        SGB w6, w10, w14, w19, w23, 56
         QG_SPILL v16, v20, v24, 29, 28, v30, 880, 960, 416
+        SGB w7, w11, w15, w20, w23, 20
         QG_SPILL v17, v21, v25, 29, 28, v30, 912, 816, 432
+        SGB w8, w12, w16, w21, w23, 48
         QG_SPILL v18, v22, v26, 29, 28, v30, 864, 928, 448
+        SGB w9, w13, w17, w22, w23, 4
         QG_SPILL v19, v23, v27, 29, 28, v30, 976, 752, 464
-        SG w6, w11, w16, w22, w23, 52, 12
+        SGA w6, w11, w16, w22, w23, 52
         QG v0, v5, v10, v15, 28, v30, 688, 528
-        SG w7, w12, w17, w19, w23, 0, 40
+        SGA w7, w12, w17, w19, w23, 0
         QG v1, v6, v11, v12, 28, v30, 480, 640
-        SG w8, w13, w14, w20, w23, 8, 24
+        SGA w8, w13, w14, w20, w23, 8
         QG v2, v7, v8, v13, 28, v30, 512, 576
-        SG w9, w10, w15, w21, w23, 16, 28
+        SGA w9, w10, w15, w21, w23, 16
         QG v3, v4, v9, v14, 28, v30, 544, 592
+        SGB w6, w11, w16, w22, w23, 12
         QG_SPILL v16, v21, v26, 29, 28, v30, 944, 784, 464
+        SGB w7, w12, w17, w19, w23, 40
         QG_SPILL v17, v22, v27, 29, 28, v30, 736, 896, 416
+        SGB w8, w13, w14, w20, w23, 24
         QG_SPILL v18, v23, v24, 29, 28, v30, 768, 832, 432
+        SGB w9, w10, w15, w21, w23, 28
         QG_SPILL v19, v20, v25, 29, 28, v30, 800, 848, 448
-        SG w6, w10, w14, w19, w23, 44, 60
+        SGA w6, w10, w14, w19, w23, 44
         QG v0, v4, v8, v12, 28, v30, 656, 720
-        SG w7, w11, w15, w20, w23, 20, 0
+        SGA w7, w11, w15, w20, w23, 20
         QG v1, v5, v9, v13, 28, v30, 560, 480
-        SG w8, w12, w16, w21, w23, 4, 36
+        SGA w8, w12, w16, w21, w23, 4
         QG v2, v6, v10, v14, 28, v30, 496, 624
-        SG w9, w13, w17, w22, w23, 32, 24
+        SGA w9, w13, w17, w22, w23, 32
         QG v3, v7, v11, v15, 28, v30, 608, 576
+        SGB w6, w10, w14, w19, w23, 60
         QG_SPILL v16, v20, v24, 29, 28, v30, 912, 976, 416
+        SGB w7, w11, w15, w20, w23, 0
         QG_SPILL v17, v21, v25, 29, 28, v30, 816, 736, 432
+        SGB w8, w12, w16, w21, w23, 36
         QG_SPILL v18, v22, v26, 29, 28, v30, 752, 880, 448
+        SGB w9, w13, w17, w22, w23, 24
         QG_SPILL v19, v23, v27, 29, 28, v30, 864, 832, 464
-        SG w6, w11, w16, w22, w23, 56, 40
+        SGA w6, w11, w16, w22, w23, 56
         QG v0, v5, v10, v15, 28, v30, 704, 640
-        SG w7, w12, w17, w19, w23, 8, 48
+        SGA w7, w12, w17, w19, w23, 8
         QG v1, v6, v11, v12, 28, v30, 512, 672
-        SG w8, w13, w14, w20, w23, 12, 16
+        SGA w8, w13, w14, w20, w23, 12
         QG v2, v7, v8, v13, 28, v30, 528, 544
-        SG w9, w10, w15, w21, w23, 28, 52
+        SGA w9, w10, w15, w21, w23, 28
         QG v3, v4, v9, v14, 28, v30, 592, 688
+        SGB w6, w11, w16, w22, w23, 40
         QG_SPILL v16, v21, v26, 29, 28, v30, 960, 896, 464
+        SGB w7, w12, w17, w19, w23, 48
         QG_SPILL v17, v22, v27, 29, 28, v30, 768, 928, 416
+        SGB w8, w13, w14, w20, w23, 16
         QG_SPILL v18, v23, v24, 29, 28, v30, 784, 800, 432
+        SGB w9, w10, w15, w21, w23, 52
         QG_SPILL v19, v20, v25, 29, 28, v30, 848, 944, 448
         eor w6, w6, w14
         eor w7, w7, w15
