@@ -15,6 +15,30 @@ pub unsafe fn hash_many<const N: usize>(
     // array, but the C implementations don't. Even though this is an unsafe
     // function, assert the bounds here.
     assert!(out.len() >= inputs.len() * OUT_LEN);
+    // On AArch64 cores with the SHA-3 extension, the integer + vector
+    // kernels in neon_hybrid.rs are faster than the four-lane C kernel at
+    // every input count (see that module). The C kernel stays for
+    // 32-bit ARM and for cores without `xar`.
+    #[cfg(blake3_neon_hybrid)]
+    {
+        let shape_covered = (N == crate::CHUNK_LEN && increment_counter.yes())
+            || (N == BLOCK_LEN && !increment_counter.yes());
+        if shape_covered && crate::neon_hybrid::sha3_detected() {
+            unsafe {
+                crate::neon_hybrid::hash_many(
+                    inputs,
+                    key,
+                    counter,
+                    increment_counter,
+                    flags,
+                    flags_start,
+                    flags_end,
+                    out,
+                );
+            }
+            return;
+        }
+    }
     unsafe {
         ffi::blake3_hash_many_neon(
             inputs.as_ptr() as *const *const u8,

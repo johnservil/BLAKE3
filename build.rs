@@ -317,6 +317,18 @@ fn build_sme2_assembly() {
     build.compile("blake3_sme2_assembly");
 }
 
+fn build_neon_hybrid_assembly() {
+    // Integer + NEON kernels for one to fifteen chunks (and parents). The
+    // pair and quad kernels use `xar` from the SHA-3 extension, detected at
+    // runtime; the scalar kernel runs everywhere. Assembling needs an
+    // assembler that knows armv8.2-a+sha3 (GNU as 2.30+, LLVM 7+).
+    assert!(is_aarch64());
+    println!("cargo::rustc-cfg=blake3_neon_hybrid");
+    let mut build = new_build();
+    build.file("c/blake3_neon_hybrid_aarch64.S");
+    build.compile("blake3_neon_hybrid_assembly");
+}
+
 fn build_neon_c_intrinsics() {
     let mut build = new_build();
     // Note that blake3_neon.c normally depends on the blake3_portable.c
@@ -326,7 +338,10 @@ fn build_neon_c_intrinsics() {
     // Prefix the two symbols shared with the crates.io blake3 crate, so this
     // benchmark build links beside it.
     build.define("blake3_hash_many_neon", "blake3_sme2_hash_many_neon");
-    build.define("blake3_compress_in_place_portable", "blake3_sme2_compress_in_place_portable");
+    build.define(
+        "blake3_compress_in_place_portable",
+        "blake3_sme2_compress_in_place_portable",
+    );
     // ARMv7 platforms that support NEON generally need the following
     // flags. AArch64 supports NEON by default and does not support -mpfu.
     if is_armv7() {
@@ -368,6 +383,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "blake3_avx2_rust",
         "blake3_avx512_ffi",
         "blake3_neon",
+        "blake3_neon_hybrid",
         "blake3_sme2",
         "blake3_wasm32_simd",
     ];
@@ -412,6 +428,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         println!("cargo::rustc-cfg=blake3_neon");
         build_neon_c_intrinsics();
+        if is_aarch64() {
+            build_neon_hybrid_assembly();
+        }
 
         // SME2 sits on top of NEON: the SME2 wrapper falls back to NEON for
         // inputs that don't fill a group of sixteen. It is built on every

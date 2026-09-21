@@ -198,7 +198,7 @@ impl Platform {
         assert!((1..=16).contains(&count));
         assert!(blocks.len() >= count * BLOCK_LEN);
         // The integer-only kernel runs on every AArch64 core.
-        #[cfg(blake3_neon)]
+        #[cfg(blake3_neon_hybrid)]
         {
             unsafe {
                 crate::neon_hybrid::compress_blocks(

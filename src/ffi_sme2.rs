@@ -4,9 +4,9 @@
 //! The assembly handles exactly one shape: groups of sixteen whole inputs,
 //! either 1024-byte chunks (sixteen blocks each, counter incrementing) or
 //! 64-byte parent blocks (one block each, counter fixed). This wrapper feeds
-//! it every full group and hands anything else to NEON: a remainder of
-//! fewer than sixteen inputs, chunk hashing with `IncrementCounter::No`, or
-//! parent hashing with `IncrementCounter::Yes`.
+//! it every full group and hands anything else to the NEON backend: a
+//! remainder of fewer than sixteen inputs, chunk hashing with
+//! `IncrementCounter::No`, or parent hashing with `IncrementCounter::Yes`.
 //!
 //! The kernels return the streaming vector length in 32-bit lanes and do
 //! work only when it is 16. `Platform::detect()` checks that once and
@@ -128,30 +128,13 @@ pub unsafe fn hash_many<const N: usize>(
         } else {
             counter
         };
-        // The remainder is fewer than sixteen inputs. The dup-layout kernel
-        // beats upstream's four-lane NEON there (latency-bound, see
-        // rust_neon_dup.rs) and needs `xar` from the SHA-3 extension.
-        if crate::neon_dup::sha3_detected() {
-            let rest = &inputs[done..];
-            let rest_out = &mut out[done * OUT_LEN..];
-            if unsafe {
-                crate::neon_hybrid::hash_many(
-                    rest,
-                    key,
-                    rest_counter,
-                    increment_counter,
-                    flags,
-                    flags_start,
-                    flags_end,
-                    rest_out,
-                )
-            }
-            .is_ok()
-            {
-                return;
-            }
+        // The remainder is fewer than sixteen inputs: the NEON kernels
+        // (integer + vector hybrids, see neon_hybrid.rs) are the fastest
+        // path there. They need the SHA-3 extension; the C kernel is the
+        // fallback without it.
+        if crate::neon_hybrid::sha3_detected() {
             unsafe {
-                crate::neon_dup::hash_many(
+                crate::neon_hybrid::hash_many(
                     &inputs[done..],
                     key,
                     rest_counter,

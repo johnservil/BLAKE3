@@ -114,11 +114,8 @@ mod avx512;
 #[cfg(blake3_neon)]
 #[path = "ffi_neon.rs"]
 mod neon;
-#[cfg(blake3_neon)]
-#[path = "rust_neon_dup.rs"]
-mod neon_dup;
-#[cfg(blake3_neon)]
-#[path = "neon_hybrid.rs"]
+#[cfg(blake3_neon_hybrid)]
+#[path = "ffi_neon_hybrid.rs"]
 mod neon_hybrid;
 mod portable;
 #[cfg(blake3_sme2)]
