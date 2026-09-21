@@ -56,15 +56,20 @@
 //!
 //! # Splitting
 //!
-//! The input is cut at chunk boundaries into as many pieces as there are
-//! lanes granted, each piece a valid BLAKE3 subtree (see
-//! [`hazmat::left_subtree_len`]): the pieces are leaves of the tree whose
-//! root is the whole input, reached by splitting the largest piece at its
-//! left-subtree boundary until enough exist. Each lane hashes its piece
-//! with [`hazmat::HasherExt::set_input_offset`] and
-//! [`finalize_non_root`](hazmat::HasherExt::finalize_non_root), and the
-//! calling thread merges the chaining values back up that tree with
-//! [`hazmat::merge_subtrees_non_root`] and
+//! The input is cut at chunk boundaries into pieces, each a valid BLAKE3
+//! subtree (see [`hazmat::left_subtree_len`]): the pieces are leaves of
+//! the tree whose root is the whole input, reached by splitting the
+//! largest piece at its left-subtree boundary until enough exist. A
+//! subtree cut is uneven when the input is no power of two (3 MiB splits
+//! 2 | 1), so where the input is long enough for every piece to stay at
+//! least [`MIN_BALANCED_PIECE_LEN`], the cut goes to up to
+//! [`PIECES_PER_LANE`] times as many pieces as lanes and the pieces are
+//! dealt to lanes largest first, each to the lane with the least so far;
+//! the lanes' shares then agree to within one piece. Each lane hashes its pieces in
+//! order with [`hazmat::HasherExt::set_input_offset`] and
+//! [`finalize_non_root`](hazmat::HasherExt::finalize_non_root), one
+//! chaining value per piece, and the calling thread merges the values
+//! back up the tree with [`hazmat::merge_subtrees_non_root`] and
 //! [`hazmat::merge_subtrees_root`]. Inputs under [`MIN_SPLIT_LEN`] stay on
 //! the calling thread: the hand-off costs a few microseconds and 64 KiB
 //! takes about fourteen on one SME2 lane, so smaller inputs gain nothing.
@@ -107,6 +112,23 @@ pub const MIN_SPLIT_LEN: usize = 128 * 1024;
 
 /// The smallest piece a lane receives: sixteen chunks fill one SME2 group.
 const MIN_PIECE_LEN: usize = 16 * CHUNK_LEN;
+
+/// Pieces cut per lane granted, so the lanes' shares come out even when
+/// the input's subtrees are unequal. Four pieces per lane put the worst
+/// imbalance at one piece in four of a lane's share for a power-of-two
+/// input and less for the others.
+pub const PIECES_PER_LANE: usize = 4;
+
+/// A piece below this length is not worth cutting for balance: each piece
+/// costs its lane a chunk-state start and a chaining value and the caller
+/// a merge, and below 512 KiB a lane's SME2 pipeline has not reached its
+/// bulk rate, so a finer cut there loses more to ramp-up than the balance
+/// gains. Measured on the two-CPU VM: 1 MiB over two lanes as two pieces,
+/// 0.092 ns/B; as eight, 0.108.
+pub const MIN_BALANCED_PIECE_LEN: usize = 512 * 1024;
+
+/// Upper bound on pieces one call cuts; sizes the on-stack arrays.
+pub const MAX_PIECES: usize = MAX_LANES * PIECES_PER_LANE;
 
 /// Upper bound on lanes one call uses; enough for any machine this crate
 /// targets, and it sizes the on-stack chaining-value array.
@@ -293,42 +315,45 @@ fn hash_over_lanes(input: &[u8], mode: Mode) -> Hash {
         release(0);
         return hash;
     }
-    let pieces = split_subtrees(input.len(), 1 + extra);
-    debug_assert_eq!(pieces.len(), 1 + extra);
+    let lanes = 1 + extra;
+    // One piece per lane, or up to PIECES_PER_LANE when the pieces stay
+    // at least MIN_BALANCED_PIECE_LEN long.
+    let piece_count = (input.len() / MIN_BALANCED_PIECE_LEN)
+        .clamp(lanes, lanes * PIECES_PER_LANE)
+        .min(input.len() / MIN_PIECE_LEN);
+    let pieces = split_subtrees(input.len(), piece_count);
+    let shares = deal_to_lanes(&pieces, lanes);
 
-    // The caller takes the largest piece, so on free lanes every worker
-    // finishes before it and its wait is the hand-off alone; a wait beyond
-    // STRAGGLER_PERMILLE of its own time is a worker that lost its CPU.
-    let own_index = pieces
-        .iter()
-        .enumerate()
-        .max_by_key(|(_, p)| p.len)
-        .map(|(i, _)| i)
+    // The caller takes the largest share, so on free lanes every worker
+    // finishes first and the caller's wait is the hand-off alone; a wait
+    // beyond STRAGGLER_PERMILLE of its own time is a worker that lost its
+    // CPU.
+    let own_lane = (0..lanes)
+        .max_by_key(|&lane| shares[lane].iter().map(|&i| pieces[i].len).sum::<usize>())
         .unwrap();
-    let mut cvs = [ChainingValue::default(); MAX_LANES];
+    let mut cvs = [ChainingValue::default(); MAX_PIECES];
     {
         let done = AtomicUsize::new(0);
-        let mut own_slot: Option<&mut ChainingValue> = None;
+        let mut slots: Vec<Option<&mut ChainingValue>> = cvs[..pieces.len()].iter_mut().map(Some).collect();
         let mut jobs: Vec<Job> = Vec::with_capacity(extra);
-        // Every job borrows `input`, a slot in `cvs`, and `done`; the wait
+        // Every job borrows `input`, slots in `cvs`, and `done`; the wait
         // below ends before any of them goes out of scope.
-        for (index, (piece, slot)) in pieces.iter().zip(cvs.iter_mut()).enumerate() {
-            if index == own_index {
-                own_slot = Some(slot);
-            } else {
-                jobs.push(Job {
-                    input: &input[piece.offset..][..piece.len],
-                    offset: piece.offset,
-                    mode: owned,
-                    slot,
-                    done: &done,
-                });
+        for (lane, share) in shares.iter().enumerate() {
+            if lane == own_lane {
+                continue;
             }
+            let job_pieces: Vec<(Piece, *mut ChainingValue)> = share
+                .iter()
+                .map(|&i| (pieces[i], slots[i].take().unwrap() as *mut ChainingValue))
+                .collect();
+            jobs.push(Job { input, pieces: job_pieces, mode: owned, done: &done });
         }
         pool().post(jobs);
-        let own = pieces[own_index];
         let started = std::time::Instant::now();
-        *own_slot.unwrap() = hash_piece(&input[own.offset..][..own.len], own.offset, owned);
+        for &i in &shares[own_lane] {
+            let piece = pieces[i];
+            *slots[i].take().unwrap() = hash_piece(&input[piece.offset..][..piece.len], piece.offset, owned);
+        }
         let own_time = started.elapsed();
         pool().wait(&done, extra);
         let waited = started.elapsed() - own_time;
@@ -345,6 +370,27 @@ fn hash_piece(bytes: &[u8], offset: usize, mode: OwnedMode) -> ChainingValue {
     hasher.finalize_non_root()
 }
 
+/// Deal pieces to `lanes` lanes so the lanes' byte totals are as even as
+/// the pieces allow: largest piece first, each to the lane with the least
+/// so far (ties to the lowest lane). Returns each lane's piece indices in
+/// offset order. `lanes` is 1..=pieces.len().
+pub fn deal_to_lanes(pieces: &[Piece], lanes: usize) -> Vec<Vec<usize>> {
+    assert!((1..=pieces.len()).contains(&lanes), "one to pieces.len() lanes");
+    let mut order: Vec<usize> = (0..pieces.len()).collect();
+    order.sort_by(|&a, &b| pieces[b].len.cmp(&pieces[a].len).then(a.cmp(&b)));
+    let mut shares: Vec<Vec<usize>> = vec![Vec::new(); lanes];
+    let mut totals = vec![0usize; lanes];
+    for index in order {
+        let lane = (0..lanes).min_by_key(|&lane| (totals[lane], lane)).unwrap();
+        shares[lane].push(index);
+        totals[lane] += pieces[index].len;
+    }
+    for share in &mut shares {
+        share.sort_unstable();
+    }
+    shares
+}
+
 /// One lane's share of the input: a whole subtree.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Piece {
@@ -355,10 +401,10 @@ pub struct Piece {
 /// Cut `len` bytes into `count` subtrees: starting from the whole input,
 /// split the largest piece at its left-subtree boundary until `count`
 /// pieces exist. Pieces come back in offset order, each a valid subtree at
-/// its offset. `count` is 1..=MAX_LANES and `len` is at least `count`
+/// its offset. `count` is 1..=MAX_PIECES and `len` is at least `count`
 /// chunks.
 pub fn split_subtrees(len: usize, count: usize) -> Vec<Piece> {
-    assert!((1..=MAX_LANES).contains(&count));
+    assert!((1..=MAX_PIECES).contains(&count));
     assert!(len >= count * CHUNK_LEN, "each piece needs at least one chunk");
     let mut pieces = vec![Piece { offset: 0, len }];
     while pieces.len() < count {
@@ -409,16 +455,17 @@ fn merge_root(pieces: &[Piece], cvs: &[ChainingValue], mode: Mode) -> Hash {
  * The worker pool: lane_count() - 1 threads waiting on one queue.
  *
  * A Job carries borrows of the caller's stack as raw pointers. The caller
- * posts its jobs, hashes its own piece, and then waits until `done` has
+ * posts its jobs, hashes its own share, and then waits until `done` has
  * counted every job; only then does it return and let those borrows end.
  * A worker touches a job's memory only between taking it from the queue
  * and incrementing `done`, so every access falls inside the caller's wait.
  */
 struct Job {
+    /// The whole input; each piece is a range within it.
     input: *const [u8],
-    offset: usize,
+    /// This lane's pieces, each with the slot its chaining value goes to.
+    pieces: Vec<(Piece, *mut ChainingValue)>,
     mode: OwnedMode,
-    slot: *mut ChainingValue,
     done: *const AtomicUsize,
 }
 
@@ -503,9 +550,12 @@ fn worker() {
     loop {
         let job = pool.take();
         // Sound by the pool's contract: the caller is waiting on `done`.
-        let cv = hash_piece(unsafe { &*job.input }, job.offset, job.mode);
-        unsafe {
-            *job.slot = cv;
+        let input = unsafe { &*job.input };
+        for &(piece, slot) in &job.pieces {
+            let cv = hash_piece(&input[piece.offset..][..piece.len], piece.offset, job.mode);
+            unsafe {
+                *slot = cv;
+            }
         }
         // Taking the lock before the increment closes the gap where the
         // caller checks the count, misses it, and sleeps forever.
@@ -674,8 +724,8 @@ mod test {
                 Piece { offset: 64 * CHUNK_LEN, len: 36 * CHUNK_LEN + 7 },
             ]
         );
-        for count in 1..=16 {
-            for len in [16 * CHUNK_LEN, 1000 * CHUNK_LEN + 3, 1 << 24, (1 << 20) + 1] {
+        for count in 1..=32 {
+            for len in [32 * CHUNK_LEN, 1000 * CHUNK_LEN + 3, 1 << 24, (1 << 20) + 1] {
                 let pieces = split_subtrees(len, count);
                 assert_eq!(pieces.len(), count);
                 assert_eq!(pieces.iter().map(|p| p.len).sum::<usize>(), len);
@@ -692,7 +742,7 @@ mod test {
 
     #[test]
     fn test_hash_matches_serial() {
-        let mut input = vec![0u8; 4 * MIN_SPLIT_LEN + 12345];
+        let mut input = vec![0u8; 3 * MIN_SPLIT_LEN * 8 + 12345];
         crate::test::paint_test_input(&mut input);
         for len in [
             0,
@@ -701,6 +751,7 @@ mod test {
             MIN_SPLIT_LEN,
             MIN_SPLIT_LEN + 1,
             2 * MIN_SPLIT_LEN + 999,
+            3 << 20,
             input.len(),
         ] {
             let want = crate::hash(&input[..len]);
@@ -716,6 +767,35 @@ mod test {
         }
     }
 
+    /// The deal evens the lanes: for a 3 MiB input over two lanes (whose
+    /// subtree cut alone is 2 | 1), eight pieces come out 1.5 | 1.5 MiB;
+    /// for a power of two, every lane gets the same.
+    #[test]
+    fn test_deal_to_lanes_is_even() {
+        let total = |pieces: &[Piece], share: &[usize]| share.iter().map(|&i| pieces[i].len).sum::<usize>();
+        let pieces = split_subtrees(3 << 20, 2 * PIECES_PER_LANE);
+        let shares = deal_to_lanes(&pieces, 2);
+        assert_eq!(total(&pieces, &shares[0]), 3 << 19);
+        assert_eq!(total(&pieces, &shares[1]), 3 << 19);
+        for lanes in 1..=6 {
+            for len in [1 << 20, 3 << 20, 5 << 20, (7 << 20) + 12345] {
+                let pieces = split_subtrees(len, lanes * PIECES_PER_LANE);
+                let shares = deal_to_lanes(&pieces, lanes);
+                assert_eq!(shares.iter().map(|s| s.len()).sum::<usize>(), pieces.len());
+                let mut seen: Vec<usize> = shares.iter().flatten().copied().collect();
+                seen.sort_unstable();
+                assert_eq!(seen, (0..pieces.len()).collect::<Vec<_>>(), "every piece dealt once");
+                let totals: Vec<usize> = shares.iter().map(|s| total(&pieces, s)).collect();
+                let largest_piece = pieces.iter().map(|p| p.len).max().unwrap();
+                let spread = totals.iter().max().unwrap() - totals.iter().min().unwrap();
+                assert!(spread <= largest_piece, "lanes = {lanes}, len = {len}: shares {totals:?} differ by more than one piece");
+                for share in &shares {
+                    assert!(share.windows(2).all(|w| w[0] < w[1]), "shares are in offset order");
+                }
+            }
+        }
+    }
+
     /// Every piece count the merge can see, through split and merge alone
     /// (independent of how many lanes the test machine has).
     #[test]
@@ -724,7 +804,7 @@ mod test {
             let mut input = vec![0u8; len];
             crate::test::paint_test_input(&mut input);
             let want = crate::hash(&input);
-            for count in 2..=16 {
+            for count in 2..=32 {
                 let pieces = split_subtrees(input.len(), count);
                 let cvs: Vec<ChainingValue> = pieces
                     .iter()
