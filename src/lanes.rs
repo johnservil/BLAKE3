@@ -22,37 +22,38 @@
 //! badly beside a copy of itself: two such pools on two cores each run at
 //! half speed, and the pair finishes later than two single threads would.
 //! This module holds a process-wide count of lanes in use. A call takes
-//! the lanes that are free at that moment (at least one: its own thread,
+//! lanes that are free at that moment (at least one: its own thread,
 //! which counts whether or not the call splits) and releases them when it
-//! returns. Two simultaneous callers on a four-lane machine get two lanes
-//! each; a caller that arrives when every lane is busy runs on its own
-//! thread alone.
+//! returns.
 //!
-//! Admission also watches the workers: a worker that a busy machine keeps
-//! off its CPU finishes its piece late, and the caller, done with its own,
-//! waits for it. When a call's wait for the workers exceeds the time its
-//! own piece took by more than [`STRAGGLER_PERMILLE`], the call notes a
-//! straggler, and after [`STRAGGLER_STRIKES`] such calls in a row the
-//! module runs on the caller's thread alone for a while before trying the
-//! lanes again. The backoff doubles on each consecutive stand-down
-//! ([`BACKOFF_CALLS_MIN`] to [`BACKOFF_CALLS_MAX`] calls) and resets when a
-//! split runs clean, so a machine that stays busy costs one probe in a few
-//! thousand calls and a machine that frees up is noticed within a few
-//! dozen. The count above is exact inside one process; the straggler rule
-//! is what makes two *processes* (which cannot see each other's count)
-//! share the machine, each discovering that its workers are competing and
-//! standing down.
+//! How many it takes is a fair share: with `c` callers active (this one
+//! included) and `L` lanes, at most `ceil(L / c)`, and never more than
+//! are free. Two simultaneous callers on a four-lane machine get two
+//! lanes each; on a three-lane machine the first to arrive gets two and
+//! the second finds one free and takes that; on a two-lane machine one
+//! each. The share is what keeps a
+//! caller from taking every lane in the instant between another caller's
+//! calls: two threads hashing back to back both release everything
+//! between calls, and without the share the first to return would take
+//! all the lanes and leave the other to run alone, turn and turn about,
+//! so that each got the whole machine half the time and one lane the
+//! other half, which averages to no gain over one lane. With the share,
+//! each takes its half and keeps it. The active count is a second
+//! process-wide counter, incremented on entry to any call long enough to
+//! split and decremented on return.
 //!
-//! A lane is held from the moment a call takes it until the call returns,
-//! so a call that arrives while another is running sees the lanes the
-//! other took. Between two calls on one thread the lanes are free for an
-//! instant, and a caller on another thread may take one then; when the
-//! first thread's next call comes, it finds that lane taken and runs
-//! alone. Once the machine is shared this way the split caller's worker
-//! runs on the CPU the other caller's thread is on, and the two compete
-//! there until the straggler rule stands the split caller down. Two busy
-//! threads on a two-lane machine therefore settle to one lane each within
-//! a few calls: which is the outcome that shares the machine.
+//! The counts are exact inside one process. Across processes, which
+//! cannot see each other's counts, the operating system's scheduler is
+//! the arbiter: each process's workers are ordinary threads that yield
+//! between polls and sleep when idle, so two processes hashing at once
+//! each see their workers run at whatever share of a CPU the scheduler
+//! gives them, and the pair finishes when a fair scheduler would have it
+//! finish. An earlier design stood the module down to one thread after
+//! its workers ran late twice in a row; it could not tell a worker
+//! delayed by another process from one delayed by an unrelated thread of
+//! its own process waking up, and on a busy machine it stood down for
+//! good. Latency of a worker is a fact about the scheduler, and the
+//! module leaves it there.
 //!
 //! # Splitting
 //!
@@ -139,67 +140,6 @@ pub const MAX_LANES: usize = 64;
 /// short enough that an idle process is quiet within it.
 pub const SPIN_BEFORE_SLEEP: std::time::Duration = std::time::Duration::from_micros(200);
 
-/// A call whose wait for its workers exceeds this share of its own piece's
-/// time saw a straggler: a worker that lost its CPU to someone else. Equal
-/// pieces on free lanes finish within a few percent of each other.
-pub const STRAGGLER_PERMILLE: u128 = 300;
-/// Straggling calls in a row before the module stands down.
-pub const STRAGGLER_STRIKES: usize = 2;
-/// Calls run on the caller's thread alone after a stand-down: the first
-/// stand-down waits this many, each consecutive one twice as many, up to
-/// the maximum.
-pub const BACKOFF_CALLS_MIN: usize = 16;
-pub const BACKOFF_CALLS_MAX: usize = 4096;
-
-/// Straggler strikes so far, the backoff calls remaining, and the length
-/// of the next backoff. All process-wide: the machine is shared by every
-/// caller, so one caller's finding serves the rest.
-static STRIKES: AtomicUsize = AtomicUsize::new(0);
-static BACKOFF_REMAINING: AtomicUsize = AtomicUsize::new(0);
-static NEXT_BACKOFF: AtomicUsize = AtomicUsize::new(BACKOFF_CALLS_MIN);
-
-/// Whether this call should stay on its own thread because the workers
-/// have been straggling; counts down the backoff as it goes.
-fn backing_off() -> bool {
-    let mut remaining = BACKOFF_REMAINING.load(Ordering::Relaxed);
-    loop {
-        if remaining == 0 {
-            return false;
-        }
-        match BACKOFF_REMAINING.compare_exchange_weak(remaining, remaining - 1, Ordering::AcqRel, Ordering::Relaxed) {
-            Ok(_) => return true,
-            Err(seen) => remaining = seen,
-        }
-    }
-}
-
-/// Record whether the workers straggled on this call. A clean split resets
-/// the strikes and the backoff length; strikes in a row start a backoff
-/// and double the next one.
-fn note_outcome(straggled: bool) {
-    if straggled {
-        let strikes = STRIKES.fetch_add(1, Ordering::AcqRel) + 1;
-        if strikes >= STRAGGLER_STRIKES {
-            STRIKES.store(0, Ordering::Relaxed);
-            let length = NEXT_BACKOFF.load(Ordering::Relaxed);
-            NEXT_BACKOFF.store((length * 2).min(BACKOFF_CALLS_MAX), Ordering::Relaxed);
-            BACKOFF_REMAINING.store(length, Ordering::Release);
-        }
-    } else {
-        STRIKES.store(0, Ordering::Relaxed);
-        NEXT_BACKOFF.store(BACKOFF_CALLS_MIN, Ordering::Relaxed);
-    }
-}
-
-/// Reset the straggler state, for tests and benchmarks that want each run
-/// to start from "lanes free".
-#[doc(hidden)]
-pub fn reset_backoff() {
-    STRIKES.store(0, Ordering::Relaxed);
-    BACKOFF_REMAINING.store(0, Ordering::Relaxed);
-    NEXT_BACKOFF.store(BACKOFF_CALLS_MIN, Ordering::Relaxed);
-}
-
 /// The number of lanes this machine has (see the module docs). At least 1.
 pub fn lane_count() -> usize {
     static COUNT: OnceLock<usize> = OnceLock::new();
@@ -210,14 +150,22 @@ pub fn lane_count() -> usize {
 /// threads included.
 static LANES_IN_USE: AtomicUsize = AtomicUsize::new(0);
 
-/// Take the caller's own lane plus up to `want` free ones; returns the
-/// extra lanes granted (0..=want).
+/// Callers currently inside a call long enough to split, whether or not
+/// it did. Sets each caller's fair share of the lanes.
+static ACTIVE_CALLERS: AtomicUsize = AtomicUsize::new(0);
+
+/// Take the caller's own lane plus up to `want` free ones, within the
+/// caller's fair share of `ceil(lanes / active callers)` and never more
+/// than are free. Returns the extra lanes granted (0..=want). The caller
+/// is already counted in ACTIVE_CALLERS.
 fn admit(want: usize) -> usize {
     let total = lane_count();
+    let callers = ACTIVE_CALLERS.load(Ordering::Acquire).max(1);
+    let share = total.div_ceil(callers);
     let mut current = LANES_IN_USE.load(Ordering::Relaxed);
     loop {
         let free = total.saturating_sub(current);
-        let extra = free.saturating_sub(1).min(want);
+        let extra = free.min(share).saturating_sub(1).min(want);
         let next = current + 1 + extra;
         match LANES_IN_USE.compare_exchange_weak(current, next, Ordering::AcqRel, Ordering::Relaxed) {
             Ok(_) => return extra,
@@ -301,14 +249,17 @@ pub fn hash_with_mode(input: &[u8], mode: Mode) -> Hash {
 #[inline(never)]
 fn hash_over_lanes(input: &[u8], mode: Mode) -> Hash {
     let owned = OwnedMode::from(mode);
+    ACTIVE_CALLERS.fetch_add(1, Ordering::AcqRel);
+    let hash = hash_over_lanes_active(input, mode, owned);
+    ACTIVE_CALLERS.fetch_sub(1, Ordering::AcqRel);
+    hash
+}
+
+fn hash_over_lanes_active(input: &[u8], mode: Mode, owned: OwnedMode) -> Hash {
     // A call that stays on its own thread still occupies a lane: the
     // count must show it, or a concurrent caller takes the lane this
     // thread is running on and its worker competes with this thread.
-    let want = if backing_off() {
-        0
-    } else {
-        (input.len() / MIN_PIECE_LEN).min(lane_count()).saturating_sub(1)
-    };
+    let want = (input.len() / MIN_PIECE_LEN).min(lane_count()).saturating_sub(1);
     let extra = admit(want);
     if extra == 0 {
         let hash = owned.hash_serial(input);
@@ -325,9 +276,7 @@ fn hash_over_lanes(input: &[u8], mode: Mode) -> Hash {
     let shares = deal_to_lanes(&pieces, lanes);
 
     // The caller takes the largest share, so on free lanes every worker
-    // finishes first and the caller's wait is the hand-off alone; a wait
-    // beyond STRAGGLER_PERMILLE of its own time is a worker that lost its
-    // CPU.
+    // finishes first and the caller's wait is the hand-off alone.
     let own_lane = (0..lanes)
         .max_by_key(|&lane| shares[lane].iter().map(|&i| pieces[i].len).sum::<usize>())
         .unwrap();
@@ -349,15 +298,11 @@ fn hash_over_lanes(input: &[u8], mode: Mode) -> Hash {
             jobs.push(Job { input, pieces: job_pieces, mode: owned, done: &done });
         }
         pool().post(jobs);
-        let started = std::time::Instant::now();
         for &i in &shares[own_lane] {
             let piece = pieces[i];
             *slots[i].take().unwrap() = hash_piece(&input[piece.offset..][..piece.len], piece.offset, owned);
         }
-        let own_time = started.elapsed();
         pool().wait(&done, extra);
-        let waited = started.elapsed() - own_time;
-        note_outcome(waited.as_nanos() * 1000 > own_time.as_nanos() * STRAGGLER_PERMILLE);
     }
     release(extra);
     merge_root(&pieces, &cvs[..pieces.len()], mode)
@@ -644,14 +589,46 @@ fn platform_lane_count() -> Option<usize> {
     }
     let levels = sysctl_u32(c"hw.nperflevels")?;
     let mut lanes = 0usize;
+    let mut detail = Vec::new();
     for level in 0..levels {
+        let name = std::ffi::CString::new(format!("hw.perflevel{level}.name")).unwrap();
         let cores = std::ffi::CString::new(format!("hw.perflevel{level}.physicalcpu")).unwrap();
         let per_cluster = std::ffi::CString::new(format!("hw.perflevel{level}.cpusperl2")).unwrap();
         let cores = sysctl_u32(&cores)? as usize;
         let per_cluster = sysctl_u32(&per_cluster)?.max(1) as usize;
-        lanes += cores.div_ceil(per_cluster);
+        let clusters = cores.div_ceil(per_cluster);
+        lanes += clusters;
+        detail.push(format!(
+            "{} {cores} cores / {per_cluster} per cluster = {clusters}",
+            sysctl_string(&name).unwrap_or_else(|| format!("level {level}"))
+        ));
     }
+    APPLE_DETAIL.set(detail.join("; ")).ok();
     (lanes > 0).then_some(lanes)
+}
+
+/// What the Apple detection saw, per performance level, for reports.
+#[cfg(target_vendor = "apple")]
+static APPLE_DETAIL: OnceLock<String> = OnceLock::new();
+
+#[cfg(target_vendor = "apple")]
+fn sysctl_string(name: &std::ffi::CStr) -> Option<String> {
+    let mut buffer = [0u8; 64];
+    let mut size = buffer.len();
+    let rc = unsafe {
+        libc::sysctlbyname(
+            name.as_ptr(),
+            buffer.as_mut_ptr() as *mut libc::c_void,
+            &mut size,
+            core::ptr::null_mut(),
+            0,
+        )
+    };
+    if rc != 0 {
+        return None;
+    }
+    let end = buffer[..size].iter().position(|&b| b == 0).unwrap_or(size);
+    Some(String::from_utf8_lossy(&buffer[..end]).into_owned())
 }
 
 /// Linux: every CPU is a lane when two threads keep their speed side by
@@ -685,13 +662,17 @@ fn platform_lane_count() -> Option<usize> {
 pub fn describe_lanes() -> String {
     let count = lane_count();
     let how = if std::env::var_os("BLAKE3_LANES").is_some() {
-        "set by BLAKE3_LANES"
+        "set by BLAKE3_LANES".to_owned()
     } else if cfg!(target_vendor = "apple") {
-        "one per core cluster (hw.perflevelN.physicalcpu / cpusperl2; each cluster shares one SME unit)"
+        #[cfg(target_vendor = "apple")]
+        let detail = APPLE_DETAIL.get().cloned().unwrap_or_default();
+        #[cfg(not(target_vendor = "apple"))]
+        let detail = String::new();
+        format!("one per core cluster, each sharing one SME unit ({detail})")
     } else if cfg!(target_os = "linux") {
-        "one per CPU when two threads measured at full speed side by side, else one per CPU cluster (sysfs topology/cluster_cpus_list)"
+        "one per CPU when two threads measured at full speed side by side, else one per CPU cluster (sysfs topology/cluster_cpus_list)".to_owned()
     } else {
-        "one per CPU (available_parallelism)"
+        "one per CPU (available_parallelism)".to_owned()
     };
     format!("{count} lane{}: {how}", if count == 1 { "" } else { "s" })
 }
@@ -837,6 +818,27 @@ mod test {
         release(a);
         // Any other holder's lanes are still counted; ours are gone.
         assert!(LANES_IN_USE.load(Ordering::Relaxed) <= before + total, "released lanes leave the count");
+    }
+
+    /// The fair share: with `c` active callers each gets ceil(L / c) lanes
+    /// at most, its own thread included, and never more than are free.
+    #[test]
+    fn test_admission_is_a_fair_share() {
+        let total = lane_count();
+        let before_lanes = LANES_IN_USE.load(Ordering::Relaxed);
+        let before_callers = ACTIVE_CALLERS.load(Ordering::Relaxed);
+        // Two callers active: each may hold ceil(total / 2) at most.
+        ACTIVE_CALLERS.fetch_add(2, Ordering::AcqRel);
+        let callers = before_callers + 2;
+        let share = total.div_ceil(callers);
+        let a = admit(MAX_LANES);
+        assert_eq!(a + 1, share.min(total.saturating_sub(before_lanes)).max(1), "first of two callers takes its share");
+        let b = admit(MAX_LANES);
+        let free_for_b = total.saturating_sub(before_lanes + a + 1);
+        assert_eq!(b + 1, share.min(free_for_b).max(1), "second takes its share of what is left");
+        release(b);
+        release(a);
+        ACTIVE_CALLERS.fetch_sub(2, Ordering::AcqRel);
     }
 
     /// Many concurrent callers on one process: every result is right and
