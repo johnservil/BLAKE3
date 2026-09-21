@@ -4,15 +4,15 @@
 //! Each kernel hashes a fixed number of contiguous chunks. This wrapper
 //! splits an input count into kernel calls that keep every unit busy:
 //!
-//! | chunks | kernels          | chunks | kernels          |
-//! |--------|------------------|--------|------------------|
-//! | 2      | k2               | 9      | k9               |
-//! | 3      | k3               | 10     | k5 + k5          |
-//! | 4      | k4               | 11     | k8 + k3          |
-//! | 5      | k5               | 12     | k8 + k4          |
-//! | 6      | k3 + k3          | 13     | k8 + k5          |
-//! | 7      | k4 + k3          | 14     | k9 + k5          |
-//! | 8      | k8               | 15     | k9 + k3 + k3     |
+//! | chunks | kernels      | chunks | kernels      |
+//! |--------|--------------|--------|--------------|
+//! | 2      | k2           | 9      | k9           |
+//! | 3      | k3           | 10     | k10          |
+//! | 4      | k4           | 11     | k8 + k3      |
+//! | 5      | k5           | 12     | k8 + k4      |
+//! | 6      | k6           | 13     | k8 + k5      |
+//! | 7      | k4 + k3      | 14     | k8 + k6      |
+//! | 8      | k8           | 15     | k9 + k6      |
 //!
 //! Anything the kernels do not cover (a lone chunk, partial chunks, parent
 //! blocks, non-contiguous inputs, `IncrementCounter::No`) goes to the
@@ -25,18 +25,19 @@ mod asm;
 
 type Kernel = unsafe extern "C" fn(*const u8, u64, *const u32, u64, u64, *mut u8);
 
-/// Kernel table: index n holds the kernel for exactly n chunks, when one exists.
-const KERNELS: [Option<(Kernel, usize)>; 10] = [
+/// Kernel per exact chunk count, when one exists.
+const KERNELS: [Option<Kernel>; 11] = [
     None,
     None,
-    Some((asm::blake3_hybrid_k2, 2)),
-    Some((asm::blake3_hybrid_k3, 3)),
-    Some((asm::blake3_hybrid_k4, 4)),
-    Some((asm::blake3_hybrid_k5, 5)),
+    Some(asm::blake3_hybrid_k2),
+    Some(asm::blake3_hybrid_k3),
+    Some(asm::blake3_hybrid_k4),
+    Some(asm::blake3_hybrid_k5),
+    Some(asm::blake3_hybrid_k6),
     None,
-    None,
-    Some((asm::blake3_hybrid_k8, 8)),
-    Some((asm::blake3_hybrid_k9, 9)),
+    Some(asm::blake3_hybrid_k8),
+    Some(asm::blake3_hybrid_k9),
+    Some(asm::blake3_hybrid_k10),
 ];
 
 /// Kernel sizes per chunk count 2..=15, largest first.
@@ -47,16 +48,16 @@ const PLANS: [&[usize]; 16] = [
     &[3],
     &[4],
     &[5],
-    &[3, 3],
+    &[6],
     &[4, 3],
     &[8],
     &[9],
-    &[5, 5],
+    &[10],
     &[8, 3],
     &[8, 4],
     &[8, 5],
-    &[9, 5],
-    &[9, 3, 3],
+    &[8, 6],
+    &[9, 6],
 ];
 
 /// True when `inputs` are laid out back to back in memory.
@@ -90,7 +91,7 @@ pub unsafe fn hash_many<const N: usize>(
     let packed = flags as u64 | (flags_start as u64) << 8 | (flags_end as u64) << 16;
     let mut done = 0;
     for &size in PLANS[n] {
-        let (kernel, _) = KERNELS[size].expect("plan names an existing kernel");
+        let kernel = KERNELS[size].expect("plan names an existing kernel");
         unsafe {
             kernel(
                 inputs[done].as_ptr(),
