@@ -614,18 +614,23 @@ impl ChunkState {
             }
         }
 
-        while input.len() > BLOCK_LEN {
+        // Every whole block except the last goes through one kernel call.
+        // The last block stays buffered for output(), which may need it as
+        // the root block.
+        if input.len() > BLOCK_LEN {
             debug_assert_eq!(self.buf_len, 0);
-            let block_flags = self.flags | self.start_flag(); // borrowck
-            self.platform.compress_in_place(
+            let count = (input.len() - 1) / BLOCK_LEN;
+            let start_flag = self.start_flag(); // borrowck
+            self.platform.compress_blocks(
                 &mut self.cv,
-                (&input[..BLOCK_LEN]).try_into().unwrap(),
-                BLOCK_LEN as u8,
+                input,
+                count,
                 self.chunk_counter,
-                block_flags,
+                self.flags,
+                start_flag,
             );
-            self.blocks_compressed += 1;
-            input = &input[BLOCK_LEN..];
+            self.blocks_compressed += count as u8;
+            input = &input[count * BLOCK_LEN..];
         }
 
         self.fill_buf(&mut input);
