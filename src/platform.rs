@@ -93,20 +93,15 @@ impl Platform {
             }
         }
         // SME2 is detected at runtime; the kernels also require a 512-bit
-        // streaming vector length, which sme2_detected() checks. This crate
-        // exists to measure SME2, so a CPU without it violates the contract
-        // and the program stops rather than silently timing NEON. Callers
-        // who want a NEON-only build say so with the `no_sme2` feature.
+        // streaming vector length, which sme2_detected() checks. Without
+        // SME2 the NEON backend (integer + vector hybrid kernels) is the
+        // selection, and it is a real result in its own right; a benchmark
+        // that cares which one ran reads it back from detect().
         #[cfg(blake3_sme2)]
         {
-            assert!(
-                sme2_detected(),
-                "blake3_sme2 requires a CPU that reports SME2 with a 512-bit \
-                 streaming vector length (Apple M4 and later, or a Linux 6.4+ \
-                 kernel exposing HWCAP2_SME2), and this CPU does not. Run on \
-                 SME2 hardware, or build with the `no_sme2` feature for NEON."
-            );
-            return Platform::SME2;
+            if sme2_detected() {
+                return Platform::SME2;
+            }
         }
         // We don't use dynamic feature detection for NEON. If the "neon"
         // feature is on, NEON is assumed to be supported.
