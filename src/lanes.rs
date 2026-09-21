@@ -31,16 +31,34 @@
 //! are free. Two simultaneous callers on a four-lane machine get two
 //! lanes each; on a three-lane machine the first to arrive gets two and
 //! the second finds one free and takes that; on a two-lane machine one
-//! each. The share is what keeps a
-//! caller from taking every lane in the instant between another caller's
-//! calls: two threads hashing back to back both release everything
-//! between calls, and without the share the first to return would take
-//! all the lanes and leave the other to run alone, turn and turn about,
-//! so that each got the whole machine half the time and one lane the
-//! other half, which averages to no gain over one lane. With the share,
-//! each takes its half and keeps it. The active count is a second
-//! process-wide counter, incremented on entry to any call long enough to
-//! split and decremented on return.
+//! each. The active count is a second process-wide counter, incremented
+//! on entry to any call long enough to split and decremented on return.
+//!
+//! The share is what keeps a caller from taking every lane in the instant
+//! between another caller's calls: two threads hashing back to back both
+//! release everything between calls, and without the share the first to
+//! return would take all the lanes and leave the other to run alone, turn
+//! and turn about, so that each got the whole machine half the time and
+//! one lane the other half, which averages to no gain over one lane.
+//!
+//! A caller's share is settled when it enters, so a caller that is alone
+//! when it enters holds every lane until it returns, and a second caller
+//! that arrives during that call finds nothing free. It waits for its
+//! share to come back rather than running on its own thread at once, up to
+//! [`ADMISSION_WAIT`]: the first caller's call ends within one input's
+//! hashing time, and when it comes back for its next call it sees two
+//! callers and takes its half, leaving the other half for the one that
+//! waited. Two threads hashing at once settle to a half each within one
+//! call this way, and the waiting caller loses one hand-off rather than a
+//! whole call at single-lane speed. A machine that stays full past the
+//! wait (many callers, or a caller with an input beyond what one lane
+//! hashes in that time) runs the call on the caller's own thread.
+//!
+//! One caller that hashes alone and then beside another sees this: its
+//! solo calls take every lane; the other's first call waits for them; from
+//! then on each holds half. A benchmark that alternates a solo batch with
+//! a duo batch, as bench-hashes --duo does, therefore measures the duo
+//! batch after that hand-over, at a half each.
 //!
 //! The counts are exact inside one process. Across processes, which
 //! cannot see each other's counts, the operating system's scheduler is
@@ -92,11 +110,24 @@
 //! path, so a piece a worker takes must be worth more than the wake: see
 //! [`MIN_SPLIT_LEN`].
 //!
-//! Workers take no lane of their own: a sleeping worker is invisible to
-//! the scheduler, and a spinning one yields its CPU on every iteration
-//! ([`std::thread::yield_now`]) so a runnable thread on the same CPU goes
-//! first. The spin is a poll between yields, and it stops within
-//! `SPIN_BEFORE_SLEEP` on an idle process.
+//! Both spins yield the CPU on every iteration
+//! ([`std::thread::yield_now`]), so a runnable thread on the same CPU
+//! goes first: a worker between jobs or a caller waiting for results is a
+//! poll between yields, and stops within `SPIN_BEFORE_SLEEP` on an idle
+//! process. A busy spin here would hold a CPU that another thread, one
+//! about to call this module, is waiting to run on, and that thread's
+//! call would start late by the length of the spin.
+//!
+//! The workers are ordinary threads, and a worker whose CPU another thread
+//! holds waits its turn like any other. A thread that spins without
+//! yielding holds its CPU for a whole scheduler quantum; on a machine with
+//! as many such spinners as CPUs, a worker's piece waits a quantum (about
+//! 2 ms on Linux) to start, and the caller waits with it. Callers that
+//! spin-wait on something while this module hashes on their behalf are
+//! asking for that; a spin that yields costs the worker nothing measurable
+//! (measured on a two-CPU machine: two spinning threads beside a 128 KiB
+//! split took the call from 29 µs to 2 ms; the same two threads yielding
+//! between polls left it at 29 µs).
 
 use crate::hazmat::{self, ChainingValue, HasherExt, Mode};
 use crate::{CHUNK_LEN, Hash, Hasher, KEY_LEN};
@@ -135,6 +166,14 @@ pub const MAX_PIECES: usize = MAX_LANES * PIECES_PER_LANE;
 /// targets, and it sizes the on-stack chaining-value array.
 pub const MAX_LANES: usize = 64;
 
+/// How long a caller that finds no lane free waits for its share before
+/// running on its own thread. The wait pays off whenever the caller holding
+/// the lanes returns within it; one SME2 lane on an Apple M4 hashes 8 MiB
+/// in about 1.4 ms and 64 MiB in about 11 ms, so this covers inputs to a
+/// few tens of megabytes; past that the waiting caller gives up and hashes
+/// alone, at one lane's speed, which is what it would have done at once.
+pub const ADMISSION_WAIT: std::time::Duration = std::time::Duration::from_millis(20);
+
 /// How long a worker or a waiting caller spins before sleeping. Long
 /// enough to bridge the gap between back-to-back hashes in a busy caller;
 /// short enough that an idle process is quiet within it.
@@ -146,36 +185,70 @@ pub fn lane_count() -> usize {
     *COUNT.get_or_init(|| detect_lane_count().clamp(1, MAX_LANES))
 }
 
-/// Lanes currently granted to callers in this process, the callers' own
-/// threads included.
-static LANES_IN_USE: AtomicUsize = AtomicUsize::new(0);
+/*
+ * The admission state: lanes in use (the callers' own threads included)
+ * and callers active, packed into one word so a caller reads and changes
+ * both in one atomic step. Low 32 bits lanes, high 32 bits callers.
+ */
+static ADMISSION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// Callers currently inside a call long enough to split, whether or not
-/// it did. Sets each caller's fair share of the lanes.
-static ACTIVE_CALLERS: AtomicUsize = AtomicUsize::new(0);
-
-/// Take the caller's own lane plus up to `want` free ones, within the
-/// caller's fair share of `ceil(lanes / active callers)` and never more
-/// than are free. Returns the extra lanes granted (0..=want). The caller
-/// is already counted in ACTIVE_CALLERS.
-fn admit(want: usize) -> usize {
-    let total = lane_count();
-    let callers = ACTIVE_CALLERS.load(Ordering::Acquire).max(1);
-    let share = total.div_ceil(callers);
-    let mut current = LANES_IN_USE.load(Ordering::Relaxed);
-    loop {
-        let free = total.saturating_sub(current);
-        let extra = free.min(share).saturating_sub(1).min(want);
-        let next = current + 1 + extra;
-        match LANES_IN_USE.compare_exchange_weak(current, next, Ordering::AcqRel, Ordering::Relaxed) {
-            Ok(_) => return extra,
-            Err(seen) => current = seen,
-        }
-    }
+fn unpack(state: u64) -> (usize, usize) {
+    ((state & 0xffff_ffff) as usize, (state >> 32) as usize)
 }
 
-fn release(extra: usize) {
-    LANES_IN_USE.fetch_sub(1 + extra, Ordering::AcqRel);
+fn pack(lanes: usize, callers: usize) -> u64 {
+    lanes as u64 | (callers as u64) << 32
+}
+
+/// Enter as a caller: one more active caller, no lanes yet.
+fn enter() {
+    ADMISSION.fetch_add(pack(0, 1), Ordering::AcqRel);
+}
+
+/// Leave: this caller and its `1 + extra` lanes go.
+fn leave(extra: usize) {
+    ADMISSION.fetch_sub(pack(1 + extra, 1), Ordering::AcqRel);
+}
+
+/// The extra lanes a caller may take now, given the state: its fair share
+/// of `ceil(total / callers)`, less its own thread, within what is free
+/// and what it wants.
+fn grant(state: u64, total: usize, want: usize) -> usize {
+    let (in_use, callers) = unpack(state);
+    let share = total.div_ceil(callers.max(1));
+    let free = total.saturating_sub(in_use);
+    free.min(share).saturating_sub(1).min(want)
+}
+
+/// Take the caller's own lane plus up to `want` free ones within its fair
+/// share (see the module docs); returns the extra lanes granted. The
+/// caller has entered already.
+///
+/// When the share is not free yet and other callers are active, wait up
+/// to ADMISSION_WAIT for it (yielding between polls): the caller holding
+/// the lanes returns within one input's hashing time, and then this
+/// caller's share is there. The decision reads lanes and callers in one
+/// atomic step, so a caller that has just left cannot be counted in the
+/// share while its lanes are still counted as held, or the reverse.
+fn admit(want: usize) -> usize {
+    let total = lane_count();
+    let started = std::time::Instant::now();
+    loop {
+        let state = ADMISSION.load(Ordering::Acquire);
+        let extra = grant(state, total, want);
+        let (_, callers) = unpack(state);
+        // Worth waiting: other callers hold lanes, the share due is bigger
+        // than what is free now, and time remains.
+        let share_due = total.div_ceil(callers.max(1)).min(want + 1);
+        if extra + 1 < share_due && callers > 1 && started.elapsed() < ADMISSION_WAIT {
+            std::thread::yield_now();
+            continue;
+        }
+        let next = state + pack(1 + extra, 0);
+        if ADMISSION.compare_exchange_weak(state, next, Ordering::AcqRel, Ordering::Relaxed).is_ok() {
+            return extra;
+        }
+    }
 }
 
 /// A hashing mode with its key material owned, so it can cross to a
@@ -249,21 +322,15 @@ pub fn hash_with_mode(input: &[u8], mode: Mode) -> Hash {
 #[inline(never)]
 fn hash_over_lanes(input: &[u8], mode: Mode) -> Hash {
     let owned = OwnedMode::from(mode);
-    ACTIVE_CALLERS.fetch_add(1, Ordering::AcqRel);
-    let hash = hash_over_lanes_active(input, mode, owned);
-    ACTIVE_CALLERS.fetch_sub(1, Ordering::AcqRel);
-    hash
-}
-
-fn hash_over_lanes_active(input: &[u8], mode: Mode, owned: OwnedMode) -> Hash {
     // A call that stays on its own thread still occupies a lane: the
     // count must show it, or a concurrent caller takes the lane this
     // thread is running on and its worker competes with this thread.
+    enter();
     let want = (input.len() / MIN_PIECE_LEN).min(lane_count()).saturating_sub(1);
     let extra = admit(want);
     if extra == 0 {
         let hash = owned.hash_serial(input);
-        release(0);
+        leave(0);
         return hash;
     }
     let lanes = 1 + extra;
@@ -304,7 +371,7 @@ fn hash_over_lanes_active(input: &[u8], mode: Mode, owned: OwnedMode) -> Hash {
         }
         pool().wait(&done, extra);
     }
-    release(extra);
+    leave(extra);
     merge_root(&pieces, &cvs[..pieces.len()], mode)
 }
 
@@ -462,7 +529,7 @@ impl Pool {
             if done.load(Ordering::Acquire) == count {
                 return;
             }
-            std::hint::spin_loop();
+            std::thread::yield_now();
         }
         let mut guard = self.finished.lock().unwrap();
         while done.load(Ordering::Acquire) != count {
@@ -796,49 +863,46 @@ mod test {
         }
     }
 
-    /// Admission grants the free lanes and no more. A caller's own thread
-    /// always counts, so with `before` lanes in use a caller that asks for
-    /// everything receives `total - before - 1` extra lanes, or none when
-    /// `before + 1` reaches the total. Other tests in this process may hold
-    /// lanes at the same time, so the check reads the count first and
-    /// reasons from there; every step is exact.
+    /// Admission arithmetic on the packed state, without touching the
+    /// live counters: grant() is a pure function of (lanes in use,
+    /// callers, total, want).
     #[test]
-    fn test_admission_is_bounded() {
-        let total = lane_count();
-        assert!(total >= 1);
-        let before = LANES_IN_USE.load(Ordering::Relaxed);
-        let a = admit(MAX_LANES);
-        assert_eq!(a, total.saturating_sub(before + 1).min(MAX_LANES), "first caller takes all free extras");
-        let b = admit(MAX_LANES);
-        assert_eq!(b, total.saturating_sub(before + a + 2).min(MAX_LANES), "second caller takes what is left");
-        let c = admit(1);
-        assert_eq!(c, 0, "with every lane granted a third caller gets its own thread and nothing more");
-        release(c);
-        release(b);
-        release(a);
-        // Any other holder's lanes are still counted; ours are gone.
-        assert!(LANES_IN_USE.load(Ordering::Relaxed) <= before + total, "released lanes leave the count");
+    fn test_grant_is_a_fair_share() {
+        // One caller, nothing in use: everything it wants, less its own thread.
+        assert_eq!(grant(pack(0, 1), 4, 8), 3);
+        assert_eq!(grant(pack(0, 1), 4, 1), 1);
+        assert_eq!(grant(pack(0, 1), 1, 8), 0, "a one-lane machine grants no extra");
+        // Two callers on four lanes: two each.
+        assert_eq!(grant(pack(0, 2), 4, 8), 1);
+        assert_eq!(grant(pack(2, 2), 4, 8), 1);
+        // Two callers on three lanes: ceil(3/2) = 2 for the first; the
+        // second finds one free and gets its own thread only.
+        assert_eq!(grant(pack(0, 2), 3, 8), 1);
+        assert_eq!(grant(pack(2, 2), 3, 8), 0);
+        // Two callers on two lanes: one each.
+        assert_eq!(grant(pack(0, 2), 2, 8), 0);
+        // Never more than free.
+        assert_eq!(grant(pack(3, 1), 4, 8), 0);
+        assert_eq!(grant(pack(4, 1), 4, 8), 0);
     }
 
-    /// The fair share: with `c` active callers each gets ceil(L / c) lanes
-    /// at most, its own thread included, and never more than are free.
+    /// pack and unpack round-trip, and enter/leave are inverses.
     #[test]
-    fn test_admission_is_a_fair_share() {
-        let total = lane_count();
-        let before_lanes = LANES_IN_USE.load(Ordering::Relaxed);
-        let before_callers = ACTIVE_CALLERS.load(Ordering::Relaxed);
-        // Two callers active: each may hold ceil(total / 2) at most.
-        ACTIVE_CALLERS.fetch_add(2, Ordering::AcqRel);
-        let callers = before_callers + 2;
-        let share = total.div_ceil(callers);
-        let a = admit(MAX_LANES);
-        assert_eq!(a + 1, share.min(total.saturating_sub(before_lanes)).max(1), "first of two callers takes its share");
-        let b = admit(MAX_LANES);
-        let free_for_b = total.saturating_sub(before_lanes + a + 1);
-        assert_eq!(b + 1, share.min(free_for_b).max(1), "second takes its share of what is left");
-        release(b);
-        release(a);
-        ACTIVE_CALLERS.fetch_sub(2, Ordering::AcqRel);
+    fn test_admission_state_packing() {
+        for (lanes, callers) in [(0, 0), (1, 1), (7, 3), (63, 64), (usize::from(u16::MAX), 5)] {
+            assert_eq!(unpack(pack(lanes, callers)), (lanes, callers));
+        }
+        let before = ADMISSION.load(Ordering::Relaxed);
+        enter();
+        let extra = admit(0);
+        assert_eq!(extra, 0);
+        let (lanes, callers) = unpack(ADMISSION.load(Ordering::Relaxed));
+        let (before_lanes, before_callers) = unpack(before);
+        assert!(lanes >= before_lanes + 1 && callers >= before_callers + 1);
+        leave(extra);
+        // Other tests may be mid-flight; the difference we made is gone.
+        let (after_lanes, after_callers) = unpack(ADMISSION.load(Ordering::Relaxed));
+        assert!(after_lanes <= lanes - 1 + 8 && after_callers <= callers - 1 + 8);
     }
 
     /// Many concurrent callers on one process: every result is right and
