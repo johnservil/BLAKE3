@@ -165,12 +165,18 @@ impl Platform {
             Platform::AVX512 => unsafe {
                 crate::avx512::compress_in_place(cv, block, block_len, counter, flags)
             },
-            // No NEON compress_in_place() implementation yet.
-            #[cfg(blake3_neon)]
+            // The scalar kernel k1 keeps the state in registers; it runs on
+            // every AArch64 core, so the NEON and SME2 platforms share it.
+            #[cfg(all(blake3_neon, blake3_neon_hybrid))]
+            Platform::NEON => {
+                crate::neon_hybrid::compress_in_place(cv, block, block_len, counter, flags)
+            }
+            #[cfg(all(blake3_neon, not(blake3_neon_hybrid)))]
             Platform::NEON => portable::compress_in_place(cv, block, block_len, counter, flags),
-            // Single compressions stay on the portable path with SME2 too.
             #[cfg(blake3_sme2)]
-            Platform::SME2 => portable::compress_in_place(cv, block, block_len, counter, flags),
+            Platform::SME2 => {
+                crate::neon_hybrid::compress_in_place(cv, block, block_len, counter, flags)
+            }
             #[cfg(blake3_wasm32_simd)]
             Platform::WASM32_SIMD => {
                 crate::wasm32_simd::compress_in_place(cv, block, block_len, counter, flags)

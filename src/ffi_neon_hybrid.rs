@@ -26,14 +26,35 @@
 //! | 15     | k9 + k6       | p8 + p4 + p2 + k1 |
 //!
 //! Longer input lists are hashed fifteen at a time.
+//!
+//! The scalar kernel also serves every single-chunk job: `hash_chunk` runs
+//! a whole input of one chunk or less, root compression included, in one
+//! call; `compress_blocks` is `ChunkState::update`'s inner loop; and
+//! `compress_in_place` is one compression of any block length, which the
+//! incremental `Hasher` uses for chunk finalization, parent nodes, and the
+//! root. Every AArch64 core runs the scalar kernel, so those need no
+//! feature check.
 
 use crate::{BLOCK_LEN, CHUNK_LEN, CVWords, IncrementCounter, OUT_LEN};
 
 /// The kernels live in c/blake3_neon_hybrid_aarch64.S. Every one has the
 /// signature `(base, blocks, key, counter, packed_flags, out)`; the contract
-/// is in that file's header.
+/// is in that file's header. `packed_flags` is
+/// `flags | flags_start << 8 | flags_end << 16 | last_len << 24`.
 mod asm {
     unsafe extern "C" {
+        /// k1 entered with the input pointer itself in place of a table,
+        /// and the address of the last block as a seventh argument: blocks
+        /// 0..blocks-1 come from `input`, the last from `last`.
+        pub fn blake3_hybrid_c1(
+            input: *const u8,
+            blocks: u64,
+            key: *const u32,
+            counter: u64,
+            packed_flags: u64,
+            out: *mut u8,
+            last: *const u8,
+        );
         pub fn blake3_hybrid_k1(
             inputs: *const *const u8,
             blocks: u64,
@@ -240,20 +261,89 @@ pub unsafe fn compress_blocks(
     flags_start: u8,
 ) {
     debug_assert!((1..=16).contains(&count));
-    let packed = flags as u64 | (flags_start as u64) << 8;
-    let mut out = [0u8; OUT_LEN];
-    let table = [blocks];
+    let packed = flags as u64 | (flags_start as u64) << 8 | (BLOCK_LEN as u64) << 24;
+    // The kernel reads the whole key in its prologue and stores the output
+    // at its end, so `cv` serves as both: the output words land in place,
+    // in the little-endian layout CVWords has on this target.
+    let cv_ptr = cv.as_mut_ptr();
     unsafe {
-        asm::blake3_hybrid_k1(
-            table.as_ptr(),
-            count as u64,
-            cv.as_ptr(),
+        let last = blocks.add((count - 1) * BLOCK_LEN);
+        asm::blake3_hybrid_c1(blocks, count as u64, cv_ptr, counter, packed, cv_ptr as *mut u8, last);
+    }
+}
+
+/// One compression of `block` into `cv`, with every flag in `flags`
+/// (start, end, root, and so on are the caller's business) and the given
+/// `block_len` recorded in the state. This is `Platform::compress_in_place`
+/// on the scalar kernel: the chunk finalizer, the root compression, and
+/// every parent node of the incremental `Hasher` go through it. Registers
+/// hold the whole state, so it saves the portable compressor's spills.
+///
+/// The kernel uses only integer instructions and runs on every AArch64
+/// core. `block_len` is at most 64; the block is 64 bytes, zero-padded
+/// past `block_len` by the caller as the portable compressor requires.
+pub fn compress_in_place(
+    cv: &mut CVWords,
+    block: &[u8; BLOCK_LEN],
+    block_len: u8,
+    counter: u64,
+    flags: u8,
+) {
+    debug_assert!(block_len as usize <= BLOCK_LEN);
+    // The one block is both first and last: the kernel ORs flags_start
+    // into the first block and flags_end into the last, so the flags go
+    // in as the base and the two per-position fields stay zero.
+    let packed = flags as u64 | (block_len as u64) << 24;
+    // `cv` is key and output at once; see compress_blocks.
+    let cv_ptr = cv.as_mut_ptr();
+    // Safe: the block is 64 readable bytes and the count is 1.
+    unsafe {
+        let block = block.as_ptr();
+        asm::blake3_hybrid_c1(block, 1, cv_ptr, counter, packed, cv_ptr as *mut u8, block);
+    }
+}
+
+/// Hash a whole chunk of `1..=16` blocks in one kernel call and write its
+/// 32-byte chaining value (or root hash) to `out`. Blocks `0..blocks - 1`
+/// are the first `(blocks - 1) * 64` bytes of `input`; the last block is
+/// `last`, zero-padded past `last_len`, so a short final block costs one
+/// 64-byte copy. The first block carries `flags | flags_start`, the last
+/// `flags | flags_end`, and every block `flags` and `counter`. This is the
+/// one-chunk `hash()`: CHUNK_START on the first block, CHUNK_END | ROOT on
+/// the last, one kernel call, no chaining value travelling through memory
+/// between calls.
+///
+/// Unsafe because `input` must hold `(blocks - 1) * 64` readable bytes and
+/// `blocks` must be in 1..=16.
+pub unsafe fn hash_chunk(
+    input: *const u8,
+    blocks: usize,
+    last: &[u8; BLOCK_LEN],
+    last_len: u8,
+    key: &CVWords,
+    counter: u64,
+    flags: u8,
+    flags_start: u8,
+    flags_end: u8,
+    out: &mut [u8; OUT_LEN],
+) {
+    debug_assert!((1..=16).contains(&blocks));
+    debug_assert!(last_len as usize <= BLOCK_LEN);
+    let packed = flags as u64
+        | (flags_start as u64) << 8
+        | (flags_end as u64) << 16
+        | (last_len as u64) << 24;
+    unsafe {
+        asm::blake3_hybrid_c1(
+            input,
+            blocks as u64,
+            key.as_ptr(),
             counter,
             packed,
             out.as_mut_ptr(),
+            last.as_ptr(),
         );
     }
-    *cv = crate::platform::words_from_le_bytes_32(&out);
 }
 
 /// Run the kernels of `plan` over `inputs`.
@@ -310,7 +400,10 @@ pub unsafe fn hash_many<const N: usize>(
                 increment_counter.yes()
             ),
         };
-    let packed = flags as u64 | (flags_start as u64) << 8 | (flags_end as u64) << 16;
+    let packed = flags as u64
+        | (flags_start as u64) << 8
+        | (flags_end as u64) << 16
+        | (BLOCK_LEN as u64) << 24;
     let blocks = N / BLOCK_LEN;
     // `&[&[u8; N]]` is a table of pointers, which is what the kernels take.
     let table = inputs.as_ptr() as *const *const u8;
@@ -526,6 +619,106 @@ mod test {
             output == committed,
             "c/blake3_neon_hybrid_aarch64.S is stale; run tools/gen_neon_hybrid.py"
         );
+    }
+
+    /// Every block length 0..=64, every flag bit, and several counters:
+    /// the kernel's one-block path against the portable compressor.
+    #[test]
+    fn test_compress_in_place_against_portable() {
+        let mut input = [0u8; BLOCK_LEN];
+        crate::test::paint_test_input(&mut input);
+        for block_len in 0..=BLOCK_LEN {
+            let mut block = [0u8; BLOCK_LEN];
+            block[..block_len].copy_from_slice(&input[..block_len]);
+            for flags in [
+                0,
+                CHUNK_START,
+                CHUNK_END,
+                CHUNK_START | CHUNK_END | crate::ROOT,
+                PARENT,
+                PARENT | crate::ROOT | KEYED_HASH,
+                crate::DERIVE_KEY_CONTEXT | CHUNK_START | CHUNK_END | crate::ROOT,
+                0xff,
+            ] {
+                for counter in [0u64, 1, u32::MAX as u64, 1 << 40, u64::MAX] {
+                    let mut want = *IV;
+                    crate::portable::compress_in_place(
+                        &mut want,
+                        &block,
+                        block_len as u8,
+                        counter,
+                        flags,
+                    );
+                    let mut got = *IV;
+                    compress_in_place(&mut got, &block, block_len as u8, counter, flags);
+                    assert_eq!(
+                        want, got,
+                        "block_len = {block_len}, flags = {flags:#x}, counter = {counter}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// hash_chunk for every input length 0..=1024 (every block count and
+    /// every final block length), with root and non-root flags, against
+    /// the portable compressor run block by block.
+    #[test]
+    fn test_hash_chunk_against_portable() {
+        let mut input = [0u8; CHUNK_LEN];
+        crate::test::paint_test_input(&mut input);
+        for len in 0..=CHUNK_LEN {
+            let blocks = core::cmp::max(1, (len + BLOCK_LEN - 1) / BLOCK_LEN);
+            let whole = (blocks - 1) * BLOCK_LEN;
+            let mut last = [0u8; BLOCK_LEN];
+            last[..len - whole].copy_from_slice(&input[whole..len]);
+            for (flags, flags_end, counter) in [
+                (0, CHUNK_END | crate::ROOT, 0u64),
+                (KEYED_HASH, CHUNK_END, 5),
+                (crate::DERIVE_KEY_MATERIAL, CHUNK_END | crate::ROOT, 1 << 40),
+            ] {
+                let mut want = *IV;
+                for b in 0..blocks {
+                    let mut block_flags = flags;
+                    if b == 0 {
+                        block_flags |= CHUNK_START;
+                    }
+                    let (block, block_len) = if b + 1 == blocks {
+                        block_flags |= flags_end;
+                        (&last, (len - whole) as u8)
+                    } else {
+                        (input[b * BLOCK_LEN..][..BLOCK_LEN].try_into().unwrap(), BLOCK_LEN as u8)
+                    };
+                    crate::portable::compress_in_place(
+                        &mut want,
+                        block,
+                        block_len,
+                        counter,
+                        block_flags,
+                    );
+                }
+                let mut got = [0u8; OUT_LEN];
+                unsafe {
+                    hash_chunk(
+                        input.as_ptr(),
+                        blocks,
+                        &last,
+                        (len - whole) as u8,
+                        IV,
+                        counter,
+                        flags,
+                        CHUNK_START,
+                        flags_end,
+                        &mut got,
+                    )
+                };
+                assert_eq!(
+                    crate::platform::le_bytes_from_words_32(&want),
+                    got,
+                    "len = {len}, flags = {flags:#x}, counter = {counter}"
+                );
+            }
+        }
     }
 
     #[test]

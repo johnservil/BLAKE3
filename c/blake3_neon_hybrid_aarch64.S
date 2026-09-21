@@ -9,7 +9,9 @@
 // Integer and vector units have separate pipes and register files, so a
 // chunk on the integer side beside NEON work finishes inside the NEON time.
 //
-// k<n> hashes n contiguous chunks: k1 scalar; k2 one NEON pair; k3 scalar +
+// k<n> hashes n contiguous chunks: k1 scalar (c1 is the same kernel taking
+// the input pointer itself instead of a table, and in x6 the address of the
+// last block, wherever it lies); k2 one NEON pair; k3 scalar +
 // pair; k4 two scalars + pair; k5 scalar + two pairs; k6 two scalars + two
 // pairs; k8 two four-lane quads; k9 scalar + two quads; k10 two scalars +
 // two quads. p<n> hashes n contiguous 64-byte parent blocks with one shared
@@ -23,9 +25,13 @@
 //               uint64_t packed_flags, uint8_t *out);
 // inputs[i] points at input i (n entries); blocks is in 1..=16 and the same
 // for every input (1 for p); input i uses counter + i (k) or counter (p);
-// packed_flags is flags | flags_start << 8 | flags_end << 16, applied per
-// block; out receives 32 bytes per input in input order. The CPU must have
-// NEON and the SHA-3 extension (xar). x18 is untouched; AAPCS64 otherwise.
+// packed_flags is flags | flags_start << 8 | flags_end << 16 | last_len << 24:
+// flags_start applies to the first block, flags_end to the last, and
+// last_len (0..=64) is the block length the last block records (earlier
+// blocks record 64; the last block's 64 bytes are read regardless, so a
+// short block arrives zero-padded); out receives 32 bytes per input in
+// input order. The CPU must have NEON and the SHA-3 extension (xar). x18
+// is untouched; AAPCS64 otherwise.
 
 #if defined(__ELF__) && defined(__linux__)
 .section .note.GNU-stack,"",%progbits
@@ -57,6 +63,8 @@
 .global _blake3_hybrid_k9
 .global blake3_hybrid_k10
 .global _blake3_hybrid_k10
+.global blake3_hybrid_c1
+.global _blake3_hybrid_c1
 #ifdef __APPLE__
 .text
 #else
@@ -258,12 +266,6 @@
 _blake3_hybrid_p2:
 blake3_hybrid_p2:
         sub sp, sp, #1088
-        stp x19, x20, [sp, #0]
-        stp x21, x22, [sp, #16]
-        stp x23, x24, [sp, #32]
-        stp x25, x26, [sp, #48]
-        stp x27, x28, [sp, #64]
-        stp x29, x30, [sp, #80]
         stp d8, d9, [sp, #96]
         stp d10, d11, [sp, #112]
         stp d12, d13, [sp, #128]
@@ -382,13 +384,18 @@ blake3_hybrid_p2_loop:
         zip2 v29.4s, v10.4s, v10.4s
         zip1 v30.4s, v11.4s, v11.4s
         zip2 v31.4s, v11.4s, v11.4s
+        ldr w3, [sp, #160]
+        lsr w3, w3, #24
+        mov w4, #64
+        cmp x1, #1
+        csel w3, w3, w4, eq
         ldr q8, [sp, #272]
         ldr q9, [sp, #288]
         ldr q10, [sp, #304]
         ldr q11, [sp, #320]
         ldr q12, [sp, #336]
         ldr q13, [sp, #352]
-        movi v14.4s, #64
+        dup v14.4s, w3
         dup v15.4s, w2
         PG_REG v0, v4, v8, v12, v16, v17
         PG_REG v1, v5, v9, v13, v18, v19
@@ -479,12 +486,6 @@ blake3_hybrid_p2_loop:
         uzp1 v10.4s, v10.4s, v11.4s
         str q8, [x2, #16]
         str q10, [x2, #48]
-        ldp x19, x20, [sp, #0]
-        ldp x21, x22, [sp, #16]
-        ldp x23, x24, [sp, #32]
-        ldp x25, x26, [sp, #48]
-        ldp x27, x28, [sp, #64]
-        ldp x29, x30, [sp, #80]
         ldp d8, d9, [sp, #96]
         ldp d10, d11, [sp, #112]
         ldp d12, d13, [sp, #128]
@@ -496,12 +497,6 @@ blake3_hybrid_p2_loop:
 _blake3_hybrid_p4:
 blake3_hybrid_p4:
         sub sp, sp, #1088
-        stp x19, x20, [sp, #0]
-        stp x21, x22, [sp, #16]
-        stp x23, x24, [sp, #32]
-        stp x25, x26, [sp, #48]
-        stp x27, x28, [sp, #64]
-        stp x29, x30, [sp, #80]
         stp d8, d9, [sp, #96]
         stp d10, d11, [sp, #112]
         stp d12, d13, [sp, #128]
@@ -694,13 +689,18 @@ blake3_hybrid_p4_loop:
         zip2 v15.4s, v11.4s, v11.4s
         stp q12, q13, [sp, #928]
         stp q14, q15, [sp, #960]
+        ldr w3, [sp, #160]
+        lsr w3, w3, #24
+        mov w4, #64
+        cmp x1, #1
+        csel w3, w3, w4, eq
         ldr q8, [sp, #272]
         ldr q9, [sp, #288]
         ldr q10, [sp, #304]
         ldr q11, [sp, #320]
         ldr q12, [sp, #336]
         ldr q13, [sp, #352]
-        movi v14.4s, #64
+        dup v14.4s, w3
         dup v15.4s, w2
         ldr q24, [sp, #272]
         ldr q25, [sp, #288]
@@ -710,7 +710,7 @@ blake3_hybrid_p4_loop:
         str q29, [sp, #416]
         ldr q29, [sp, #384]
         str q29, [sp, #432]
-        movi v29.4s, #64
+        dup v29.4s, w3
         str q29, [sp, #448]
         dup v29.4s, w2
         str q29, [sp, #464]
@@ -893,12 +893,6 @@ blake3_hybrid_p4_loop:
         uzp1 v10.4s, v10.4s, v11.4s
         str q8, [x2, #80]
         str q10, [x2, #112]
-        ldp x19, x20, [sp, #0]
-        ldp x21, x22, [sp, #16]
-        ldp x23, x24, [sp, #32]
-        ldp x25, x26, [sp, #48]
-        ldp x27, x28, [sp, #64]
-        ldp x29, x30, [sp, #80]
         ldp d8, d9, [sp, #96]
         ldp d10, d11, [sp, #112]
         ldp d12, d13, [sp, #128]
@@ -910,12 +904,6 @@ blake3_hybrid_p4_loop:
 _blake3_hybrid_p8:
 blake3_hybrid_p8:
         sub sp, sp, #1088
-        stp x19, x20, [sp, #0]
-        stp x21, x22, [sp, #16]
-        stp x23, x24, [sp, #32]
-        stp x25, x26, [sp, #48]
-        stp x27, x28, [sp, #64]
-        stp x29, x30, [sp, #80]
         stp d8, d9, [sp, #96]
         stp d10, d11, [sp, #112]
         stp d12, d13, [sp, #128]
@@ -1184,13 +1172,18 @@ blake3_hybrid_p8_loop:
         trn2 v11.2d, v13.2d, v15.2d
         stp q8, q9, [sp, #928]
         stp q10, q11, [sp, #960]
+        ldr w3, [sp, #160]
+        lsr w3, w3, #24
+        mov w4, #64
+        cmp x1, #1
+        csel w3, w3, w4, eq
         ldr q8, [sp, #272]
         ldr q9, [sp, #288]
         ldr q10, [sp, #304]
         ldr q11, [sp, #320]
         ldr q12, [sp, #336]
         ldr q13, [sp, #352]
-        movi v14.4s, #64
+        dup v14.4s, w3
         dup v15.4s, w2
         ldr q24, [sp, #272]
         ldr q25, [sp, #288]
@@ -1200,7 +1193,7 @@ blake3_hybrid_p8_loop:
         str q29, [sp, #416]
         ldr q29, [sp, #384]
         str q29, [sp, #432]
-        movi v29.4s, #64
+        dup v29.4s, w3
         str q29, [sp, #448]
         dup v29.4s, w2
         str q29, [sp, #464]
@@ -1411,12 +1404,6 @@ blake3_hybrid_p8_loop:
         str q13, [x2, #176]
         str q14, [x2, #208]
         str q15, [x2, #240]
-        ldp x19, x20, [sp, #0]
-        ldp x21, x22, [sp, #16]
-        ldp x23, x24, [sp, #32]
-        ldp x25, x26, [sp, #48]
-        ldp x27, x28, [sp, #64]
-        ldp x29, x30, [sp, #80]
         ldp d8, d9, [sp, #96]
         ldp d10, d11, [sp, #112]
         ldp d12, d13, [sp, #128]
@@ -1427,58 +1414,48 @@ blake3_hybrid_p8_loop:
         .p2align 6
 _blake3_hybrid_k1:
 blake3_hybrid_k1:
+        ldr x0, [x0]
+        sub x6, x1, #1
+        add x6, x0, x6, lsl #6
+_blake3_hybrid_c1:
+blake3_hybrid_c1:
         sub sp, sp, #1088
         stp x19, x20, [sp, #0]
         stp x21, x22, [sp, #16]
         stp x23, x24, [sp, #32]
         stp x25, x26, [sp, #48]
-        stp x27, x28, [sp, #64]
-        stp x29, x30, [sp, #80]
-        stp d8, d9, [sp, #96]
-        stp d10, d11, [sp, #112]
-        stp d12, d13, [sp, #128]
-        stp d14, d15, [sp, #144]
-        str x4, [sp, #160]
-        str x1, [sp, #168]
         str x5, [sp, #176]
-        ldr x24, [x0, #0]
-        mov w6, #58983
-        movk w6, #27145, lsl #16
-        mov w7, #44677
-        movk w7, #47975, lsl #16
-        stp w6, w7, [sp, #184]
-        mov w6, #62322
-        movk w6, #15470, lsl #16
-        mov w7, #62778
-        movk w7, #42319, lsl #16
-        stp w6, w7, [sp, #192]
+        cmp x1, #1
+        csel x24, x6, x0, eq
+        mov x25, x6
         ldp w6, w7, [x2, #0]
         ldp w8, w9, [x2, #8]
         ldp w10, w11, [x2, #16]
         ldp w12, w13, [x2, #24]
-        add x4, x3, #0
-        mov x5, #64
-        stp x4, x5, [sp, #200]
-blake3_hybrid_k1_loop:
-        ldr w3, [sp, #160]
-        ldr x4, [sp, #168]
-        and w2, w3, #0xff
-        cmp x1, x4
-        ubfx w4, w3, #8, #8
-        csel w4, w4, wzr, eq
-        orr w2, w2, w4
+        and w2, w4, #0xff
+        ubfx w5, w4, #8, #8
+        orr w2, w2, w5
         cmp x1, #1
-        ubfx w3, w3, #16, #8
-        csel w3, w3, wzr, eq
-        orr w2, w2, w3
-        ldp w14, w15, [sp, #184]
-        ldp w16, w17, [sp, #192]
-        ldp x3, x4, [sp, #200]
-        bfi x4, x2, #32, #32
+        ubfx w5, w4, #16, #8
+        csel w5, w5, wzr, eq
+        orr w2, w2, w5
+        lsr w0, w4, #24
+        mov w5, #64
+        cmp x1, #1
+        csel w0, w0, w5, eq
+blake3_hybrid_k1_loop:
+        mov w14, #58983
+        movk w14, #27145, lsl #16
+        mov w15, #44677
+        movk w15, #47975, lsl #16
+        mov w16, #62322
+        movk w16, #15470, lsl #16
+        mov w17, #62778
+        movk w17, #42319, lsl #16
         mov w19, w3
         lsr x20, x3, #32
-        mov w21, w4
-        lsr x22, x4, #32
+        mov w21, w0
+        mov w22, w2
         SGA_R w6, w10, w14, w19, w23, x24, 0
         SGA_R w7, w11, w15, w20, w23, x24, 8
         SGA_R w8, w12, w16, w21, w23, x24, 16
@@ -1600,8 +1577,19 @@ blake3_hybrid_k1_loop:
         eor w12, w12, w21
         eor w13, w13, w22
         add x24, x24, #64
-        subs x1, x1, #1
-        b.ne blake3_hybrid_k1_loop
+        sub x1, x1, #1
+        cmp x1, #1
+        csel x24, x25, x24, eq
+        and w2, w4, #0xff
+        cmp x1, #1
+        ubfx w5, w4, #16, #8
+        csel w5, w5, wzr, eq
+        orr w2, w2, w5
+        lsr w0, w4, #24
+        mov w5, #64
+        cmp x1, #1
+        csel w0, w0, w5, eq
+        cbnz x1, blake3_hybrid_k1_loop
         ldr x2, [sp, #176]
         stp w6, w7, [x2, #0]
         stp w8, w9, [x2, #8]
@@ -1611,12 +1599,6 @@ blake3_hybrid_k1_loop:
         ldp x21, x22, [sp, #16]
         ldp x23, x24, [sp, #32]
         ldp x25, x26, [sp, #48]
-        ldp x27, x28, [sp, #64]
-        ldp x29, x30, [sp, #80]
-        ldp d8, d9, [sp, #96]
-        ldp d10, d11, [sp, #112]
-        ldp d12, d13, [sp, #128]
-        ldp d14, d15, [sp, #144]
         add sp, sp, #1088
         ret
 
@@ -1624,12 +1606,6 @@ blake3_hybrid_k1_loop:
 _blake3_hybrid_k2:
 blake3_hybrid_k2:
         sub sp, sp, #1088
-        stp x19, x20, [sp, #0]
-        stp x21, x22, [sp, #16]
-        stp x23, x24, [sp, #32]
-        stp x25, x26, [sp, #48]
-        stp x27, x28, [sp, #64]
-        stp x29, x30, [sp, #80]
         stp d8, d9, [sp, #96]
         stp d10, d11, [sp, #112]
         stp d12, d13, [sp, #128]
@@ -1748,13 +1724,18 @@ blake3_hybrid_k2_loop:
         zip2 v29.4s, v10.4s, v10.4s
         zip1 v30.4s, v11.4s, v11.4s
         zip2 v31.4s, v11.4s, v11.4s
+        ldr w3, [sp, #160]
+        lsr w3, w3, #24
+        mov w4, #64
+        cmp x1, #1
+        csel w3, w3, w4, eq
         ldr q8, [sp, #272]
         ldr q9, [sp, #288]
         ldr q10, [sp, #304]
         ldr q11, [sp, #320]
         ldr q12, [sp, #336]
         ldr q13, [sp, #352]
-        movi v14.4s, #64
+        dup v14.4s, w3
         dup v15.4s, w2
         PG_REG v0, v4, v8, v12, v16, v17
         PG_REG v1, v5, v9, v13, v18, v19
@@ -1845,12 +1826,6 @@ blake3_hybrid_k2_loop:
         uzp1 v10.4s, v10.4s, v11.4s
         str q8, [x2, #16]
         str q10, [x2, #48]
-        ldp x19, x20, [sp, #0]
-        ldp x21, x22, [sp, #16]
-        ldp x23, x24, [sp, #32]
-        ldp x25, x26, [sp, #48]
-        ldp x27, x28, [sp, #64]
-        ldp x29, x30, [sp, #80]
         ldp d8, d9, [sp, #96]
         ldp d10, d11, [sp, #112]
         ldp d12, d13, [sp, #128]
@@ -1865,9 +1840,6 @@ blake3_hybrid_k3:
         stp x19, x20, [sp, #0]
         stp x21, x22, [sp, #16]
         stp x23, x24, [sp, #32]
-        stp x25, x26, [sp, #48]
-        stp x27, x28, [sp, #64]
-        stp x29, x30, [sp, #80]
         stp d8, d9, [sp, #96]
         stp d10, d11, [sp, #112]
         stp d12, d13, [sp, #128]
@@ -1946,8 +1918,7 @@ blake3_hybrid_k3:
         ldp w10, w11, [x2, #16]
         ldp w12, w13, [x2, #24]
         add x4, x3, #0
-        mov x5, #64
-        stp x4, x5, [sp, #200]
+        str x4, [sp, #200]
 blake3_hybrid_k3_loop:
         ldr w3, [sp, #160]
         ldr x4, [sp, #168]
@@ -1994,22 +1965,26 @@ blake3_hybrid_k3_loop:
         zip2 v29.4s, v10.4s, v10.4s
         zip1 v30.4s, v11.4s, v11.4s
         zip2 v31.4s, v11.4s, v11.4s
+        ldr w3, [sp, #160]
+        lsr w3, w3, #24
+        mov w4, #64
+        cmp x1, #1
+        csel w3, w3, w4, eq
         ldr q8, [sp, #272]
         ldr q9, [sp, #288]
         ldr q10, [sp, #304]
         ldr q11, [sp, #320]
         ldr q12, [sp, #336]
         ldr q13, [sp, #352]
-        movi v14.4s, #64
+        dup v14.4s, w3
         dup v15.4s, w2
         ldp w14, w15, [sp, #184]
         ldp w16, w17, [sp, #192]
-        ldp x3, x4, [sp, #200]
-        bfi x4, x2, #32, #32
-        mov w19, w3
-        lsr x20, x3, #32
-        mov w21, w4
-        lsr x22, x4, #32
+        ldr x4, [sp, #200]
+        mov w19, w4
+        lsr x20, x4, #32
+        mov w21, w3
+        mov w22, w2
         SGA_R w6, w10, w14, w19, w23, x24, 0
         PG_REG v0, v4, v8, v12, v16, v17
         SGA_R w7, w11, w15, w20, w23, x24, 8
@@ -2227,9 +2202,6 @@ blake3_hybrid_k3_loop:
         ldp x19, x20, [sp, #0]
         ldp x21, x22, [sp, #16]
         ldp x23, x24, [sp, #32]
-        ldp x25, x26, [sp, #48]
-        ldp x27, x28, [sp, #64]
-        ldp x29, x30, [sp, #80]
         ldp d8, d9, [sp, #96]
         ldp d10, d11, [sp, #112]
         ldp d12, d13, [sp, #128]
@@ -2324,15 +2296,13 @@ blake3_hybrid_k4:
         ldp w10, w11, [x2, #16]
         ldp w12, w13, [x2, #24]
         add x4, x3, #0
-        mov x5, #64
-        stp x4, x5, [sp, #200]
+        str x4, [sp, #200]
         ldp w19, w20, [x2, #0]
         ldp w21, w22, [x2, #8]
         ldp w23, w24, [x2, #16]
         ldp w25, w26, [x2, #24]
         add x4, x3, #1
-        mov x5, #64
-        stp x4, x5, [sp, #216]
+        str x4, [sp, #216]
         str x1, [sp, #1072]
         ldr x1, [x0, #8]
         ldr x0, [x0, #0]
@@ -2383,24 +2353,31 @@ blake3_hybrid_k4_loop:
         zip2 v29.4s, v10.4s, v10.4s
         zip1 v30.4s, v11.4s, v11.4s
         zip2 v31.4s, v11.4s, v11.4s
+        ldr w3, [sp, #160]
+        lsr w3, w3, #24
+        mov w4, #64
+        cmp x5, #1
+        csel w3, w3, w4, eq
         ldr q8, [sp, #272]
         ldr q9, [sp, #288]
         ldr q10, [sp, #304]
         ldr q11, [sp, #320]
         ldr q12, [sp, #336]
         ldr q13, [sp, #352]
-        movi v14.4s, #64
+        dup v14.4s, w3
         dup v15.4s, w2
         ldp w14, w15, [sp, #184]
         ldp w16, w17, [sp, #192]
-        ldp x3, x4, [sp, #200]
-        bfi x4, x2, #32, #32
-        stp x3, x4, [sp, #232]
+        ldr x4, [sp, #200]
+        str x4, [sp, #232]
+        str w3, [sp, #240]
+        str w2, [sp, #244]
         ldp w27, w28, [sp, #184]
         ldp w29, w30, [sp, #192]
-        ldp x3, x4, [sp, #216]
-        bfi x4, x2, #32, #32
-        stp x3, x4, [sp, #248]
+        ldr x4, [sp, #216]
+        str x4, [sp, #248]
+        str w3, [sp, #256]
+        str w2, [sp, #260]
         SG_SPILL_R w6, w10, w14, w3, w2, x0, 0, 4, 232
         SG_SPILL_R w19, w23, w27, w5, w4, x1, 0, 4, 248
         PG_REG v0, v4, v8, v12, v16, v17
@@ -2658,9 +2635,6 @@ blake3_hybrid_k5:
         stp x19, x20, [sp, #0]
         stp x21, x22, [sp, #16]
         stp x23, x24, [sp, #32]
-        stp x25, x26, [sp, #48]
-        stp x27, x28, [sp, #64]
-        stp x29, x30, [sp, #80]
         stp d8, d9, [sp, #96]
         stp d10, d11, [sp, #112]
         stp d12, d13, [sp, #128]
@@ -2763,8 +2737,7 @@ blake3_hybrid_k5:
         ldp w10, w11, [x2, #16]
         ldp w12, w13, [x2, #24]
         add x4, x3, #0
-        mov x5, #64
-        stp x4, x5, [sp, #200]
+        str x4, [sp, #200]
 blake3_hybrid_k5_loop:
         ldr w3, [sp, #160]
         ldr x4, [sp, #168]
@@ -2861,13 +2834,18 @@ blake3_hybrid_k5_loop:
         zip2 v15.4s, v11.4s, v11.4s
         stp q12, q13, [sp, #928]
         stp q14, q15, [sp, #960]
+        ldr w3, [sp, #160]
+        lsr w3, w3, #24
+        mov w4, #64
+        cmp x1, #1
+        csel w3, w3, w4, eq
         ldr q8, [sp, #272]
         ldr q9, [sp, #288]
         ldr q10, [sp, #304]
         ldr q11, [sp, #320]
         ldr q12, [sp, #336]
         ldr q13, [sp, #352]
-        movi v14.4s, #64
+        dup v14.4s, w3
         dup v15.4s, w2
         ldr q24, [sp, #272]
         ldr q25, [sp, #288]
@@ -2877,18 +2855,17 @@ blake3_hybrid_k5_loop:
         str q29, [sp, #416]
         ldr q29, [sp, #384]
         str q29, [sp, #432]
-        movi v29.4s, #64
+        dup v29.4s, w3
         str q29, [sp, #448]
         dup v29.4s, w2
         str q29, [sp, #464]
         ldp w14, w15, [sp, #184]
         ldp w16, w17, [sp, #192]
-        ldp x3, x4, [sp, #200]
-        bfi x4, x2, #32, #32
-        mov w19, w3
-        lsr x20, x3, #32
-        mov w21, w4
-        lsr x22, x4, #32
+        ldr x4, [sp, #200]
+        mov w19, w4
+        lsr x20, x4, #32
+        mov w21, w3
+        mov w22, w2
         SGA_R w6, w10, w14, w19, w23, x24, 0
         PG v0, v4, v8, v12, 28, 480, 496
         SGA_R w7, w11, w15, w20, w23, x24, 8
@@ -3196,9 +3173,6 @@ blake3_hybrid_k5_loop:
         ldp x19, x20, [sp, #0]
         ldp x21, x22, [sp, #16]
         ldp x23, x24, [sp, #32]
-        ldp x25, x26, [sp, #48]
-        ldp x27, x28, [sp, #64]
-        ldp x29, x30, [sp, #80]
         ldp d8, d9, [sp, #96]
         ldp d10, d11, [sp, #112]
         ldp d12, d13, [sp, #128]
@@ -3317,15 +3291,13 @@ blake3_hybrid_k6:
         ldp w10, w11, [x2, #16]
         ldp w12, w13, [x2, #24]
         add x4, x3, #0
-        mov x5, #64
-        stp x4, x5, [sp, #200]
+        str x4, [sp, #200]
         ldp w19, w20, [x2, #0]
         ldp w21, w22, [x2, #8]
         ldp w23, w24, [x2, #16]
         ldp w25, w26, [x2, #24]
         add x4, x3, #1
-        mov x5, #64
-        stp x4, x5, [sp, #216]
+        str x4, [sp, #216]
         str x1, [sp, #1072]
         ldr x1, [x0, #8]
         ldr x0, [x0, #0]
@@ -3426,13 +3398,18 @@ blake3_hybrid_k6_loop:
         zip2 v15.4s, v11.4s, v11.4s
         stp q12, q13, [sp, #928]
         stp q14, q15, [sp, #960]
+        ldr w3, [sp, #160]
+        lsr w3, w3, #24
+        mov w4, #64
+        cmp x5, #1
+        csel w3, w3, w4, eq
         ldr q8, [sp, #272]
         ldr q9, [sp, #288]
         ldr q10, [sp, #304]
         ldr q11, [sp, #320]
         ldr q12, [sp, #336]
         ldr q13, [sp, #352]
-        movi v14.4s, #64
+        dup v14.4s, w3
         dup v15.4s, w2
         ldr q24, [sp, #272]
         ldr q25, [sp, #288]
@@ -3442,20 +3419,22 @@ blake3_hybrid_k6_loop:
         str q29, [sp, #416]
         ldr q29, [sp, #384]
         str q29, [sp, #432]
-        movi v29.4s, #64
+        dup v29.4s, w3
         str q29, [sp, #448]
         dup v29.4s, w2
         str q29, [sp, #464]
         ldp w14, w15, [sp, #184]
         ldp w16, w17, [sp, #192]
-        ldp x3, x4, [sp, #200]
-        bfi x4, x2, #32, #32
-        stp x3, x4, [sp, #232]
+        ldr x4, [sp, #200]
+        str x4, [sp, #232]
+        str w3, [sp, #240]
+        str w2, [sp, #244]
         ldp w27, w28, [sp, #184]
         ldp w29, w30, [sp, #192]
-        ldp x3, x4, [sp, #216]
-        bfi x4, x2, #32, #32
-        stp x3, x4, [sp, #248]
+        ldr x4, [sp, #216]
+        str x4, [sp, #248]
+        str w3, [sp, #256]
+        str w2, [sp, #260]
         SG_SPILL_R w6, w10, w14, w3, w2, x0, 0, 4, 232
         SG_SPILL_R w19, w23, w27, w5, w4, x1, 0, 4, 248
         PG v0, v4, v8, v12, 28, 480, 496
@@ -3800,12 +3779,6 @@ blake3_hybrid_k6_loop:
 _blake3_hybrid_k8:
 blake3_hybrid_k8:
         sub sp, sp, #1088
-        stp x19, x20, [sp, #0]
-        stp x21, x22, [sp, #16]
-        stp x23, x24, [sp, #32]
-        stp x25, x26, [sp, #48]
-        stp x27, x28, [sp, #64]
-        stp x29, x30, [sp, #80]
         stp d8, d9, [sp, #96]
         stp d10, d11, [sp, #112]
         stp d12, d13, [sp, #128]
@@ -4074,13 +4047,18 @@ blake3_hybrid_k8_loop:
         trn2 v11.2d, v13.2d, v15.2d
         stp q8, q9, [sp, #928]
         stp q10, q11, [sp, #960]
+        ldr w3, [sp, #160]
+        lsr w3, w3, #24
+        mov w4, #64
+        cmp x1, #1
+        csel w3, w3, w4, eq
         ldr q8, [sp, #272]
         ldr q9, [sp, #288]
         ldr q10, [sp, #304]
         ldr q11, [sp, #320]
         ldr q12, [sp, #336]
         ldr q13, [sp, #352]
-        movi v14.4s, #64
+        dup v14.4s, w3
         dup v15.4s, w2
         ldr q24, [sp, #272]
         ldr q25, [sp, #288]
@@ -4090,7 +4068,7 @@ blake3_hybrid_k8_loop:
         str q29, [sp, #416]
         ldr q29, [sp, #384]
         str q29, [sp, #432]
-        movi v29.4s, #64
+        dup v29.4s, w3
         str q29, [sp, #448]
         dup v29.4s, w2
         str q29, [sp, #464]
@@ -4301,12 +4279,6 @@ blake3_hybrid_k8_loop:
         str q13, [x2, #176]
         str q14, [x2, #208]
         str q15, [x2, #240]
-        ldp x19, x20, [sp, #0]
-        ldp x21, x22, [sp, #16]
-        ldp x23, x24, [sp, #32]
-        ldp x25, x26, [sp, #48]
-        ldp x27, x28, [sp, #64]
-        ldp x29, x30, [sp, #80]
         ldp d8, d9, [sp, #96]
         ldp d10, d11, [sp, #112]
         ldp d12, d13, [sp, #128]
@@ -4321,9 +4293,6 @@ blake3_hybrid_k9:
         stp x19, x20, [sp, #0]
         stp x21, x22, [sp, #16]
         stp x23, x24, [sp, #32]
-        stp x25, x26, [sp, #48]
-        stp x27, x28, [sp, #64]
-        stp x29, x30, [sp, #80]
         stp d8, d9, [sp, #96]
         stp d10, d11, [sp, #112]
         stp d12, d13, [sp, #128]
@@ -4442,8 +4411,7 @@ blake3_hybrid_k9:
         ldp w10, w11, [x2, #16]
         ldp w12, w13, [x2, #24]
         add x4, x3, #0
-        mov x5, #64
-        stp x4, x5, [sp, #200]
+        str x4, [sp, #200]
 blake3_hybrid_k9_loop:
         ldr w3, [sp, #160]
         ldr x4, [sp, #168]
@@ -4600,13 +4568,18 @@ blake3_hybrid_k9_loop:
         trn2 v11.2d, v13.2d, v15.2d
         stp q8, q9, [sp, #928]
         stp q10, q11, [sp, #960]
+        ldr w3, [sp, #160]
+        lsr w3, w3, #24
+        mov w4, #64
+        cmp x1, #1
+        csel w3, w3, w4, eq
         ldr q8, [sp, #272]
         ldr q9, [sp, #288]
         ldr q10, [sp, #304]
         ldr q11, [sp, #320]
         ldr q12, [sp, #336]
         ldr q13, [sp, #352]
-        movi v14.4s, #64
+        dup v14.4s, w3
         dup v15.4s, w2
         ldr q24, [sp, #272]
         ldr q25, [sp, #288]
@@ -4616,18 +4589,17 @@ blake3_hybrid_k9_loop:
         str q29, [sp, #416]
         ldr q29, [sp, #384]
         str q29, [sp, #432]
-        movi v29.4s, #64
+        dup v29.4s, w3
         str q29, [sp, #448]
         dup v29.4s, w2
         str q29, [sp, #464]
         ldp w14, w15, [sp, #184]
         ldp w16, w17, [sp, #192]
-        ldp x3, x4, [sp, #200]
-        bfi x4, x2, #32, #32
-        mov w19, w3
-        lsr x20, x3, #32
-        mov w21, w4
-        lsr x22, x4, #32
+        ldr x4, [sp, #200]
+        mov w19, w4
+        lsr x20, x4, #32
+        mov w21, w3
+        mov w22, w2
         SGA_R w6, w10, w14, w19, w23, x24, 0
         QG v0, v4, v8, v12, 28, v30, 480, 496
         SGA_R w7, w11, w15, w20, w23, x24, 8
@@ -4963,9 +4935,6 @@ blake3_hybrid_k9_loop:
         ldp x19, x20, [sp, #0]
         ldp x21, x22, [sp, #16]
         ldp x23, x24, [sp, #32]
-        ldp x25, x26, [sp, #48]
-        ldp x27, x28, [sp, #64]
-        ldp x29, x30, [sp, #80]
         ldp d8, d9, [sp, #96]
         ldp d10, d11, [sp, #112]
         ldp d12, d13, [sp, #128]
@@ -5100,15 +5069,13 @@ blake3_hybrid_k10:
         ldp w10, w11, [x2, #16]
         ldp w12, w13, [x2, #24]
         add x4, x3, #0
-        mov x5, #64
-        stp x4, x5, [sp, #200]
+        str x4, [sp, #200]
         ldp w19, w20, [x2, #0]
         ldp w21, w22, [x2, #8]
         ldp w23, w24, [x2, #16]
         ldp w25, w26, [x2, #24]
         add x4, x3, #1
-        mov x5, #64
-        stp x4, x5, [sp, #216]
+        str x4, [sp, #216]
         str x1, [sp, #1072]
         ldr x1, [x0, #8]
         ldr x0, [x0, #0]
@@ -5269,13 +5236,18 @@ blake3_hybrid_k10_loop:
         trn2 v11.2d, v13.2d, v15.2d
         stp q8, q9, [sp, #928]
         stp q10, q11, [sp, #960]
+        ldr w3, [sp, #160]
+        lsr w3, w3, #24
+        mov w4, #64
+        cmp x5, #1
+        csel w3, w3, w4, eq
         ldr q8, [sp, #272]
         ldr q9, [sp, #288]
         ldr q10, [sp, #304]
         ldr q11, [sp, #320]
         ldr q12, [sp, #336]
         ldr q13, [sp, #352]
-        movi v14.4s, #64
+        dup v14.4s, w3
         dup v15.4s, w2
         ldr q24, [sp, #272]
         ldr q25, [sp, #288]
@@ -5285,20 +5257,22 @@ blake3_hybrid_k10_loop:
         str q29, [sp, #416]
         ldr q29, [sp, #384]
         str q29, [sp, #432]
-        movi v29.4s, #64
+        dup v29.4s, w3
         str q29, [sp, #448]
         dup v29.4s, w2
         str q29, [sp, #464]
         ldp w14, w15, [sp, #184]
         ldp w16, w17, [sp, #192]
-        ldp x3, x4, [sp, #200]
-        bfi x4, x2, #32, #32
-        stp x3, x4, [sp, #232]
+        ldr x4, [sp, #200]
+        str x4, [sp, #232]
+        str w3, [sp, #240]
+        str w2, [sp, #244]
         ldp w27, w28, [sp, #184]
         ldp w29, w30, [sp, #192]
-        ldp x3, x4, [sp, #216]
-        bfi x4, x2, #32, #32
-        stp x3, x4, [sp, #248]
+        ldr x4, [sp, #216]
+        str x4, [sp, #248]
+        str w3, [sp, #256]
+        str w2, [sp, #260]
         SG_SPILL_R w6, w10, w14, w3, w2, x0, 0, 4, 232
         SG_SPILL_R w19, w23, w27, w5, w4, x1, 0, 4, 248
         QG v0, v4, v8, v12, 28, v30, 480, 496

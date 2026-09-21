@@ -25,8 +25,15 @@ C ABI, every kernel:
      packed_flags: u64, out: *mut u8)
   inputs[i] points at input i; blocks in 1..=16 is the same for all; the
   counter is counter + i for chunk i (fixed for parents); packed_flags =
-  flags | flags_start << 8 | flags_end << 16; 32 bytes per input to out in
-  input order. Requires NEON and the SHA-3 extension (`xar`). x18 untouched.
+  flags | flags_start << 8 | flags_end << 16 | last_len << 24, where
+  last_len (0..=64) is the block length recorded for the final block (every
+  earlier block records 64; the final block's 64 bytes are read regardless,
+  so a short block arrives zero-padded); 32 bytes per input to out in input
+  order. Requires NEON and the SHA-3 extension (`xar`). x18 untouched.
+  blake3_hybrid_c1 is k1 with the input pointer itself in x0 instead of a
+  one-entry table, and a seventh argument in x6: the address of the last
+  block, read from there instead of the input. The entry for a single
+  chunk's blocks, whose short final block arrives zero-padded elsewhere.
 
 Run from the repository root:
 
@@ -58,7 +65,7 @@ F_PACKED = 160   # packed flags
 F_TOTAL = 168    # total blocks
 F_OUT = 176      # out pointer
 F_IVT = 184      # IV[0..4] as words (16 bytes) -- scalar c row
-F_SCTPL = 200    # per scalar chunk: d-row template ctr (64-bit), 64 (64-bit); two slots
+F_SCTPL = 200    # per scalar chunk: counter (64-bit) for the d row; two 16-byte slots
 F_SDSPILL = 232  # per scalar chunk: spilled d row (16 bytes); two slots
 F_IVDUP = 272    # IV[0..4], each broadcast to a 128-bit vector (64 bytes)
 F_UNIT = 336     # per NEON unit: 32 bytes of constants (ctr_lo, ctr_hi)
@@ -141,35 +148,63 @@ class Scalar:
                 out += self.half_g(half, *q, sched[base + k + half])
         return out
 
-    def prologue(self):
-        # Key into a/b rows; d-row template [counter, 64] on the stack.
+    def prologue(self, ctr=None):
+        """Key into the a/b rows. The chunk's counter goes to the frame, or
+        stays in register `ctr` when the kernel keeps it there."""
         out = []
         for i in range(0, 8, 2):
             out.append(f"ldp {self.r(i)}, {self.r(i + 1)}, [x2, #{4 * i}]")
+        offset = self.slot * self.ctr_step
+        if ctr:
+            assert not self.spill_d
+            if offset:
+                out.append(f"add {ctr}, {ctr}, #{offset}")
+            return out
         out += [
-            f"add x4, x3, #{self.slot * self.ctr_step}",
-            "mov x5, #64",
-            f"stp x4, x5, [sp, #{self.tpl}]",
+            f"add x4, x3, #{offset}",
+            f"str x4, [sp, #{self.tpl}]",
         ]
         return out
 
-    def block_start(self, flags):
+    def block_start(self, flags, blen, ctr=None):
+        # c row <- IV; d row <- [ctr_lo, ctr_hi, block length, flags]. The
+        # block length and flags arrive in registers. With `ctr` the counter
+        # is in a register too and the IV comes from immediates: nothing on
+        # the way to the first G step waits on a load.
         c = self.state[8:12]
+        if ctr:
+            d = self.state[12:16]
+            out = []
+            for i in range(4):
+                out += [
+                    f"mov {c[i]}, #{IV[i] & 0xffff}",
+                    f"movk {c[i]}, #{IV[i] >> 16}, lsl #16",
+                ]
+            out += [
+                f"mov {d[0]}, {w(ctr)}",
+                f"lsr {x(d[1])}, {ctr}, #32",
+                f"mov {d[2]}, {blen}",
+                f"mov {d[3]}, {flags}",
+            ]
+            return out
         out = [
             f"ldp {c[0]}, {c[1]}, [sp, #{F_IVT}]",
             f"ldp {c[2]}, {c[3]}, [sp, #{F_IVT + 8}]",
-            f"ldp x3, x4, [sp, #{self.tpl}]",
-            f"bfi x4, {x(flags)}, #32, #32",
+            f"ldr x4, [sp, #{self.tpl}]",
         ]
         if self.spill_d:
-            out.append(f"stp x3, x4, [sp, #{self.dmem}]")
+            out += [
+                f"str x4, [sp, #{self.dmem}]",
+                f"str {blen}, [sp, #{self.dmem + 8}]",
+                f"str {flags}, [sp, #{self.dmem + 12}]",
+            ]
         else:
             d = self.state[12:16]
             out += [
-                f"mov {d[0]}, w3",
-                f"lsr {x(d[1])}, x3, #32",
-                f"mov {d[2]}, w4",
-                f"lsr {x(d[3])}, x4, #32",
+                f"mov {d[0]}, w4",
+                f"lsr {x(d[1])}, x4, #32",
+                f"mov {d[2]}, {blen}",
+                f"mov {d[3]}, {flags}",
             ]
         return out
 
@@ -237,8 +272,8 @@ class Unit:
             out.append(f"eor {self.v(4 + i)}.16b, {self.v(4 + i)}.16b, {self.v(12 + i)}.16b")
         return out
 
-    def start_rows(self, flags):
-        # c row <- IV; d row <- [ctr_lo, ctr_hi, 64, flags].
+    def start_rows(self, flags, blen):
+        # c row <- IV; d row <- [ctr_lo, ctr_hi, block length, flags].
         out = [f"ldr q{self.state[8 + i]}, [sp, #{F_IVDUP + 16 * i}]" for i in range(4)]
         d = [self.v(12 + i) for i in range(4)]
         out += [
@@ -246,7 +281,7 @@ class Unit:
         ] + self.d_store(12) + [
             f"ldr q{d[1][1:]}, [sp, #{self.const + 16}]",
         ] + self.d_store(13) + [
-            f"movi {d[2]}.4s, #64",
+            f"dup {d[2]}.4s, {blen}",
         ] + self.d_store(14) + [
             f"dup {d[3]}.4s, {flags}",
         ] + self.d_store(15)
@@ -608,17 +643,131 @@ def interleave(lists):
     return out
 
 
+def callee_saved(scalars, units, extra=()):
+    """The callee-saved registers a kernel touches: x19..x30 as a run from
+    x19 up to the highest one any scalar names (padded to a pair), and
+    d8..d15 whenever NEON units are present (both units' state rows cross
+    v8..v15). A scalar-only kernel skips the vector saves and the x
+    registers above its own, which is fourteen fewer stores and loads on
+    the one-block calls that compress_in_place makes."""
+    highest = 18
+    for sc in scalars:
+        for reg in sc.state + [sc.mtemp, sc.dtemp or "w0", sc.preg or "x0"] + list(extra):
+            highest = max(highest, int(reg[1:]))
+    count = highest - 18
+    count += count % 2
+    x_pairs = [(19 + i, 20 + i) for i in range(0, count, 2)]
+    d_pairs = [(8 + i, 9 + i) for i in range(0, 8, 2)] if units else []
+    return x_pairs, d_pairs
+
+
+# Extra global symbols the kernels define beside their own names.
+GLOBALS = []
+
+
+def block_flags(dst, packed, tmp, first):
+    """`dst` <- the flags of one block from the packed word in `packed`:
+    the base flags, the start flags when `first`, and the end flags when
+    the block count in x1 is one. `tmp` is a scratch register."""
+    out = [f"and {dst}, {packed}, #0xff"]
+    if first:
+        out += [f"ubfx {tmp}, {packed}, #8, #8", f"orr {dst}, {dst}, {tmp}"]
+    out += [
+        "cmp x1, #1",
+        f"ubfx {tmp}, {packed}, #16, #8",
+        f"csel {tmp}, {tmp}, wzr, eq",
+        f"orr {dst}, {dst}, {tmp}",
+    ]
+    return out
+
+
+def block_len(dst, packed, tmp):
+    """`dst` <- the block length: the packed final length when the block
+    count in x1 is one, 64 otherwise."""
+    return [
+        f"lsr {dst}, {packed}, #24",
+        f"mov {tmp}, #64",
+        "cmp x1, #1",
+        f"csel {dst}, {dst}, {tmp}, eq",
+    ]
+
+
+def lean_kernel(name, sc, last):
+    """One scalar chunk with every per-block value in a register. The
+    packed flags stay in x4 and the counter in x3 for the whole call; the
+    block's flags (w2) and length (w0) are computed for the first block in
+    the prologue and for each next block at the end of the one before, so
+    the first G step of a block never waits on the frame.
+
+    Two entries. The k-form takes a one-entry pointer table in x0 like
+    every other kernel. The c-form (`blake3_hybrid_c1`) takes the input
+    pointer itself in x0 and, in x6, the address of the last block, which
+    may lie anywhere: a caller with a short final block hands over its
+    zero-padded copy and the kernel hashes the chunk in one call. Register
+    `last` holds that address across the loop."""
+    assert sc.preg and sc.preg not in ("x0", "x1", "x2", "x3", "x4", "x5", "x6")
+    assert not sc.spill_d
+    cname = name.replace("_k1", "_c1")
+    GLOBALS.extend([cname, f"_{cname}"])
+    x_pairs, _ = callee_saved([sc], [], extra=[last])
+    L = []
+    e = L.append
+    e(f"{name}:")
+    e("ldr x0, [x0]")
+    e("sub x6, x1, #1")
+    e("add x6, x0, x6, lsl #6")
+    e(f"_{cname}:")
+    e(f"{cname}:")
+    e(f"sub sp, sp, #{FRAME}")
+    for lo, hi in x_pairs:
+        e(f"stp x{lo}, x{hi}, [sp, #{F_X19 + 8 * (lo - 19)}]")
+    e(f"str x5, [sp, #{F_OUT}]")
+    # The running pointer starts at the last block when it is the only one.
+    e("cmp x1, #1")
+    e(f"csel {sc.preg}, x6, x0, eq")
+    e(f"mov {last}, x6")
+    L += sc.prologue(ctr="x3")
+    L += block_flags("w2", "w4", "w5", first=True)
+    L += block_len("w0", "w4", "w5")
+    e(f"{name}_loop:")
+    L += sc.block_start("w2", "w0", ctr="x3")
+    for r in range(7):
+        for quads, base in ((COLS, 0), (DIAGS, 8)):
+            L += sc.half_step(quads, SCHEDULE[r], base)
+    L += sc.block_end()
+    # Advance: to the next contiguous block, or to the last block when one
+    # remains. This and the next block's flags and length below are off the
+    # dependency chain; the core computes them under the rounds above.
+    e(f"add {sc.preg}, {sc.preg}, #64")
+    e("sub x1, x1, #1")
+    e("cmp x1, #1")
+    e(f"csel {sc.preg}, {last}, {sc.preg}, eq")
+    L += block_flags("w2", "w4", "w5", first=False)
+    L += block_len("w0", "w4", "w5")
+    e(f"cbnz x1, {name}_loop")
+    e(f"ldr x2, [sp, #{F_OUT}]")
+    L += sc.store("x2")
+    for lo, hi in x_pairs:
+        e(f"ldp x{lo}, x{hi}, [sp, #{F_X19 + 8 * (lo - 19)}]")
+    e(f"add sp, sp, #{FRAME}")
+    e("ret")
+    return L
+
+
 def kernel(name, scalars, units):
+    if not units and len(scalars) == 1:
+        return lean_kernel(name, scalars[0], last="x25")
     n_inputs = len(scalars) + sum(len(u.slots) for u in units)
     assert n_inputs <= MAX_INPUTS
+    x_pairs, d_pairs = callee_saved(scalars, units)
     L = []
     e = L.append
     e(f"{name}:")
     e(f"sub sp, sp, #{FRAME}")
-    for i in range(0, 12, 2):
-        e(f"stp x{19 + i}, x{20 + i}, [sp, #{F_X19 + 8 * i}]")
-    for i in range(0, 8, 2):
-        e(f"stp d{8 + i}, d{9 + i}, [sp, #{F_D8 + 8 * i}]")
+    for lo, hi in x_pairs:
+        e(f"stp x{lo}, x{hi}, [sp, #{F_X19 + 8 * (lo - 19)}]")
+    for lo, hi in d_pairs:
+        e(f"stp d{lo}, d{hi}, [sp, #{F_D8 + 8 * (lo - 8)}]")
     e(f"str x4, [sp, #{F_PACKED}]")
     e(f"str x1, [sp, #{F_TOTAL}]")
     e(f"str x5, [sp, #{F_OUT}]")
@@ -703,10 +852,19 @@ def kernel(name, scalars, units):
                 temps.append(int(units[0].rtemp[1:]))
         for u in units:
             L += u.transpose(temps)
+    # Block length into w3: the packed final length on the last block, 64
+    # before it. The transposes above used x3/x4 as pointer temps, so this
+    # comes after them; the flags in w2 survive.
+    e(f"ldr w3, [sp, #{F_PACKED}]")
+    e("lsr w3, w3, #24")
+    e("mov w4, #64")
+    e(f"cmp {rem}, #1")
+    e("csel w3, w3, w4, eq")
+    if units:
         for u in units:
-            L += u.start_rows("w2")
+            L += u.start_rows("w2", "w3")
     for sc in scalars:
-        L += sc.block_start("w2")
+        L += sc.block_start("w2", "w3")
     for r in range(7):
         for quads, base in ((COLS, 0), (DIAGS, 8)):
             lists = [sc.half_step(quads, SCHEDULE[r], base) for sc in scalars]
@@ -741,10 +899,10 @@ def kernel(name, scalars, units):
         temps = [n for u in units for n in u.state[8:]] + [int(units[0].mtemp[1:]), int(units[0].dtemp[1:])]
         for u in units:
             L += u.store("x2", temps)
-    for i in range(0, 12, 2):
-        e(f"ldp x{19 + i}, x{20 + i}, [sp, #{F_X19 + 8 * i}]")
-    for i in range(0, 8, 2):
-        e(f"ldp d{8 + i}, d{9 + i}, [sp, #{F_D8 + 8 * i}]")
+    for lo, hi in x_pairs:
+        e(f"ldp x{lo}, x{hi}, [sp, #{F_X19 + 8 * (lo - 19)}]")
+    for lo, hi in d_pairs:
+        e(f"ldp d{lo}, d{hi}, [sp, #{F_D8 + 8 * (lo - 8)}]")
     e(f"add sp, sp, #{FRAME}")
     e("ret")
     return L
@@ -802,7 +960,9 @@ HEADER = """\
 // Integer and vector units have separate pipes and register files, so a
 // chunk on the integer side beside NEON work finishes inside the NEON time.
 //
-// k<n> hashes n contiguous chunks: k1 scalar; k2 one NEON pair; k3 scalar +
+// k<n> hashes n contiguous chunks: k1 scalar (c1 is the same kernel taking
+// the input pointer itself instead of a table, and in x6 the address of the
+// last block, wherever it lies); k2 one NEON pair; k3 scalar +
 // pair; k4 two scalars + pair; k5 scalar + two pairs; k6 two scalars + two
 // pairs; k8 two four-lane quads; k9 scalar + two quads; k10 two scalars +
 // two quads. p<n> hashes n contiguous 64-byte parent blocks with one shared
@@ -816,9 +976,13 @@ HEADER = """\
 //               uint64_t packed_flags, uint8_t *out);
 // inputs[i] points at input i (n entries); blocks is in 1..=16 and the same
 // for every input (1 for p); input i uses counter + i (k) or counter (p);
-// packed_flags is flags | flags_start << 8 | flags_end << 16, applied per
-// block; out receives 32 bytes per input in input order. The CPU must have
-// NEON and the SHA-3 extension (xar). x18 is untouched; AAPCS64 otherwise.
+// packed_flags is flags | flags_start << 8 | flags_end << 16 | last_len << 24:
+// flags_start applies to the first block, flags_end to the last, and
+// last_len (0..=64) is the block length the last block records (earlier
+// blocks record 64; the last block's 64 bytes are read regardless, so a
+// short block arrives zero-padded); out receives 32 bytes per input in
+// input order. The CPU must have NEON and the SHA-3 extension (xar). x18
+// is untouched; AAPCS64 otherwise.
 
 #if defined(__ELF__) && defined(__linux__)
 .section .note.GNU-stack,"",%progbits
@@ -834,6 +998,8 @@ def asm_source(kernels):
     for n in names:
         out.append(f".global {n}")
         out.append(f".global _{n}")
+    for n in GLOBALS:
+        out.append(f".global {n}")
     out.append("#ifdef __APPLE__\n.text\n#else\n.section .text\n#endif")
     out.append(MACROS)
     for name, body in zip(names, kernels.values()):

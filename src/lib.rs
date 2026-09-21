@@ -905,6 +905,13 @@ fn compress_subtree_wide<J: join::Join>(
 //
 // As with compress_subtree_wide(), this function is not used on inputs of 1
 // chunk or less. That's a different codepath.
+//
+// With the SME2 degree of 128, cv_array and out_array together are 6 KiB.
+// Kept out of line, that frame belongs to this function alone; inlined into
+// hash() or update(), it would grow their frames past a page, and every call
+// (including the one-chunk path that never touches these arrays) would pay
+// for stack probing and zeroing.
+#[inline(never)]
 fn compress_subtree_to_parent_node<J: join::Join>(
     input: &[u8],
     key: &CVWords,
@@ -930,8 +937,47 @@ fn compress_subtree_to_parent_node<J: join::Join>(
     cv_array[..2 * OUT_LEN].try_into().unwrap()
 }
 
+// The root hash of an input of one chunk or less, in one kernel call. The
+// whole blocks are read in place; the final block (the only block, for an
+// input under 65 bytes, and the empty block for the empty input) is copied
+// into a zero-padded buffer, which is the copy ChunkState::update() makes
+// too. The scalar kernel runs on every AArch64 core, so this path needs no
+// platform check.
+#[cfg(blake3_neon_hybrid)]
+#[inline]
+fn hash_one_chunk_root(input: &[u8], key: &CVWords, flags: u8) -> Hash {
+    debug_assert!(input.len() <= CHUNK_LEN);
+    let blocks = cmp::max(1, input.len().div_ceil(BLOCK_LEN));
+    let whole = (blocks - 1) * BLOCK_LEN;
+    let tail = &input[whole..];
+    let mut last = Aligned64([0; BLOCK_LEN]);
+    last[..tail.len()].copy_from_slice(tail);
+    let mut out = [0u8; OUT_LEN];
+    // Safe: `input` holds `whole` bytes before `tail`, and blocks is 1..=16.
+    unsafe {
+        neon_hybrid::hash_chunk(
+            input.as_ptr(),
+            blocks,
+            &last,
+            tail.len() as u8,
+            key,
+            0,
+            flags,
+            CHUNK_START,
+            CHUNK_END | ROOT,
+            &mut out,
+        );
+    }
+    Hash(out)
+}
+
 // Hash a complete input all at once. Unlike compress_subtree_wide() and
 // compress_subtree_to_parent_node(), this function handles the 1 chunk case.
+//
+// Inlined into hash(), keyed_hash(), and derive_key(): the one-chunk path
+// is then a straight line from the public function to the kernel, and the
+// multi-chunk path is one call to compress_subtree_to_parent_node().
+#[inline]
 fn hash_all_at_once<J: join::Join>(input: &[u8], key: &CVWords, flags: u8) -> Output {
     let platform = Platform::detect();
 
@@ -976,6 +1022,10 @@ fn hash_all_at_once<J: join::Join>(input: &[u8], key: &CVWords, flags: u8) -> Ou
 /// This function is always single-threaded. For multithreading support, see
 /// [`Hasher::update_rayon`](struct.Hasher.html#method.update_rayon).
 pub fn hash(input: &[u8]) -> Hash {
+    #[cfg(blake3_neon_hybrid)]
+    if input.len() <= CHUNK_LEN {
+        return hash_one_chunk_root(input, IV, 0);
+    }
     hash_all_at_once::<join::SerialJoin>(input, IV, 0).root_hash()
 }
 
@@ -1006,6 +1056,10 @@ pub fn hash(input: &[u8]) -> Hash {
 /// [`Hasher::update_rayon`](struct.Hasher.html#method.update_rayon).
 pub fn keyed_hash(key: &[u8; KEY_LEN], input: &[u8]) -> Hash {
     let key_words = platform::words_from_le_bytes_32(key);
+    #[cfg(blake3_neon_hybrid)]
+    if input.len() <= CHUNK_LEN {
+        return hash_one_chunk_root(input, &key_words, KEYED_HASH);
+    }
     hash_all_at_once::<join::SerialJoin>(input, &key_words, KEYED_HASH).root_hash()
 }
 
@@ -1061,6 +1115,10 @@ pub fn keyed_hash(key: &[u8; KEY_LEN], input: &[u8]) -> Hash {
 pub fn derive_key(context: &str, key_material: &[u8]) -> [u8; OUT_LEN] {
     let context_key = hazmat::hash_derive_key_context(context);
     let context_key_words = platform::words_from_le_bytes_32(&context_key);
+    #[cfg(blake3_neon_hybrid)]
+    if key_material.len() <= CHUNK_LEN {
+        return hash_one_chunk_root(key_material, &context_key_words, DERIVE_KEY_MATERIAL).0;
+    }
     hash_all_at_once::<join::SerialJoin>(key_material, &context_key_words, DERIVE_KEY_MATERIAL)
         .root_hash()
         .0
