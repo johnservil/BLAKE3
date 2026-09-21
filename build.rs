@@ -283,28 +283,25 @@ fn build_avx512_assembly() {
 }
 
 // The SME2 assembly implementation needs an assembler that understands
-// `.arch armv9-a+sme2` (Clang/LLVM 17+, Xcode 15+, or binutils 2.41+). Probe
-// for it the same way we probe for AVX-512 support, and skip the kernel when
-// the assembler can't handle it.
-fn c_compiler_supports_sme2() -> bool {
+// `.arch armv9-a+sme2` (Clang/LLVM 17+, Xcode 15+, or binutils 2.41+ with
+// GCC 14+). This branch exists to measure SME2, so a toolchain without it is
+// a contract violation: fail the build with the fix in the message. Callers
+// who want a NEON-only build of this crate say so with the `no_sme2` feature.
+fn require_c_compiler_supports_sme2() {
     let build = new_build();
+    let compiler = build.get_compiler().path().to_owned();
     match build.is_flag_supported("-march=armv9-a+sme2") {
-        Ok(true) => true,
-        Ok(false) => {
-            warn(&format!(
-                "The C compiler {:?} does not support -march=armv9-a+sme2.",
-                build.get_compiler().path(),
-            ));
-            false
-        }
-        Err(e) => {
-            println!("{:?}", e);
-            warn(&format!(
-                "No C compiler {:?} detected.",
-                build.get_compiler().path()
-            ));
-            false
-        }
+        Ok(true) => {}
+        Ok(false) => panic!(
+            "blake3_sme2 requires a C compiler that assembles SME2, and {compiler:?} \
+             rejects -march=armv9-a+sme2. Point the cc crate at Clang/LLVM 17 or \
+             later (for example CC=clang-19), or Xcode 15 or later on macOS. To \
+             build this crate without the SME2 kernel, enable its `no_sme2` feature."
+        ),
+        Err(e) => panic!(
+            "blake3_sme2 requires a C compiler that assembles SME2, and none was \
+             found at {compiler:?}: {e:?}. Install Clang/LLVM 17 or later and set CC."
+        ),
     }
 }
 
@@ -417,14 +414,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         build_neon_c_intrinsics();
 
         // SME2 sits on top of NEON: the SME2 wrapper falls back to NEON for
-        // inputs that don't fill a group of sixteen. It is only built on
-        // little-endian AArch64 with NEON enabled and an assembler that
-        // supports it. Apple platforms and Linux have runtime detection.
+        // inputs that don't fill a group of sixteen. It is built on every
+        // little-endian AArch64 target with NEON enabled and runtime
+        // detection (Apple platforms and Linux), and the build fails when
+        // the assembler lacks SME2 support. Platform::detect() then insists
+        // that the CPU has SME2 too, so a successful build of this crate
+        // hashes with the SME2 kernel or stops.
         if is_aarch64()
             && !is_no_sme2()
             && (target_components()[2] == "darwin" || target_components()[2] == "linux")
-            && c_compiler_supports_sme2()
         {
+            require_c_compiler_supports_sme2();
             build_sme2_assembly();
         }
     }
