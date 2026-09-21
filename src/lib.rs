@@ -144,6 +144,8 @@ pub mod traits;
 #[cfg(feature = "std")]
 mod io;
 mod join;
+#[cfg(feature = "std")]
+pub mod lanes;
 
 use arrayvec::{ArrayString, ArrayVec};
 use core::cmp;
@@ -1022,11 +1024,20 @@ fn hash_all_at_once<J: join::Join>(input: &[u8], key: &CVWords, flags: u8) -> Ou
 /// This function is always single-threaded. For multithreading support, see
 /// [`Hasher::update_rayon`](struct.Hasher.html#method.update_rayon).
 pub fn hash(input: &[u8]) -> Hash {
+    hash_serial(input, IV, 0)
+}
+
+/// The whole input on the calling thread, in the given mode: the one-chunk
+/// kernel call up to CHUNK_LEN, the subtree walk above. hash(),
+/// keyed_hash(), derive_key(), and the lanes module's short path all come
+/// through here.
+#[inline]
+fn hash_serial(input: &[u8], key: &CVWords, flags: u8) -> Hash {
     #[cfg(blake3_neon_hybrid)]
     if input.len() <= CHUNK_LEN {
-        return hash_one_chunk_root(input, IV, 0);
+        return hash_one_chunk_root(input, key, flags);
     }
-    hash_all_at_once::<join::SerialJoin>(input, IV, 0).root_hash()
+    hash_all_at_once::<join::SerialJoin>(input, key, flags).root_hash()
 }
 
 /// The keyed hash function.
@@ -1056,11 +1067,7 @@ pub fn hash(input: &[u8]) -> Hash {
 /// [`Hasher::update_rayon`](struct.Hasher.html#method.update_rayon).
 pub fn keyed_hash(key: &[u8; KEY_LEN], input: &[u8]) -> Hash {
     let key_words = platform::words_from_le_bytes_32(key);
-    #[cfg(blake3_neon_hybrid)]
-    if input.len() <= CHUNK_LEN {
-        return hash_one_chunk_root(input, &key_words, KEYED_HASH);
-    }
-    hash_all_at_once::<join::SerialJoin>(input, &key_words, KEYED_HASH).root_hash()
+    hash_serial(input, &key_words, KEYED_HASH)
 }
 
 /// The key derivation function.
@@ -1115,13 +1122,7 @@ pub fn keyed_hash(key: &[u8; KEY_LEN], input: &[u8]) -> Hash {
 pub fn derive_key(context: &str, key_material: &[u8]) -> [u8; OUT_LEN] {
     let context_key = hazmat::hash_derive_key_context(context);
     let context_key_words = platform::words_from_le_bytes_32(&context_key);
-    #[cfg(blake3_neon_hybrid)]
-    if key_material.len() <= CHUNK_LEN {
-        return hash_one_chunk_root(key_material, &context_key_words, DERIVE_KEY_MATERIAL).0;
-    }
-    hash_all_at_once::<join::SerialJoin>(key_material, &context_key_words, DERIVE_KEY_MATERIAL)
-        .root_hash()
-        .0
+    hash_serial(key_material, &context_key_words, DERIVE_KEY_MATERIAL).0
 }
 
 fn parent_node_output(
