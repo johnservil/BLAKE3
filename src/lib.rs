@@ -1029,7 +1029,7 @@ pub fn hash(input: &[u8]) -> Hash {
 
 /// The default hash function over several threads.
 ///
-/// Returns the same [`Hash`] as [`hash`] for every input. Inputs below
+/// Returns the same [`Hash`](struct@Hash) as [`hash`] for every input. Inputs below
 /// 64 KiB are hashed on the calling thread alone, at [`hash`]'s speed.
 /// Larger inputs are cut into pieces that the calling thread and worker
 /// threads hash at once; this crate starts the workers once per process,
@@ -1053,7 +1053,7 @@ pub fn hash_multithreaded(input: &[u8]) -> Hash {
 
 /// [`hash_multithreaded`] with at most `max_threads` threads, the calling
 /// thread included. `max_threads` is at least 1; 1 hashes on the calling
-/// thread alone, as [`hash`] does. Returns the same [`Hash`] as [`hash`]
+/// thread alone, as [`hash`] does. Returns the same [`Hash`](struct@Hash) as [`hash`]
 /// for every input.
 ///
 /// ```
