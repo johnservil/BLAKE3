@@ -1030,16 +1030,17 @@ pub fn hash(input: &[u8]) -> Hash {
 /// The default hash function over several threads.
 ///
 /// Returns the same [`Hash`] as [`hash`] for every input. Inputs below
-/// 128 KiB are hashed on the calling thread alone, at [`hash`]'s speed.
-/// Larger inputs are split across the calling thread and worker threads
-/// this crate starts once per process and keeps; how many threads a call
-/// uses depends on the input's length and the machine.
+/// 64 KiB are hashed on the calling thread alone, at [`hash`]'s speed.
+/// Larger inputs are cut into pieces that the calling thread and worker
+/// threads hash at once; this crate starts the workers once per process,
+/// one per CPU beyond the first, and keeps them. Threads hashing at once
+/// stay within the machine's CPU count.
 ///
-/// Concurrent calls within one process share the worker threads fairly:
-/// two callers hashing at once each get about half the machine, and each
-/// finishes at about the speed one caller would on that half. A call never
-/// waits on another process; the operating system's scheduler arbitrates
-/// between processes as it does for any threads.
+/// Concurrent calls within one process share the workers: they take pieces
+/// from each call in turn, so two callers hashing at once each get about
+/// half the machine. A call never waits on another process; the operating
+/// system's scheduler arbitrates between processes as it does for any
+/// threads.
 ///
 /// ```
 /// let hash = blake3_servil::hash_multithreaded(&[0u8; 1 << 20]);
@@ -1116,10 +1117,10 @@ pub fn kernel_report() -> KernelReport {
             why: "Inputs of one chunk (1 KiB) or less run every block, the root compression included, in one call to the integer-only kernel, with the state in registers throughout.",
         });
         if neon_hybrid::sha3_detected() {
-            // The NEON platform hands hash_many its degree of four chunks;
+            // The NEON platform hands hash_many sixteen chunks at a time;
             // SME2 hands the hybrids the remainder below a group of sixteen.
-            let why = if platform.simd_degree() == 4 {
-                "Above one chunk the tree is hashed several chunks at a time, up to four per call on this platform; the hybrid kernels run scalar chunks on the integer units beside NEON chunks, so both stay busy."
+            let why = if platform.simd_degree() == 16 {
+                "Above one chunk the tree is hashed several chunks at a time, up to sixteen per call on this platform; the hybrid kernels run scalar chunks on the integer units beside NEON chunks (k10: two scalar beside eight NEON), so both stay busy."
             } else {
                 "Above one chunk the tree is hashed several chunks at a time; below a full SME2 group of sixteen, the hybrid kernels run scalar chunks on the integer units beside NEON chunks, up to fifteen per call."
             };
@@ -1167,7 +1168,7 @@ pub fn kernel_report_multithreaded() -> KernelReport {
     report.kernels.push(Kernel {
         from_len: lanes::MIN_SPLIT_LEN,
         name: "subtrees over threads",
-        why: "From here the input may split at subtree boundaries across the calling thread and this crate's worker threads, each running the kernels above; the caller merges the chaining values. How many threads a call gets depends on the machine and on concurrent callers.",
+        why: "From here the input is cut at subtree boundaries into pieces of 8 KiB to 128 KiB, shrinking toward the end, that the calling thread and this crate's worker threads (one per CPU beyond the first) hash at once; a piece runs on the SME2 kernels while an SME unit is free and on the NEON hybrids otherwise, and the caller merges the chaining values. Concurrent callers' pieces are served in turn.",
     });
     report
 }
@@ -1332,6 +1333,25 @@ impl Hasher {
             initial_chunk_counter: 0,
             cv_stack: ArrayVec::new(),
         }
+    }
+
+    /// Hash with `platform`'s kernels instead of the detected ones. Only
+    /// for a fresh hasher: the chunk state's platform is the one every
+    /// compression from here on uses.
+    #[cfg(feature = "std")]
+    pub(crate) fn set_platform(&mut self, platform: Platform) -> &mut Self {
+        assert!(self.cv_stack.is_empty() && self.chunk_state.count() == 0, "set_platform on a fresh hasher");
+        self.chunk_state.platform = platform;
+        self
+    }
+
+    /// A fresh hasher on `platform`'s kernels (for measurement; hidden).
+    #[cfg(feature = "std")]
+    #[doc(hidden)]
+    pub fn new_with_platform(platform: Platform) -> Self {
+        let mut hasher = Self::new();
+        hasher.set_platform(platform);
+        hasher
     }
 
     /// Construct a new `Hasher` for the regular hash function.

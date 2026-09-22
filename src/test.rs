@@ -1109,7 +1109,7 @@ fn test_kernel_reports() {
     assert_eq!(multi.platform, single.platform);
     assert_eq!(&multi.kernels[..single.kernels.len()], &single.kernels[..]);
     assert_eq!(multi.kernels.len(), single.kernels.len() + 1);
-    assert_eq!(multi.kernels.last().unwrap().from_len, 128 * 1024);
+    assert_eq!(multi.kernels.last().unwrap().from_len, crate::lanes::MIN_SPLIT_LEN);
     for kernel in &multi.kernels {
         assert!(!kernel.name.is_empty() && !kernel.why.is_empty());
     }

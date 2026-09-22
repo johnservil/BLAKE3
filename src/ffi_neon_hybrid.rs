@@ -21,11 +21,17 @@
 //! | 10     | k10           | p8 + p2        |
 //! | 11     | k8 + k3       | p8 + p2 + k1   |
 //! | 12     | k8 + k4       | p8 + p4        |
-//! | 13     | k8 + k5       | p8 + p4 + k1   |
-//! | 14     | k8 + k6       | p8 + p4 + p2   |
-//! | 15     | k9 + k6       | p8 + p4 + p2 + k1 |
+//! | 13     | k10 + k3      | p8 + p4 + k1   |
+//! | 14     | k10 + k4      | p8 + p4 + p2   |
+//! | 15     | k10 + k5      | p8 + p4 + p2 + k1 |
+//! | 16     | k10 + k6      | p8 + p8        |
 //!
-//! Longer input lists are hashed fifteen at a time.
+//! Longer input lists are hashed sixteen at a time. k10 is the fastest
+//! kernel per chunk (two scalar chunks beside eight NEON ones: 0.21 ns/B
+//! on a two-CPU SME2 VM against k8's 0.26 and k4's 0.29), so counts
+//! from 13 up lead with it, and `Platform::NEON` reports a degree of 16 so
+//! the tree walk hands over sixteen chunks at a time (0.23 ns/B in bulk,
+//! against 0.29 at a degree of four).
 //!
 //! The scalar kernel also serves every single-chunk job: `hash_chunk` runs
 //! a whole input of one chunk or less, root compression included, in one
@@ -159,7 +165,7 @@ mod asm {
 type Kernel = unsafe extern "C" fn(*const *const u8, u64, *const u32, u64, u64, *mut u8);
 
 /// Most inputs one `hash_many` call hands to the kernels at once.
-const GROUP: usize = 15;
+const GROUP: usize = 16;
 
 /// Chunk kernel per exact input count.
 const CHUNK_KERNELS: [Option<Kernel>; 11] = [
@@ -176,8 +182,8 @@ const CHUNK_KERNELS: [Option<Kernel>; 11] = [
     Some(asm::blake3_hybrid_k10),
 ];
 
-/// Kernel sizes per chunk count 1..=15, largest first.
-const CHUNK_PLANS: [&[usize]; 16] = [
+/// Kernel sizes per chunk count 1..=16, largest first.
+const CHUNK_PLANS: [&[usize]; 17] = [
     &[],
     &[1],
     &[2],
@@ -191,9 +197,10 @@ const CHUNK_PLANS: [&[usize]; 16] = [
     &[10],
     &[8, 3],
     &[8, 4],
-    &[8, 5],
-    &[8, 6],
-    &[9, 6],
+    &[10, 3],
+    &[10, 4],
+    &[10, 5],
+    &[10, 6],
 ];
 
 /// Parent kernel per exact input count.
@@ -209,8 +216,8 @@ const PARENT_KERNELS: [Option<Kernel>; 9] = [
     Some(asm::blake3_hybrid_p8),
 ];
 
-/// Kernel sizes per parent count 1..=15: the binary decomposition.
-const PARENT_PLANS: [&[usize]; 16] = [
+/// Kernel sizes per parent count 1..=16: the binary decomposition.
+const PARENT_PLANS: [&[usize]; 17] = [
     &[],
     &[1],
     &[2],
@@ -227,6 +234,7 @@ const PARENT_PLANS: [&[usize]; 16] = [
     &[8, 4, 1],
     &[8, 4, 2],
     &[8, 4, 2, 1],
+    &[8, 8],
 ];
 
 /// True when the CPU has the SHA-3 extension that provides `xar`. Every
@@ -391,7 +399,7 @@ pub unsafe fn hash_many<const N: usize>(
     out: &mut [u8],
 ) {
     assert!(out.len() >= inputs.len() * OUT_LEN);
-    let (plans, kernels, counter_step): (&[&[usize]; 16], &[Option<Kernel>], u64) =
+    let (plans, kernels, counter_step): (&[&[usize]; 17], &[Option<Kernel>], u64) =
         match (N, increment_counter.yes()) {
             (CHUNK_LEN, true) => (&CHUNK_PLANS, &CHUNK_KERNELS, 1),
             (BLOCK_LEN, false) => (&PARENT_PLANS, &PARENT_KERNELS, 0),
@@ -441,29 +449,29 @@ mod test {
         crate::test::test_hash_many_fn(hash_many, hash_many);
     }
 
-    /// Every count 1..=15 for chunks and parents, at four counter values,
+    /// Every count 1..=16 for chunks and parents, at four counter values,
     /// so each plan and each kernel is exercised on its own.
     #[test]
     fn test_every_count_against_portable() {
         if !sha3_detected() {
             return;
         }
-        let mut input = [0u8; 15 * CHUNK_LEN];
+        let mut input = [0u8; 16 * CHUNK_LEN];
         crate::test::paint_test_input(&mut input);
-        for n in 1..=15 {
-            let chunks: arrayvec::ArrayVec<&[u8; CHUNK_LEN], 15> = input
+        for n in 1..=16 {
+            let chunks: arrayvec::ArrayVec<&[u8; CHUNK_LEN], 16> = input
                 .chunks_exact(CHUNK_LEN)
                 .take(n)
                 .map(|c| c.try_into().unwrap())
                 .collect();
-            let parents: arrayvec::ArrayVec<&[u8; BLOCK_LEN], 15> = input
+            let parents: arrayvec::ArrayVec<&[u8; BLOCK_LEN], 16> = input
                 .chunks_exact(BLOCK_LEN)
                 .take(n)
                 .map(|c| c.try_into().unwrap())
                 .collect();
             for counter in [0u64, u32::MAX as u64, i32::MAX as u64, 1 << 40] {
-                let mut want = [0u8; 15 * OUT_LEN];
-                let mut got = [0u8; 15 * OUT_LEN];
+                let mut want = [0u8; 16 * OUT_LEN];
+                let mut got = [0u8; 16 * OUT_LEN];
                 crate::portable::hash_many(
                     &chunks,
                     IV,

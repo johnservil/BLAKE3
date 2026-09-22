@@ -12,6 +12,9 @@ cfg_if::cfg_if! {
     } else if #[cfg(blake3_sme2)] {
         // See sme2::DEGREE.
         pub const MAX_SIMD_DEGREE: usize = crate::sme2::DEGREE;
+    } else if #[cfg(blake3_neon_hybrid)] {
+        // See neon_hybrid::GROUP.
+        pub const MAX_SIMD_DEGREE: usize = 16;
     } else if #[cfg(blake3_neon)] {
         pub const MAX_SIMD_DEGREE: usize = 4;
     } else if #[cfg(blake3_wasm32_simd)] {
@@ -36,6 +39,8 @@ cfg_if::cfg_if! {
         }
     } else if #[cfg(blake3_sme2)] {
         pub const MAX_SIMD_DEGREE_OR_2: usize = crate::sme2::DEGREE;
+    } else if #[cfg(blake3_neon_hybrid)] {
+        pub const MAX_SIMD_DEGREE_OR_2: usize = 16;
     } else if #[cfg(blake3_neon)] {
         pub const MAX_SIMD_DEGREE_OR_2: usize = 4;
     } else if #[cfg(blake3_wasm32_simd)] {
@@ -174,7 +179,9 @@ impl Platform {
             #[cfg(blake3_avx512_ffi)]
             #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
             Platform::AVX512 => "AVX-512 hash_many (16-way)",
-            #[cfg(blake3_neon)]
+            #[cfg(all(blake3_neon, blake3_neon_hybrid))]
+            Platform::NEON => "integer + NEON hybrid kernels (16 chunks per call)",
+            #[cfg(all(blake3_neon, not(blake3_neon_hybrid)))]
             Platform::NEON => "NEON hash_many (4-way)",
             #[cfg(blake3_sme2)]
             Platform::SME2 => "SME2 hash_many",
@@ -195,7 +202,17 @@ impl Platform {
             #[cfg(blake3_avx512_ffi)]
             #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
             Platform::AVX512 => 16,
-            #[cfg(blake3_neon)]
+            // Sixteen chunks per call reach the k10 kernel (see
+            // neon_hybrid); the four-lane C kernel takes four.
+            #[cfg(all(blake3_neon, blake3_neon_hybrid))]
+            Platform::NEON => {
+                if crate::neon_hybrid::sha3_detected() {
+                    16
+                } else {
+                    4
+                }
+            }
+            #[cfg(all(blake3_neon, not(blake3_neon_hybrid)))]
             Platform::NEON => 4,
             #[cfg(blake3_sme2)]
             Platform::SME2 => crate::sme2::DEGREE,

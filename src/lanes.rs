@@ -1,263 +1,110 @@
-//! Multithreaded hashing over the machine's execution *lanes*, with
-//! cooperative admission so that concurrent callers share the machine
-//! instead of each taking all of it.
+//! Multithreaded hashing over every CPU, with the machine's SME2 units
+//! shared out as permits and concurrent callers served round-robin.
 //!
 //! This module is crate-internal. The public entry points are
 //! [`crate::hash_multithreaded`] and
 //! [`crate::hash_multithreaded_with_budget`], whose contracts speak of
-//! threads alone; lanes, admission, and clusters are how those contracts
+//! threads alone; pieces, permits, and the pool are how those contracts
 //! are met, and this file is where they are explained.
 //!
-//! # Lanes
-//!
-//! A lane is a run of CPUs that share the execution resource a BLAKE3
-//! kernel saturates. On Apple silicon every core cluster has one SME unit,
-//! so a second SME2 thread on the same cluster adds nothing: one lane per
-//! cluster, from `sysctl hw.perflevelN`. Elsewhere the SME unit's sharing
-//! is a property of the part that no interface reports, so it is measured
-//! once, at first use: two threads hash 256 KiB each at the same time, and
-//! when the pair takes at least half again as long as one thread alone, the
-//! CPUs share a unit and the lanes are the kernel's CPU clusters (sysfs
-//! `topology/cluster_cpus_list`); otherwise every CPU is a lane. The probe
-//! takes about thirty milliseconds.
-//!
-//! A caller may cap the threads one call uses
-//! ([`crate::hash_multithreaded_with_budget`]); the cap bounds the lanes
-//! that call asks for, and admission works within it as usual.
-//!
-//! # Admission
-//!
-//! A work-stealing pool sized to the whole machine performs well alone and
-//! badly beside a copy of itself: two such pools on two cores each run at
-//! half speed, and the pair finishes later than two single threads would.
-//! This module holds a process-wide count of lanes in use. A call takes
-//! lanes that are free at that moment (at least one: its own thread,
-//! which counts whether or not the call splits) and releases them when it
-//! returns.
-//!
-//! How many it takes is a fair share: with `c` callers active (this one
-//! included) and `L` lanes, at most `ceil(L / c)`, and never more than
-//! are free. Two simultaneous callers on a four-lane machine get two
-//! lanes each; on a three-lane machine the first to arrive gets two and
-//! the second finds one free and takes that; on a two-lane machine one
-//! each. The active count is a second process-wide counter, incremented
-//! on entry to any call long enough to split and decremented on return.
-//!
-//! The share is what keeps a caller from taking every lane in the instant
-//! between another caller's calls: two threads hashing back to back both
-//! release everything between calls, and without the share the first to
-//! return would take all the lanes and leave the other to run alone, turn
-//! and turn about, so that each got the whole machine half the time and
-//! one lane the other half, which averages to no gain over one lane.
-//!
-//! A caller's share is settled when it enters, so a caller that is alone
-//! when it enters holds every lane until it returns, and a second caller
-//! that arrives during that call finds nothing free. It waits for its
-//! share to come back rather than running on its own thread at once, up to
-//! [`ADMISSION_WAIT`]: the first caller's call ends within one input's
-//! hashing time, and when it comes back for its next call it sees two
-//! callers and takes its half, leaving the other half for the one that
-//! waited. Two threads hashing at once settle to a half each within one
-//! call this way, and the waiting caller loses one hand-off rather than a
-//! whole call at single-lane speed. A machine that stays full past the
-//! wait (many callers, or a caller with an input beyond what one lane
-//! hashes in that time) runs the call on the caller's own thread.
-//!
-//! One caller that hashes alone and then beside another sees this: its
-//! solo calls take every lane; the other's first call waits for them; from
-//! then on each holds half. A benchmark that alternates a solo batch with
-//! a duo batch, as bench-hashes --duo does, therefore measures the duo
-//! batch after that hand-over, at a half each.
-//!
-//! The counts are exact inside one process. Across processes, which
-//! cannot see each other's counts, the operating system's scheduler is
-//! the arbiter: each process's workers are ordinary threads that yield
-//! between polls and sleep when idle, so two processes hashing at once
-//! each see their workers run at whatever share of a CPU the scheduler
-//! gives them, and the pair finishes when a fair scheduler would have it
-//! finish. An earlier design stood the module down to one thread after
-//! its workers ran late twice in a row; it could not tell a worker
-//! delayed by another process from one delayed by an unrelated thread of
-//! its own process waking up, and on a busy machine it stood down for
-//! good. Latency of a worker is a fact about the scheduler, and the
-//! module leaves it there.
-//!
-//! # Splitting
+//! # Pieces
 //!
 //! The input is cut at chunk boundaries into pieces, each a valid BLAKE3
-//! subtree (see [`hazmat::left_subtree_len`]): the pieces are leaves of
-//! the tree whose root is the whole input, reached by splitting the
-//! largest piece at its left-subtree boundary until enough exist. A
-//! subtree cut is uneven when the input is no power of two (3 MiB splits
-//! 2 | 1), so where the input is long enough for every piece to stay at
-//! least [`MIN_BALANCED_PIECE_LEN`], the cut goes to up to
-//! [`PIECES_PER_LANE`] times as many pieces as lanes and the pieces are
-//! dealt to lanes largest first, each to the lane with the least so far;
-//! the lanes' shares then agree to within one piece. Each lane hashes its pieces in
-//! order with [`hazmat::HasherExt::set_input_offset`] and
+//! subtree (see [`hazmat::left_subtree_len`]), from the front: each piece
+//! is about a thread's share of what remains ([`next_piece_len`]), a power
+//! of two chunks within [`MIN_PIECE_LEN`] and [`MAX_PIECE_LEN`]. Pieces
+//! shrink toward the end, so a thread that is slow (an efficiency core, or
+//! one sharing its CPU) holds a small piece when the others run out, and
+//! the finish waits on little. Every thread hashes a piece with
+//! [`hazmat::HasherExt::set_input_offset`] and
 //! [`finalize_non_root`](hazmat::HasherExt::finalize_non_root), one
-//! chaining value per piece, and the calling thread merges the values
-//! back up the tree with [`hazmat::merge_subtrees_non_root`] and
+//! chaining value per piece, and the calling thread merges the values back
+//! up the tree with [`hazmat::merge_subtrees_non_root`] and
 //! [`hazmat::merge_subtrees_root`]. Inputs under [`MIN_SPLIT_LEN`] stay on
-//! the calling thread: the hand-off costs a few microseconds and 64 KiB
-//! takes about fourteen on one SME2 lane, so smaller inputs gain nothing.
+//! the calling thread.
 //!
-//! # Workers
+//! # Jobs and the pool
 //!
-//! Workers are started on first use, one per lane beyond the first, and
-//! take jobs from a shared queue. A job is the caller's input slice and a
-//! slot for the chaining value; the caller hashes its own piece, then
-//! waits until every job it posted is done. The caller returns only after
-//! that wait, which is what makes lending its stack to the workers sound.
+//! A call registers a *job* (its pieces, a cursor, a done count) in the
+//! pool's list, then takes pieces from its own job through the cursor until
+//! none remain and waits for the done count. Workers, started once per
+//! process, one per CPU beyond the first, serve the jobs in the list
+//! round-robin, one piece at a time through the same cursor. Two callers
+//! hashing at once therefore each get about half the workers' time, and
+//! a slow thread takes fewer pieces than a fast one; there is nothing to
+//! tune for fairness or balance.
 //!
-//! A worker sleeps on the queue's condition variable between jobs, and a
-//! caller sleeps on another while it waits for results; both spin briefly
-//! first ([`SPIN_BEFORE_SLEEP`]), which covers back-to-back calls. Waking a
-//! sleeping worker costs tens of microseconds on some systems (a futex
-//! wake through a hypervisor), and that wake is the caller's to pay only
-//! when a worker is asleep. The caller pays it as latency on its critical
-//! path, so a piece a worker takes must be worth more than the wake: see
-//! [`MIN_SPLIT_LEN`].
+//! Threads hashing at once (callers inside a call plus workers holding a
+//! piece) stay within the CPU count: a worker takes a piece only while
+//! that holds. Two callers on a two-CPU machine run one piece at a time
+//! each, on their own threads, which is the right answer there. A caller's
+//! thread cap ([`crate::hash_multithreaded_with_budget`]) bounds the
+//! threads holding a piece of its job at once, the caller included.
 //!
-//! Both spins yield the CPU on every iteration
-//! ([`std::thread::yield_now`]), so a runnable thread on the same CPU
-//! goes first: a worker between jobs or a caller waiting for results is a
-//! poll between yields, and stops within `SPIN_BEFORE_SLEEP` on an idle
-//! process. A busy spin here would hold a CPU that another thread, one
-//! about to call this module, is waiting to run on, and that thread's
-//! call would start late by the length of the spin.
+//! # Kernels
 //!
-//! The workers are ordinary threads, and a worker whose CPU another thread
-//! holds waits its turn like any other. A thread that spins without
-//! yielding holds its CPU for a whole scheduler quantum; on a machine with
-//! as many such spinners as CPUs, a worker's piece waits a quantum (about
-//! 2 ms on Linux) to start, and the caller waits with it. Callers that
-//! spin-wait on something while this module hashes on their behalf are
-//! asking for that; a spin that yields costs the worker nothing measurable
+//! On a CPU with SME2, the SME2 kernel runs about half again as fast as
+//! the NEON hybrids, and the SME unit is shared by the cores of a cluster:
+//! a second SME2 thread on the same cluster adds nothing. The pool holds
+//! one permit per SME unit ([`sme_permits`]); a thread takes one before a
+//! piece when one is free and hashes that piece with the SME2 kernels,
+//! otherwise with the NEON hybrids, which every core runs at full speed.
+//! The unit count is the cluster count on Apple systems (`sysctl
+//! hw.perflevelN`) and measured once on Linux: the aggregate rate of `n`
+//! SME2 threads at once stops growing at the unit count. Without SME2
+//! every piece runs on the detected platform.
+//!
+//! # Waiting
+//!
+//! A worker between pieces polls the slots, yielding the CPU between polls
+//! ([`std::thread::yield_now`]) so a runnable thread on the same CPU goes
+//! first, and sleeps on a condition variable once no call has registered
+//! a job for [`SPIN_BEFORE_SLEEP`]; a caller waiting for its last pieces
+//! polls the same way and then sleeps. Waking a sleeping thread costs the
+//! waker ten microseconds or more on some systems and the sleeper arrives
+//! tens of microseconds later, so a call whose pieces outnumber the
+//! workers awake wakes every sleeper at once, and workers stay awake
+//! while calls keep coming; the cost falls on the first call after a
+//! pause, once.
+//!
+//! A thread that spins without yielding holds its CPU for a whole
+//! scheduler quantum; callers that spin-wait on something while this
+//! module hashes on their behalf delay their own pieces by that much
 //! (measured on a two-CPU machine: two spinning threads beside a 128 KiB
 //! split took the call from 29 µs to 2 ms; the same two threads yielding
 //! between polls left it at 29 µs).
 
 use crate::hazmat::{self, ChainingValue, HasherExt, Mode};
+use crate::platform::Platform;
 use crate::{CHUNK_LEN, Hash, Hasher, KEY_LEN};
-use std::collections::VecDeque;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex, OnceLock};
 
-/// Inputs below this length are hashed on the calling thread. 128 KiB is
-/// two 64 KiB pieces: on an Apple M4 one SME2 lane takes about 14 µs per
-/// 64 KiB, and the hand-off to a waiting worker and back costs 3–5 µs, so
-/// a two-way split of 128 KiB comes out ahead by a third and a split of
-/// 64 KiB about even.
-pub(crate) const MIN_SPLIT_LEN: usize = 128 * 1024;
+/// Inputs below this length are hashed on the calling thread. A split
+/// hands pieces to workers that are polling, a few microseconds each way;
+/// 64 KiB takes about 14 µs on one SME2 thread, and as four pieces it
+/// comes back sooner.
+pub(crate) const MIN_SPLIT_LEN: usize = 64 * 1024;
 
-/// The smallest piece a lane receives: sixteen chunks fill one SME2 group.
-const MIN_PIECE_LEN: usize = 16 * CHUNK_LEN;
+/// The shortest piece: eight chunks, a hybrid kernel's worth.
+const MIN_PIECE_LEN: usize = 8 * CHUNK_LEN;
 
-/// Pieces cut per lane granted, so the lanes' shares come out even when
-/// the input's subtrees are unequal. Four pieces per lane put the worst
-/// imbalance at one piece in four of a lane's share for a power-of-two
-/// input and less for the others.
-pub(crate) const PIECES_PER_LANE: usize = 4;
-
-/// A piece below this length is not worth cutting for balance: each piece
-/// costs its lane a chunk-state start and a chaining value and the caller
-/// a merge, and below 512 KiB a lane's SME2 pipeline has not reached its
-/// bulk rate, so a finer cut there loses more to ramp-up than the balance
-/// gains. Measured on the two-CPU VM: 1 MiB over two lanes as two pieces,
-/// 0.092 ns/B; as eight, 0.108.
-pub(crate) const MIN_BALANCED_PIECE_LEN: usize = 512 * 1024;
-
-/// Upper bound on pieces one call cuts; sizes the on-stack arrays.
-pub(crate) const MAX_PIECES: usize = MAX_LANES * PIECES_PER_LANE;
-
-/// Upper bound on lanes one call uses; enough for any machine this crate
-/// targets, and it sizes the on-stack chaining-value array.
-pub(crate) const MAX_LANES: usize = 64;
-
-/// How long a caller that finds no lane free waits for its share before
-/// running on its own thread. The wait pays off whenever the caller holding
-/// the lanes returns within it; one SME2 lane on an Apple M4 hashes 8 MiB
-/// in about 1.4 ms and 64 MiB in about 11 ms, so this covers inputs to a
-/// few tens of megabytes; past that the waiting caller gives up and hashes
-/// alone, at one lane's speed, which is what it would have done at once.
-pub(crate) const ADMISSION_WAIT: std::time::Duration = std::time::Duration::from_millis(20);
+/// The longest piece: one SME2 kernel call of the platform's degree.
+const MAX_PIECE_LEN: usize = 128 * CHUNK_LEN;
 
 /// How long a worker or a waiting caller spins before sleeping. Long
 /// enough to bridge the gap between back-to-back hashes in a busy caller;
 /// short enough that an idle process is quiet within it.
 pub(crate) const SPIN_BEFORE_SLEEP: std::time::Duration = std::time::Duration::from_micros(200);
 
-/// The number of lanes this machine has (see the module docs). At least 1.
-pub(crate) fn lane_count() -> usize {
-    static COUNT: OnceLock<usize> = OnceLock::new();
-    *COUNT.get_or_init(|| detect_lane_count().clamp(1, MAX_LANES))
-}
-
-/*
- * The admission state: lanes in use (the callers' own threads included)
- * and callers active, packed into one word so a caller reads and changes
- * both in one atomic step. Low 32 bits lanes, high 32 bits callers.
- */
-static ADMISSION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-fn unpack(state: u64) -> (usize, usize) {
-    ((state & 0xffff_ffff) as usize, (state >> 32) as usize)
-}
-
-fn pack(lanes: usize, callers: usize) -> u64 {
-    lanes as u64 | (callers as u64) << 32
-}
-
-/// Enter as a caller: one more active caller, no lanes yet.
-fn enter() {
-    ADMISSION.fetch_add(pack(0, 1), Ordering::AcqRel);
-}
-
-/// Leave: this caller and its `1 + extra` lanes go.
-fn leave(extra: usize) {
-    ADMISSION.fetch_sub(pack(1 + extra, 1), Ordering::AcqRel);
-}
-
-/// The extra lanes a caller may take now, given the state: its fair share
-/// of `ceil(total / callers)`, less its own thread, within what is free
-/// and what it wants.
-fn grant(state: u64, total: usize, want: usize) -> usize {
-    let (in_use, callers) = unpack(state);
-    let share = total.div_ceil(callers.max(1));
-    let free = total.saturating_sub(in_use);
-    free.min(share).saturating_sub(1).min(want)
-}
-
-/// Take the caller's own lane plus up to `want` free ones within its fair
-/// share (see the module docs); returns the extra lanes granted. The
-/// caller has entered already.
-///
-/// When the share is not free yet and other callers are active, wait up
-/// to ADMISSION_WAIT for it (yielding between polls): the caller holding
-/// the lanes returns within one input's hashing time, and then this
-/// caller's share is there. The decision reads lanes and callers in one
-/// atomic step, so a caller that has just left cannot be counted in the
-/// share while its lanes are still counted as held, or the reverse.
-fn admit(want: usize) -> usize {
-    let total = lane_count();
-    let started = std::time::Instant::now();
-    loop {
-        let state = ADMISSION.load(Ordering::Acquire);
-        let extra = grant(state, total, want);
-        let (_, callers) = unpack(state);
-        // Worth waiting: other callers hold lanes, the share due is bigger
-        // than what is free now, and time remains.
-        let share_due = total.div_ceil(callers.max(1)).min(want + 1);
-        if extra + 1 < share_due && callers > 1 && started.elapsed() < ADMISSION_WAIT {
-            std::thread::yield_now();
-            continue;
-        }
-        let next = state + pack(1 + extra, 0);
-        if ADMISSION.compare_exchange_weak(state, next, Ordering::AcqRel, Ordering::Relaxed).is_ok() {
-            return extra;
-        }
-    }
+/// The length of the next piece when `remaining` bytes are uncut and
+/// `threads` threads may share them: about a thread's share of what is
+/// left, rounded down to a power of two chunks within the bounds above.
+/// Pieces therefore shrink toward the end of the input, and the slowest
+/// thread's last piece is a small one.
+fn next_piece_len(remaining: usize, threads: usize) -> usize {
+    let want = (remaining / threads.max(1)).clamp(MIN_PIECE_LEN, MAX_PIECE_LEN);
+    1 << (usize::BITS - 1 - want.leading_zeros())
 }
 
 /// A hashing mode with its key material owned, so it can cross to a
@@ -296,316 +143,527 @@ impl OwnedMode {
             }
         }
     }
-
-    /// The whole input on the calling thread: the same path as hash().
-    fn hash_serial(&self, input: &[u8]) -> Hash {
-        let (key, flags) = self.key_and_flags();
-        crate::hash_serial(input, &key, flags)
-    }
 }
 
-/// Hash `input` over the machine's free lanes, at most `max_threads`
-/// threads in all (the caller's included; at least 1). The thread cap is
-/// the caller's; the fair share is the module's.
+/// Hash `input` over the machine's threads, at most `max_threads` of them
+/// holding a piece at once (the caller's included; at least 1).
 #[inline]
 pub(crate) fn hash(input: &[u8], max_threads: usize) -> Hash {
     hash_with_mode(input, Mode::Hash, max_threads)
 }
 
-/// Hash `input` over the machine's free lanes in the given mode.
+/// Hash `input` over the machine's threads in the given mode.
 #[inline]
 pub(crate) fn hash_with_mode(input: &[u8], mode: Mode, max_threads: usize) -> Hash {
     assert!(max_threads >= 1, "a hash needs at least the calling thread");
     // The short path first and inline, so a small input costs what hash()
-    // costs; everything the lanes need is behind the call below.
+    // costs; everything the pool needs is behind the call below.
     if input.len() < MIN_SPLIT_LEN || max_threads == 1 {
         let (key, flags) = OwnedMode::from(mode).key_and_flags();
         return crate::hash_serial(input, &key, flags);
     }
-    hash_over_lanes(input, mode, max_threads)
+    hash_over_pool(input, mode, max_threads)
 }
 
 #[inline(never)]
-fn hash_over_lanes(input: &[u8], mode: Mode, max_threads: usize) -> Hash {
-    let owned = OwnedMode::from(mode);
-    // A call that stays on its own thread still occupies a lane: the
-    // count must show it, or a concurrent caller takes the lane this
-    // thread is running on and its worker competes with this thread.
-    enter();
-    let want = (input.len() / MIN_PIECE_LEN).min(lane_count()).min(max_threads).saturating_sub(1);
-    let extra = admit(want);
-    if extra == 0 {
-        let hash = owned.hash_serial(input);
-        leave(0);
-        return hash;
-    }
-    let lanes = 1 + extra;
-    // One piece per lane, or up to PIECES_PER_LANE when the pieces stay
-    // at least MIN_BALANCED_PIECE_LEN long.
-    let piece_count = (input.len() / MIN_BALANCED_PIECE_LEN)
-        .clamp(lanes, lanes * PIECES_PER_LANE)
-        .min(input.len() / MIN_PIECE_LEN);
-    let pieces = split_subtrees(input.len(), piece_count);
-    let shares = deal_to_lanes(&pieces, lanes);
-
-    // The caller takes the largest share, so on free lanes every worker
-    // finishes first and the caller's wait is the hand-off alone.
-    let own_lane = (0..lanes)
-        .max_by_key(|&lane| shares[lane].iter().map(|&i| pieces[i].len).sum::<usize>())
-        .unwrap();
-    let mut cvs = [ChainingValue::default(); MAX_PIECES];
-    {
-        let done = AtomicUsize::new(0);
-        let mut slots: Vec<Option<&mut ChainingValue>> = cvs[..pieces.len()].iter_mut().map(Some).collect();
-        let mut jobs: Vec<Job> = Vec::with_capacity(extra);
-        // Every job borrows `input`, slots in `cvs`, and `done`; the wait
-        // below ends before any of them goes out of scope.
-        for (lane, share) in shares.iter().enumerate() {
-            if lane == own_lane {
-                continue;
-            }
-            let job_pieces: Vec<(Piece, *mut ChainingValue)> = share
-                .iter()
-                .map(|&i| (pieces[i], slots[i].take().unwrap() as *mut ChainingValue))
-                .collect();
-            jobs.push(Job { input, pieces: job_pieces, mode: owned, done: &done });
+fn hash_over_pool(input: &[u8], mode: Mode, max_threads: usize) -> Hash {
+    let pool = pool();
+    let pieces = cut_subtrees(input.len(), pool.cpus);
+    let mut cvs = vec![ChainingValue::default(); pieces.len()];
+    let job = Job {
+        input,
+        pieces: &pieces,
+        cvs: cvs.as_mut_ptr(),
+        mode: OwnedMode::from(mode),
+        cursor: Line(AtomicUsize::new(0)),
+        done: Line(AtomicUsize::new(0)),
+        active: Line(AtomicUsize::new(1)),
+        max_threads,
+    };
+    pool.callers.fetch_add(1, Ordering::SeqCst);
+    let slot = pool.register(&job);
+    loop {
+        let index = job.cursor.fetch_add(1, Ordering::SeqCst);
+        if index >= pieces.len() {
+            break;
         }
-        pool().post(jobs);
-        for &i in &shares[own_lane] {
-            let piece = pieces[i];
-            *slots[i].take().unwrap() = hash_piece(&input[piece.offset..][..piece.len], piece.offset, owned);
+        // Sound: this thread took index through the cursor, so it alone
+        // writes cvs[index].
+        unsafe { job.hash_piece(index) };
+        job.done.fetch_add(1, Ordering::SeqCst);
+    }
+    job.active.fetch_sub(1, Ordering::SeqCst);
+    // Every piece is taken; the slot has nothing more to give from this
+    // job. Workers that hold a piece finish it and count it in `done`.
+    if let Some(slot) = slot {
+        pool.unregister(slot);
+    }
+    pool.wait_done(&job.done, pieces.len());
+    pool.callers.fetch_sub(1, Ordering::SeqCst);
+    merge_root(&pieces, &cvs, mode)
+}
+
+/// One call's work, on the caller's stack. Workers reach it through the
+/// pool's list while it is registered, and finish the pieces they hold
+/// after; the caller returns only when `done` has counted every piece, so
+/// every worker access falls inside the caller's frame.
+struct Job<'a> {
+    input: &'a [u8],
+    /// In offset order.
+    pieces: &'a [Piece],
+    /// One slot per piece; slot `i` is written by the thread that took
+    /// piece `i` through `cursor`, and by nobody else.
+    cvs: *mut ChainingValue,
+    mode: OwnedMode,
+    /// The next piece to take.
+    cursor: Line,
+    /// Pieces finished.
+    done: Line,
+    /// Threads holding a piece of this job, the caller included while it
+    /// still takes pieces.
+    active: Line,
+    /// Bound on `active`.
+    max_threads: usize,
+}
+
+/// An atomic counter on its own cache line: `cursor`, `done`, and `active`
+/// are each hit by every thread of a job, and sharing a line would make
+/// each update evict the others.
+#[repr(align(128))]
+struct Line(AtomicUsize);
+
+impl std::ops::Deref for Line {
+    type Target = AtomicUsize;
+    fn deref(&self) -> &AtomicUsize {
+        &self.0
+    }
+}
+
+impl Job<'_> {
+    /// Hash piece `index` into its slot. The caller has taken `index`
+    /// through `cursor`.
+    unsafe fn hash_piece(&self, index: usize) {
+        let piece = self.pieces[index];
+        let bytes = &self.input[piece.offset..][..piece.len];
+        let permit = pool().take_sme_permit();
+        let mut hasher = self.mode.hasher();
+        hasher.set_platform(if permit { fast_platform() } else { other_platform() });
+        hasher.set_input_offset(piece.offset as u64);
+        hasher.update(bytes);
+        let cv = hasher.finalize_non_root();
+        if permit {
+            pool().release_sme_permit();
         }
-        pool().wait(&done, extra);
+        unsafe { *self.cvs.add(index) = cv };
     }
-    leave(extra);
-    merge_root(&pieces, &cvs[..pieces.len()], mode)
 }
 
-fn hash_piece(bytes: &[u8], offset: usize, mode: OwnedMode) -> ChainingValue {
-    let mut hasher = mode.hasher();
-    hasher.set_input_offset(offset as u64);
-    hasher.update(bytes);
-    hasher.finalize_non_root()
+/// The platform a piece runs on with an SME2 permit: the detected one.
+fn fast_platform() -> Platform {
+    Platform::detect()
 }
 
-/// Deal pieces to `lanes` lanes so the lanes' byte totals are as even as
-/// the pieces allow: largest piece first, each to the lane with the least
-/// so far (ties to the lowest lane). Returns each lane's piece indices in
-/// offset order. `lanes` is 1..=pieces.len().
-fn deal_to_lanes(pieces: &[Piece], lanes: usize) -> Vec<Vec<usize>> {
-    assert!((1..=pieces.len()).contains(&lanes), "one to pieces.len() lanes");
-    let mut order: Vec<usize> = (0..pieces.len()).collect();
-    order.sort_by(|&a, &b| pieces[b].len.cmp(&pieces[a].len).then(a.cmp(&b)));
-    let mut shares: Vec<Vec<usize>> = vec![Vec::new(); lanes];
-    let mut totals = vec![0usize; lanes];
-    for index in order {
-        let lane = (0..lanes).min_by_key(|&lane| (totals[lane], lane)).unwrap();
-        shares[lane].push(index);
-        totals[lane] += pieces[index].len;
+/// The platform a piece runs on without a permit. On an SME2 CPU the NEON
+/// hybrids, which no other core slows down; elsewhere the detected one.
+fn other_platform() -> Platform {
+    #[cfg(blake3_sme2)]
+    if matches!(Platform::detect(), Platform::SME2) {
+        return Platform::NEON;
     }
-    for share in &mut shares {
-        share.sort_unstable();
-    }
-    shares
+    Platform::detect()
 }
 
-/// One lane's share of the input: a whole subtree.
+/// One piece of the input: a whole subtree.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Piece {
     offset: usize,
     len: usize,
 }
 
-/// Cut `len` bytes into `count` subtrees: starting from the whole input,
-/// split the largest piece at its left-subtree boundary until `count`
-/// pieces exist. Pieces come back in offset order, each a valid subtree at
-/// its offset. `count` is 1..=MAX_PIECES and `len` is at least `count`
-/// chunks.
-fn split_subtrees(len: usize, count: usize) -> Vec<Piece> {
-    assert!((1..=MAX_PIECES).contains(&count));
-    assert!(len >= count * CHUNK_LEN, "each piece needs at least one chunk");
-    let mut pieces = vec![Piece { offset: 0, len }];
-    while pieces.len() < count {
-        // The largest piece; ties to the leftmost.
-        let (index, _) = pieces
-            .iter()
-            .enumerate()
-            .max_by(|(ia, a), (ib, b)| a.len.cmp(&b.len).then(ib.cmp(ia)))
-            .unwrap();
-        let piece = pieces[index];
-        assert!(piece.len > CHUNK_LEN, "a one-chunk piece cannot split");
-        let left = hazmat::left_subtree_len(piece.len as u64) as usize;
-        pieces[index] = Piece { offset: piece.offset, len: left };
-        pieces.insert(index + 1, Piece { offset: piece.offset + left, len: piece.len - left });
+/// Cut `len` bytes into subtrees for `threads` threads, in offset order:
+/// each piece is [`next_piece_len`] of what remains, and the last is
+/// whatever is left. A piece's length never exceeds the one before it and
+/// every piece starts at a multiple of its own length, so each is a whole
+/// subtree at its offset. `len` is at least two chunks... it exceeds
+/// [`MIN_PIECE_LEN`], so two or more pieces come back.
+fn cut_subtrees(len: usize, threads: usize) -> Vec<Piece> {
+    assert!(len > MIN_PIECE_LEN, "one piece has no parent to merge; hash it whole instead");
+    let mut pieces = Vec::with_capacity(64);
+    let mut offset = 0;
+    while len - offset > MIN_PIECE_LEN {
+        let piece = next_piece_len(len - offset, threads);
+        if len - offset <= piece {
+            break;
+        }
+        pieces.push(Piece { offset, len: piece });
+        offset += piece;
     }
+    pieces.push(Piece { offset, len: len - offset });
     pieces
 }
 
-/// The chaining value of the subtree at `offset` of `len` bytes: a piece's
-/// value when a piece covers exactly that subtree, else the parent of its
-/// two halves. Every subtree this asks for is a node of the tree
-/// `split_subtrees` cut, because that function split along the same
-/// boundaries from the same root.
-fn subtree_cv(pieces: &[Piece], cvs: &[ChainingValue], offset: usize, len: usize, mode: Mode) -> ChainingValue {
-    if let Some(index) = pieces.iter().position(|p| p.offset == offset && p.len == len) {
-        return cvs[index];
+/// The chaining value of the subtree covering `pieces` (in offset order,
+/// tiling one subtree): the piece's own value for one piece, else the
+/// parent of its two halves, cut at the subtree's left-subtree boundary.
+fn subtree_cv(pieces: &[Piece], cvs: &[ChainingValue], mode: Mode) -> ChainingValue {
+    debug_assert_eq!(pieces.len(), cvs.len());
+    if pieces.len() == 1 {
+        return cvs[0];
     }
-    assert!(len > CHUNK_LEN, "a subtree below every piece: the pieces do not tile the input");
-    let left = hazmat::left_subtree_len(len as u64) as usize;
-    let left_cv = subtree_cv(pieces, cvs, offset, left, mode);
-    let right_cv = subtree_cv(pieces, cvs, offset + left, len - left, mode);
-    hazmat::merge_subtrees_non_root(&left_cv, &right_cv, mode)
+    let offset = pieces[0].offset;
+    let len: usize = pieces.iter().map(|p| p.len).sum();
+    let boundary = offset + hazmat::left_subtree_len(len as u64) as usize;
+    let split = pieces.partition_point(|p| p.offset < boundary);
+    assert!(split > 0 && split < pieces.len() && pieces[split].offset == boundary, "pieces do not tile the tree");
+    let left = subtree_cv(&pieces[..split], &cvs[..split], mode);
+    let right = subtree_cv(&pieces[split..], &cvs[split..], mode);
+    hazmat::merge_subtrees_non_root(&left, &right, mode)
 }
 
 /// Merge the pieces' chaining values up the tree and finish with the root
-/// compression. Needs two or more pieces, which is what a split gives.
+/// compression. Needs two or more pieces, which is what a cut gives.
 fn merge_root(pieces: &[Piece], cvs: &[ChainingValue], mode: Mode) -> Hash {
     assert_eq!(pieces.len(), cvs.len());
     assert!(pieces.len() >= 2, "one piece has no parent to merge; finalize it as the root instead");
     let len: usize = pieces.iter().map(|p| p.len).sum();
-    let left = hazmat::left_subtree_len(len as u64) as usize;
-    let left_cv = subtree_cv(pieces, cvs, 0, left, mode);
-    let right_cv = subtree_cv(pieces, cvs, left, len - left, mode);
-    hazmat::merge_subtrees_root(&left_cv, &right_cv, mode)
+    let boundary = hazmat::left_subtree_len(len as u64) as usize;
+    let split = pieces.partition_point(|p| p.offset < boundary);
+    assert!(pieces[split].offset == boundary, "pieces do not tile the tree");
+    let left = subtree_cv(&pieces[..split], &cvs[..split], mode);
+    let right = subtree_cv(&pieces[split..], &cvs[split..], mode);
+    hazmat::merge_subtrees_root(&left, &right, mode)
 }
 
 /*
- * The worker pool: lane_count() - 1 threads waiting on one queue.
+ * The pool: cpus - 1 worker threads serving the registered jobs.
  *
- * A Job carries borrows of the caller's stack as raw pointers. The caller
- * posts its jobs, hashes its own share, and then waits until `done` has
- * counted every job; only then does it return and let those borrows end.
- * A worker touches a job's memory only between taking it from the queue
- * and incrementing `done`, so every access falls inside the caller's wait.
+ * The slots hold raw pointers to jobs on callers' stacks. A worker counts
+ * itself as a reader of a slot before it loads the pointer and until it has
+ * moved the job's cursor; a caller clears its slot once every piece is
+ * taken and then waits until the slot has no reader, so no worker is left
+ * mid-take on a job that is gone. A worker that took a piece touches the
+ * job until its increment of `done`, which is the last thing it does with
+ * the job, and the caller returns only after `done` has counted every
+ * piece; so every worker access falls inside the caller's frame.
+ *
+ * Every step on the way to a piece is an atomic operation; the two locks
+ * below serve sleeping and waking alone, and a thread takes one only when
+ * it is about to sleep or knows a sleeper is there.
  */
-struct Job {
-    /// The whole input; each piece is a range within it.
-    input: *const [u8],
-    /// This lane's pieces, each with the slot its chaining value goes to.
-    pieces: Vec<(Piece, *mut ChainingValue)>,
-    mode: OwnedMode,
-    done: *const AtomicUsize,
-}
-
-// The pointers are borrows of a caller that outlives every use (see above).
-unsafe impl Send for Job {}
-
 struct Pool {
-    queue: Mutex<VecDeque<Job>>,
+    slots: [Slot; MAX_JOBS],
+    /// Callers inside hash_over_pool.
+    callers: AtomicUsize,
+    /// Workers holding a piece.
+    busy: AtomicUsize,
+    /// SME2 permits free.
+    sme_free: AtomicUsize,
+    /// SME2 permits in all, once the starter has counted them.
+    sme_total: OnceLock<usize>,
+    cpus: usize,
+    /// When the last job was registered, in nanoseconds of `epoch`; a
+    /// worker sleeps only when this is SPIN_BEFORE_SLEEP old.
+    last_job_ns: AtomicU64,
+    epoch: std::time::Instant,
+    /// Workers asleep on `posted`.
+    sleepers: AtomicUsize,
+    sleep_lock: Mutex<()>,
     posted: Condvar,
+    /// Callers asleep on `finished_signal`.
+    waiters: AtomicUsize,
     finished: Mutex<()>,
     finished_signal: Condvar,
 }
 
+/// Jobs registered at once. A caller that finds every slot taken hashes
+/// on its own thread.
+const MAX_JOBS: usize = 64;
+
+struct Slot {
+    job: AtomicPtr<Job<'static>>,
+    /// Workers between loading `job` and finishing their take from it.
+    readers: AtomicUsize,
+}
+
+// The pointers are borrows of callers that outlive every use (see above).
+unsafe impl Send for Pool {}
+unsafe impl Sync for Pool {}
+
+/// The pool, created on first use. Creation itself is cheap: a starter
+/// thread spawns the workers and, where the SME unit count is measured,
+/// runs that measurement; the first calls proceed on the calling thread
+/// and whichever workers have arrived, and the permits grow to the
+/// measured count when the starter is done. The first call therefore
+/// costs about what a call costs, and a caller timing it (a benchmark's
+/// calibration, say) sees nothing of the start.
 fn pool() -> &'static Pool {
     static POOL: OnceLock<Pool> = OnceLock::new();
     POOL.get_or_init(|| {
+        let cpus = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
         let pool = Pool {
-            queue: Mutex::new(VecDeque::new()),
+            slots: std::array::from_fn(|_| Slot { job: AtomicPtr::new(std::ptr::null_mut()), readers: AtomicUsize::new(0) }),
+            callers: AtomicUsize::new(0),
+            busy: AtomicUsize::new(0),
+            sme_free: AtomicUsize::new(if uses_sme_permits() { 1 } else { 0 }),
+            sme_total: OnceLock::new(),
+            cpus,
+            last_job_ns: AtomicU64::new(0),
+            epoch: std::time::Instant::now(),
+            sleepers: AtomicUsize::new(0),
+            sleep_lock: Mutex::new(()),
             posted: Condvar::new(),
+            waiters: AtomicUsize::new(0),
             finished: Mutex::new(()),
             finished_signal: Condvar::new(),
         };
-        for lane in 1..lane_count() {
-            std::thread::Builder::new()
-                .name(format!("blake3-lane-{lane}"))
-                .spawn(worker)
-                .expect("spawning a BLAKE3 lane worker");
-        }
+        std::thread::Builder::new()
+            .name("blake3-starter".into())
+            .spawn(move || {
+                for worker in 1..cpus {
+                    std::thread::Builder::new()
+                        .name(format!("blake3-worker-{worker}"))
+                        .spawn(worker_main)
+                        .expect("spawning a BLAKE3 worker");
+                }
+                let pool = POOL.wait();
+                let permits = sme_permits();
+                if permits > 1 {
+                    pool.sme_free.fetch_add(permits - 1, Ordering::SeqCst);
+                }
+                pool.sme_total.set(permits).expect("the starter sets the permit count once");
+            })
+            .expect("spawning the BLAKE3 starter");
         pool
     })
 }
 
 impl Pool {
-    fn post(&self, jobs: Vec<Job>) {
-        let mut queue = self.queue.lock().unwrap();
-        for job in jobs {
-            queue.push_back(job);
-            self.posted.notify_one();
+    /// Put the job in a free slot. Returns the slot, or None when every
+    /// slot is taken. When the workers awake are fewer than the pieces,
+    /// every sleeper is woken, in one system call: a wake costs the waker
+    /// ten microseconds or more on some machines and the sleeper arrives
+    /// tens of microseconds later, so one call pays once for all, and
+    /// the woken workers then stay awake while calls keep coming.
+    fn register(&self, job: &Job) -> Option<usize> {
+        // The 'static is a promise the caller keeps by waiting on `done`.
+        let ptr = job as *const Job as *mut Job<'static>;
+        let slot = (0..MAX_JOBS).find(|&i| {
+            self.slots[i].job.compare_exchange(std::ptr::null_mut(), ptr, Ordering::SeqCst, Ordering::Relaxed).is_ok()
+        })?;
+        self.last_job_ns.store(self.epoch.elapsed().as_nanos() as u64, Ordering::SeqCst);
+        let sleepers = self.sleepers.load(Ordering::SeqCst);
+        if sleepers > 0 && (self.cpus - 1 - sleepers.min(self.cpus - 1)) < job.pieces.len() {
+            // The lock orders the notify after a sleeper's last check.
+            let _guard = self.sleep_lock.lock().unwrap();
+            self.posted.notify_all();
+        }
+        Some(slot)
+    }
+
+    /// Whether a job was registered within SPIN_BEFORE_SLEEP: while calls
+    /// keep coming, workers stay awake.
+    fn jobs_recently(&self) -> bool {
+        let last = self.last_job_ns.load(Ordering::SeqCst);
+        self.epoch.elapsed().as_nanos() as u64 - last < SPIN_BEFORE_SLEEP.as_nanos() as u64
+    }
+
+    /// Clear the slot and wait out any worker mid-take on it.
+    fn unregister(&self, slot: usize) {
+        self.slots[slot].job.store(std::ptr::null_mut(), Ordering::SeqCst);
+        while self.slots[slot].readers.load(Ordering::SeqCst) > 0 {
+            std::hint::spin_loop();
         }
     }
 
-    /// Wait until `done` reaches `count`. The caller's own piece has just
+    /// One SME2 permit, when one is free.
+    fn take_sme_permit(&self) -> bool {
+        let mut free = self.sme_free.load(Ordering::Relaxed);
+        while free > 0 {
+            match self.sme_free.compare_exchange_weak(free, free - 1, Ordering::AcqRel, Ordering::Relaxed) {
+                Ok(_) => return true,
+                Err(now) => free = now,
+            }
+        }
+        false
+    }
+
+    fn release_sme_permit(&self) {
+        self.sme_free.fetch_add(1, Ordering::AcqRel);
+    }
+
+    /// Wait until `done` reaches `count`. The caller's own pieces have just
     /// finished, so the workers are usually done or nearly so: spin for a
     /// while, then sleep on the condition variable the workers signal
-    /// after every job.
-    fn wait(&self, done: &AtomicUsize, count: usize) {
+    /// after a piece while a caller sleeps.
+    fn wait_done(&self, done: &AtomicUsize, count: usize) {
         let started = std::time::Instant::now();
         while started.elapsed() < SPIN_BEFORE_SLEEP {
-            if done.load(Ordering::Acquire) == count {
+            if done.load(Ordering::SeqCst) == count {
                 return;
             }
             std::thread::yield_now();
         }
         let mut guard = self.finished.lock().unwrap();
-        while done.load(Ordering::Acquire) != count {
+        self.waiters.fetch_add(1, Ordering::SeqCst);
+        while done.load(Ordering::SeqCst) != count {
             guard = self.finished_signal.wait(guard).unwrap();
         }
+        self.waiters.fetch_sub(1, Ordering::SeqCst);
     }
 
-    /// The next job: polled for a while (yielding the CPU between polls,
-    /// so a thread that has work on this CPU runs), then waited for.
-    fn take(&self) -> Job {
-        let started = std::time::Instant::now();
-        while started.elapsed() < SPIN_BEFORE_SLEEP {
-            if let Some(job) = self.queue.lock().unwrap().pop_front() {
-                return job;
-            }
-            std::thread::yield_now();
+    /// A piece is finished: count it, and wake a sleeping caller. The
+    /// increment is the worker's last touch of the job.
+    fn piece_done(&self, done: &AtomicUsize) {
+        done.fetch_add(1, Ordering::SeqCst);
+        if self.waiters.load(Ordering::SeqCst) > 0 {
+            let _guard = self.finished.lock().unwrap();
+            self.finished_signal.notify_all();
         }
-        let mut queue = self.queue.lock().unwrap();
-        loop {
-            if let Some(job) = queue.pop_front() {
-                return job;
-            }
-            queue = self.posted.wait(queue).unwrap();
+    }
+
+    /// A worker takes one piece from the first job, scanning the slots
+    /// from `start`, that has one and room under its thread cap, while
+    /// hashing threads stay within the CPUs. The pointer stays valid until
+    /// this worker's `piece_done` (see the pool's comment).
+    fn take_piece(&self, start: &mut usize) -> Option<(*const Job<'static>, usize)> {
+        if self.busy.load(Ordering::SeqCst) + self.callers.load(Ordering::SeqCst) >= self.cpus {
+            return None;
         }
+        for k in 0..MAX_JOBS {
+            let at = (*start + k) % MAX_JOBS;
+            let slot = &self.slots[at];
+            // A load first: an empty slot costs the pollers no writes, so
+            // a caller's registration is not fighting fifteen of them for
+            // the line.
+            if slot.job.load(Ordering::SeqCst).is_null() {
+                continue;
+            }
+            slot.readers.fetch_add(1, Ordering::SeqCst);
+            let ptr = slot.job.load(Ordering::SeqCst);
+            let mut taken = None;
+            let mut over_cap = false;
+            if !ptr.is_null() {
+                // Sound: a reader of the slot; the caller waits for readers.
+                let job = unsafe { &*ptr };
+                if job.cursor.load(Ordering::SeqCst) < job.pieces.len()
+                    && job.active.load(Ordering::SeqCst) < job.max_threads
+                {
+                    // Reserve a hashing thread, then the piece; both exact.
+                    if self.busy.fetch_add(1, Ordering::SeqCst) + self.callers.load(Ordering::SeqCst) >= self.cpus {
+                        over_cap = true;
+                    } else {
+                        let index = job.cursor.fetch_add(1, Ordering::SeqCst);
+                        if index < job.pieces.len() {
+                            job.active.fetch_add(1, Ordering::SeqCst);
+                            taken = Some(index);
+                        }
+                    }
+                    if taken.is_none() {
+                        self.busy.fetch_sub(1, Ordering::SeqCst);
+                    }
+                }
+            }
+            slot.readers.fetch_sub(1, Ordering::SeqCst);
+            if let Some(index) = taken {
+                *start = at + 1;
+                return Some((ptr, index));
+            }
+            if over_cap {
+                return None;
+            }
+        }
+        None
+    }
+
+    /// The next piece for a worker: polled for a while (yielding the CPU
+    /// between polls, so a thread that has work on this CPU runs), then
+    /// waited for.
+    fn next_piece(&self, start: &mut usize) -> (*const Job<'static>, usize) {
+        let taken = 'taken: loop {
+            let started = std::time::Instant::now();
+            while started.elapsed() < SPIN_BEFORE_SLEEP || self.jobs_recently() {
+                if let Some(taken) = self.take_piece(start) {
+                    break 'taken taken;
+                }
+                std::thread::yield_now();
+            }
+            // Asleep until a wake, then back to polling: a woken worker
+            // that finds nothing yet stays available for the next call.
+            // The guard is held through the take, so a caller's wake
+            // cannot fall between the take and the wait.
+            let guard = self.sleep_lock.lock().unwrap();
+            self.sleepers.fetch_add(1, Ordering::SeqCst);
+            let taken = self.take_piece(start);
+            if taken.is_none() {
+                drop(self.posted.wait(guard).unwrap());
+            }
+            self.sleepers.fetch_sub(1, Ordering::SeqCst);
+            if let Some(taken) = taken {
+                break 'taken taken;
+            }
+        };
+        taken
     }
 }
 
-fn worker() {
+fn worker_main() {
     let pool = pool();
+    let mut start = 0;
     loop {
-        let job = pool.take();
+        let (job_ptr, index) = pool.next_piece(&mut start);
         // Sound by the pool's contract: the caller is waiting on `done`.
-        let input = unsafe { &*job.input };
-        for &(piece, slot) in &job.pieces {
-            let cv = hash_piece(&input[piece.offset..][..piece.len], piece.offset, job.mode);
-            unsafe {
-                *slot = cv;
-            }
-        }
-        // Taking the lock before the increment closes the gap where the
-        // caller checks the count, misses it, and sleeps forever.
-        let _guard = pool.finished.lock().unwrap();
-        unsafe { &*job.done }.fetch_add(1, Ordering::Release);
-        pool.finished_signal.notify_all();
+        let job = unsafe { &*job_ptr };
+        unsafe { job.hash_piece(index) };
+        job.active.fetch_sub(1, Ordering::SeqCst);
+        pool.busy.fetch_sub(1, Ordering::SeqCst);
+        pool.piece_done(&job.done);
     }
 }
 
-/// See the module docs: the platform's topology, then a measurement of
-/// whether CPUs share the kernel's unit.
-fn detect_lane_count() -> usize {
-    if let Some(count) = platform_lane_count() {
+/// Whether pieces take SME2 permits: the detected platform is SME2.
+fn uses_sme_permits() -> bool {
+    #[cfg(blake3_sme2)]
+    if matches!(Platform::detect(), Platform::SME2) {
+        return true;
+    }
+    false
+}
+
+/// The number of SME2 permits: the SME units this machine has, when the
+/// detected platform is SME2; otherwise nothing takes one, so any value
+/// serves and 0 says so. Calls the measurement where one is needed.
+fn sme_permits() -> usize {
+    if uses_sme_permits() {
+        #[cfg(blake3_sme2)]
+        return sme_unit_count().max(1);
+    }
+    0
+}
+
+/// See the module docs: the platform's topology where it names clusters,
+/// else a measurement.
+#[cfg(blake3_sme2)]
+fn sme_unit_count() -> usize {
+    if let Some(count) = platform_cluster_count() {
         return count;
     }
-    std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1)
+    measure_sme_units()
 }
 
-/// Whether two threads hashing at once each keep their single-thread
-/// speed. A pair that takes at least half again as long as one thread
-/// alone shares an execution unit. Each timing covers `REPEAT` hashes of
-/// 256 KiB (about two milliseconds), so a fresh thread's first
-/// microseconds of scheduling are a small share; the best of `ROUNDS` is
+/// How many threads can run the SME2 kernel at full speed at once: the
+/// aggregate rate of `n` threads hashing at the same time, over the rate
+/// of one, at the `n` where it stops growing. Each timing covers `REPEAT`
+/// hashes of 256 KiB (about two milliseconds); the best of `ROUNDS` is
 /// kept, which rides out a hypervisor descheduling a virtual CPU.
-#[cfg(target_os = "linux")]
-fn cpus_share_kernel_unit() -> bool {
+#[cfg(blake3_sme2)]
+fn measure_sme_units() -> usize {
     use std::sync::{Arc, Barrier};
     use std::time::{Duration, Instant};
     const LEN: usize = 256 * CHUNK_LEN;
     const REPEAT: usize = 40;
-    const ROUNDS: usize = 5;
-    let input: Vec<u8> = (0..LEN as u32).map(|i| (i.wrapping_mul(2654435761) >> 24) as u8).collect();
+    const ROUNDS: usize = 2;
+    let cpus = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+    let input: Arc<Vec<u8>> = Arc::new((0..LEN as u32).map(|i| (i.wrapping_mul(2654435761) >> 24) as u8).collect());
     let timed = |input: &[u8]| -> Duration {
         let started = Instant::now();
         for _ in 0..REPEAT {
@@ -613,35 +671,48 @@ fn cpus_share_kernel_unit() -> bool {
         }
         started.elapsed()
     };
+    // The slowest thread's time, best of ROUNDS, for n threads at once.
+    let pair_time = |n: usize| -> Duration {
+        let mut best = Duration::MAX;
+        for _ in 0..ROUNDS {
+            let barrier = Arc::new(Barrier::new(n));
+            let threads: Vec<_> = (0..n)
+                .map(|_| {
+                    let input = Arc::clone(&input);
+                    let barrier = Arc::clone(&barrier);
+                    std::thread::spawn(move || {
+                        barrier.wait();
+                        timed(&input)
+                    })
+                })
+                .collect();
+            let slowest = threads.into_iter().map(|t| t.join().expect("SME probe thread")).max().unwrap();
+            best = best.min(slowest);
+        }
+        best
+    };
     timed(&input);
-    let solo = (0..ROUNDS).map(|_| timed(&input)).min().unwrap();
-    let input = Arc::new(input);
-    let mut pair = Duration::MAX;
-    for _ in 0..ROUNDS {
-        let barrier = Arc::new(Barrier::new(2));
-        let other = {
-            let input = Arc::clone(&input);
-            let barrier = Arc::clone(&barrier);
-            std::thread::spawn(move || {
-                barrier.wait();
-                timed(&input)
-            })
-        };
-        barrier.wait();
-        let mine = timed(&input);
-        let theirs = other.join().expect("lane probe thread");
-        pair = pair.min(mine.max(theirs));
+    let solo = pair_time(1).as_nanos() as f64;
+    let mut units = 1.0f64;
+    let mut n = 2;
+    while n <= cpus {
+        let aggregate = n as f64 * solo / pair_time(n).as_nanos() as f64;
+        units = units.max(aggregate);
+        // Past the knee the aggregate stays flat; two more steps confirm it.
+        if aggregate < units * 0.9 {
+            break;
+        }
+        n += 1 + n / 4;
     }
-    // Integer comparison: pair ≥ 1.5 × solo.
-    pair.as_nanos() * 2 >= solo.as_nanos() * 3
+    (units.round() as usize).clamp(1, cpus)
 }
 
 /// Apple: `hw.nperflevels` performance levels, each with
 /// `hw.perflevelN.physicalcpu` cores and `hw.perflevelN.cpusperl2` cores
-/// per cluster (the cores that share an L2 share an SME unit). Lanes are
+/// per cluster (the cores that share an L2 share an SME unit). Units are
 /// clusters: the sum over levels of physicalcpu / cpusperl2.
-#[cfg(target_vendor = "apple")]
-fn platform_lane_count() -> Option<usize> {
+#[cfg(all(blake3_sme2, target_vendor = "apple"))]
+fn platform_cluster_count() -> Option<usize> {
     fn sysctl_u32(name: &std::ffi::CStr) -> Option<u32> {
         let mut value: u32 = 0;
         let mut size = core::mem::size_of::<u32>();
@@ -657,40 +728,22 @@ fn platform_lane_count() -> Option<usize> {
         (rc == 0).then_some(value)
     }
     let levels = sysctl_u32(c"hw.nperflevels")?;
-    let mut lanes = 0usize;
+    let mut clusters = 0usize;
     for level in 0..levels {
         let cores = std::ffi::CString::new(format!("hw.perflevel{level}.physicalcpu")).unwrap();
         let per_cluster = std::ffi::CString::new(format!("hw.perflevel{level}.cpusperl2")).unwrap();
         let cores = sysctl_u32(&cores)? as usize;
         let per_cluster = sysctl_u32(&per_cluster)?.max(1) as usize;
-        lanes += cores.div_ceil(per_cluster);
+        clusters += cores.div_ceil(per_cluster);
     }
-    (lanes > 0).then_some(lanes)
+    (clusters > 0).then_some(clusters)
 }
 
-/// Linux: every CPU is a lane when two threads keep their speed side by
-/// side; otherwise the distinct `cluster_cpus_list` values across online
-/// CPUs. Kernels before 5.16 have no cluster topology; then every CPU is
-/// a lane.
-#[cfg(target_os = "linux")]
-fn platform_lane_count() -> Option<usize> {
-    let cpus = std::thread::available_parallelism().ok()?.get();
-    if cpus == 1 || !cpus_share_kernel_unit() {
-        return Some(cpus);
-    }
-    let mut clusters: Vec<String> = Vec::new();
-    for cpu in 0..cpus {
-        let path = format!("/sys/devices/system/cpu/cpu{cpu}/topology/cluster_cpus_list");
-        let list = std::fs::read_to_string(path).ok()?.trim().to_owned();
-        if !clusters.contains(&list) {
-            clusters.push(list);
-        }
-    }
-    (!clusters.is_empty()).then_some(clusters.len())
-}
-
-#[cfg(not(any(target_vendor = "apple", target_os = "linux")))]
-fn platform_lane_count() -> Option<usize> {
+/// Elsewhere no interface reports which cores share an SME unit (Linux's
+/// `cluster_cpus_list` describes the guest's view, which a hypervisor
+/// invents), so the count is measured.
+#[cfg(all(blake3_sme2, not(target_vendor = "apple")))]
+fn platform_cluster_count() -> Option<usize> {
     None
 }
 
@@ -699,39 +752,42 @@ mod test {
     use super::*;
 
     #[test]
-    fn test_split_subtrees_shapes() {
-        assert_eq!(
-            split_subtrees(64 * CHUNK_LEN, 2),
-            vec![Piece { offset: 0, len: 32 * CHUNK_LEN }, Piece { offset: 32 * CHUNK_LEN, len: 32 * CHUNK_LEN }]
-        );
-        assert_eq!(
-            split_subtrees(64 * CHUNK_LEN, 3),
-            vec![
-                Piece { offset: 0, len: 16 * CHUNK_LEN },
-                Piece { offset: 16 * CHUNK_LEN, len: 16 * CHUNK_LEN },
-                Piece { offset: 32 * CHUNK_LEN, len: 32 * CHUNK_LEN },
-            ]
-        );
-        // 100 chunks + 7 bytes into three: the root splits 64 | 36 + 7,
-        // then the 64-chunk left side (the larger) splits into halves.
-        assert_eq!(
-            split_subtrees(100 * CHUNK_LEN + 7, 3),
-            vec![
-                Piece { offset: 0, len: 32 * CHUNK_LEN },
-                Piece { offset: 32 * CHUNK_LEN, len: 32 * CHUNK_LEN },
-                Piece { offset: 64 * CHUNK_LEN, len: 36 * CHUNK_LEN + 7 },
-            ]
-        );
-        for count in 1..=32 {
-            for len in [32 * CHUNK_LEN, 1000 * CHUNK_LEN + 3, 1 << 24, (1 << 20) + 1] {
-                let pieces = split_subtrees(len, count);
-                assert_eq!(pieces.len(), count);
+    fn test_next_piece_len() {
+        assert_eq!(next_piece_len(64 * CHUNK_LEN, 16), MIN_PIECE_LEN);
+        assert_eq!(next_piece_len(1 << 20, 16), 64 * CHUNK_LEN);
+        assert_eq!(next_piece_len(3 << 20, 16), 128 * CHUNK_LEN, "192 KiB caps at the longest piece");
+        assert_eq!(next_piece_len(1 << 30, 16), MAX_PIECE_LEN);
+        assert_eq!(next_piece_len((3 << 20) / 4, 16), 32 * CHUNK_LEN, "48 KiB rounds down to 32 KiB");
+        for remaining in [MIN_PIECE_LEN + 1, 100_000, 1 << 20, (3 << 20) + 5, 1 << 27] {
+            for threads in [1, 2, 3, 16, 64] {
+                let piece = next_piece_len(remaining, threads);
+                assert!(piece.is_power_of_two() && piece >= MIN_PIECE_LEN && piece <= MAX_PIECE_LEN);
+            }
+        }
+    }
+
+    #[test]
+    fn test_cut_subtrees_shapes() {
+        // 64 KiB for 16 threads: eight pieces of the shortest length.
+        let pieces = cut_subtrees(64 * CHUNK_LEN, 16);
+        assert_eq!(pieces.len(), 8);
+        assert!(pieces.iter().all(|p| p.len == MIN_PIECE_LEN));
+        // 1 MiB for 16 threads: 64 KiB first, then shrinking, then a tail.
+        let pieces = cut_subtrees(1 << 20, 16);
+        assert_eq!(pieces[0].len, 64 * CHUNK_LEN);
+        assert!(pieces.windows(2).all(|w| w[1].len <= w[0].len), "{pieces:?}");
+        assert!(pieces.last().unwrap().len <= MIN_PIECE_LEN);
+        for threads in [1, 2, 3, 16, 64] {
+            for len in [MIN_PIECE_LEN + 1, 100 * CHUNK_LEN + 7, 1000 * CHUNK_LEN + 3, 1 << 24, (1 << 20) + 1] {
+                let pieces = cut_subtrees(len, threads);
+                assert!(pieces.len() >= 2);
                 assert_eq!(pieces.iter().map(|p| p.len).sum::<usize>(), len);
                 for (i, p) in pieces.iter().enumerate() {
+                    assert!(p.len <= MAX_PIECE_LEN);
                     if i > 0 {
                         assert_eq!(p.offset, pieces[i - 1].offset + pieces[i - 1].len);
                         let max = hazmat::max_subtree_len(p.offset as u64).unwrap();
-                        assert!(p.len as u64 <= max, "piece {i} of {count} for {len}: {p:?} exceeds {max}");
+                        assert!(p.len as u64 <= max, "piece {i} for {len}: {p:?} exceeds {max}");
                     }
                 }
             }
@@ -740,7 +796,7 @@ mod test {
 
     #[test]
     fn test_hash_matches_serial() {
-        let mut input = vec![0u8; 3 * MIN_SPLIT_LEN * 8 + 12345];
+        let mut input = vec![0u8; (3 << 20) + 12345];
         crate::test::paint_test_input(&mut input);
         for len in [
             0,
@@ -769,127 +825,73 @@ mod test {
         }
     }
 
-    /// The deal evens the lanes: for a 3 MiB input over two lanes (whose
-    /// subtree cut alone is 2 | 1), eight pieces come out 1.5 | 1.5 MiB;
-    /// for a power of two, every lane gets the same.
+    /// Every piece length the cut can produce, through cut and merge alone
+    /// (independent of how many CPUs the test machine has), on both
+    /// kernel platforms.
     #[test]
-    fn test_deal_to_lanes_is_even() {
-        let total = |pieces: &[Piece], share: &[usize]| share.iter().map(|&i| pieces[i].len).sum::<usize>();
-        let pieces = split_subtrees(3 << 20, 2 * PIECES_PER_LANE);
-        let shares = deal_to_lanes(&pieces, 2);
-        assert_eq!(total(&pieces, &shares[0]), 3 << 19);
-        assert_eq!(total(&pieces, &shares[1]), 3 << 19);
-        for lanes in 1..=6 {
-            for len in [1 << 20, 3 << 20, 5 << 20, (7 << 20) + 12345] {
-                let pieces = split_subtrees(len, lanes * PIECES_PER_LANE);
-                let shares = deal_to_lanes(&pieces, lanes);
-                assert_eq!(shares.iter().map(|s| s.len()).sum::<usize>(), pieces.len());
-                let mut seen: Vec<usize> = shares.iter().flatten().copied().collect();
-                seen.sort_unstable();
-                assert_eq!(seen, (0..pieces.len()).collect::<Vec<_>>(), "every piece dealt once");
-                let totals: Vec<usize> = shares.iter().map(|s| total(&pieces, s)).collect();
-                let largest_piece = pieces.iter().map(|p| p.len).max().unwrap();
-                let spread = totals.iter().max().unwrap() - totals.iter().min().unwrap();
-                assert!(spread <= largest_piece, "lanes = {lanes}, len = {len}: shares {totals:?} differ by more than one piece");
-                for share in &shares {
-                    assert!(share.windows(2).all(|w| w[0] < w[1]), "shares are in offset order");
+    fn test_merge_every_cut() {
+        for len in [70 * CHUNK_LEN + 5, 100 * CHUNK_LEN + 7, 256 * CHUNK_LEN, 1000 * CHUNK_LEN] {
+            let mut input = vec![0u8; len];
+            crate::test::paint_test_input(&mut input);
+            let want = crate::hash(&input);
+            for threads in [1, 2, 3, 5, 16, 64] {
+                let pieces = cut_subtrees(len, threads);
+                for platform in [fast_platform(), other_platform()] {
+                    let cvs: Vec<ChainingValue> = pieces
+                        .iter()
+                        .map(|p| {
+                            let mut hasher = Hasher::new();
+                            hasher.set_platform(platform);
+                            hasher.set_input_offset(p.offset as u64);
+                            hasher.update(&input[p.offset..][..p.len]);
+                            hasher.finalize_non_root()
+                        })
+                        .collect();
+                    assert_eq!(want, merge_root(&pieces, &cvs, Mode::Hash), "len = {len}, threads = {threads}");
                 }
             }
         }
     }
 
-    /// Every piece count the merge can see, through split and merge alone
-    /// (independent of how many lanes the test machine has).
-    #[test]
-    fn test_merge_every_count() {
-        for len in [70 * CHUNK_LEN + 5, 100 * CHUNK_LEN + 7, 256 * CHUNK_LEN, 1000 * CHUNK_LEN] {
-            let mut input = vec![0u8; len];
-            crate::test::paint_test_input(&mut input);
-            let want = crate::hash(&input);
-            for count in 2..=32 {
-                let pieces = split_subtrees(input.len(), count);
-                let cvs: Vec<ChainingValue> = pieces
-                    .iter()
-                    .map(|p| hash_piece(&input[p.offset..][..p.len], p.offset, OwnedMode::Hash))
-                    .collect();
-                assert_eq!(want, merge_root(&pieces, &cvs, Mode::Hash), "len = {len}, count = {count}");
-            }
-        }
-    }
-
-    /// Admission arithmetic on the packed state, without touching the
-    /// live counters: grant() is a pure function of (lanes in use,
-    /// callers, total, want).
-    #[test]
-    fn test_grant_is_a_fair_share() {
-        // One caller, nothing in use: everything it wants, less its own thread.
-        assert_eq!(grant(pack(0, 1), 4, 8), 3);
-        assert_eq!(grant(pack(0, 1), 4, 1), 1);
-        assert_eq!(grant(pack(0, 1), 1, 8), 0, "a one-lane machine grants no extra");
-        // Two callers on four lanes: two each.
-        assert_eq!(grant(pack(0, 2), 4, 8), 1);
-        assert_eq!(grant(pack(2, 2), 4, 8), 1);
-        // Two callers on three lanes: ceil(3/2) = 2 for the first; the
-        // second finds one free and gets its own thread only.
-        assert_eq!(grant(pack(0, 2), 3, 8), 1);
-        assert_eq!(grant(pack(2, 2), 3, 8), 0);
-        // Two callers on two lanes: one each.
-        assert_eq!(grant(pack(0, 2), 2, 8), 0);
-        // Never more than free.
-        assert_eq!(grant(pack(3, 1), 4, 8), 0);
-        assert_eq!(grant(pack(4, 1), 4, 8), 0);
-    }
-
-    /// pack and unpack round-trip, and enter/leave are inverses.
-    #[test]
-    fn test_admission_state_packing() {
-        for (lanes, callers) in [(0, 0), (1, 1), (7, 3), (63, 64), (usize::from(u16::MAX), 5)] {
-            assert_eq!(unpack(pack(lanes, callers)), (lanes, callers));
-        }
-        let before = ADMISSION.load(Ordering::Relaxed);
-        enter();
-        let extra = admit(0);
-        assert_eq!(extra, 0);
-        let (lanes, callers) = unpack(ADMISSION.load(Ordering::Relaxed));
-        let (before_lanes, before_callers) = unpack(before);
-        assert!(lanes >= before_lanes + 1 && callers >= before_callers + 1);
-        leave(extra);
-        // Other tests may be mid-flight; the difference we made is gone.
-        let (after_lanes, after_callers) = unpack(ADMISSION.load(Ordering::Relaxed));
-        assert!(after_lanes <= lanes - 1 + 8 && after_callers <= callers - 1 + 8);
-    }
-
     /// Every thread cap gives hash()'s result, and a cap of one takes the
-    /// serial path without touching the admission counters.
+    /// serial path without touching the pool.
     #[test]
     fn test_budget_caps_agree() {
         let mut input = vec![0u8; 4 * MIN_SPLIT_LEN + 77];
         crate::test::paint_test_input(&mut input);
         let want = crate::hash(&input);
-        let before = ADMISSION.load(Ordering::Relaxed);
         assert_eq!(want, hash(&input, 1));
-        assert_eq!(before, ADMISSION.load(Ordering::Relaxed), "a cap of one leaves admission alone");
         for cap in [2, 3, 4, 64, usize::MAX] {
             assert_eq!(want, hash(&input, cap), "cap = {cap}");
         }
     }
 
-    /// Many concurrent callers on one process: every result is right and
-    /// the lane count is never exceeded by more than the callers' own
-    /// threads (which admission cannot refuse).
+    /// Many concurrent callers on one process: every result is right, and
+    /// afterwards the pool is quiet: no caller, no busy worker, no job,
+    /// every permit back.
     #[test]
     fn test_concurrent_callers_agree() {
         let mut input = vec![0u8; 8 * MIN_SPLIT_LEN + 1];
         crate::test::paint_test_input(&mut input);
         let want = crate::hash(&input);
+        let input = &input[..];
         std::thread::scope(|scope| {
-            for _ in 0..8 {
-                scope.spawn(|| {
+            for cap in [usize::MAX, usize::MAX, 3, 2, usize::MAX, 5, usize::MAX, usize::MAX] {
+                scope.spawn(move || {
                     for _ in 0..20 {
-                        assert_eq!(want, hash(&input, usize::MAX));
+                        assert_eq!(want, hash(input, cap));
                     }
                 });
             }
         });
+        let pool = pool();
+        // Other tests in this process may be mid-call; when they are quiet
+        // too the counts read zero and the permits are all back.
+        let total = *pool.sme_total.wait();
+        if pool.callers.load(Ordering::SeqCst) == 0 {
+            assert!(pool.slots.iter().all(|s| s.job.load(Ordering::SeqCst).is_null()));
+            assert_eq!(pool.busy.load(Ordering::SeqCst), 0);
+            assert_eq!(pool.sme_free.load(Ordering::SeqCst), total);
+        }
     }
 }
