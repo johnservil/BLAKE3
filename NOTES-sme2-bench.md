@@ -157,17 +157,21 @@ M4, where SME2 is 1.5–2× NEON per thread and the round trip a quarter.
   **Do not reintroduce.**
 - `spin_loop` polls without yielding: hold a scheduler quantum.
 
-## Results as of b3b4bc8 (16-vCPU Debian VM, bench-hashes duo medians, ns/B)
+## Results as of 845ff09 (16-vCPU Debian VM, bench-hashes --all, duo medians, ns/B)
 
     size      servil   servil mt      size      servil   servil mt
-    64 KiB    0.214    0.191          1 MiB     0.186    0.078
-    128 KiB   0.209    0.139          2 MiB     0.183    0.067
-    256 KiB   0.201    0.118          4 MiB     0.186    0.061
-    512 KiB   0.189    0.093          8 MiB     0.184    0.062
+    64 KiB    0.216    0.194          1 MiB     0.190    0.078
+    128 KiB   0.213    0.134          2 MiB     0.187    0.068
+    256 KiB   0.207    0.114          3 MiB     0.181    0.065
+    512 KiB   0.200    0.091          8 MiB     0.184    0.056
 
-servil mt wins every cell from 64 KiB; mt·1 tracks servil. Rayon
-(`blake3-mt`) on this VM: 12.7 at 64 KiB, 0.18 at 8 MiB (wakes per
-call). The M4 Max has not run this design yet.
+servil mt wins every cell from 64 KiB (bands apart) and ties servil from
+3 KiB; below that SHA-256 (ring, 0.30) wins as expected; mt·1 tracks
+servil. Rayon (`blake3-mt`) on this VM: 13.9 at 64 KiB, 0.22 at 8 MiB
+(wakes per call). After b3b4bc8 two small changes, each measured with
+`examples/interleave.rs`: a second caller skips the wake when the
+sleepers are already notified (51832b0), and pieces under 16 KiB take no
+SME2 permit (845ff09). The M4 Max has not run this design yet.
 
 ## Next steps, in rough priority
 
