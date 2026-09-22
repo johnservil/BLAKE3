@@ -26,10 +26,11 @@
 //! # Jobs and the pool
 //!
 //! A call registers a *job* (its pieces, a cursor, a done count) in the
-//! pool's list, then takes pieces from its own job through the cursor until
-//! none remain and waits for the done count. Workers, started once per
-//! process, one per CPU beyond the first, serve the jobs in the list
-//! round-robin, one piece at a time through the same cursor. Two callers
+//! pool's slot table, then takes pieces from its own job through the
+//! cursor until none remain and waits for the done count. Workers,
+//! started once per process, one per CPU beyond the first, serve the
+//! registered jobs round-robin, one piece at a time through the same
+//! cursor. Two callers
 //! hashing at once therefore each get about half the workers' time, and
 //! a slow thread takes fewer pieces than a fast one; there is nothing to
 //! tune for fairness or balance.
@@ -82,8 +83,9 @@ use std::sync::{Condvar, Mutex, OnceLock};
 
 /// Inputs below this length are hashed on the calling thread. A split
 /// hands pieces to workers that are polling, a few microseconds each way;
-/// 64 KiB takes about 14 µs on one SME2 thread, and as four pieces it
-/// comes back sooner.
+/// 64 KiB takes about 14 µs on one SME2 thread, and as eight pieces it
+/// comes back sooner (VM, beside a copy of itself: 0.19 ns/B against
+/// 0.21; 32 KiB and 48 KiB came back later split than whole).
 pub(crate) const MIN_SPLIT_LEN: usize = 64 * 1024;
 
 /// The shortest piece: eight chunks, a hybrid kernel's worth.
@@ -210,7 +212,7 @@ fn hash_over_pool(input: &[u8], mode: Mode, max_threads: usize) -> Hash {
 }
 
 /// One call's work, on the caller's stack. Workers reach it through the
-/// pool's list while it is registered, and finish the pieces they hold
+/// pool's slots while it is registered, and finish the pieces they hold
 /// after; the caller returns only when `done` has counted every piece, so
 /// every worker access falls inside the caller's frame.
 struct Job<'a> {
