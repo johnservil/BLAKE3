@@ -434,15 +434,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // SME2 sits on top of NEON: the SME2 wrapper falls back to NEON for
         // inputs that don't fill a group of sixteen. It is built on every
-        // little-endian AArch64 target with NEON enabled and runtime
-        // detection (Apple platforms and Linux), and the build fails when
-        // the assembler lacks SME2 support. Platform::detect() then insists
-        // that the CPU has SME2 too, so a successful build of this crate
-        // hashes with the SME2 kernel or stops.
-        if is_aarch64()
-            && !is_no_sme2()
-            && (target_components()[2] == "darwin" || target_components()[2] == "linux")
-        {
+        // AArch64 target with NEON enabled and runtime detection (Apple
+        // platforms and Linux, the same cfg as platform.rs's sme2_reported
+        // and Cargo.toml's libc dependency), and the build fails when the
+        // assembler lacks SME2 support. Platform::detect() selects the SME2
+        // kernels when the CPU reports SME2 with 512-bit streaming vectors
+        // and the NEON hybrids otherwise.
+        let target_vendor = env::var("CARGO_CFG_TARGET_VENDOR").unwrap_or_default();
+        let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+        if is_aarch64() && !is_no_sme2() && (target_vendor == "apple" || target_os == "linux") {
             require_c_compiler_supports_sme2();
             build_sme2_assembly();
         }
