@@ -293,13 +293,13 @@ fn require_c_compiler_supports_sme2() {
     match build.is_flag_supported("-march=armv9-a+sme2") {
         Ok(true) => {}
         Ok(false) => panic!(
-            "blake3_sme2 requires a C compiler that assembles SME2, and {compiler:?} \
+            "blake3-servil requires a C compiler that assembles SME2, and {compiler:?} \
              rejects -march=armv9-a+sme2. Point the cc crate at Clang/LLVM 17 or \
              later (for example CC=clang-19), or Xcode 15 or later on macOS. To \
              build this crate without the SME2 kernel, enable its `no_sme2` feature."
         ),
         Err(e) => panic!(
-            "blake3_sme2 requires a C compiler that assembles SME2, and none was \
+            "blake3-servil requires a C compiler that assembles SME2, and none was \
              found at {compiler:?}: {e:?}. Install Clang/LLVM 17 or later and set CC."
         ),
     }

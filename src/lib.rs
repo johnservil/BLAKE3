@@ -6,10 +6,10 @@
 //! ```
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! // Hash an input all at once.
-//! let hash1 = blake3::hash(b"foobarbaz");
+//! let hash1 = blake3_servil::hash(b"foobarbaz");
 //!
 //! // Hash an input incrementally.
-//! let mut hasher = blake3::Hasher::new();
+//! let mut hasher = blake3_servil::Hasher::new();
 //! hasher.update(b"foo");
 //! hasher.update(b"bar");
 //! hasher.update(b"baz");
@@ -145,7 +145,7 @@ pub mod traits;
 mod io;
 mod join;
 #[cfg(feature = "std")]
-pub mod lanes;
+mod lanes;
 
 use arrayvec::{ArrayString, ArrayVec};
 use core::cmp;
@@ -1010,10 +1010,10 @@ fn hash_all_at_once<J: join::Join>(input: &[u8], key: &CVWords, flags: u8) -> Ou
 /// [`Hasher::update`], and [`Hasher::finalize`]. These two lines are equivalent:
 ///
 /// ```
-/// let hash = blake3::hash(b"foo");
+/// let hash = blake3_servil::hash(b"foo");
 /// # let hash1 = hash;
 ///
-/// let hash = blake3::Hasher::new().update(b"foo").finalize();
+/// let hash = blake3_servil::Hasher::new().update(b"foo").finalize();
 /// # let hash2 = hash;
 /// # assert_eq!(hash1, hash2);
 /// ```
@@ -1021,15 +1021,53 @@ fn hash_all_at_once<J: join::Join>(input: &[u8], key: &CVWords, flags: u8) -> Ou
 /// For output sizes other than 32 bytes, see [`Hasher::finalize_xof`] and
 /// [`OutputReader`].
 ///
-/// This function is always single-threaded. For multithreading support, see
-/// [`Hasher::update_rayon`](struct.Hasher.html#method.update_rayon).
+/// This function is always single-threaded. For the same hash over several
+/// threads, see [`hash_multithreaded`] and [`hash_multithreaded_with_budget`].
 pub fn hash(input: &[u8]) -> Hash {
     hash_serial(input, IV, 0)
 }
 
+/// The default hash function over several threads.
+///
+/// Returns the same [`Hash`] as [`hash`] for every input. Inputs below
+/// 128 KiB are hashed on the calling thread alone, at [`hash`]'s speed.
+/// Larger inputs are split across the calling thread and worker threads
+/// this crate starts once per process and keeps; how many threads a call
+/// uses depends on the input's length and the machine.
+///
+/// Concurrent calls within one process share the worker threads fairly:
+/// two callers hashing at once each get about half the machine, and each
+/// finishes at about the speed one caller would on that half. A call never
+/// waits on another process; the operating system's scheduler arbitrates
+/// between processes as it does for any threads.
+///
+/// ```
+/// let hash = blake3_servil::hash_multithreaded(&[0u8; 1 << 20]);
+/// assert_eq!(hash, blake3_servil::hash(&[0u8; 1 << 20]));
+/// ```
+#[cfg(feature = "std")]
+pub fn hash_multithreaded(input: &[u8]) -> Hash {
+    lanes::hash(input, usize::MAX)
+}
+
+/// [`hash_multithreaded`] with at most `max_threads` threads, the calling
+/// thread included. `max_threads` is at least 1; 1 hashes on the calling
+/// thread alone, as [`hash`] does. Returns the same [`Hash`] as [`hash`]
+/// for every input.
+///
+/// ```
+/// let input = [0u8; 1 << 20];
+/// assert_eq!(blake3_servil::hash_multithreaded_with_budget(&input, 2), blake3_servil::hash(&input));
+/// ```
+#[cfg(feature = "std")]
+pub fn hash_multithreaded_with_budget(input: &[u8], max_threads: usize) -> Hash {
+    assert!(max_threads >= 1, "a hash needs at least the calling thread");
+    lanes::hash(input, max_threads)
+}
+
 /// The whole input on the calling thread, in the given mode: the one-chunk
 /// kernel call up to CHUNK_LEN, the subtree walk above. hash(),
-/// keyed_hash(), derive_key(), and the lanes module's short path all come
+/// keyed_hash(), derive_key(), and hash_multithreaded()'s short path all come
 /// through here.
 #[inline]
 fn hash_serial(input: &[u8], key: &CVWords, flags: u8) -> Hash {
@@ -1053,10 +1091,10 @@ fn hash_serial(input: &[u8], key: &CVWords, flags: u8) -> Hash {
 ///
 /// ```
 /// # const KEY: &[u8; 32] = &[0; 32];
-/// let mac = blake3::keyed_hash(KEY, b"foo");
+/// let mac = blake3_servil::keyed_hash(KEY, b"foo");
 /// # let mac1 = mac;
 ///
-/// let mac = blake3::Hasher::new_keyed(KEY).update(b"foo").finalize();
+/// let mac = blake3_servil::Hasher::new_keyed(KEY).update(b"foo").finalize();
 /// # let mac2 = mac;
 /// # assert_eq!(mac1, mac2);
 /// ```
@@ -1102,10 +1140,10 @@ pub fn keyed_hash(key: &[u8; KEY_LEN], input: &[u8]) -> Hash {
 ///
 /// ```
 /// # const CONTEXT: &str = "example.com 2019-12-25 16:18:03 session tokens v1";
-/// let key = blake3::derive_key(CONTEXT, b"key material, not a password");
+/// let key = blake3_servil::derive_key(CONTEXT, b"key material, not a password");
 /// # let key1 = key;
 ///
-/// let key: [u8; 32] = blake3::Hasher::new_derive_key(CONTEXT)
+/// let key: [u8; 32] = blake3_servil::Hasher::new_derive_key(CONTEXT)
 ///     .update(b"key material, not a password")
 ///     .finalize()
 ///     .into();
@@ -1163,18 +1201,18 @@ fn parent_node_output(
 /// ```
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// // Hash an input incrementally.
-/// let mut hasher = blake3::Hasher::new();
+/// let mut hasher = blake3_servil::Hasher::new();
 /// hasher.update(b"foo");
 /// hasher.update(b"bar");
 /// hasher.update(b"baz");
-/// assert_eq!(hasher.finalize(), blake3::hash(b"foobarbaz"));
+/// assert_eq!(hasher.finalize(), blake3_servil::hash(b"foobarbaz"));
 ///
 /// // Extended output. OutputReader also implements Read and Seek.
 /// # #[cfg(feature = "std")] {
 /// let mut output = [0; 1000];
 /// let mut output_reader = hasher.finalize_xof();
 /// output_reader.fill(&mut output);
-/// assert_eq!(&output[..32], blake3::hash(b"foobarbaz").as_bytes());
+/// assert_eq!(&output[..32], blake3_servil::hash(b"foobarbaz").as_bytes());
 /// # }
 /// # Ok(())
 /// # }
@@ -1578,7 +1616,7 @@ impl Hasher {
     /// # use std::io;
     /// # fn main() -> io::Result<()> {
     /// // Hash standard input.
-    /// let mut hasher = blake3::Hasher::new();
+    /// let mut hasher = blake3_servil::Hasher::new();
     /// hasher.update_reader(std::io::stdin().lock())?;
     /// println!("{}", hasher.finalize());
     /// # Ok(())
@@ -1650,7 +1688,7 @@ impl Hasher {
     /// # use std::path::Path;
     /// # fn main() -> io::Result<()> {
     /// let path = Path::new("file.dat");
-    /// let mut hasher = blake3::Hasher::new();
+    /// let mut hasher = blake3_servil::Hasher::new();
     /// hasher.update_mmap(path)?;
     /// println!("{}", hasher.finalize());
     /// # Ok(())
@@ -1700,7 +1738,7 @@ impl Hasher {
     /// # #[cfg(feature = "rayon")]
     /// # {
     /// let path = Path::new("big_file.dat");
-    /// let mut hasher = blake3::Hasher::new();
+    /// let mut hasher = blake3_servil::Hasher::new();
     /// hasher.update_mmap_rayon(path)?;
     /// println!("{}", hasher.finalize());
     /// # }

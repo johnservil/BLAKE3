@@ -2,6 +2,12 @@
 //! cooperative admission so that concurrent callers share the machine
 //! instead of each taking all of it.
 //!
+//! This module is crate-internal. The public entry points are
+//! [`crate::hash_multithreaded`] and
+//! [`crate::hash_multithreaded_with_budget`], whose contracts speak of
+//! threads alone; lanes, admission, and clusters are how those contracts
+//! are met, and this file is where they are explained.
+//!
 //! # Lanes
 //!
 //! A lane is a run of CPUs that share the execution resource a BLAKE3
@@ -13,8 +19,11 @@
 //! when the pair takes at least half again as long as one thread alone, the
 //! CPUs share a unit and the lanes are the kernel's CPU clusters (sysfs
 //! `topology/cluster_cpus_list`); otherwise every CPU is a lane. The probe
-//! takes about thirty milliseconds. `BLAKE3_LANES=<n>` in the environment
-//! overrides the detection.
+//! takes about thirty milliseconds.
+//!
+//! A caller may cap the threads one call uses
+//! ([`crate::hash_multithreaded_with_budget`]); the cap bounds the lanes
+//! that call asks for, and admission works within it as usual.
 //!
 //! # Admission
 //!
@@ -140,7 +149,7 @@ use std::sync::{Condvar, Mutex, OnceLock};
 /// 64 KiB, and the hand-off to a waiting worker and back costs 3–5 µs, so
 /// a two-way split of 128 KiB comes out ahead by a third and a split of
 /// 64 KiB about even.
-pub const MIN_SPLIT_LEN: usize = 128 * 1024;
+pub(crate) const MIN_SPLIT_LEN: usize = 128 * 1024;
 
 /// The smallest piece a lane receives: sixteen chunks fill one SME2 group.
 const MIN_PIECE_LEN: usize = 16 * CHUNK_LEN;
@@ -149,7 +158,7 @@ const MIN_PIECE_LEN: usize = 16 * CHUNK_LEN;
 /// the input's subtrees are unequal. Four pieces per lane put the worst
 /// imbalance at one piece in four of a lane's share for a power-of-two
 /// input and less for the others.
-pub const PIECES_PER_LANE: usize = 4;
+pub(crate) const PIECES_PER_LANE: usize = 4;
 
 /// A piece below this length is not worth cutting for balance: each piece
 /// costs its lane a chunk-state start and a chaining value and the caller
@@ -157,14 +166,14 @@ pub const PIECES_PER_LANE: usize = 4;
 /// bulk rate, so a finer cut there loses more to ramp-up than the balance
 /// gains. Measured on the two-CPU VM: 1 MiB over two lanes as two pieces,
 /// 0.092 ns/B; as eight, 0.108.
-pub const MIN_BALANCED_PIECE_LEN: usize = 512 * 1024;
+pub(crate) const MIN_BALANCED_PIECE_LEN: usize = 512 * 1024;
 
 /// Upper bound on pieces one call cuts; sizes the on-stack arrays.
-pub const MAX_PIECES: usize = MAX_LANES * PIECES_PER_LANE;
+pub(crate) const MAX_PIECES: usize = MAX_LANES * PIECES_PER_LANE;
 
 /// Upper bound on lanes one call uses; enough for any machine this crate
 /// targets, and it sizes the on-stack chaining-value array.
-pub const MAX_LANES: usize = 64;
+pub(crate) const MAX_LANES: usize = 64;
 
 /// How long a caller that finds no lane free waits for its share before
 /// running on its own thread. The wait pays off whenever the caller holding
@@ -172,15 +181,15 @@ pub const MAX_LANES: usize = 64;
 /// in about 1.4 ms and 64 MiB in about 11 ms, so this covers inputs to a
 /// few tens of megabytes; past that the waiting caller gives up and hashes
 /// alone, at one lane's speed, which is what it would have done at once.
-pub const ADMISSION_WAIT: std::time::Duration = std::time::Duration::from_millis(20);
+pub(crate) const ADMISSION_WAIT: std::time::Duration = std::time::Duration::from_millis(20);
 
 /// How long a worker or a waiting caller spins before sleeping. Long
 /// enough to bridge the gap between back-to-back hashes in a busy caller;
 /// short enough that an idle process is quiet within it.
-pub const SPIN_BEFORE_SLEEP: std::time::Duration = std::time::Duration::from_micros(200);
+pub(crate) const SPIN_BEFORE_SLEEP: std::time::Duration = std::time::Duration::from_micros(200);
 
 /// The number of lanes this machine has (see the module docs). At least 1.
-pub fn lane_count() -> usize {
+pub(crate) fn lane_count() -> usize {
     static COUNT: OnceLock<usize> = OnceLock::new();
     *COUNT.get_or_init(|| detect_lane_count().clamp(1, MAX_LANES))
 }
@@ -295,38 +304,35 @@ impl OwnedMode {
     }
 }
 
-/// Hash `input` over the machine's free lanes; the regular hash function.
+/// Hash `input` over the machine's free lanes, at most `max_threads`
+/// threads in all (the caller's included; at least 1). The thread cap is
+/// the caller's; the fair share is the module's.
 #[inline]
-pub fn hash(input: &[u8]) -> Hash {
-    hash_with_mode(input, Mode::Hash)
-}
-
-/// Hash `input` over the machine's free lanes in keyed mode.
-#[inline]
-pub fn keyed_hash(key: &[u8; KEY_LEN], input: &[u8]) -> Hash {
-    hash_with_mode(input, Mode::KeyedHash(key))
+pub(crate) fn hash(input: &[u8], max_threads: usize) -> Hash {
+    hash_with_mode(input, Mode::Hash, max_threads)
 }
 
 /// Hash `input` over the machine's free lanes in the given mode.
 #[inline]
-pub fn hash_with_mode(input: &[u8], mode: Mode) -> Hash {
+pub(crate) fn hash_with_mode(input: &[u8], mode: Mode, max_threads: usize) -> Hash {
+    assert!(max_threads >= 1, "a hash needs at least the calling thread");
     // The short path first and inline, so a small input costs what hash()
     // costs; everything the lanes need is behind the call below.
-    if input.len() < MIN_SPLIT_LEN {
+    if input.len() < MIN_SPLIT_LEN || max_threads == 1 {
         let (key, flags) = OwnedMode::from(mode).key_and_flags();
         return crate::hash_serial(input, &key, flags);
     }
-    hash_over_lanes(input, mode)
+    hash_over_lanes(input, mode, max_threads)
 }
 
 #[inline(never)]
-fn hash_over_lanes(input: &[u8], mode: Mode) -> Hash {
+fn hash_over_lanes(input: &[u8], mode: Mode, max_threads: usize) -> Hash {
     let owned = OwnedMode::from(mode);
     // A call that stays on its own thread still occupies a lane: the
     // count must show it, or a concurrent caller takes the lane this
     // thread is running on and its worker competes with this thread.
     enter();
-    let want = (input.len() / MIN_PIECE_LEN).min(lane_count()).saturating_sub(1);
+    let want = (input.len() / MIN_PIECE_LEN).min(lane_count()).min(max_threads).saturating_sub(1);
     let extra = admit(want);
     if extra == 0 {
         let hash = owned.hash_serial(input);
@@ -386,7 +392,7 @@ fn hash_piece(bytes: &[u8], offset: usize, mode: OwnedMode) -> ChainingValue {
 /// the pieces allow: largest piece first, each to the lane with the least
 /// so far (ties to the lowest lane). Returns each lane's piece indices in
 /// offset order. `lanes` is 1..=pieces.len().
-pub fn deal_to_lanes(pieces: &[Piece], lanes: usize) -> Vec<Vec<usize>> {
+fn deal_to_lanes(pieces: &[Piece], lanes: usize) -> Vec<Vec<usize>> {
     assert!((1..=pieces.len()).contains(&lanes), "one to pieces.len() lanes");
     let mut order: Vec<usize> = (0..pieces.len()).collect();
     order.sort_by(|&a, &b| pieces[b].len.cmp(&pieces[a].len).then(a.cmp(&b)));
@@ -405,9 +411,9 @@ pub fn deal_to_lanes(pieces: &[Piece], lanes: usize) -> Vec<Vec<usize>> {
 
 /// One lane's share of the input: a whole subtree.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Piece {
-    pub offset: usize,
-    pub len: usize,
+struct Piece {
+    offset: usize,
+    len: usize,
 }
 
 /// Cut `len` bytes into `count` subtrees: starting from the whole input,
@@ -415,7 +421,7 @@ pub struct Piece {
 /// pieces exist. Pieces come back in offset order, each a valid subtree at
 /// its offset. `count` is 1..=MAX_PIECES and `len` is at least `count`
 /// chunks.
-pub fn split_subtrees(len: usize, count: usize) -> Vec<Piece> {
+fn split_subtrees(len: usize, count: usize) -> Vec<Piece> {
     assert!((1..=MAX_PIECES).contains(&count));
     assert!(len >= count * CHUNK_LEN, "each piece needs at least one chunk");
     let mut pieces = vec![Piece { offset: 0, len }];
@@ -577,13 +583,9 @@ fn worker() {
     }
 }
 
-/// See the module docs: the environment override, then the platform's
-/// topology, then a measurement of whether CPUs share the kernel's unit.
+/// See the module docs: the platform's topology, then a measurement of
+/// whether CPUs share the kernel's unit.
 fn detect_lane_count() -> usize {
-    if let Some(count) = std::env::var("BLAKE3_LANES").ok().and_then(|v| v.parse::<usize>().ok()) {
-        assert!(count >= 1, "BLAKE3_LANES must be at least 1");
-        return count;
-    }
     if let Some(count) = platform_lane_count() {
         return count;
     }
@@ -656,46 +658,14 @@ fn platform_lane_count() -> Option<usize> {
     }
     let levels = sysctl_u32(c"hw.nperflevels")?;
     let mut lanes = 0usize;
-    let mut detail = Vec::new();
     for level in 0..levels {
-        let name = std::ffi::CString::new(format!("hw.perflevel{level}.name")).unwrap();
         let cores = std::ffi::CString::new(format!("hw.perflevel{level}.physicalcpu")).unwrap();
         let per_cluster = std::ffi::CString::new(format!("hw.perflevel{level}.cpusperl2")).unwrap();
         let cores = sysctl_u32(&cores)? as usize;
         let per_cluster = sysctl_u32(&per_cluster)?.max(1) as usize;
-        let clusters = cores.div_ceil(per_cluster);
-        lanes += clusters;
-        detail.push(format!(
-            "{} {cores} cores / {per_cluster} per cluster = {clusters}",
-            sysctl_string(&name).unwrap_or_else(|| format!("level {level}"))
-        ));
+        lanes += cores.div_ceil(per_cluster);
     }
-    APPLE_DETAIL.set(detail.join("; ")).ok();
     (lanes > 0).then_some(lanes)
-}
-
-/// What the Apple detection saw, per performance level, for reports.
-#[cfg(target_vendor = "apple")]
-static APPLE_DETAIL: OnceLock<String> = OnceLock::new();
-
-#[cfg(target_vendor = "apple")]
-fn sysctl_string(name: &std::ffi::CStr) -> Option<String> {
-    let mut buffer = [0u8; 64];
-    let mut size = buffer.len();
-    let rc = unsafe {
-        libc::sysctlbyname(
-            name.as_ptr(),
-            buffer.as_mut_ptr() as *mut libc::c_void,
-            &mut size,
-            core::ptr::null_mut(),
-            0,
-        )
-    };
-    if rc != 0 {
-        return None;
-    }
-    let end = buffer[..size].iter().position(|&b| b == 0).unwrap_or(size);
-    Some(String::from_utf8_lossy(&buffer[..end]).into_owned())
 }
 
 /// Linux: every CPU is a lane when two threads keep their speed side by
@@ -722,26 +692,6 @@ fn platform_lane_count() -> Option<usize> {
 #[cfg(not(any(target_vendor = "apple", target_os = "linux")))]
 fn platform_lane_count() -> Option<usize> {
     None
-}
-
-/// A one-line description of the lanes for reports: the count and how it
-/// was found.
-pub fn describe_lanes() -> String {
-    let count = lane_count();
-    let how = if std::env::var_os("BLAKE3_LANES").is_some() {
-        "set by BLAKE3_LANES".to_owned()
-    } else if cfg!(target_vendor = "apple") {
-        #[cfg(target_vendor = "apple")]
-        let detail = APPLE_DETAIL.get().cloned().unwrap_or_default();
-        #[cfg(not(target_vendor = "apple"))]
-        let detail = String::new();
-        format!("one per core cluster, each sharing one SME unit ({detail})")
-    } else if cfg!(target_os = "linux") {
-        "one per CPU when two threads measured at full speed side by side, else one per CPU cluster (sysfs topology/cluster_cpus_list)".to_owned()
-    } else {
-        "one per CPU (available_parallelism)".to_owned()
-    };
-    format!("{count} lane{}: {how}", if count == 1 { "" } else { "s" })
 }
 
 #[cfg(test)]
@@ -803,13 +753,17 @@ mod test {
             input.len(),
         ] {
             let want = crate::hash(&input[..len]);
-            assert_eq!(want, hash(&input[..len]), "len = {len}");
+            assert_eq!(want, hash(&input[..len], usize::MAX), "len = {len}");
             let key = [42u8; KEY_LEN];
-            assert_eq!(crate::keyed_hash(&key, &input[..len]), keyed_hash(&key, &input[..len]), "keyed len = {len}");
+            assert_eq!(
+                crate::keyed_hash(&key, &input[..len]),
+                hash_with_mode(&input[..len], Mode::KeyedHash(&key), usize::MAX),
+                "keyed len = {len}"
+            );
             let context_key = hazmat::hash_derive_key_context("lanes test");
             assert_eq!(
                 *Hasher::new_from_context_key(&context_key).update(&input[..len]).finalize().as_bytes(),
-                *hash_with_mode(&input[..len], Mode::DeriveKeyMaterial(&context_key)).as_bytes(),
+                *hash_with_mode(&input[..len], Mode::DeriveKeyMaterial(&context_key), usize::MAX).as_bytes(),
                 "derive len = {len}"
             );
         }
@@ -905,6 +859,21 @@ mod test {
         assert!(after_lanes <= lanes - 1 + 8 && after_callers <= callers - 1 + 8);
     }
 
+    /// Every thread cap gives hash()'s result, and a cap of one takes the
+    /// serial path without touching the admission counters.
+    #[test]
+    fn test_budget_caps_agree() {
+        let mut input = vec![0u8; 4 * MIN_SPLIT_LEN + 77];
+        crate::test::paint_test_input(&mut input);
+        let want = crate::hash(&input);
+        let before = ADMISSION.load(Ordering::Relaxed);
+        assert_eq!(want, hash(&input, 1));
+        assert_eq!(before, ADMISSION.load(Ordering::Relaxed), "a cap of one leaves admission alone");
+        for cap in [2, 3, 4, 64, usize::MAX] {
+            assert_eq!(want, hash(&input, cap), "cap = {cap}");
+        }
+    }
+
     /// Many concurrent callers on one process: every result is right and
     /// the lane count is never exceeded by more than the callers' own
     /// threads (which admission cannot refuse).
@@ -917,7 +886,7 @@ mod test {
             for _ in 0..8 {
                 scope.spawn(|| {
                     for _ in 0..20 {
-                        assert_eq!(want, hash(&input));
+                        assert_eq!(want, hash(&input, usize::MAX));
                     }
                 });
             }

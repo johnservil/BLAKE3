@@ -13,7 +13,7 @@
 //! requirements, and any mistakes will give you garbage output and/or break the security
 //! properties that BLAKE3 is supposed to have. Read section 2.1 of [the BLAKE3
 //! paper](https://github.com/BLAKE3-team/BLAKE3-specs/blob/master/blake3.pdf) to understand the
-//! tree structure you need to maintain. Test your code against [`blake3::hash`](../fn.hash.html)
+//! tree structure you need to maintain. Test your code against [`blake3_servil::hash`](../fn.hash.html)
 //! and make sure you can get the same outputs for [lots of different
 //! inputs](https://github.com/BLAKE3-team/BLAKE3/blob/master/test_vectors/test_vectors.json).
 //!
@@ -49,9 +49,9 @@
 //!
 //! ```
 //! # fn main() {
-//! use blake3::{Hasher, CHUNK_LEN};
-//! use blake3::hazmat::{merge_subtrees_non_root, merge_subtrees_root, Mode};
-//! use blake3::hazmat::HasherExt; // an extension trait for Hasher
+//! use blake3_servil::{Hasher, CHUNK_LEN};
+//! use blake3_servil::hazmat::{merge_subtrees_non_root, merge_subtrees_root, Mode};
+//! use blake3_servil::hazmat::HasherExt; // an extension trait for Hasher
 //!
 //! let chunk0 = [b'a'; CHUNK_LEN];
 //! let chunk1 = [b'b'; CHUNK_LEN];
@@ -83,7 +83,7 @@
 //! combined_input.extend_from_slice(&chunk0);
 //! combined_input.extend_from_slice(&chunk1);
 //! combined_input.extend_from_slice(&chunk2);
-//! assert_eq!(root_hash, blake3::hash(&combined_input));
+//! assert_eq!(root_hash, blake3_servil::hash(&combined_input));
 //! # }
 //! ```
 //!
@@ -94,8 +94,8 @@
 //!
 //! ```
 //! # fn main() {
-//! # use blake3::{Hasher, CHUNK_LEN};
-//! # use blake3::hazmat::{Mode, HasherExt, merge_subtrees_non_root, merge_subtrees_root};
+//! # use blake3_servil::{Hasher, CHUNK_LEN};
+//! # use blake3_servil::hazmat::{Mode, HasherExt, merge_subtrees_non_root, merge_subtrees_root};
 //! # let chunk0 = [b'a'; CHUNK_LEN];
 //! # let chunk1 = [b'b'; CHUNK_LEN];
 //! # let chunk0_cv = Hasher::new().update(&chunk0).finalize_non_root();
@@ -127,8 +127,8 @@
 //!
 //! ```should_panic
 //! # fn main() {
-//! # use blake3::{Hasher, CHUNK_LEN};
-//! # use blake3::hazmat::HasherExt;
+//! # use blake3_servil::{Hasher, CHUNK_LEN};
+//! # use blake3_servil::hazmat::HasherExt;
 //! # let chunk0 = [b'a'; CHUNK_LEN];
 //! # let chunk1 = [b'b'; CHUNK_LEN];
 //! # let chunk2 = [b'c'; 42];
@@ -146,7 +146,7 @@
 //! paper](https://github.com/BLAKE3-team/BLAKE3-specs/blob/master/blake3.pdf). Note that the
 //! merging functions ([`merge_subtrees_root`] and friends) don't know the shape of the left and
 //! right subtrees you're giving them, and they can't help you catch mistakes. The best way to
-//! catch mistakes with these is to compare your root output to the [`blake3::hash`](crate::hash)
+//! catch mistakes with these is to compare your root output to the [`blake3_servil::hash`](crate::hash)
 //! of the same input.
 
 use crate::platform::Platform;
@@ -169,15 +169,15 @@ pub trait HasherExt {
     /// # Example
     ///
     /// ```
-    /// use blake3::Hasher;
-    /// use blake3::hazmat::HasherExt;
+    /// use blake3_servil::Hasher;
+    /// use blake3_servil::hazmat::HasherExt;
     ///
-    /// let context_key = blake3::hazmat::hash_derive_key_context("foo");
+    /// let context_key = blake3_servil::hazmat::hash_derive_key_context("foo");
     /// let mut hasher = Hasher::new_from_context_key(&context_key);
     /// hasher.update(b"bar");
     /// let derived_key = *hasher.finalize().as_bytes();
     ///
-    /// assert_eq!(derived_key, blake3::derive_key("foo", b"bar"));
+    /// assert_eq!(derived_key, blake3_servil::derive_key("foo", b"bar"));
     /// ```
     fn new_from_context_key(context_key: &ContextKey) -> Self;
 
@@ -348,8 +348,8 @@ fn test_max_subtree_len() {
 ///
 /// ```
 /// # #[cfg(feature = "std")] {
-/// use blake3::hazmat::{left_subtree_len, merge_subtrees_root, HasherExt, Mode};
-/// use blake3::{Hasher, CHUNK_LEN};
+/// use blake3_servil::hazmat::{left_subtree_len, merge_subtrees_root, HasherExt, Mode};
+/// use blake3_servil::{Hasher, CHUNK_LEN};
 ///
 /// // Generate a random-length input. Note that to be split into two subtrees, the input length
 /// // must be greater than CHUNK_LEN.
@@ -371,7 +371,7 @@ fn test_max_subtree_len() {
 /// let root_hash = merge_subtrees_root(&left_subtree_cv, &right_subtree_cv, Mode::Hash);
 ///
 /// // Double check the answer.
-/// assert_eq!(root_hash, blake3::hash(&input));
+/// assert_eq!(root_hash, blake3_servil::hash(&input));
 /// # }
 /// ```
 #[inline(always)]
@@ -473,7 +473,7 @@ pub fn merge_subtrees_non_root(
 ///
 /// Note that inputs of [`CHUNK_LEN`] or less don't produce any parent nodes and can't be hashed
 /// using this function. In that case you must get the root hash from [`Hasher::finalize`] (or just
-/// [`blake3::hash`](crate::hash)).
+/// [`blake3_servil::hash`](crate::hash)).
 pub fn merge_subtrees_root(
     left_child: &ChainingValue,
     right_child: &ChainingValue,
@@ -496,8 +496,8 @@ pub fn merge_subtrees_root(
 /// # Example
 ///
 /// ```
-/// use blake3::hazmat::{merge_subtrees_root_xof, HasherExt, Mode};
-/// use blake3::{Hasher, CHUNK_LEN};
+/// use blake3_servil::hazmat::{merge_subtrees_root_xof, HasherExt, Mode};
+/// use blake3_servil::{Hasher, CHUNK_LEN};
 ///
 /// // Hash a 2-chunk subtree in steps. Note that only
 /// // the final chunk can be shorter than CHUNK_LEN.
@@ -511,7 +511,7 @@ pub fn merge_subtrees_root(
 ///     .update(chunk1)
 ///     .finalize_non_root();
 ///
-/// // Obtain a blake3::OutputReader at the root and extract 1000 bytes.
+/// // Obtain a blake3_servil::OutputReader at the root and extract 1000 bytes.
 /// let mut output_reader = merge_subtrees_root_xof(&chunk0_cv, &chunk1_cv, Mode::Hash);
 /// let mut output_bytes = [0; 1_000];
 /// output_reader.fill(&mut output_bytes);
@@ -547,15 +547,15 @@ pub type ContextKey = [u8; KEY_LEN];
 /// # Example
 ///
 /// ```
-/// use blake3::Hasher;
-/// use blake3::hazmat::HasherExt;
+/// use blake3_servil::Hasher;
+/// use blake3_servil::hazmat::HasherExt;
 ///
-/// let context_key = blake3::hazmat::hash_derive_key_context("foo");
+/// let context_key = blake3_servil::hazmat::hash_derive_key_context("foo");
 /// let mut hasher = Hasher::new_from_context_key(&context_key);
 /// hasher.update(b"bar");
 /// let derived_key = *hasher.finalize().as_bytes();
 ///
-/// assert_eq!(derived_key, blake3::derive_key("foo", b"bar"));
+/// assert_eq!(derived_key, blake3_servil::derive_key("foo", b"bar"));
 /// ```
 pub fn hash_derive_key_context(context: &str) -> ContextKey {
     crate::hash_serial(context.as_bytes(), IV, crate::DERIVE_KEY_CONTEXT).0

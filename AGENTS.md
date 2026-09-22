@@ -36,11 +36,24 @@ A highly desirable property of an interface and its contract: the user learns th
 
 # Environment
 
+## Where things are
+
+- `/workspace` is the host checkout of this fork (github.com/johnservil/BLAKE3, branch `sme2-bench`), mounted through sandboxfs. It persists across VM restarts.
+- `/workspace/bench-hashes` is the benchmark's own repository (github.com/johnservil/bench-hashes, branch `main`), nested inside the fork. Its `Cargo.toml` and `build.rs` point the `blake3-servil` path dependency at `..`, so edits to the fork take effect on the benchmark's next build. `/workspace/.git/info/exclude` keeps it, `benchmark-results/`, `tmp/`, `vm/`, and the token out of the fork's status.
+- `/workspace/vm/` holds everything the guest needs that a restart would otherwise remove:
+  - `vm/home/` is `HOME` for `git` and `cargo`: `.gitconfig` with `safe.directory = *`, John Servil's `user.name`/`user.email`, and the credential helper.
+  - `vm/home/bin/gh-cred.sh` speaks the git credential protocol and reads the johnservil classic token from `/workspace/ghtokenclassic.txt` (never print that file). Both repos have `credential.helper = !sh /workspace/vm/home/bin/gh-cred.sh` (the mount drops executable bits, hence `!sh`).
+  - `vm/setup.sh` installs `clang-19` from apt.llvm.org when it is absent, creates `/tmp/target`, and re-points both repos' credential helpers. Run `sh /workspace/vm/setup.sh` first after a VM restart.
+- Guest disk (`/tmp`, `/usr`, apt packages) vanishes with the VM. Only `/workspace` persists.
+
+## Building and running
+
 - The VM is Debian 12 on AArch64 with two cores. Its CPU exposes SME2 with 512-bit streaming vectors (`/proc/cpuinfo` lists `sme2`), so the fork's kernels run here. Absolute timings differ from Apple hardware; relative comparisons hold.
-- The fork's SME2 kernel is `c/blake3_sme2_aarch64.S`, compiled by the `cc` crate with `-march=armv9-a+sme2`. The system `cc` (GCC 12) and `as` (binutils 2.40) predate SME2, so the fork's build script fails under them with a message naming the fix. `clang-19` is installed and assembles SME2. Build with `CC=clang-19 TMPDIR=/tmp cargo run --release`; `TMPDIR` gives clang a temporary directory that exists in the guest.
-- The johnservil classic token is in `ghtokenclassic.txt` (gitignored; never print it). Both this repository and the fork checkout at `/upstream/BLAKE3` (a working clone of `sme2-bench` for editing the fork) have `credential.helper` set to `/tmp/home/bin/gh-cred.sh`, which reads that file; the fork checkout also has `user.name`/`user.email` set to John Servil. The checkout and the helper live on the guest disk, so recreate them after a VM restart before pushing.
-- `/workspace` is the host checkout mounted through sandboxfs. Files show as uid 501 while the guest runs as uid 0, so git needs `safe.directory`. `HOME` points at an absent host path; use `HOME=/tmp/home` (which holds a `.gitconfig` with `safe.directory = /workspace`) for both `git` and `cargo` commands. `/tmp/home/.gitconfig` also sets `safe.directory = *`. `/upstream/BLAKE3` and `/tmp/home` live on the guest disk and vanish with the VM; `/workspace` persists.
-- `CARGO_TARGET_DIR=/tmp/target` on a tmpfs; `CARGO_HOME=/usr/local/cargo`. The toolchain is rustc 1.98.1 without the `rustfmt` component, so there is no formatting check available in the guest.
+- The fork's SME2 kernel is `c/blake3_sme2_aarch64.S`, compiled by the `cc` crate with `-march=armv9-a+sme2`. The system `cc` (GCC 12) and `as` (binutils 2.40) predate SME2, so the fork's build script fails under them with a message naming the fix. `clang-19` assembles SME2; `TMPDIR` gives clang a temporary directory that exists in the guest.
+- Every `git` and `cargo` command takes `HOME=/workspace/vm/home`. Files on the mount show as uid 501 while the guest runs as uid 0, which is what `safe.directory` covers.
+- Build the fork: `HOME=/workspace/vm/home CARGO_TARGET_DIR=/tmp/target CC=clang-19 TMPDIR=/tmp cargo build --release`
+- Run the benchmark: `HOME=/workspace/vm/home CARGO_TARGET_DIR=/tmp/target CC=clang-19 TMPDIR=/tmp cargo run --release --manifest-path /workspace/bench-hashes/Cargo.toml -- --contenders blake3,blake3-servil`
+- `CARGO_TARGET_DIR=/tmp/target` is a tmpfs build cache (rebuilt after a restart); `CARGO_HOME=/usr/local/cargo`. The toolchain is rustc 1.98.1 without the `rustfmt` component, so there is no formatting check in the guest.
 - Commands for the user go on one line, with no `\` continuations.
 - Never `sleep` in commands. When a network call fails, report it and stop; the user decides about retries.
 - Run long commands (builds, benchmark runs, package installs) without a timeout and let their output stream, so the user can watch progress and interrupt when they choose.
