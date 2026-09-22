@@ -92,6 +92,12 @@ const MIN_PIECE_LEN: usize = 8 * CHUNK_LEN;
 /// The longest piece: one SME2 kernel call of the platform's degree.
 const MAX_PIECE_LEN: usize = 128 * CHUNK_LEN;
 
+/// Pieces shorter than this run on the NEON hybrids without asking for
+/// an SME2 permit: a piece on SME2 pays one switch out of streaming mode
+/// and back (about a microsecond on an M4, several on a virtual machine),
+/// which at 8 KiB is what SME2 would gain over NEON.
+const MIN_SME_PIECE_LEN: usize = 16 * CHUNK_LEN;
+
 /// How long a worker or a waiting caller spins before sleeping. Long
 /// enough to bridge the gap between back-to-back hashes in a busy caller;
 /// short enough that an idle process is quiet within it.
@@ -245,7 +251,7 @@ impl Job<'_> {
     unsafe fn hash_piece(&self, index: usize) {
         let piece = self.pieces[index];
         let bytes = &self.input[piece.offset..][..piece.len];
-        let permit = pool().take_sme_permit();
+        let permit = piece.len >= MIN_SME_PIECE_LEN && pool().take_sme_permit();
         let mut hasher = self.mode.hasher();
         hasher.set_platform(if permit { fast_platform() } else { other_platform() });
         hasher.set_input_offset(piece.offset as u64);
