@@ -34,6 +34,10 @@ We never write "defensive code" — code that complicates a contract to ease the
 
 A highly desirable property of an interface and its contract: the user learns the fewest new concepts. Zero new concepts earns a perfect score. Each new term (a resource unit, a sharing rule, a tuning knob) taxes working memory and needs a place in prediction and control. Prefer familiar concepts the caller already holds (threads, inputs, budgets), keep implementation units unnamed in public docs, and express observable behavior (speed, thread count, fairness beside concurrent calls) in those familiar terms.
 
+# Where to start
+
+Read `/workspace/bench-hashes/NEXT-STEPS.md` first: it says what the work is now (optimising this fork against the benchmark) and where the last session left both repositories. `NOTES-sme2-bench.md` in this directory holds the fork's design notes and the measurements behind each change.
+
 # Environment
 
 ## Where things are
