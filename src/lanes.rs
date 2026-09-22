@@ -367,6 +367,8 @@ struct Pool {
     epoch: std::time::Instant,
     /// Workers asleep on `posted`.
     sleepers: AtomicUsize,
+    /// Of those, the ones a caller has notified and that have yet to wake.
+    notified: AtomicUsize,
     sleep_lock: Mutex<()>,
     posted: Condvar,
     /// Callers asleep on `finished_signal`.
@@ -410,6 +412,7 @@ fn pool() -> &'static Pool {
             last_job_ns: AtomicU64::new(0),
             epoch: std::time::Instant::now(),
             sleepers: AtomicUsize::new(0),
+            notified: AtomicUsize::new(0),
             sleep_lock: Mutex::new(()),
             posted: Condvar::new(),
             waiters: AtomicUsize::new(0),
@@ -451,8 +454,13 @@ impl Pool {
             self.slots[i].job.compare_exchange(std::ptr::null_mut(), ptr, Ordering::SeqCst, Ordering::Relaxed).is_ok()
         })?;
         self.last_job_ns.store(self.epoch.elapsed().as_nanos() as u64, Ordering::SeqCst);
-        let sleepers = self.sleepers.load(Ordering::SeqCst);
-        if sleepers > 0 && (self.cpus - 1 - sleepers.min(self.cpus - 1)) < job.pieces.len() {
+        // Sleepers already notified are on their way (a wake takes tens
+        // of microseconds to land); a second caller in that window counts
+        // them as awake and pays nothing.
+        let sleepers = self.sleepers.load(Ordering::SeqCst).min(self.cpus - 1);
+        let unnotified = sleepers.saturating_sub(self.notified.load(Ordering::SeqCst));
+        if unnotified > 0 && (self.cpus - 1 - unnotified) < job.pieces.len() {
+            self.notified.store(sleepers, Ordering::SeqCst);
             // The lock orders the notify after a sleeper's last check.
             let _guard = self.sleep_lock.lock().unwrap();
             self.posted.notify_all();
@@ -596,6 +604,9 @@ impl Pool {
             let taken = self.take_piece(start);
             if taken.is_none() {
                 drop(self.posted.wait(guard).unwrap());
+                // Awake: one fewer notified sleeper on the way (a wake
+                // nobody asked for leaves the count where it is).
+                let _ = self.notified.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| Some(n.saturating_sub(1)));
             }
             self.sleepers.fetch_sub(1, Ordering::SeqCst);
             if let Some(taken) = taken {
