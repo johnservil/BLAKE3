@@ -1043,6 +1043,10 @@ pub fn hash(input: &[u8]) -> Hash {
 /// already occupy the machine's CPUs, a new call hashes on its own thread.
 /// Existing calls can still have workers finishing their pieces.
 ///
+/// The first call that leaves the calling thread runs [`initialize`]
+/// unless the program already has, and takes up to tens of milliseconds
+/// longer for it.
+///
 /// Concurrent calls within one process share the workers: they take pieces
 /// from each call in turn, so two callers hashing at once each get about
 /// half the machine. A call never waits on another process; the operating
@@ -1071,6 +1075,25 @@ pub fn hash_multithreaded(input: &[u8]) -> Hash {
 pub fn hash_multithreaded_with_budget(input: &[u8], max_threads: usize) -> Hash {
     assert!(max_threads >= 1, "a hash needs at least the calling thread");
     lanes::hash(input, max_threads)
+}
+
+/// Start the worker threads that [`hash_multithreaded`] and
+/// [`hash_multithreaded_with_budget`] use, once per process. Where the
+/// platform reports no CPU topology, this also measures how many threads
+/// can run the SME2 kernels at full speed at once, which occupies every
+/// CPU for up to tens of milliseconds. The first multithreaded call that
+/// leaves the calling thread does the same when the program has yet to
+/// call this; call it at start-up to choose when that cost falls.
+/// Later calls return at once.
+///
+/// ```
+/// blake3_servil::initialize();
+/// let hash = blake3_servil::hash_multithreaded(&[0u8; 1 << 20]);
+/// assert_eq!(hash, blake3_servil::hash(&[0u8; 1 << 20]));
+/// ```
+#[cfg(feature = "std")]
+pub fn initialize() {
+    lanes::initialize();
 }
 
 /// The whole input on the calling thread, in the given mode: the one-chunk

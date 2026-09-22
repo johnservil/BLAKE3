@@ -1,5 +1,11 @@
 # BLAKE3
 
+This is the `sme2-bench` branch of John Servil's fork, published as the
+crate `blake3-servil` so it links beside crates.io `blake3`. It adds SME2
+and integer + NEON kernels for AArch64, `hash_multithreaded` over a pool
+shared by every caller, and `kernel_report()`. `NOTES-sme2-bench.md`
+describes the design and its measurements; the text below is upstream's.
+
 BLAKE3 is a cryptographic hash function that is:
 
 - **Much faster** than MD5, SHA-1, SHA-2, SHA-3, and BLAKE2.

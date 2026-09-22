@@ -120,11 +120,20 @@ of that: workers sleep only when no job has been *registered* for
 piece stays up while calls keep coming; a call whose pieces outnumber
 the awake workers wakes every sleeper in one `notify_all`; a woken
 worker returns to polling rather than re-waiting; nobody wakes anyone on
-a hashing thread's critical path. Pool creation spawns a starter thread
-that spawns the workers and runs the SME measurement, so the first call
-costs a call: a synchronous start (~50 ms) landed inside bench-hashes'
-calibration probe for the first splitting size and pinned that cell at
-one cold call per sample (1.5 ns/B at 64 KiB).
+a hashing thread's critical path.
+
+**Start-up is part of the contract.** `initialize()` creates the pool:
+it measures the SME unit count where the platform reports no topology
+(Linux; about 40 ms on the 16-vCPU VM, every CPU busy) and spawns the
+workers, then returns. The first multithreaded call that leaves its
+thread does the same when the program has yet to call it, and the public
+docs say so: up to tens of milliseconds, once. An earlier design hid the
+start behind a starter thread so the first call cost a call; it was there
+because a synchronous start once landed inside bench-hashes' calibration
+probe and pinned the 64 KiB cell at one cold call per sample. The
+benchmark now calls every contender at every size in its correctness
+checks before calibrating, so the start lands there, and the documented
+contract replaces the hidden mechanism.
 
 **The SME2 ↔ NEON transition** (`examples/transition.rs`). On the VM the
 first NEON load/store after the SME2 kernel costs ~4 µs; SME2 kernel
@@ -193,6 +202,7 @@ SME2 permit (845ff09). The M4 Max has not run this design yet.
 
     cargo test --release --lib                      # 56 tests
     cargo test --release --features no_sme2 --lib   # NEON platform path
+    cargo test --release --manifest-path test_vectors/Cargo.toml   # official vectors
     cargo doc --no-deps                             # 7 warnings, all upstream's
 
 The lanes tests check the piece schedule and subtree validity, merge for
@@ -200,10 +210,13 @@ every cut on both kernel platforms, results against `hash()` across the
 split threshold and at 3 MiB, every thread cap agreeing, and 32
 concurrent callers with mixed caps agreeing and leaving the pool quiet
 after every call. A global quiet-state assertion was removed: other tests
-can start calls between its reads. Official test vectors, every
-length 0..=4096 vs crates.io, and byte-at-a-time incremental were
-checked externally at 220bed6 and 9a97d45; there's no in-tree harness
-for that yet — worth adding.
+can start calls between its reads. Upstream's `test_vectors/` crate runs
+the published vectors (`test_vectors.json`: hash, keyed hash, derive key,
+incremental) against this crate; its manifest names the dependency
+`blake3 = { path = "../", package = "blake3-servil" }`, as `b3sum/`'s
+does, so both build on this branch. Every length 0..=4096 against
+crates.io and byte-at-a-time incremental hashing were checked externally
+at 220bed6 and 9a97d45.
 
 On the Debian VM: `CC=clang-19 TMPDIR=/tmp` (system binutils predates
 SME2). On macOS with Xcode ≥ 15, nothing special.
