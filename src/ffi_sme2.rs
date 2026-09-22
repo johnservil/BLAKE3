@@ -87,9 +87,14 @@ pub unsafe fn hash_many<const N: usize>(
                     )
                 }
             } else {
-                let mut buf = [0u8; GROUP * BLOCK_LEN];
-                for group in 0..full_groups {
-                    for (i, input) in inputs[group * GROUP..][..GROUP].iter().enumerate() {
+                // Gather up to GATHER groups per kernel call, so one entry
+                // into streaming mode covers them all.
+                const GATHER: usize = DEGREE / GROUP;
+                let mut buf = [0u8; GATHER * GROUP * BLOCK_LEN];
+                let mut group = 0;
+                while group < full_groups {
+                    let groups = (full_groups - group).min(GATHER);
+                    for (i, input) in inputs[group * GROUP..][..groups * GROUP].iter().enumerate() {
                         buf[i * BLOCK_LEN..][..BLOCK_LEN].copy_from_slice(&input[..]);
                     }
                     let lanes = unsafe {
@@ -99,10 +104,11 @@ pub unsafe fn hash_many<const N: usize>(
                             counter,
                             packed_flags,
                             out[group * GROUP * OUT_LEN..].as_mut_ptr(),
-                            1,
+                            groups as u64,
                         )
                     };
                     assert_eq!(lanes, 16, "SME2 streaming vector length changed under us");
+                    group += groups;
                 }
                 16
             }

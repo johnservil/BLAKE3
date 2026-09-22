@@ -146,6 +146,7 @@ mod io;
 mod join;
 #[cfg(feature = "std")]
 mod lanes;
+mod many;
 
 use arrayvec::{ArrayString, ArrayVec};
 use core::cmp;
@@ -246,6 +247,7 @@ fn counter_high(counter: u64) -> u32 {
 /// [`FromStr`]: https://doc.rust-lang.org/std/str/trait.FromStr.html
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 #[derive(Clone, Copy, Hash, Eq)]
+#[repr(transparent)]
 pub struct Hash([u8; OUT_LEN]);
 
 impl Hash {
@@ -1102,11 +1104,78 @@ pub fn initialize() {
 /// through here.
 #[inline]
 fn hash_serial(input: &[u8], key: &CVWords, flags: u8) -> Hash {
+    hash_serial_on(input, key, flags, Platform::detect())
+}
+
+/// [`hash_serial`] with the tree's kernels chosen by the caller (a pool
+/// piece without an SME2 permit runs the NEON hybrids); one chunk or less
+/// runs the scalar kernel on every platform.
+#[inline]
+fn hash_serial_on(input: &[u8], key: &CVWords, flags: u8, platform: Platform) -> Hash {
     #[cfg(blake3_neon_hybrid)]
     if input.len() <= CHUNK_LEN {
         return hash_one_chunk_root(input, key, flags);
     }
-    hash_all_at_once::<join::SerialJoin>(input, key, 0, flags, Platform::detect()).root_hash()
+    hash_all_at_once::<join::SerialJoin>(input, key, 0, flags, platform).root_hash()
+}
+
+/// Many messages at once: `outputs[i]` becomes [`hash`]`(inputs[i])` for
+/// every `i`. `inputs` and `outputs` have the same length.
+///
+/// Messages of exactly one block (64 bytes) are compressed several at a
+/// time on the platform's SIMD kernels, sixteen per group on SME2, so a
+/// batch of them hashes at a multiple of one [`hash`] call's rate; every
+/// other message costs what [`hash`] costs. Always single-threaded; see
+/// [`hash_many_multithreaded`] for the same digests over several threads.
+///
+/// ```
+/// let messages = [&b"foo"[..], &[7u8; 64][..], &[0u8; 4096][..]];
+/// let mut digests = [blake3_servil::Hash::from_bytes([0; 32]); 3];
+/// blake3_servil::hash_many(&messages, &mut digests);
+/// assert_eq!(digests[1], blake3_servil::hash(&[7u8; 64]));
+/// ```
+pub fn hash_many(inputs: &[&[u8]], outputs: &mut [Hash]) {
+    many::hash_many_on(inputs, outputs, Platform::detect());
+}
+
+/// [`hash_many`] over several threads. Writes the same digests for every
+/// batch. Batches under 64 KiB of messages in all are hashed on the
+/// calling thread alone, at [`hash_many`]'s speed. Larger batches are cut
+/// into ranges of messages that the calling thread and this crate's
+/// worker threads hash at once, under the same rules as
+/// [`hash_multithreaded`]: the workers are started once per process, one
+/// per CPU beyond the first ([`initialize`]), concurrent calls share them
+/// in turn, and a call arriving when calls already fill the CPUs hashes
+/// on its own thread.
+///
+/// ```
+/// let block = [7u8; 64];
+/// let messages = vec![&block[..]; 4096];
+/// let mut digests = vec![blake3_servil::Hash::from_bytes([0; 32]); 4096];
+/// blake3_servil::hash_many_multithreaded(&messages, &mut digests);
+/// assert!(digests.iter().all(|d| *d == blake3_servil::hash(&block)));
+/// ```
+#[cfg(feature = "std")]
+pub fn hash_many_multithreaded(inputs: &[&[u8]], outputs: &mut [Hash]) {
+    lanes::hash_many(inputs, outputs, usize::MAX)
+}
+
+/// [`hash_many_multithreaded`] with at most `max_threads` threads, the
+/// calling thread included. `max_threads` is at least 1; 1 hashes on the
+/// calling thread alone, as [`hash_many`] does.
+///
+/// ```
+/// let messages = [&[1u8; 64][..]; 2000];
+/// let mut a = [blake3_servil::Hash::from_bytes([0; 32]); 2000];
+/// let mut b = a;
+/// blake3_servil::hash_many_multithreaded_with_budget(&messages, &mut a, 2);
+/// blake3_servil::hash_many(&messages, &mut b);
+/// assert_eq!(a, b);
+/// ```
+#[cfg(feature = "std")]
+pub fn hash_many_multithreaded_with_budget(inputs: &[&[u8]], outputs: &mut [Hash], max_threads: usize) {
+    assert!(max_threads >= 1, "a hash needs at least the calling thread");
+    lanes::hash_many(inputs, outputs, max_threads)
 }
 
 /// One kernel [`hash`] runs, from `from_len` input bytes up to the next
@@ -1187,6 +1256,75 @@ pub fn kernel_report() -> KernelReport {
         }
     }
     KernelReport { platform: platform.name(), kernels }
+}
+
+/// What [`hash_many`] runs on a batch of one-block (64-byte) messages,
+/// by the batch's length in bytes: `from_len` is the total of the
+/// messages' lengths at which each kernel starts. Messages of other
+/// lengths run [`kernel_report`]'s kernels one message per call.
+#[cfg(feature = "std")]
+pub fn kernel_report_many() -> KernelReport {
+    let platform = Platform::detect();
+    let mut kernels = Vec::with_capacity(3);
+    #[cfg(blake3_neon_hybrid)]
+    {
+        kernels.push(Kernel {
+            from_len: 0,
+            name: "scalar kernel c1, one message per call",
+            why: "A single message runs the same one-call kernel as hash().",
+        });
+        if neon_hybrid::sha3_detected() {
+            kernels.push(Kernel {
+                from_len: 2 * BLOCK_LEN,
+                name: "NEON hybrid parent kernels p8/p4/p2 + k1",
+                why: "Two or more one-block messages are compressed together on the NEON hybrid kernels, up to eight lanes beside a scalar lane per call; on SME2 this remains the path for the messages left over below a group of sixteen.",
+            });
+        } else {
+            kernels.push(Kernel {
+                from_len: 2 * BLOCK_LEN,
+                name: "NEON hash_many (4-way C kernel)",
+                why: "Two or more one-block messages are compressed four at a time on the NEON C kernel; this core lacks the SHA-3 extension the hybrid kernels rotate with.",
+            });
+        }
+        #[cfg(blake3_sme2)]
+        if matches!(platform, Platform::SME2) {
+            kernels.push(Kernel {
+                from_len: sme2::GROUP * BLOCK_LEN,
+                name: "SME2 hash16_parents kernel",
+                why: "Sixteen one-block messages fill one group on 512-bit streaming vectors, one compression per lane, up to 64 groups per entry into streaming mode; a remainder below sixteen stays on the hybrid kernels.",
+            });
+        }
+    }
+    #[cfg(not(blake3_neon_hybrid))]
+    {
+        kernels.push(Kernel {
+            from_len: 0,
+            name: platform.compress_name(),
+            why: "A single message is one compression on the calling platform's compress kernel.",
+        });
+        if platform.simd_degree() > 1 {
+            kernels.push(Kernel {
+                from_len: 2 * BLOCK_LEN,
+                name: platform.hash_many_name(),
+                why: "Two or more one-block messages are compressed together, up to the platform's SIMD degree per call.",
+            });
+        }
+    }
+    KernelReport { platform: platform.name(), kernels }
+}
+
+/// What [`hash_many_multithreaded`] runs by batch length: [`kernel_report_many`]
+/// plus, from the length at which a call may leave the calling thread,
+/// the split across threads.
+#[cfg(feature = "std")]
+pub fn kernel_report_many_multithreaded() -> KernelReport {
+    let mut report = kernel_report_many();
+    report.kernels.push(Kernel {
+        from_len: lanes::MIN_SPLIT_LEN,
+        name: "message ranges over threads",
+        why: "From here a batch is cut into ranges of messages of 8 KiB to 128 KiB, shrinking toward the end, that the calling thread and this crate's worker threads hash at once, each range through the kernels above; a range runs on the SME2 kernels while an SME unit is free and on the NEON hybrids otherwise. Concurrent callers' ranges are served in turn; when callers already fill the CPUs, a new call hashes its batch whole on its own thread.",
+    });
+    report
 }
 
 /// What [`hash_multithreaded`] runs at each input length: [`kernel_report`]

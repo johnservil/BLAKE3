@@ -149,35 +149,45 @@ fn hash_over_pool(input: &[u8], mode: Mode, max_threads: usize) -> Hash {
     }
     let pieces = cut_subtrees(input.len(), pool.cpus.min(max_threads));
     let mut cvs = vec![ChainingValue::default(); pieces.len()];
-    let job = Job {
+    let work = Work::Tree {
         input,
         pieces: &pieces,
         cvs: cvs.as_mut_ptr(),
         key: mode.key_words(),
         flags: mode.flags_byte(),
-        cursor: Line(AtomicUsize::new(0)),
-        active: Line(AtomicUsize::new(1)),
-        max_threads,
     };
-    let slot = pool.register(&job);
-    loop {
-        let index = job.cursor.fetch_add(1, Ordering::SeqCst);
-        if index >= pieces.len() {
-            break;
-        }
-        // Sound: this thread took index through the cursor, so it alone
-        // writes cvs[index].
-        unsafe { job.hash_piece(index) };
-    }
-    job.active.fetch_sub(1, Ordering::SeqCst);
-    // Every piece is taken; the slot has nothing more to give from this
-    // job. Unregister drains readers still making a reservation; afterwards
-    // active reaches zero exactly when the last piece has finished.
-    if let Some(slot) = slot {
-        pool.unregister(slot);
-    }
-    pool.wait_done(&job.active);
+    pool.run_job(work, pieces.len(), max_threads);
     merge_root(&pieces, &mut cvs, mode)
+}
+
+/// Hash every message of `inputs` into `outputs` over the machine's
+/// threads, at most `max_threads` holding a range at once (the caller's
+/// included; at least 1). Same digests as [`crate::hash_many`].
+#[inline]
+pub(crate) fn hash_many(inputs: &[&[u8]], outputs: &mut [Hash], max_threads: usize) {
+    assert!(max_threads >= 1, "a hash needs at least the calling thread");
+    assert_eq!(inputs.len(), outputs.len(), "one output per message");
+    let total: usize = inputs.iter().map(|m| m.len()).sum();
+    if total < MIN_SPLIT_LEN || max_threads == 1 || inputs.len() < 2 {
+        return crate::many::hash_many_on(inputs, outputs, Platform::detect());
+    }
+    hash_many_over_pool(inputs, outputs, total, max_threads)
+}
+
+#[inline(never)]
+fn hash_many_over_pool(inputs: &[&[u8]], outputs: &mut [Hash], total: usize, max_threads: usize) {
+    let pool = pool();
+    let callers = pool.callers.fetch_add(1, Ordering::SeqCst) + 1;
+    let _caller = Caller(&pool.callers);
+    if callers >= pool.cpus {
+        return pool.hash_messages(inputs, outputs, total);
+    }
+    let pieces = cut_messages(inputs, total, pool.cpus.min(max_threads));
+    if pieces.len() < 2 {
+        return pool.hash_messages(inputs, outputs, total);
+    }
+    let work = Work::Messages { inputs, pieces: &pieces, outputs: outputs.as_mut_ptr() };
+    pool.run_job(work, pieces.len(), max_threads);
 }
 
 /// A counted call, including its serial fallback. Keeping the count until
@@ -196,14 +206,9 @@ impl Drop for Caller<'_> {
 /// reservation can reach this job. The caller waits for `active == 0`, so
 /// every worker access falls inside the caller's frame.
 struct Job<'a> {
-    input: &'a [u8],
-    /// In offset order.
-    pieces: &'a [Piece],
-    /// One slot per piece; slot `i` is written by the thread that took
-    /// piece `i` through `cursor`, and by nobody else.
-    cvs: *mut ChainingValue,
-    key: crate::CVWords,
-    flags: u8,
+    work: Work<'a>,
+    /// How many pieces the work has; `cursor` counts up to it.
+    pieces: usize,
     /// The next piece to take.
     cursor: Line,
     /// Thread reservations, including the caller while it takes pieces.
@@ -212,6 +217,27 @@ struct Job<'a> {
     active: Line,
     /// Bound on accepted reservations.
     max_threads: usize,
+}
+
+/// What a job's pieces are. Piece `i` writes output slot `i` (a chaining
+/// value, or a range of digests) and nothing else, from the thread that
+/// took `i` through the cursor.
+enum Work<'a> {
+    /// Subtrees of one input, in offset order; one chaining value each.
+    Tree {
+        input: &'a [u8],
+        pieces: &'a [Piece],
+        cvs: *mut ChainingValue,
+        key: crate::CVWords,
+        flags: u8,
+    },
+    /// Ranges of a batch of messages (`offset` and `len` count messages);
+    /// one digest per message.
+    Messages {
+        inputs: &'a [&'a [u8]],
+        pieces: &'a [Piece],
+        outputs: *mut Hash,
+    },
 }
 
 /// An atomic counter on its own cache line: `cursor` and `active` are
@@ -245,12 +271,22 @@ impl Job<'_> {
     /// Hash piece `index` into its slot. The caller has taken `index`
     /// through `cursor`.
     unsafe fn hash_piece(&self, index: usize) {
-        let piece = self.pieces[index];
-        let bytes = &self.input[piece.offset..][..piece.len];
-        let cv = pool().hash_subtree(
-            bytes, &self.key, (piece.offset / CHUNK_LEN) as u64, self.flags,
-        ).chaining_value();
-        unsafe { *self.cvs.add(index) = cv };
+        match &self.work {
+            Work::Tree { input, pieces, cvs, key, flags } => {
+                let piece = pieces[index];
+                let bytes = &input[piece.offset..][..piece.len];
+                let cv = pool().hash_subtree(bytes, key, (piece.offset / CHUNK_LEN) as u64, *flags).chaining_value();
+                unsafe { *cvs.add(index) = cv };
+            }
+            Work::Messages { inputs, pieces, outputs } => {
+                let piece = pieces[index];
+                let messages = &inputs[piece.offset..][..piece.len];
+                // Sound: this range of outputs belongs to piece `index` alone.
+                let digests = unsafe { core::slice::from_raw_parts_mut(outputs.add(piece.offset), piece.len) };
+                let bytes = messages.iter().map(|m| m.len()).sum();
+                pool().hash_messages(messages, digests, bytes);
+            }
+        }
     }
 }
 
@@ -269,11 +305,35 @@ fn other_platform() -> Platform {
     Platform::detect()
 }
 
-/// One piece of the input: a whole subtree.
+/// One piece of the input: a whole subtree (bytes), or for a batch a
+/// range of messages (message indices).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Piece {
     offset: usize,
     len: usize,
+}
+
+/// Cut a batch of messages (`total` bytes in all) into ranges for
+/// `threads` threads, in order: each range gathers messages until it
+/// holds [`next_piece_len`] of the bytes that remain, so ranges shrink
+/// toward the end as subtree pieces do. Every message lands in one range.
+fn cut_messages(inputs: &[&[u8]], total: usize, threads: usize) -> Vec<Piece> {
+    let mut pieces = Vec::with_capacity(64);
+    let mut remaining = total;
+    let mut start = 0;
+    while start < inputs.len() {
+        let target = next_piece_len(remaining, threads);
+        let mut end = start;
+        let mut bytes = 0;
+        while end < inputs.len() && (end == start || bytes + inputs[end].len() <= target) {
+            bytes += inputs[end].len();
+            end += 1;
+        }
+        pieces.push(Piece { offset: start, len: end - start });
+        remaining -= bytes;
+        start = end;
+    }
+    pieces
 }
 
 /// Cut `len` bytes into subtrees for `threads` threads, in offset order:
@@ -471,6 +531,48 @@ impl Pool {
         output
     }
 
+    /// Hash a batch of messages (`bytes` in all) with the same kernel
+    /// policy as [`Pool::hash_subtree`].
+    fn hash_messages(&self, inputs: &[&[u8]], outputs: &mut [Hash], bytes: usize) {
+        let permit = bytes >= MIN_SME_PIECE_LEN && self.take_sme_permit();
+        let platform = if permit { fast_platform() } else { other_platform() };
+        crate::many::hash_many_on(inputs, outputs, platform);
+        if permit {
+            self.release_sme_permit();
+        }
+    }
+
+    /// Register `work` of `pieces` pieces, take pieces on this thread until
+    /// none remain, and return once every piece is finished, on whichever
+    /// thread took it. At most `max_threads` threads hold a piece at once.
+    fn run_job(&self, work: Work, pieces: usize, max_threads: usize) {
+        let job = Job {
+            work,
+            pieces,
+            cursor: Line(AtomicUsize::new(0)),
+            active: Line(AtomicUsize::new(1)),
+            max_threads,
+        };
+        let slot = self.register(&job);
+        loop {
+            let index = job.cursor.fetch_add(1, Ordering::SeqCst);
+            if index >= pieces {
+                break;
+            }
+            // Sound: this thread took index through the cursor, so it alone
+            // writes slot index.
+            unsafe { job.hash_piece(index) };
+        }
+        job.active.fetch_sub(1, Ordering::SeqCst);
+        // Every piece is taken; the slot has nothing more to give from this
+        // job. Unregister drains readers still making a reservation; afterwards
+        // active reaches zero exactly when the last piece has finished.
+        if let Some(slot) = slot {
+            self.unregister(slot);
+        }
+        self.wait_done(&job.active);
+    }
+
     /// Put the job in a free slot. Returns the slot, or None when every
     /// slot is taken. When the workers awake are fewer than the pieces,
     /// every sleeper is woken, in one system call: a wake costs the waker
@@ -494,7 +596,7 @@ impl Pool {
             let _guard = self.sleep_lock.lock().unwrap();
             let sleepers = self.sleepers.load(Ordering::SeqCst);
             let unnotified = sleepers - self.notified.load(Ordering::SeqCst);
-            if unnotified > 0 && (self.cpus - 1 - unnotified) < job.pieces.len() {
+            if unnotified > 0 && (self.cpus - 1 - unnotified) < job.pieces {
                 self.notified.store(sleepers, Ordering::SeqCst);
                 self.posted.notify_all();
             }
@@ -585,12 +687,12 @@ impl Pool {
             if !ptr.is_null() {
                 // Sound: a reader of the slot; the caller waits for readers.
                 let job = unsafe { &*ptr };
-                if job.cursor.load(Ordering::SeqCst) < job.pieces.len()
+                if job.cursor.load(Ordering::SeqCst) < job.pieces
                     && job.active.load(Ordering::SeqCst) < job.max_threads
                 {
                     if reserve_thread(&job.active, job.max_threads) {
                         let index = job.cursor.fetch_add(1, Ordering::SeqCst);
-                        if index < job.pieces.len() {
+                        if index < job.pieces {
                             taken = Some(index);
                         } else {
                             job.active.fetch_sub(1, Ordering::SeqCst);
@@ -997,5 +1099,80 @@ mod test {
         });
         // Global pool counters can change as other tests start calls.
         // Each call's digest assertion above checks its own completion.
+    }
+
+    /// Message ranges: every message in exactly one range, ranges shrink
+    /// toward the end, and a batch that fits one range stays whole.
+    #[test]
+    fn test_cut_messages_shapes() {
+        let block = [0u8; crate::BLOCK_LEN];
+        let big = [0u8; 3 * CHUNK_LEN + 5];
+        let small = [0u8; 3];
+        let mut inputs: Vec<&[u8]> = vec![&block[..]; 40_000];
+        inputs[7] = &big[..];
+        inputs[39_999] = &small[..];
+        let total: usize = inputs.iter().map(|m| m.len()).sum();
+        let pieces = cut_messages(&inputs, total, 16);
+        assert!(pieces.len() >= 16, "{} ranges", pieces.len());
+        assert_eq!(pieces[0].offset, 0);
+        assert!(pieces.windows(2).all(|w| w[0].offset + w[0].len == w[1].offset));
+        assert_eq!(pieces.last().unwrap().offset + pieces.last().unwrap().len, inputs.len());
+        let bytes = |p: &Piece| inputs[p.offset..][..p.len].iter().map(|m| m.len()).sum::<usize>();
+        assert!(pieces[..pieces.len() - 1].iter().all(|p| bytes(p) <= MAX_PIECE_LEN && bytes(p) >= MIN_PIECE_LEN / 2));
+        assert!(bytes(&pieces[0]) >= bytes(&pieces[pieces.len() - 2]));
+        assert_eq!(cut_messages(&inputs[200..300], 100 * 64, 16).len(), 1);
+    }
+
+    /// Every budget gives hash_many()'s digests, on contiguous and on
+    /// scattered messages, with lengths other than one block mixed in.
+    #[test]
+    fn test_hash_many_budgets_agree() {
+        let mut buffer = vec![0u8; 4 * MIN_SPLIT_LEN + 3 * CHUNK_LEN];
+        crate::test::paint_test_input(&mut buffer);
+        let mut inputs: Vec<&[u8]> = buffer[..4 * MIN_SPLIT_LEN].chunks_exact(crate::BLOCK_LEN).collect();
+        inputs[100] = &buffer[4 * MIN_SPLIT_LEN..][..3 * CHUNK_LEN];
+        inputs[101] = &buffer[..0];
+        inputs[102] = &buffer[..65];
+        let mut want = vec![Hash::from_bytes([0; 32]); inputs.len()];
+        crate::hash_many(&inputs, &mut want);
+        for (i, message) in inputs.iter().enumerate().take(200) {
+            assert_eq!(want[i], crate::hash(message), "message {i}");
+        }
+        for cap in [1, 2, 3, 4, 64, usize::MAX] {
+            let mut got = vec![Hash::from_bytes([0; 32]); inputs.len()];
+            hash_many(&inputs, &mut got, cap);
+            assert_eq!(want, got, "cap = {cap}");
+        }
+    }
+
+    /// Concurrent batch callers beside tree callers: every digest right.
+    #[test]
+    fn test_concurrent_batch_callers_agree() {
+        let mut buffer = vec![0u8; 8 * MIN_SPLIT_LEN];
+        crate::test::paint_test_input(&mut buffer);
+        let inputs: Vec<&[u8]> = buffer.chunks_exact(crate::BLOCK_LEN).collect();
+        let mut want = vec![Hash::from_bytes([0; 32]); inputs.len()];
+        crate::hash_many(&inputs, &mut want);
+        let tree_want = crate::hash(&buffer);
+        let (inputs, want, buffer) = (&inputs[..], &want[..], &buffer[..]);
+        let barrier = std::sync::Barrier::new(16);
+        std::thread::scope(|scope| {
+            for i in 0..16 {
+                let cap = [usize::MAX, 3, 2, 5][i % 4];
+                let barrier = &barrier;
+                scope.spawn(move || {
+                    barrier.wait();
+                    let mut got = vec![Hash::from_bytes([0; 32]); inputs.len()];
+                    for _ in 0..10 {
+                        if i % 2 == 0 {
+                            hash_many(inputs, &mut got, cap);
+                            assert_eq!(want, &got[..]);
+                        } else {
+                            assert_eq!(tree_want, hash(buffer, cap));
+                        }
+                    }
+                });
+            }
+        });
     }
 }
