@@ -27,9 +27,9 @@
 //! in the pool's slot table, then takes pieces through the cursor until
 //! none remain. It unregisters the job and waits for its active threads
 //! to finish. The same count enforces the call's thread budget. Workers,
-//! started once per process, one per CPU beyond the first, serve the
-//! registered jobs round-robin, one piece at a time through the same
-//! cursor. Two callers
+//! started once per process ([`crate::initialize`]), one per CPU beyond
+//! the first, serve the registered jobs round-robin, one piece at a time
+//! through the same cursor. Two callers
 //! hashing at once therefore each get about half the workers' time, and
 //! a slow thread takes fewer pieces than a fast one; there is nothing to
 //! tune for fairness or balance.
@@ -280,9 +280,8 @@ struct Piece {
 /// each piece is [`next_piece_len`] of what remains, and the last is
 /// whatever is left. A piece's length never exceeds the one before it and
 /// every piece starts at a multiple of its own length, so each is a whole
-/// subtree at its offset. `len` is at least two chunks... it exceeds
-/// [`MIN_PIECE_LEN`]. At least two threads share it, so two or more
-/// pieces come back.
+/// subtree at its offset. `len` exceeds [`MIN_PIECE_LEN`] and at least
+/// two threads share it, so two or more pieces come back.
 fn cut_subtrees(len: usize, threads: usize) -> Vec<Piece> {
     assert!(threads >= 2, "a serial call hashes the input whole");
     assert!(len > MIN_PIECE_LEN, "one piece has no parent to merge; hash it whole instead");
@@ -418,13 +417,17 @@ struct Slot {
     readers: AtomicUsize,
 }
 
-/// The pool, created on first use. Creation itself is cheap: a starter
-/// thread spawns the workers and, where the SME unit count is measured,
-/// runs that measurement; the first calls proceed on the calling thread
-/// and whichever workers have arrived, and the permits grow to the
-/// measured count when the starter is done. The first call therefore
-/// costs about what a call costs, and a caller timing it (a benchmark's
-/// calibration, say) sees nothing of the start.
+/// Start the pool: see [`crate::initialize`]. Every later call returns
+/// the same pool at once.
+pub(crate) fn initialize() {
+    pool();
+}
+
+/// The pool, created on first use. Creation counts the SME units (a
+/// measurement of up to tens of milliseconds where the platform reports
+/// no cluster topology, see [`sme_permits`]) and spawns the workers, then
+/// returns; [`crate::initialize`] is this function's public face. Workers
+/// calling `pool()` wait until the creator returns.
 fn pool() -> &'static Pool {
     static POOL: OnceLock<Pool> = OnceLock::new();
     POOL.get_or_init(|| {
@@ -432,7 +435,7 @@ fn pool() -> &'static Pool {
         let pool = Pool {
             slots: std::array::from_fn(|_| Slot { job: AtomicPtr::new(std::ptr::null_mut()), readers: AtomicUsize::new(0) }),
             callers: AtomicUsize::new(0),
-            sme_free: AtomicUsize::new(if uses_sme_permits() { 1 } else { 0 }),
+            sme_free: AtomicUsize::new(sme_permits()),
             cpus,
             last_job_ns: AtomicU64::new(0),
             epoch: std::time::Instant::now(),
@@ -444,22 +447,12 @@ fn pool() -> &'static Pool {
             finished: Mutex::new(()),
             finished_signal: Condvar::new(),
         };
-        std::thread::Builder::new()
-            .name("blake3-starter".into())
-            .spawn(move || {
-                for worker in 1..cpus {
-                    std::thread::Builder::new()
-                        .name(format!("blake3-worker-{worker}"))
-                        .spawn(worker_main)
-                        .expect("spawning a BLAKE3 worker");
-                }
-                let pool = POOL.wait();
-                let permits = sme_permits();
-                if permits > 1 {
-                    pool.sme_free.fetch_add(permits - 1, Ordering::SeqCst);
-                }
-            })
-            .expect("spawning the BLAKE3 starter");
+        for worker in 1..cpus {
+            std::thread::Builder::new()
+                .name(format!("blake3-worker-{worker}"))
+                .spawn(worker_main)
+                .expect("spawning a BLAKE3 worker");
+        }
         pool
     })
 }
@@ -494,23 +487,28 @@ impl Pool {
         self.last_job_ns.store(self.epoch.elapsed().as_nanos() as u64, Ordering::SeqCst);
         // Sleepers already notified are on their way (a wake takes tens
         // of microseconds to land); a second caller in that window counts
-        // them as awake and pays nothing.
-        let sleepers = self.sleepers.load(Ordering::SeqCst).min(self.cpus - 1);
-        let unnotified = sleepers.saturating_sub(self.notified.load(Ordering::SeqCst));
-        if unnotified > 0 && (self.cpus - 1 - unnotified) < job.pieces.len() {
-            self.notified.store(sleepers, Ordering::SeqCst);
-            // The lock orders the notify after a sleeper's last check.
+        // them as awake and pays nothing. The lock-free reads are a hint;
+        // the counts are exact under sleep_lock, where every sleeper
+        // counted is waiting (see next_piece).
+        if self.sleepers.load(Ordering::SeqCst) > self.notified.load(Ordering::SeqCst) {
             let _guard = self.sleep_lock.lock().unwrap();
-            self.posted.notify_all();
+            let sleepers = self.sleepers.load(Ordering::SeqCst);
+            let unnotified = sleepers - self.notified.load(Ordering::SeqCst);
+            if unnotified > 0 && (self.cpus - 1 - unnotified) < job.pieces.len() {
+                self.notified.store(sleepers, Ordering::SeqCst);
+                self.posted.notify_all();
+            }
         }
         Some(slot)
     }
 
     /// Whether a job was registered within SPIN_BEFORE_SLEEP: while calls
-    /// keep coming, workers stay awake.
+    /// keep coming, workers stay awake. A registration between this
+    /// thread's clock read and its load of `last_job_ns` reads as recent.
     fn jobs_recently(&self) -> bool {
+        let now = self.epoch.elapsed().as_nanos() as u64;
         let last = self.last_job_ns.load(Ordering::SeqCst);
-        self.epoch.elapsed().as_nanos() as u64 - last < SPIN_BEFORE_SLEEP.as_nanos() as u64
+        now.saturating_sub(last) < SPIN_BEFORE_SLEEP.as_nanos() as u64
     }
 
     /// Clear the slot and wait out any worker mid-take on it.
@@ -623,18 +621,23 @@ impl Pool {
             }
             // Asleep until a wake, then back to polling: a woken worker
             // that finds nothing yet stays available for the next call.
-            // The guard is held through the take, so a caller's wake
-            // cannot fall between the take and the wait.
-            let guard = self.sleep_lock.lock().unwrap();
+            // The guard is held from the count's increment through the
+            // take, the wait, and the decrement, so under sleep_lock every
+            // sleeper counted is waiting, and notified never exceeds
+            // sleepers: a caller's wake cannot fall between the take and
+            // the wait, and a sleeper that leaves without waiting was
+            // never counted as notified.
+            let mut guard = self.sleep_lock.lock().unwrap();
             self.sleepers.fetch_add(1, Ordering::SeqCst);
             let taken = self.take_piece(start);
             if taken.is_none() {
-                drop(self.posted.wait(guard).unwrap());
+                guard = self.posted.wait(guard).unwrap();
                 // Awake: one fewer notified sleeper on the way (a wake
                 // nobody asked for leaves the count where it is).
                 let _ = self.notified.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| Some(n.saturating_sub(1)));
             }
             self.sleepers.fetch_sub(1, Ordering::SeqCst);
+            drop(guard);
             if let Some(taken) = taken {
                 break 'taken taken;
             }
@@ -688,14 +691,16 @@ fn sme_unit_count() -> usize {
 /// How many threads can run the SME2 kernel at full speed at once: the
 /// aggregate rate of `n` threads hashing at the same time, over the rate
 /// of one, at the `n` where it stops growing. Each timing covers `REPEAT`
-/// hashes of 256 KiB (about two milliseconds); the best of `ROUNDS` is
-/// kept, which rides out a hypervisor descheduling a virtual CPU.
+/// hashes of 256 KiB (about a millisecond); the best of `ROUNDS` is
+/// kept, which rides out a hypervisor descheduling a virtual CPU. The
+/// whole measurement takes about 40 ms on a 16-CPU virtual machine, the
+/// "tens of milliseconds" in [`crate::initialize`]'s contract.
 #[cfg(blake3_sme2)]
 fn measure_sme_units() -> usize {
     use std::sync::{Arc, Barrier};
     use std::time::{Duration, Instant};
     const LEN: usize = 256 * CHUNK_LEN;
-    const REPEAT: usize = 40;
+    const REPEAT: usize = 20;
     const ROUNDS: usize = 2;
     let cpus = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
     let input: Arc<Vec<u8>> = Arc::new((0..LEN as u32).map(|i| (i.wrapping_mul(2654435761) >> 24) as u8).collect());
