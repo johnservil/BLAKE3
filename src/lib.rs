@@ -1078,6 +1078,100 @@ fn hash_serial(input: &[u8], key: &CVWords, flags: u8) -> Hash {
     hash_all_at_once::<join::SerialJoin>(input, key, flags).root_hash()
 }
 
+/// One kernel [`hash`] runs, from `from_len` input bytes up to the next
+/// kernel's `from_len`.
+#[cfg(feature = "std")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Kernel {
+    /// The smallest input length, in bytes, this kernel handles.
+    pub from_len: usize,
+    /// A short name for a report or a legend.
+    pub name: &'static str,
+    /// One or two sentences on what changes at `from_len`.
+    pub why: &'static str,
+}
+
+/// The kernels this CPU runs, by input length, in ascending `from_len`
+/// with the first at 0. `platform` names the selection
+/// (`"SME2"`, `"NEON"`, `"AVX2"`, ...).
+#[cfg(feature = "std")]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KernelReport {
+    pub platform: &'static str,
+    pub kernels: Vec<Kernel>,
+}
+
+/// What [`hash`] runs on this CPU at each input length. Read at run
+/// time from the same detection [`hash`] uses, so a report built from it
+/// describes the measurement it accompanies.
+#[cfg(feature = "std")]
+pub fn kernel_report() -> KernelReport {
+    let platform = Platform::detect();
+    let mut kernels = Vec::with_capacity(4);
+    #[cfg(blake3_neon_hybrid)]
+    {
+        kernels.push(Kernel {
+            from_len: 0,
+            name: "scalar kernel c1, one call",
+            why: "Inputs of one chunk (1 KiB) or less run every block, the root compression included, in one call to the integer-only kernel, with the state in registers throughout.",
+        });
+        if neon_hybrid::sha3_detected() {
+            // The NEON platform hands hash_many its degree of four chunks;
+            // SME2 hands the hybrids the remainder below a group of sixteen.
+            let why = if platform.simd_degree() == 4 {
+                "Above one chunk the tree is hashed several chunks at a time, up to four per call on this platform; the hybrid kernels run scalar chunks on the integer units beside NEON chunks, so both stay busy."
+            } else {
+                "Above one chunk the tree is hashed several chunks at a time; below a full SME2 group of sixteen, the hybrid kernels run scalar chunks on the integer units beside NEON chunks, up to fifteen per call."
+            };
+            kernels.push(Kernel { from_len: CHUNK_LEN + 1, name: "integer + NEON hybrid kernels", why });
+        } else {
+            kernels.push(Kernel {
+                from_len: CHUNK_LEN + 1,
+                name: "NEON hash_many (4-way C kernel)",
+                why: "Above one chunk the tree is hashed four chunks at a time on the NEON C kernel; this core lacks the SHA-3 extension the hybrid kernels rotate with.",
+            });
+        }
+        #[cfg(blake3_sme2)]
+        if matches!(platform, Platform::SME2) {
+            kernels.push(Kernel {
+                from_len: sme2::GROUP * CHUNK_LEN,
+                name: "SME2 hash16_chunks kernel",
+                why: "Sixteen whole chunks fill one group on 512-bit streaming vectors, up to eight groups per call; a remainder below sixteen stays on the hybrid kernels.",
+            });
+        }
+    }
+    #[cfg(not(blake3_neon_hybrid))]
+    {
+        kernels.push(Kernel {
+            from_len: 0,
+            name: platform.compress_name(),
+            why: "Inputs of one chunk (1 KiB) or less run one compression per block on the calling platform's compress kernel.",
+        });
+        if platform.simd_degree() > 1 {
+            kernels.push(Kernel {
+                from_len: CHUNK_LEN + 1,
+                name: platform.hash_many_name(),
+                why: "Above one chunk the tree is hashed several chunks at a time, up to the platform's SIMD degree per call.",
+            });
+        }
+    }
+    KernelReport { platform: platform.name(), kernels }
+}
+
+/// What [`hash_multithreaded`] runs at each input length: [`kernel_report`]
+/// plus, from the length at which a call may leave the calling thread,
+/// the split across threads.
+#[cfg(feature = "std")]
+pub fn kernel_report_multithreaded() -> KernelReport {
+    let mut report = kernel_report();
+    report.kernels.push(Kernel {
+        from_len: lanes::MIN_SPLIT_LEN,
+        name: "subtrees over threads",
+        why: "From here the input may split at subtree boundaries across the calling thread and this crate's worker threads, each running the kernels above; the caller merges the chaining values. How many threads a call gets depends on the machine and on concurrent callers.",
+    });
+    report
+}
+
 /// The keyed hash function.
 ///
 /// This is suitable for use as a message authentication code, for example to

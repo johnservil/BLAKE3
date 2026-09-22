@@ -116,6 +116,73 @@ impl Platform {
         Platform::Portable
     }
 
+    /// The selection's name, for reports.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Platform::Portable => "portable",
+            #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+            Platform::SSE2 => "SSE2",
+            #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+            Platform::SSE41 => "SSE4.1",
+            #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+            Platform::AVX2 => "AVX2",
+            #[cfg(blake3_avx512_ffi)]
+            #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+            Platform::AVX512 => "AVX-512",
+            #[cfg(blake3_neon)]
+            Platform::NEON => "NEON",
+            #[cfg(blake3_sme2)]
+            Platform::SME2 => "SME2",
+            #[cfg(blake3_wasm32_simd)]
+            Platform::WASM32_SIMD => "WASM32 SIMD",
+        }
+    }
+
+    /// The single-block compress kernel's name, for reports on platforms
+    /// without the scalar c1 kernel.
+    #[allow(dead_code)]
+    pub fn compress_name(&self) -> &'static str {
+        match self {
+            Platform::Portable => "portable compression",
+            #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+            Platform::SSE2 => "SSE2 compression",
+            #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+            Platform::SSE41 | Platform::AVX2 => "SSE4.1 compression",
+            #[cfg(blake3_avx512_ffi)]
+            #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+            Platform::AVX512 => "AVX-512 compression",
+            #[cfg(blake3_neon)]
+            Platform::NEON => "portable compression",
+            #[cfg(blake3_sme2)]
+            Platform::SME2 => "portable compression",
+            #[cfg(blake3_wasm32_simd)]
+            Platform::WASM32_SIMD => "WASM32 SIMD compression",
+        }
+    }
+
+    /// The many-chunk kernel's name with its degree, for reports.
+    #[allow(dead_code)]
+    pub fn hash_many_name(&self) -> &'static str {
+        match self {
+            Platform::Portable => "portable hash_many",
+            #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+            Platform::SSE2 => "SSE2 hash_many (4-way)",
+            #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+            Platform::SSE41 => "SSE4.1 hash_many (4-way)",
+            #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+            Platform::AVX2 => "AVX2 hash_many (8-way)",
+            #[cfg(blake3_avx512_ffi)]
+            #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+            Platform::AVX512 => "AVX-512 hash_many (16-way)",
+            #[cfg(blake3_neon)]
+            Platform::NEON => "NEON hash_many (4-way)",
+            #[cfg(blake3_sme2)]
+            Platform::SME2 => "SME2 hash_many",
+            #[cfg(blake3_wasm32_simd)]
+            Platform::WASM32_SIMD => "WASM32 SIMD hash_many (4-way)",
+        }
+    }
+
     pub fn simd_degree(&self) -> usize {
         let degree = match self {
             Platform::Portable => 1,

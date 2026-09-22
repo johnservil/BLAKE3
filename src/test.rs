@@ -1094,3 +1094,23 @@ mod guts_tests {
         assert_eq!(hasher.finalize(), root);
     }
 }
+
+/// The kernel reports are well formed: ascending from 0, and the
+/// multithreaded report is the single-threaded one plus the split entry,
+/// which starts where hash_multithreaded may leave the calling thread.
+#[test]
+#[cfg(feature = "std")]
+fn test_kernel_reports() {
+    let single = crate::kernel_report();
+    assert!(!single.platform.is_empty());
+    assert_eq!(single.kernels[0].from_len, 0);
+    assert!(single.kernels.windows(2).all(|pair| pair[0].from_len < pair[1].from_len));
+    let multi = crate::kernel_report_multithreaded();
+    assert_eq!(multi.platform, single.platform);
+    assert_eq!(&multi.kernels[..single.kernels.len()], &single.kernels[..]);
+    assert_eq!(multi.kernels.len(), single.kernels.len() + 1);
+    assert_eq!(multi.kernels.last().unwrap().from_len, 128 * 1024);
+    for kernel in &multi.kernels {
+        assert!(!kernel.name.is_empty() && !kernel.why.is_empty());
+    }
+}
