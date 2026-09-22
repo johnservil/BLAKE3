@@ -24,6 +24,38 @@ Sixteen actions that improve writing:
 15. Name responsibility
 16. Trim metadiscourse
 
+## Simplicity
+
+Prefer the simplest design that meets the contract and performs well.
+Simplicity has several dimensions:
+
+- **Conceptual ease:** a reader can understand and predict the design with
+  a few familiar concepts.
+- **Less code and information:** fewer moving parts, less state, and fewer
+  facts to carry in working memory.
+- **Fewer runtime cases:** fewer branches, special cases, tuning knobs,
+  and distinct operating regimes.
+
+Use one clear mechanism wherever it serves. Added complexity earns its
+place through a concrete need and a demonstrated benefit. When approaches
+perform similarly, choose the simpler one. Apply this standard to code,
+interfaces, documentation, and performance optimizations.
+
+## Correctness tests
+
+Use reproducible inputs and fixed, independently established expected
+outputs. A deterministic RNG is a compact specification of test bytes;
+record its algorithm, seed, and length, and check in the expected digests.
+Published test vectors and independent reference implementations establish
+the answers. Regenerating golden outputs is an explicit, reviewed action.
+Tests never silently regenerate their own expected answers.
+
+The same fixed vectors can exercise different kernels, thread budgets,
+concurrent calls, and scheduling interleavings. Input generation and
+execution scheduling are separate concerns. Differential tests supplement
+these anchors. Keep benchmark correctness checks outside timed intervals,
+and share the implementation dispatch between checking and timing.
+
 ## Coding: Design By Contract
 
 We document and `assert` every precondition our code relies on (`debug_assert` only on hot paths). Contracts are **expansive** (the caller carries the responsibility), **conceptually simple** (a few sentences of English; simplicity beats familiarity), and **structurally simple** to enforce (few lines, types, data elements, conditionals).
@@ -52,7 +84,7 @@ Read `/workspace/bench-hashes/NEXT-STEPS.md` first: it says what the work is now
 
 ## Building and running
 
-- The VM is Debian 12 on AArch64 with two cores. Its CPU exposes SME2 with 512-bit streaming vectors (`/proc/cpuinfo` lists `sme2`), so the fork's kernels run here. Absolute timings differ from Apple hardware; relative comparisons hold.
+- The VM is Debian 12 on AArch64 with 16 vCPUs (inspect `nproc` after a restart). Its CPU exposes SME2 with 512-bit streaming vectors (`/proc/cpuinfo` lists `sme2`), so the fork's kernels run here. Absolute timings differ from Apple hardware; relative comparisons hold.
 - The fork's SME2 kernel is `c/blake3_sme2_aarch64.S`, compiled by the `cc` crate with `-march=armv9-a+sme2`. The system `cc` (GCC 12) and `as` (binutils 2.40) predate SME2, so the fork's build script fails under them with a message naming the fix. `clang-19` assembles SME2; `TMPDIR` gives clang a temporary directory that exists in the guest.
 - Every `git` and `cargo` command takes `HOME=/workspace/vm/home`. Files on the mount show as uid 501 while the guest runs as uid 0, which is what `safe.directory` covers.
 - Build the fork: `HOME=/workspace/vm/home CARGO_TARGET_DIR=/tmp/target CC=clang-19 TMPDIR=/tmp cargo build --release`

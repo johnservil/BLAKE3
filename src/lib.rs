@@ -973,19 +973,25 @@ fn hash_one_chunk_root(input: &[u8], key: &CVWords, flags: u8) -> Hash {
     Hash(out)
 }
 
-// Hash a complete input all at once. Unlike compress_subtree_wide() and
-// compress_subtree_to_parent_node(), this function handles the 1 chunk case.
+// Hash a whole subtree at its chunk counter (or the whole input at zero).
+// Unlike the wider helpers above, this also handles one chunk or less.
 //
 // Inlined into hash(), keyed_hash(), and derive_key(): the one-chunk path
 // is then a straight line from the public function to the kernel, and the
 // multi-chunk path is one call to compress_subtree_to_parent_node().
 #[inline]
-fn hash_all_at_once<J: join::Join>(input: &[u8], key: &CVWords, flags: u8) -> Output {
-    let platform = Platform::detect();
+fn hash_all_at_once<J: join::Join>(
+    input: &[u8], key: &CVWords, chunk_counter: u64, flags: u8, platform: Platform,
+) -> Output {
+    // The input is a complete subtree at chunk_counter, or the whole
+    // input (including empty) at counter zero. Its byte offset fits u64.
+    debug_assert!(chunk_counter <= u64::MAX / CHUNK_LEN as u64);
+    debug_assert!(chunk_counter == 0 || (!input.is_empty()
+        && input.len() as u64 <= hazmat::max_subtree_len(chunk_counter * CHUNK_LEN as u64).unwrap()));
 
     // If the whole subtree is one chunk, hash it directly with a ChunkState.
     if input.len() <= CHUNK_LEN {
-        return ChunkState::new(key, 0, flags, platform)
+        return ChunkState::new(key, chunk_counter, flags, platform)
             .update(input)
             .output();
     }
@@ -995,7 +1001,7 @@ fn hash_all_at_once<J: join::Join>(input: &[u8], key: &CVWords, flags: u8) -> Ou
     Output {
         input_chaining_value: *key,
         block: Aligned64(compress_subtree_to_parent_node::<J>(
-            input, key, 0, flags, platform,
+            input, key, chunk_counter, flags, platform,
         )),
         block_len: BLOCK_LEN as u8,
         counter: 0,
@@ -1033,8 +1039,9 @@ pub fn hash(input: &[u8]) -> Hash {
 /// 64 KiB are hashed on the calling thread alone, at [`hash`]'s speed.
 /// Larger inputs are cut into pieces that the calling thread and worker
 /// threads hash at once; this crate starts the workers once per process,
-/// one per CPU beyond the first, and keeps them. Threads hashing at once
-/// stay within the machine's CPU count.
+/// one per CPU beyond the first, and keeps them. When concurrent calls
+/// already occupy the machine's CPUs, a new call hashes on its own thread.
+/// Existing calls can still have workers finishing their pieces.
 ///
 /// Concurrent calls within one process share the workers: they take pieces
 /// from each call in turn, so two callers hashing at once each get about
@@ -1076,7 +1083,7 @@ fn hash_serial(input: &[u8], key: &CVWords, flags: u8) -> Hash {
     if input.len() <= CHUNK_LEN {
         return hash_one_chunk_root(input, key, flags);
     }
-    hash_all_at_once::<join::SerialJoin>(input, key, flags).root_hash()
+    hash_all_at_once::<join::SerialJoin>(input, key, 0, flags, Platform::detect()).root_hash()
 }
 
 /// One kernel [`hash`] runs, from `from_len` input bytes up to the next
@@ -1168,7 +1175,7 @@ pub fn kernel_report_multithreaded() -> KernelReport {
     report.kernels.push(Kernel {
         from_len: lanes::MIN_SPLIT_LEN,
         name: "subtrees over threads",
-        why: "From here the input is cut at subtree boundaries into pieces of 8 KiB to 128 KiB, shrinking toward the end, that the calling thread and this crate's worker threads (one per CPU beyond the first) hash at once; a piece runs on the SME2 kernels while an SME unit is free and on the NEON hybrids otherwise, and the caller merges the chaining values. Concurrent callers' pieces are served in turn.",
+        why: "From here calls may cut the input at subtree boundaries into pieces of 8 KiB to 128 KiB, shrinking toward the end, that the calling thread and this crate's worker threads (one per CPU beyond the first) hash at once; a piece runs on the SME2 kernels while an SME unit is free and on the NEON hybrids otherwise, and the caller merges the chaining values. Concurrent callers' pieces are served in turn; when callers already fill the CPUs, a new call hashes its input whole on its own thread.",
     });
     report
 }

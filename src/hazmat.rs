@@ -411,7 +411,7 @@ pub enum Mode<'a> {
 }
 
 impl<'a> Mode<'a> {
-    fn key_words(&self) -> CVWords {
+    pub(crate) fn key_words(&self) -> CVWords {
         match self {
             Mode::Hash => *IV,
             Mode::KeyedHash(key) => crate::platform::words_from_le_bytes_32(key),
@@ -419,7 +419,7 @@ impl<'a> Mode<'a> {
         }
     }
 
-    fn flags_byte(&self) -> u8 {
+    pub(crate) fn flags_byte(&self) -> u8 {
         match self {
             Mode::Hash => 0,
             Mode::KeyedHash(_) => crate::KEYED_HASH,
