@@ -650,8 +650,8 @@ each hashing 1 MiB at once, per thread (median/slowest):
 plausible (a program's own thread pool; Apple's Accelerate uses the SME
 unit), and there SME2 always is 3-5 times slower than NEON.
 
-Rejected on the way: one SME2 thread per process (branch
-`sme2-one-thread`, patch `one-thread.patch`): case 3 bounded, but two
+Rejected on the way: one SME2 thread per process (patch
+`tmp/sme2-session/one-thread.patch`): case 3 bounded, but two
 threads that would not have shared a unit lose (duo st 1 MiB .180 ->
 .251), and a lone SME2 thread beside NEON threads handed the permit back
 and forth; two permits: n=16 slowest .84. Pacing against the process's
