@@ -106,7 +106,7 @@ Speed is this fork's purpose, so no commit that makes it slower may enter git un
 - `/workspace/vm/` holds everything the guest needs that a restart would otherwise remove:
   - `vm/home/` is `HOME` for `git` and `cargo`: `.gitconfig` with `safe.directory = *`, John Servil's `user.name`/`user.email`, and the credential helper.
   - `vm/home/bin/gh-cred.sh` speaks the git credential protocol and reads the johnservil classic token from `/workspace/ghtokenclassic.txt` (never print that file). Both repos have `credential.helper = !sh /workspace/vm/home/bin/gh-cred.sh` (the mount drops executable bits, hence `!sh`).
-  - `vm/setup.sh` installs `clang-19` from apt.llvm.org when it is absent, creates `/tmp/target`, and re-points both repos' credential helpers. Run `sh /workspace/vm/setup.sh` first after a VM restart.
+  - `vm/setup.sh` installs `clang-19` from apt.llvm.org, and `pypy3` and `librsvg2-bin` from Debian, when they are absent; creates `/tmp/target`; re-points both repos' credential helpers; and installs the guest's pre-commit hook in `/tmp/git-hooks`. Run `sh /workspace/vm/setup.sh` first after a VM restart.
 - Guest disk (`/tmp`, `/usr`, apt packages) vanishes with the VM. Only `/workspace` persists.
 
 ## Building and running
