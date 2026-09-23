@@ -47,6 +47,7 @@ hashes a batch one message at a time, so the current benchmark builds; a
 comparison involving such a commit judges the one-message cells alone.
 """
 import argparse
+import hashlib
 import json
 import shutil
 import statistics
@@ -128,14 +129,28 @@ def target_dir():
     return Path(json.loads(meta)["target_directory"])
 
 
+def bench_fingerprint():
+    """The benchmark source that `commit_bench` copies into each build, as
+    12 hex digits: every file it builds from, so a cached executable never
+    outlives a change to the benchmark."""
+    digest = hashlib.sha256()
+    bench = ROOT / "bench-hashes"
+    for path in sorted([bench / "Cargo.toml", bench / "Cargo.lock", bench / "build.rs", *(bench / "src").rglob("*.rs"),
+                        *(bench / ".cargo").rglob("*")]):
+        if path.is_file():
+            digest.update(str(path.relative_to(bench)).encode() + b"\0" + path.read_bytes() + b"\0")
+    return digest.hexdigest()[:12]
+
+
 def commit_bench(rev):
     """(bench-hashes executable built against the fork at `rev`, whether it
-    needed the shim). Built once per commit, in a worktree under CACHE, and
-    kept in the target directory."""
+    needed the shim). Built once per fork commit and benchmark source, in a
+    worktree under CACHE, and kept in the target directory."""
     commit = git("rev-parse", "--short=12", f"{rev}^{{commit}}")
     # Executables live in Cargo's target directory, which runs programs
-    # everywhere (a VM's shared mount may not).
-    exe = target_dir() / "perf-ab" / commit / "bench-hashes"
+    # everywhere (a VM's shared mount may not). The name carries the
+    # benchmark's fingerprint as well as the fork's commit.
+    exe = target_dir() / "perf-ab" / f"{commit}-{bench_fingerprint()}" / "bench-hashes"
     shimmed = "pub fn hash_many(" not in git("show", f"{commit}:src/lib.rs")
     if exe.exists():
         return str(exe), shimmed
