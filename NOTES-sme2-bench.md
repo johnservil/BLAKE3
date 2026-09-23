@@ -662,17 +662,25 @@ each kernel cost 15% alone: read CNTVCT_EL0 instead, and without `isb`
 (which made 512-message batches 28% slower). A backoff of 4 ms or a
 streak of 2 left worse slowest threads than 1 ms and 4.
 
-**Kept: pacing against NEON** (`pace` in `ffi_sme2.rs`). Once per
+**Tried, kept briefly, and reverted: pacing against NEON** (0c206a3,
+reverted in the next code commit; the code is in that commit). Once per
 process, time one full-size NEON call of each kernel (best of five, about
-0.2 ms). Each thread counts its full-size SME2 calls (eight groups) that
+0.2 ms); each thread counts its full-size SME2 calls (eight groups) that
 took a quarter longer than that; four in a row send it to NEON for 1 ms.
-This is a per-thread kernel choice by measured speed; no thread waits or
-stands down (the rejected stand-down concerned pool workers). The
-benchmark's cells are level with the unpaced build (`perf_regress
-check`: no regression; A B B A: one-message cells within 3%, batches at
-16 messages 14-32% faster solo, others within noise). Unmeasured on the
-Mac: whether calibration may land on an E-core (NEON's best would then
-read slow and case 3 would switch later); run the scaling probe there.
+The scaling probe liked it (table above: n=16 .32, slowest .50-.53, one
+thread .165-.170) and `perf_regress check` passed (its three contenders).
+The full benchmark did not: with all eight contenders, 3 of 4 paced runs
+fell into a state where both duo copies ran slower than NEON itself (2
+MiB 0.549 ns/B, 65536 messages 50 ns/msg, against NEON's 0.25 and 19),
+with 112-135 switches per run spread evenly over the two copies; clean
+paced runs had 1, and the unpaced build was clean in 8 of 8. The counter
+read costs 0.3 ns and CNTFRQ is right, so the switching itself sets off
+the slow state; the host's placement of the vCPU threads (E-cores for
+threads that look light?) is the suspect, unverified. A mechanism that
+can lock itself into a mode slower than both kernels fails the minimax
+and simplicity rules. Case 3 for serial calls stays open; lessons: judge
+a scheduling-sensitive change on the full benchmark, several runs, not
+on the three-contender check alone.
 
 **Also measured and set aside this session (VM):**
 - *Two scalar chunks side by side for 2 KiB* (`s2`: the generator's
