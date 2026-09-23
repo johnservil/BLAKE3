@@ -18,7 +18,7 @@ Load, thermal state, and drift reach both sides of a pair alike, so there
 is nothing to record, store, or keep current, and any machine can run it.
 
 The rule, calibrated on the 16-vCPU VM with 32 runs of one commit taken back
-to back while the host's load came and went (NOTES-sme2-bench.md):
+to back while the host's load came and went (NOTES-servil.md):
 
 * The statistic is a cell's 5th percentile per run: a low quantile moves
   when the code does, a median moves with the host.

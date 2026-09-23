@@ -1,9 +1,11 @@
-# Notes for the sme2-bench maintainers
+# Notes for the servil fork's maintainers
 
-For whoever works on this branch next. `sme2-bench` is a fork of
-BLAKE3 1.8.7 published as the crate `blake3-servil` (library `blake3_servil`) so it links beside
+For whoever works on this branch next. `servil`, the main branch of
+github.com/johnservil/BLAKE3, is a fork of BLAKE3 1.8.7 published as the
+crate `blake3-servil` (library `blake3_servil`) so it links beside
 crates.io `blake3`. Its purpose is to be the fastest BLAKE3 on Apple
-M4-class hardware, alone and beside other work. This file is what was
+M4-class hardware, natively and in virtual machines, in every situation a
+program meets: alone, beside other work, beside other hashing threads. This file is what was
 learned making it so; the commit messages on this branch carry the
 numbers behind each change.
 

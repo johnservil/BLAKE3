@@ -91,7 +91,7 @@ A highly desirable property of an interface and its contract: the user learns th
 
 # Where to start
 
-Read `/workspace/bench-hashes/NEXT-STEPS.md` first: it says what the work is now (optimising this fork against the benchmark) and where the last session left both repositories. `NOTES-sme2-bench.md` in this directory holds the fork's design notes and the measurements behind each change.
+Read `/workspace/bench-hashes/NEXT-STEPS.md` first: it says what the work is now (optimising this fork against the benchmark) and where the last session left both repositories. `NOTES-servil.md` in this directory holds the fork's design notes and the measurements behind each change.
 
 # Targets
 
@@ -118,13 +118,28 @@ Speed is this fork's purpose, so no commit that makes it slower may enter git un
 
 **Commits that skipped the check** (`--no-verify`, or made where the hook was absent) must be checked before they are pushed: `pypy3 tools/perf_regress.py compare <parent> <commit>` for one, `pypy3 tools/perf_bisect.py <commit> <commit> ...` for a run of them (each against the one before, then the last against the first).
 
-`NOTES-sme2-bench.md` ("Performance-regression check") explains the rule and its measured false-alarm rate and sensitivity.
+`NOTES-servil.md` ("Performance-regression check") explains the rule and its measured false-alarm rate and sensitivity.
+
+# Branches: candidates, then servil
+
+`servil` is this fork's main line. Every commit on it has passed the whole gate below, on the VM and natively on the Mac.
+
+Work happens on `candidate/<topic>` branches (`candidate/p-e-classification`, `candidate/workgroup-placement`). Their commits pass the pre-commit check on the machine where they are made, as every code commit does, and may be pushed before native measurement: that is how the Mac's benchmark runner, which builds from GitHub alone, gets them.
+
+A candidate reaches `servil` only when all of these hold, and never without the performance check:
+
+1. It is a fast-forward of `servil`'s current tip, so what was measured is exactly what lands. When `servil` has moved, rebase and check again.
+2. Every test suite passes: the fork's default, `no_sme2`, and `pure` builds, the official vectors, and the benchmark's own tests.
+3. `pypy3 tools/perf_regress.py compare servil candidate/<topic>` reports no regression on the VM.
+4. The same comparison reports no regression natively on the Mac.
+
+A regression the user accepts, as the section above describes, lands with the user's decision, the regressed cells, and their numbers in the merge's message. A candidate waiting on the Mac waits on its branch; the VM's verdict alone does not promote it.
 
 # Environment
 
 ## Where things are
 
-- `/workspace` is the host checkout of this fork (github.com/johnservil/BLAKE3, branch `sme2-bench`), mounted through sandboxfs. It persists across VM restarts.
+- `/workspace` is the host checkout of this fork (github.com/johnservil/BLAKE3, main branch `servil`, work on `candidate/<topic>` branches), mounted through sandboxfs. It persists across VM restarts.
 - `/workspace/bench-hashes` is the benchmark's own repository (github.com/johnservil/bench-hashes, branch `main`), nested inside the fork. Its `Cargo.toml` and `build.rs` point the `blake3-servil` path dependency at `..`, so edits to the fork take effect on the benchmark's next build. `/workspace/.git/info/exclude` keeps it, `benchmark-results/`, `tmp/`, `vm/`, and the token out of the fork's status.
 - `/workspace/vm/` holds everything the guest needs that a restart would otherwise remove:
   - `vm/home/` is `HOME` for `git` and `cargo`: `.gitconfig` with `safe.directory = *`, John Servil's `user.name`/`user.email`, and the credential helper.
