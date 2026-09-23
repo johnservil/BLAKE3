@@ -323,6 +323,50 @@ idle; the NEON hybrids already interleave scalar chunks this way (k10).
 An SME2 kernel with one or two scalar chunks interleaved in its
 instruction stream is the next kernel project.
 
+## Performance-regression check
+
+`python3 tools/perf_regress.py check` (the pre-commit hook runs it for
+commits that touch `src/`, `c/`, `build.rs`, or the manifests; install
+with `sh tools/install-git-hooks.sh`; CI runs it in
+`.github/workflows/perf-regress.yml`) measures `blake3`, `blake3-servil`,
+and `blake3-servil-mt` with bench-hashes and compares every cell of both
+use cases with `perf-baselines/<machine>.json`. `record` writes that file
+from 12 runs; commit it, as a reviewed change. Exit 0 passes, 1 is a
+confirmed regression, 2 gives no verdict (no baseline for the machine, or
+another machine, build, or state than the baseline's) and passes with a
+warning.
+
+How the rule was chosen, from 16 runs of 25e8b86 on the VM:
+
+- *A first design failed its own test.* A bootstrap interval of each
+  cell's 5th percentile within one run, a control-speed rescaling, and a
+  confirming run against the same baseline flagged 7% of cells on
+  unchanged code. Two causes: runs differ by more than any within-run
+  interval shows, and the control (crates.io `blake3`: NEON, one thread)
+  does not track the fork (in one run the control ran 5% fast while
+  the fork's cells were unchanged, so rescaling faked a 5% slowdown).
+- *Whole runs sit in a slow state for some cells.* The batch cells from
+  16 to 256 messages ran 20–45% slower in a quarter of the runs, every
+  such cell in the same runs, stable within each: a process-level state,
+  most likely the benchmark's two duo threads placed on vCPUs that share
+  an SME unit. A baseline has to have seen that state.
+- *The rule:* per run, a cell's 5th percentile; a baseline keeps every
+  run's; a cell is slower when every new run exceeds the baseline's
+  slowest run by more than 5%; two runs decide, a third must agree when
+  a cell is flagged; the control only gates comparability (within 7%).
+- *Measured:* with 12 baseline runs, 0.13% of checks on unchanged code
+  report a regression; a cell 10% slower is caught 66% of the time, 20%
+  88%, 50% 97%. With 5 baseline runs the false-alarm rate was 1.4%.
+  A regression usually slows many cells at once, so missing all of them
+  is far less likely than missing one.
+- *Identity matters.* The first comparison refused two builds whose
+  target features differed: `cargo --manifest-path` from another
+  directory skips bench-hashes' `.cargo/config.toml` (`target-cpu=native`).
+  The tool now builds from the benchmark's own directory and runs the
+  binary in a scratch directory, so committed records stay untouched.
+
+A check takes about 75 s on the VM (two runs), a record about 7 minutes.
+
 ## Testing
 
     cargo test --release --lib                      # 63 tests

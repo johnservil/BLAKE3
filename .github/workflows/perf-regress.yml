@@ -1,0 +1,38 @@
+# The performance-regression check (tools/perf_regress.py) on every push
+# and pull request. A verdict needs a baseline recorded on the same
+# machine, committed under perf-baselines/. GitHub-hosted runners change
+# hardware between jobs, so on them the check usually gives no verdict
+# (exit 2), which passes with a warning. The reliable setup is a
+# self-hosted runner on a fixed machine (the M4 Max, or the Debian VM):
+# register it, set the repository variable PERF_RUNNER to its label,
+# record a baseline there (python3 tools/perf_regress.py record), and
+# commit the file. A confirmed regression (exit 1) fails the job.
+name: perf-regress
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  perf:
+    runs-on: ${{ vars.PERF_RUNNER || 'macos-15' }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: johnservil/bench-hashes
+          path: bench-hashes
+      - uses: dtolnay/rust-toolchain@stable
+      - name: performance-regression check
+        shell: bash
+        run: |
+          set +e
+          python3 tools/perf_regress.py check
+          status=$?
+          if [ "$status" -eq 2 ]; then
+            echo "::warning::perf_regress gave no verdict: no baseline recorded on this runner's machine, or it differs from the baseline's"
+            exit 0
+          fi
+          exit "$status"
