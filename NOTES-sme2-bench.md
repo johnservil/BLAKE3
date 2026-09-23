@@ -674,6 +674,25 @@ check`: no regression; A B B A: one-message cells within 3%, batches at
 Mac: whether calibration may land on an E-core (NEON's best would then
 read slow and case 3 would switch later); run the scaling probe there.
 
+**Also measured and set aside this session (VM):**
+- *Two scalar chunks side by side for 2 KiB* (`s2`: the generator's
+  `sc2` with no NEON unit, in k2's place): 0.587 ns/B against k2's 0.455.
+  Two scalar chains spill and share the integer pipes; 2 KiB stays bound
+  by one chunk's latency on whichever side is slower.
+- *The pool split from 32 KiB* with NEON pieces: mt at 32 KiB 0.224 solo
+  either way, duo 0.267-0.275 against 0.225; 512 messages 14.5 / 17.2
+  against 12.6 / 12.9. 64 KiB stays.
+- *Longest piece 64 or 256 KiB* in place of 128: within noise from 1 MiB
+  to 128 MiB and at 65536-262144 messages. 128 KiB stays.
+- *servil mt below the split threshold, batches of 512 messages*: its
+  one pass over the message lengths before the serial path is core work
+  between SME2 calls, which makes those calls slower (above); no
+  cheaper decision exists without that pass, and programs do such work
+  between calls anyway.
+- *Serial 64-128 MiB*: flat on the VM solo (0.168-0.178 from 8 to 128
+  MiB); duo 0.184 from 32 MiB (two copies streaming memory). The Mac's
+  0.176 -> 0.210 at 128 MiB needs a native look.
+
 ## Future work
 
 - **A GPU kernel** (Metal on Apple silicon): chunks and parents as a
