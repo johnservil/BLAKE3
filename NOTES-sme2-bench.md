@@ -557,3 +557,64 @@ are narrow; the four marked cells belong to Rayon. Relative to the
 13:05 run, 512 KiB and 1 MiB are promising, 64 KiB deserves attention,
 and bulk is similar. Compare bands and repeat native A/B measurements
 before attributing these differences. Preserve the report as received.
+
+## Session: SME2 under the minimax rule, September 2026
+
+AGENTS.md now states the minimax strategy: judge a design by its worst
+plausible case. This session measured SME2's worst cases. Raw data:
+`tmp/mac-trace/`, `tmp/mac-trace2/` (per-copy duo trace), `tmp/mac-neon/`
+(fork built with `no_sme2`), probes in `tmp/sme2-session/`.
+
+**Two SME2 threads of one process share an SME unit** (M4 Max, per-copy
+duo trace from bench-hashes 5cfba2f). In every slow servil batch sample,
+16 to 8192 messages, both copies ran on P-cores (E share 0.00), on CPU
+100% of the time, at the same 3.87 GHz as the fast samples, within 1.00x
+of each other, each taking twice the cycles: two threads on one P-cluster's
+unit. The E-core explanation is refuted (solo samples that ran on E-cores
+are 1-5% of samples, and slow the NEON contenders alike). The slow
+rounds recur with the contender order: in the batch half of a round every
+contender is single-threaded (Rayon sits out) and macOS consolidates the
+process onto one P-cluster; in the one-message half Rayon and the pool
+keep every core busy, so the tree path's SME2 cells are slow in 0-1 of 96
+samples. host_lab section 6 read x1.1 because its threads were spread.
+host_lab section 2 on both machines shows the general case: 256 KiB per
+thread on SME2, 1/2/4/8/16 threads at once, 50/54/75-86/122/236 µs per
+hash; NEON at 8 KiB scales flat (2.3 -> 3.0 µs).
+
+**What NEON alone costs** (Mac duo, the fork built with `no_sme2`, against
+SME2 in the same week):
+
+    serial 16 KiB-128 MiB   NEON 0.254-0.260 ns/B   SME2 0.178-0.24 (shared: ~0.35)
+    serial batch 16-8192    NEON 19.1 ns/msg        SME2 9.5 alone, 18.8 shared
+    mt 128 KiB-128 MiB      NEON .088 -> .042       SME2 .097 -> .046
+    mt batch 1024-8192      NEON 9.6/6.1/4.8/4.6    SME2 11.0/6.9/6.0/5.3
+
+The NEON-only pool beats the SME2 pool at every mt point from 128 KiB in
+duo; serial SME2 wins while it holds a unit alone and loses when shared.
+
+**SME2 slows down when the core works between calls** (VM probe,
+`placement_probe.rs`, time per message beyond the added work alone):
+`hash_many` of 512-2048 one-block messages back to back 9.5-9.8 ns; with
+a pass over the message lengths, an 8-32 KiB scan of other memory, or a
+pure ALU loop between calls, 11.2-15. NEON (`no_sme2`) stays at 16.7
+whatever runs between. On the Mac the same cells show unchanged cycles
+per message at a lower clock (3.2-3.3 GHz against 3.9). This explains
+both "bigger is slower" and "mt slower than st" batch cells: servil mt
+at 512 messages sums the lengths before choosing the serial path (12.3
+against 9.7), and serial 1024-8192 builds fresh vectors per sample in the
+benchmark. The code is identical in both; placement of the input, output,
+and pointer table (tried at 1 KiB steps) changes nothing; summing the
+lengths without NEON changes nothing. Programs always do work between
+calls, so ~12 ns/msg is SME2's realistic batch rate, against NEON's 16.7.
+
+**History check.** Every optimization recorded in the branch's commit
+messages and these notes is present in the code (kernel register saves,
+packed last_len, single-call chunk path, scattered-input handling,
+`inline(never)` on the subtree function with `hash()` a tail call into a
+176-byte frame, wake skipping, the permit floor, load-only polls and line
+padding, shrinking pieces); `origin/sme2`'s one commit is 61b2d4a's patch.
+Nothing was lost.
+
+**`sme-only-workers` on the Mac** (`perf_regress compare`): servil mt
+faster at 256 KiB (-14.2%), 1 MiB (-5.3%), 3 MiB (-6.1%), 8 MiB
+(-6.5%), 16384 messages (-6.5%); nothing slower. Level on the VM earlier.
