@@ -160,12 +160,12 @@ def commit_bench(rev):
 
 
 def run(exe):
-    """One run in a scratch directory; {"contender|use_case|point": 5th percentile}."""
+    """One run in a scratch directory; {"contender|scenario|use_case|point": 5th percentile}."""
     with tempfile.TemporaryDirectory() as tmp:
         subprocess.run([exe, "--contenders", ",".join(CONTENDERS), "--points", ",".join(POINTS),
                         "--rounds", str(ROUNDS)], cwd=tmp, check=True,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        found = list(Path(tmp).glob("benchmark-results/*/bench-hashes.duo.samples.tsv"))
+        found = list(Path(tmp).glob("benchmark-results/*/bench-hashes.samples.tsv"))
         assert len(found) == 1, f"expected one samples file, found {found}"
         return parse(found[0].read_text())
 
@@ -177,11 +177,11 @@ def parse(text):
             continue
         if header is None:
             header = line.split("\t")
-            assert header == ["contender", "use_case", "point", "unit", "ps_per_unit"], header
+            assert header == ["contender", "scenario", "use_case", "point", "unit", "ps_per_unit"], header
         elif line:
-            contender, use_case, point, _unit, values = line.split("\t")
+            contender, scenario, use_case, point, _unit, values = line.split("\t")
             ordered = sorted(int(v) for v in values.split(","))
-            cells[f"{contender}|{use_case}|{point}"] = ordered[int(QUANTILE * len(ordered))]
+            cells[f"{contender}|{scenario}|{use_case}|{point}"] = ordered[int(QUANTILE * len(ordered))]
     return cells
 
 
@@ -206,7 +206,7 @@ def judge(measured, use_cases, contenders):
     pair's new/old ratio exceeds 1 + MARGIN (falls below 1 - MARGIN)."""
     slower, faster, ratio = [], [], {}
     for key in measured[0][0]:
-        contender, use_case, _ = key.split("|")
+        contender, _scenario, use_case, _ = key.split("|")
         if contender not in contenders or use_case not in use_cases:
             continue
         ratios = [b[key] / a[key] for a, b in measured]
