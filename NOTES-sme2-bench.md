@@ -367,6 +367,24 @@ How the rule was chosen, from 16 runs of 25e8b86 on the VM:
 
 A check takes about 75 s on the VM (two runs), a record about 7 minutes.
 
+**Bisect of 2fd3163..25e8b86** (`tools/perf_bisect.py`, six runs per code
+commit, current bench-hashes, batch API shimmed where missing; runs kept
+in `tmp/bisect/`). Serial `hash()` at 16 and 32 KiB was 27–38% slower
+from b3b4bc8 through 604abc4 (seven commits: about 300 ps/B against 239
+and 220 before and 236 and 218 after) and recovered in 6485bd9; servil mt
+below its split threshold shows the same, 64 KiB and the control never
+moved. Cause not established: b3b4bc8 rewrote the pool, 6485bd9 turned
+`hash_serial` into `hash_serial_on` and made `Hash` `repr(transparent)`;
+an inlining or frame-layout effect on the SME2 tree path is the prime
+suspect (compare the 220bed6 finding above). The detector flagged only
++7.2% at b3b4bc8, because one of its six runs was fast and the rule
+compares the new best run with the old worst; later slow commits read
+"ok" against each other, and the recovering pair gave no verdict (the
+control moved 8% between the two commits' runs). Lesson: a bisect must
+print each flagged cell's series across all commits, not only steps.
+b3b4bc8 also made servil mt 17–68% faster from 64 KiB up; first to
+last, nothing is slower and 13 cells are 37–76% faster.
+
 ## Testing
 
     cargo test --release --lib                      # 63 tests
