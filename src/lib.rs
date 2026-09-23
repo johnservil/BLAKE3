@@ -1046,8 +1046,7 @@ pub fn hash(input: &[u8]) -> Hash {
 /// Existing calls can still have workers finishing their pieces.
 ///
 /// The first call that leaves the calling thread runs [`initialize`]
-/// unless the program already has, and takes up to tens of milliseconds
-/// longer for it.
+/// unless the program already has, and takes that long longer.
 ///
 /// Concurrent calls within one process share the workers: they take pieces
 /// from each call in turn, so two callers hashing at once each get about
@@ -1080,13 +1079,11 @@ pub fn hash_multithreaded_with_budget(input: &[u8], max_threads: usize) -> Hash 
 }
 
 /// Start the worker threads that [`hash_multithreaded`] and
-/// [`hash_multithreaded_with_budget`] use, once per process. Where the
-/// platform reports no CPU topology, this also measures how many threads
-/// can run the SME2 kernels at full speed at once, which occupies every
-/// CPU for up to tens of milliseconds. The first multithreaded call that
-/// leaves the calling thread does the same when the program has yet to
-/// call this; call it at start-up to choose when that cost falls.
-/// Later calls return at once.
+/// [`hash_multithreaded_with_budget`] use, once per process: one per CPU
+/// beyond the first (about half a millisecond for fifteen). The first
+/// multithreaded call that leaves the calling thread does the same when
+/// the program has yet to call this; call it at start-up to choose when
+/// that cost falls. Later calls return at once.
 ///
 /// ```
 /// blake3_servil::initialize();
@@ -1108,8 +1105,8 @@ fn hash_serial(input: &[u8], key: &CVWords, flags: u8) -> Hash {
 }
 
 /// [`hash_serial`] with the tree's kernels chosen by the caller (a pool
-/// piece without an SME2 permit runs the NEON hybrids); one chunk or less
-/// runs the scalar kernel on every platform.
+/// piece runs the NEON hybrids); one chunk or less runs the scalar kernel
+/// on every platform.
 #[inline]
 fn hash_serial_on(input: &[u8], key: &CVWords, flags: u8, platform: Platform) -> Hash {
     #[cfg(blake3_neon_hybrid)]
@@ -1322,7 +1319,7 @@ pub fn kernel_report_many_multithreaded() -> KernelReport {
     report.kernels.push(Kernel {
         from_len: lanes::MIN_SPLIT_LEN,
         name: "message ranges over threads",
-        why: "From here a batch is cut into ranges of messages of 8 KiB to 128 KiB, shrinking toward the end, that the calling thread and this crate's worker threads hash at once, each range through the kernels above; a range runs on the SME2 kernels while an SME unit is free and on the NEON hybrids otherwise. Concurrent callers' ranges are served in turn; when callers already fill the CPUs, a new call hashes its batch whole on its own thread.",
+        why: "From here a batch is cut into ranges of messages of 8 KiB to 128 KiB, shrinking toward the end, that the calling thread and this crate's worker threads hash at once, each range on the NEON hybrid kernels, which run at full speed on every core at once. Concurrent callers' ranges are served in turn; when callers already fill the CPUs, a new call hashes its batch whole on its own thread.",
     });
     report
 }
@@ -1336,7 +1333,7 @@ pub fn kernel_report_multithreaded() -> KernelReport {
     report.kernels.push(Kernel {
         from_len: lanes::MIN_SPLIT_LEN,
         name: "subtrees over threads",
-        why: "From here calls may cut the input at subtree boundaries into pieces of 8 KiB to 128 KiB, shrinking toward the end, that the calling thread and this crate's worker threads (one per CPU beyond the first) hash at once; a piece runs on the SME2 kernels while an SME unit is free and on the NEON hybrids otherwise, and the caller merges the chaining values. Concurrent callers' pieces are served in turn; when callers already fill the CPUs, a new call hashes its input whole on its own thread.",
+        why: "From here calls may cut the input at subtree boundaries into pieces of 8 KiB to 128 KiB, shrinking toward the end, that the calling thread and this crate's worker threads (one per CPU beyond the first) hash at once, each on the NEON hybrid kernels, which run at full speed on every core at once; the caller merges the chaining values. Concurrent callers' pieces are served in turn; when callers already fill the CPUs, a new call hashes its input whole on its own thread.",
     });
     report
 }
