@@ -682,6 +682,15 @@ and simplicity rules. Case 3 for serial calls stays open; lessons: judge
 a scheduling-sensitive change on the full benchmark, several runs, not
 on the three-contender check alone.
 
+**NEON alone is steady where SME2 draws lots** (VM, all eight
+contenders, 16 KiB-8 MiB and 1024-65536 messages, four runs each): the
+`no_sme2` build read 0.251-0.256 ns/B and 18.8-19.6 ns/msg in every run;
+the SME2 build reads 0.17 or 0.31 ns/B and 10-12 or 19-24 ns/msg, by which
+cells its duo copies happen to share a unit. So the pacing slow state was
+the switching, not the host's treatment of NEON threads. For the case-3
+decision: SME2's worst duo cell is at or below NEON's level of 0.25 only
+where the unit is not shared; NEON's worst equals its best.
+
 **Also measured and set aside this session (VM):**
 - *Two scalar chunks side by side for 2 KiB* (`s2`: the generator's
   `sc2` with no NEON unit, in k2's place): 0.587 ns/B against k2's 0.455.
