@@ -1,6 +1,6 @@
 use std::time::Instant;
 fn main() {
-    let buffer: Vec<u8> = (0..(1 << 20) as u32).map(|i| (i.wrapping_mul(2654435761) >> 24) as u8).collect();
+    let buffer: Vec<u8> = vec![0x5a; 1 << 20];
     blake3_servil::initialize();
     for &count in &[1024usize, 1536, 2048, 4096] {
         let inputs: Vec<&[u8]> = buffer.chunks_exact(64).take(count).collect();

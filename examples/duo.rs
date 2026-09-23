@@ -7,7 +7,7 @@ fn median(mut v: Vec<f64>) -> f64 {
     v[v.len() / 2]
 }
 fn duo(len: usize, f: fn(&[u8]) -> blake3_servil::Hash) -> f64 {
-    let input: Arc<Vec<u8>> = Arc::new((0..len as u32).map(|i| (i.wrapping_mul(2654435761) >> 24) as u8).collect());
+    let input: Arc<Vec<u8>> = Arc::new(vec![0x5a; len]);
     let reps = ((8 << 20) / len).clamp(4, 512);
     let samples = 21;
     let barrier = Arc::new(Barrier::new(2));
@@ -38,7 +38,7 @@ fn main() {
         let serial = duo(len, blake3_servil::hash);
         let mt = duo(len, blake3_servil::hash_multithreaded);
         // Solo: one thread only, for reference.
-        let input: Vec<u8> = (0..len as u32).map(|i| (i.wrapping_mul(2654435761) >> 24) as u8).collect();
+        let input: Vec<u8> = vec![0x5a; len];
         let reps = ((8 << 20) / len).clamp(4, 512);
         let solo = median((0..21).map(|_| {
             let start = Instant::now();

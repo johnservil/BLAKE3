@@ -6,7 +6,7 @@ mod probe {
     use std::time::Instant;
     const CHUNK: usize = 1024;
     pub fn run() {
-        let input: Vec<u8> = (0..(128u32 << 10)).map(|i| (i.wrapping_mul(2654435761) >> 24) as u8).collect();
+        let input: Vec<u8> = vec![0x5a; 128 << 10];
         let chunks: Vec<&[u8; CHUNK]> = input.chunks_exact(CHUNK).map(|c| c.try_into().unwrap()).collect();
         let key = blake3_servil::platform::words_from_le_bytes_32(&[0u8; 32]);
         let sme2 = Platform::detect();

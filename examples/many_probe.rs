@@ -2,7 +2,7 @@
 use std::time::Instant;
 fn main() {
     let total = 1 << 20;
-    let buffer: Vec<u8> = (0..total as u32).map(|i| (i.wrapping_mul(2654435761) >> 24) as u8).collect();
+    let buffer: Vec<u8> = vec![0x5a; total];
     for &count in &[1usize, 2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64, 96, 128, 256, 512, 1024, 2048, 4096, 16384] {
         let inputs: Vec<&[u8]> = buffer.chunks_exact(64).take(count).collect();
         let mut out = vec![blake3_servil::Hash::from_bytes([0; 32]); count];

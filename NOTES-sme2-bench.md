@@ -266,6 +266,63 @@ flags).
 Diagnostics: `examples/many_probe.rs` (serial and pool rates by batch
 size), `examples/many_split.rs` (thread budgets against the tree path).
 
+## Session: questioning the synchronization, September 2026
+
+**Where a small split's time went.** Instrumented 64 KiB calls (8 pieces
+of 8 KiB) on the VM: registration 0.33 µs, first worker starts at 1.6
+µs, but each 8 KiB piece took 5.5 µs on a worker and up to 8 µs on the
+caller, against 2.6 µs for the same hash on a thread alone. The
+synchronization proper cost about 2 µs of a 12.4 µs call; slow pieces
+cost the rest. The same call confined to nine CPUs took 7.2 µs.
+
+**Idle pollers were the cause.** Beside eight hashing threads, eight
+idle threads cost each 8 KiB hash: asleep, nothing (2575 ns); spinning
+on loads, +18%; `sched_yield` in a loop (what the pool did), +36%. Under
+back-to-back calls every worker stayed awake (the rule "sleep only after
+200 µs with no job registered anywhere" never fired), so a small call
+always ran beside a crowd of yielding pollers.
+
+**Kept: ranked workers and spin polling.** Worker `r` takes from a job
+only `20 ns × r` after registration: the low ranks take a call's pieces,
+the high ranks find none and fall asleep after 200 µs without a piece
+(the jobs-recently rule and `last_job_ns` are gone). Register's wake
+rule counts pieces beyond the caller's own. Polls spin (`spin_loop`, 8
+per poll) and `sched_yield` every 20 µs, so a runnable thread never
+waits a quantum behind a poller. Solo back to back, 64 KiB 12.4 → 5.3
+µs. Duo ABBA against 6485bd9 (servil mt, ns/B): 64 KiB .158 → .144,
+128 KiB .113 → .097, 1 MiB .070 → .065, 8 MiB .056 → .052; batches at
+1024 / 2048 messages 11.0 → 9.8 / 7.6 → 6.8 ns per message.
+
+**Measured and set aside.**
+- *WFE* instead of spinning (ldaxr + wfe, woken by the store that posts
+  work): fastest hand-off (81 ns) but on the VM it returns every 0.1–1.3
+  µs, so it is a spin to the host and costs neighbours the same. On a
+  native Mac it should truly idle; `examples/host_lab.rs` section 6
+  measures it. Not adopted without a native number.
+- *Plain loads instead of `spin_loop`* between polls: identical in the
+  pool (host_lab section 5, three rounds each). `spin_loop` stays: it is
+  x86's `pause`, which spares an SMT sibling.
+- *SME2 workers that never run NEON* (branch `sme-only-workers`): the
+  first NEON instruction after an SME2 kernel costs 3.4–4 µs on the VM;
+  a subtree hasher on SME2 kernels and scalar code alone
+  (`sme2::subtree_cv`, verified free of SIMD/FP instructions in the
+  disassembly) and one dedicated worker per SME unit remove it. On the
+  VM it gains nothing (64 KiB .160, 1 MiB .068, 8 MiB .053 against the
+  ranked pool's .145 / .068 / .057), with the SME2 workers at either end
+  of the ranks. Measure on the M4 before merging.
+
+**`host_lab`** (`cargo run --release --example host_lab`, about 6 s)
+measures every effect above on the machine it runs on and writes
+`host-lab.<seconds>.txt`: primitives, core scaling, idle-waiter
+interference, the SME2 → NEON penalty, the pool against the serial calls
+by size (one and two callers), and WFE. Run it natively and in a VM.
+
+**Open.** Scalar chunks beside the SME2 kernel: while streaming
+instructions run on the shared SME unit, the core's integer units sit
+idle; the NEON hybrids already interleave scalar chunks this way (k10).
+An SME2 kernel with one or two scalar chunks interleaved in its
+instruction stream is the next kernel project.
+
 ## Testing
 
     cargo test --release --lib                      # 63 tests

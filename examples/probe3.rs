@@ -20,7 +20,7 @@ mod probe {
     }
     pub fn run() {
         let len = 1 << 20;
-        let input: Vec<u8> = (0..len as u32).map(|i| (i.wrapping_mul(2654435761) >> 24) as u8).collect();
+        let input: Vec<u8> = vec![0x5a; len];
         let reps = 32;
         for platform in [Platform::detect(), Platform::NEON] {
             for n in [1, 2, 3, 4, 6, 8, 12, 16] {

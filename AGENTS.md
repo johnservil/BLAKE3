@@ -70,6 +70,10 @@ A highly desirable property of an interface and its contract: the user learns th
 
 Read `/workspace/bench-hashes/NEXT-STEPS.md` first: it says what the work is now (optimising this fork against the benchmark) and where the last session left both repositories. `NOTES-sme2-bench.md` in this directory holds the fork's design notes and the measurements behind each change.
 
+# Targets
+
+**Virtual machines are first-class optimization targets.** People run BLAKE3 inside VMs like the Debian guest this repository is developed in, and its speed there matters as much as on the native Mac. A change is good when it helps both, or helps one and leaves the other level; a change that wins natively and loses in a VM (or the reverse) needs a decision on the record, not a default. VMs behave differently in ways that matter here: an idle vCPU that spins or calls `sched_yield` steals host time from the vCPUs that hash, `WFE` returns at once instead of idling, the first NEON instruction after an SME2 kernel costs about 4 µs (about 1 µs natively), and a 16-vCPU guest may sit on fewer fast host cores than it has vCPUs. `examples/host_lab.rs` measures each of these; run it on both and keep both reports.
+
 # Environment
 
 ## Where things are

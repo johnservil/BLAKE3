@@ -7,7 +7,7 @@ mod probe {
     use std::time::Instant;
     pub fn run() {
         let len = 8 << 20;
-        let input: Vec<u8> = (0..len as u32).map(|i| (i.wrapping_mul(2654435761) >> 24) as u8).collect();
+        let input: Vec<u8> = vec![0x5a; len];
         for platform in [Platform::detect(), Platform::NEON] {
             for piece in [8 << 10, 16 << 10, 32 << 10, 64 << 10, 128 << 10, 256 << 10, 512 << 10, 1 << 20] {
                 let mut best = f64::MAX;

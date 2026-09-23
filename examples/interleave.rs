@@ -7,7 +7,7 @@ fn main() {
     let sizes: Vec<usize> = std::env::args().skip(1).map(|s| s.parse().unwrap()).collect();
     let sizes = if sizes.is_empty() { vec![64 << 10, 128 << 10, 256 << 10, 1 << 20, 8 << 20] } else { sizes };
     for len in sizes {
-        let input: Arc<Vec<u8>> = Arc::new((0..len as u32).map(|i| (i.wrapping_mul(2654435761) >> 24) as u8).collect());
+        let input: Arc<Vec<u8>> = Arc::new(vec![0x5a; len]);
         let iterations = ((4 << 20) / len).max(1); // about a 1 ms batch of mt calls, as the bencher calibrates
         let rounds = 15;
         let barrier = Arc::new(Barrier::new(2));

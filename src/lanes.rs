@@ -56,23 +56,28 @@
 //!
 //! # Waiting
 //!
-//! A worker between pieces polls the slots, yielding the CPU between polls
-//! ([`std::thread::yield_now`]) so a runnable thread on the same CPU goes
-//! first, and sleeps on a condition variable once no call has registered
-//! a job for [`SPIN_BEFORE_SLEEP`]; a caller waiting for its last pieces
-//! polls the same way and then sleeps. Waking a sleeping thread costs the
-//! waker ten microseconds or more on some systems and the sleeper arrives
-//! tens of microseconds later, so a call whose pieces outnumber the
-//! workers awake wakes every sleeper at once, and workers stay awake
-//! while calls keep coming; the cost falls on the first call after a
-//! pause, once.
+//! A worker between pieces polls the slots; after [`SPIN_BEFORE_SLEEP`]
+//! without taking a piece it sleeps on a condition variable. A caller
+//! waiting for its last pieces polls the same way, then sleeps. Polls
+//! spin in user space and yield the CPU every [`YIELD_EVERY`]. Measured on
+//! a 16-vCPU VM beside eight hashing threads, eight idle waiters that
+//! call `sched_yield` in a loop slow each hash by 36%, eight that spin by
+//! 18%, eight asleep by nothing; a spinning waiter also notices a posted
+//! job sooner (0.10 µs against 0.17). The yield every 20 µs keeps a
+//! runnable thread from waiting a scheduler quantum behind a poller
+//! (measured on a two-CPU machine: two threads spinning without ever
+//! yielding took a 128 KiB split from 29 µs to 2 ms).
 //!
-//! A thread that spins without yielding holds its CPU for a whole
-//! scheduler quantum; callers that spin-wait on something while this
-//! module hashes on their behalf delay their own pieces by that much
-//! (measured on a two-CPU machine: two spinning threads beside a 128 KiB
-//! split took the call from 29 µs to 2 ms; the same two threads yielding
-//! between polls left it at 29 µs).
+//! Idle pollers cost the threads that hash, so the pool keeps as few as a
+//! call needs: workers are ranked, and worker `r` takes from a job only
+//! [`RANK_STAGGER_NS`]` × r` after it was registered. The lowest ranks
+//! take a call's pieces; the rest never do, and fall asleep. On the VM a
+//! 64 KiB call (eight pieces) went from 12.4 µs to 5.3 µs this way, the
+//! same as confining the process to nine CPUs. Waking a sleeper costs the
+//! waker a microsecond or more and the sleeper arrives tens of
+//! microseconds later, so a call whose pieces outnumber the workers
+//! awake wakes every sleeper at once, in one system call; the cost falls
+//! on the first larger call after a run of smaller ones.
 
 use crate::hazmat::{self, ChainingValue, Mode};
 #[cfg(test)]
@@ -81,7 +86,7 @@ use crate::platform::Platform;
 use crate::{CHUNK_LEN, Hash};
 #[cfg(test)]
 use crate::{Hasher, KEY_LEN};
-use std::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex, OnceLock};
 
 /// Inputs below this length are hashed on the calling thread. A split
@@ -103,9 +108,32 @@ const MAX_PIECE_LEN: usize = 128 * CHUNK_LEN;
 /// which at 8 KiB is what SME2 would gain over NEON.
 const MIN_SME_PIECE_LEN: usize = 16 * CHUNK_LEN;
 
-/// How long a worker or a waiting caller spins before sleeping. Long
-/// enough to bridge the gap between back-to-back hashes in a busy caller;
-/// short enough that an idle process is quiet within it.
+/// Worker `r` takes from a job only once it has been registered for
+/// `r` times this long. The lowest ranks take the pieces a call needs;
+/// the highest find none, stop polling after SPIN_BEFORE_SLEEP, and
+/// sleep, so a small call runs beside no idle pollers. It need only
+/// exceed the jitter of noticing a job (about 0.1 µs); the highest rank
+/// on a 16-CPU machine starts 0.3 µs late.
+const RANK_STAGGER_NS: u64 = 20;
+
+/// Between polls a thread spins in user space, and every YIELD_EVERY it
+/// hands the CPU to any runnable thread (a caller the OS has queued
+/// behind a poller then waits this long at most, never a quantum).
+const YIELD_EVERY: std::time::Duration = std::time::Duration::from_micros(20);
+
+#[inline]
+fn poll_pause(yielded: &mut std::time::Instant) {
+    for _ in 0..8 {
+        std::hint::spin_loop();
+    }
+    if yielded.elapsed() >= YIELD_EVERY {
+        std::thread::yield_now();
+        *yielded = std::time::Instant::now();
+    }
+}
+
+/// How long a worker polls without taking a piece, and a caller for its
+/// last pieces, before sleeping.
 pub(crate) const SPIN_BEFORE_SLEEP: std::time::Duration = std::time::Duration::from_micros(200);
 
 /// The length of the next piece when `remaining` bytes are uncut and
@@ -207,6 +235,9 @@ impl Drop for Caller<'_> {
 /// every worker access falls inside the caller's frame.
 struct Job<'a> {
     work: Work<'a>,
+    /// When the job was registered, in nanoseconds of the pool's epoch;
+    /// a worker of rank r takes from it only r × RANK_STAGGER later.
+    registered_ns: u64,
     /// How many pieces the work has; `cursor` counts up to it.
     pieces: usize,
     /// The next piece to take.
@@ -451,9 +482,7 @@ struct Pool {
     /// SME2 permits free.
     sme_free: AtomicUsize,
     cpus: usize,
-    /// When the last job was registered, in nanoseconds of `epoch`; a
-    /// worker sleeps only when this is SPIN_BEFORE_SLEEP old.
-    last_job_ns: AtomicU64,
+    /// The clock jobs' registration times count from.
     epoch: std::time::Instant,
     /// Workers asleep on `posted`.
     sleepers: AtomicUsize,
@@ -497,7 +526,6 @@ fn pool() -> &'static Pool {
             callers: AtomicUsize::new(0),
             sme_free: AtomicUsize::new(sme_permits()),
             cpus,
-            last_job_ns: AtomicU64::new(0),
             epoch: std::time::Instant::now(),
             sleepers: AtomicUsize::new(0),
             notified: AtomicUsize::new(0),
@@ -510,7 +538,7 @@ fn pool() -> &'static Pool {
         for worker in 1..cpus {
             std::thread::Builder::new()
                 .name(format!("blake3-worker-{worker}"))
-                .spawn(worker_main)
+                .spawn(move || worker_main(worker - 1))
                 .expect("spawning a BLAKE3 worker");
         }
         pool
@@ -548,6 +576,7 @@ impl Pool {
     fn run_job(&self, work: Work, pieces: usize, max_threads: usize) {
         let job = Job {
             work,
+            registered_ns: self.epoch.elapsed().as_nanos() as u64,
             pieces,
             cursor: Line(AtomicUsize::new(0)),
             active: Line(AtomicUsize::new(1)),
@@ -586,7 +615,6 @@ impl Pool {
         let slot = (0..MAX_JOBS).find(|&i| {
             self.slots[i].job.compare_exchange(std::ptr::null_mut(), ptr, Ordering::SeqCst, Ordering::Relaxed).is_ok()
         })?;
-        self.last_job_ns.store(self.epoch.elapsed().as_nanos() as u64, Ordering::SeqCst);
         // Sleepers already notified are on their way (a wake takes tens
         // of microseconds to land); a second caller in that window counts
         // them as awake and pays nothing. The lock-free reads are a hint;
@@ -596,21 +624,12 @@ impl Pool {
             let _guard = self.sleep_lock.lock().unwrap();
             let sleepers = self.sleepers.load(Ordering::SeqCst);
             let unnotified = sleepers - self.notified.load(Ordering::SeqCst);
-            if unnotified > 0 && (self.cpus - 1 - unnotified) < job.pieces {
+            if unnotified > 0 && (self.cpus - 1 - unnotified) < job.pieces - 1 {
                 self.notified.store(sleepers, Ordering::SeqCst);
                 self.posted.notify_all();
             }
         }
         Some(slot)
-    }
-
-    /// Whether a job was registered within SPIN_BEFORE_SLEEP: while calls
-    /// keep coming, workers stay awake. A registration between this
-    /// thread's clock read and its load of `last_job_ns` reads as recent.
-    fn jobs_recently(&self) -> bool {
-        let now = self.epoch.elapsed().as_nanos() as u64;
-        let last = self.last_job_ns.load(Ordering::SeqCst);
-        now.saturating_sub(last) < SPIN_BEFORE_SLEEP.as_nanos() as u64
     }
 
     /// Clear the slot and wait out any worker mid-take on it.
@@ -643,11 +662,12 @@ impl Pool {
     /// sleep on the condition variable that finishing workers signal.
     fn wait_done(&self, active: &AtomicUsize) {
         let started = std::time::Instant::now();
+        let mut yielded = started;
         while started.elapsed() < SPIN_BEFORE_SLEEP {
             if active.load(Ordering::SeqCst) == 0 {
                 return;
             }
-            std::thread::yield_now();
+            poll_pause(&mut yielded);
         }
         let mut guard = self.finished.lock().unwrap();
         self.waiters.fetch_add(1, Ordering::SeqCst);
@@ -671,7 +691,8 @@ impl Pool {
     /// from `start`, that has one and room under its thread cap.
     /// The pointer stays valid until
     /// this worker's `piece_done` (see the pool's comment).
-    fn take_piece(&self, start: &mut usize) -> Option<(*const Job<'static>, usize)> {
+    fn take_piece(&self, start: &mut usize, rank: usize) -> Option<(*const Job<'static>, usize)> {
+        let now = self.epoch.elapsed().as_nanos() as u64;
         for k in 0..MAX_JOBS {
             let at = (*start + k) % MAX_JOBS;
             let slot = &self.slots[at];
@@ -687,7 +708,8 @@ impl Pool {
             if !ptr.is_null() {
                 // Sound: a reader of the slot; the caller waits for readers.
                 let job = unsafe { &*ptr };
-                if job.cursor.load(Ordering::SeqCst) < job.pieces
+                if now.saturating_sub(job.registered_ns) >= rank as u64 * RANK_STAGGER_NS
+                    && job.cursor.load(Ordering::SeqCst) < job.pieces
                     && job.active.load(Ordering::SeqCst) < job.max_threads
                 {
                     if reserve_thread(&job.active, job.max_threads) {
@@ -712,14 +734,15 @@ impl Pool {
     /// The next piece for a worker: polled for a while (yielding the CPU
     /// between polls, so a thread that has work on this CPU runs), then
     /// waited for.
-    fn next_piece(&self, start: &mut usize) -> (*const Job<'static>, usize) {
+    fn next_piece(&self, start: &mut usize, rank: usize) -> (*const Job<'static>, usize) {
         let taken = 'taken: loop {
             let started = std::time::Instant::now();
-            while started.elapsed() < SPIN_BEFORE_SLEEP || self.jobs_recently() {
-                if let Some(taken) = self.take_piece(start) {
+            let mut yielded = started;
+            while started.elapsed() < SPIN_BEFORE_SLEEP {
+                if let Some(taken) = self.take_piece(start, rank) {
                     break 'taken taken;
                 }
-                std::thread::yield_now();
+                poll_pause(&mut yielded);
             }
             // Asleep until a wake, then back to polling: a woken worker
             // that finds nothing yet stays available for the next call.
@@ -731,7 +754,7 @@ impl Pool {
             // never counted as notified.
             let mut guard = self.sleep_lock.lock().unwrap();
             self.sleepers.fetch_add(1, Ordering::SeqCst);
-            let taken = self.take_piece(start);
+            let taken = self.take_piece(start, rank);
             if taken.is_none() {
                 guard = self.posted.wait(guard).unwrap();
                 // Awake: one fewer notified sleeper on the way (a wake
@@ -748,11 +771,11 @@ impl Pool {
     }
 }
 
-fn worker_main() {
+fn worker_main(rank: usize) {
     let pool = pool();
     let mut start = 0;
     loop {
-        let (job_ptr, index) = pool.next_piece(&mut start);
+        let (job_ptr, index) = pool.next_piece(&mut start, rank);
         // Sound by the pool's contract: our active reservation keeps the job alive.
         let job = unsafe { &*job_ptr };
         unsafe { job.hash_piece(index) };
@@ -805,7 +828,8 @@ fn measure_sme_units() -> usize {
     const REPEAT: usize = 20;
     const ROUNDS: usize = 2;
     let cpus = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
-    let input: Arc<Vec<u8>> = Arc::new((0..LEN as u32).map(|i| (i.wrapping_mul(2654435761) >> 24) as u8).collect());
+    // BLAKE3's speed does not depend on the bytes it hashes.
+    let input: Arc<Vec<u8>> = Arc::new(vec![0x5a; LEN]);
     let timed = |input: &[u8]| -> Duration {
         let started = Instant::now();
         for _ in 0..REPEAT {

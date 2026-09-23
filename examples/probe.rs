@@ -24,7 +24,7 @@ mod probe {
 
     pub fn run() {
         let len: usize = std::env::args().nth(1).map(|s| s.parse().unwrap()).unwrap_or(1 << 20);
-        let input: Vec<u8> = (0..len as u32).map(|i| (i.wrapping_mul(2654435761) >> 24) as u8).collect();
+        let input: Vec<u8> = vec![0x5a; len];
         let reps = (64 << 20) / len;
         let sme2 = Platform::detect();
         let neon = Platform::NEON;

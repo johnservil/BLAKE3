@@ -6,7 +6,7 @@ mod probe {
     const CHUNK: usize = 1024;
     pub fn run() {
         let len = 1 << 20;
-        let input: Vec<u8> = (0..len as u32).map(|i| (i.wrapping_mul(2654435761) >> 24) as u8).collect();
+        let input: Vec<u8> = vec![0x5a; len];
         let chunks: Vec<&[u8; CHUNK]> = input.chunks_exact(CHUNK).map(|c| c.try_into().unwrap()).collect();
         let key = blake3_servil::platform::words_from_le_bytes_32(&[0u8; 32]);
         for degree in [2usize, 3, 4, 5, 6, 8, 9, 10, 15, 16] {

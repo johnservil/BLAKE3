@@ -80,17 +80,13 @@ mod test {
     use super::*;
     use crate::CHUNK_LEN;
 
-    /// A deterministic message of `len` bytes, distinct per `seed`.
+    /// A deterministic message of `len` bytes, distinct per `seed`:
+    /// little-endian 64-bit words `seed << 48 | index`, so every block
+    /// differs and a kernel that mixed up its lanes would be caught.
     fn message(len: usize, seed: u64) -> Vec<u8> {
-        let mut state = 0x9E37_79B9_7F4A_7C15u64 ^ seed.wrapping_mul(0x2545_F491_4F6C_DD1D) ^ (len as u64) << 32;
-        (0..len)
-            .map(|_| {
-                state ^= state << 13;
-                state ^= state >> 7;
-                state ^= state << 17;
-                (state >> 24) as u8
-            })
-            .collect()
+        let mut bytes: Vec<u8> = (0..len.div_ceil(8) as u64).flat_map(|i| (seed << 48 | i).to_le_bytes()).collect();
+        bytes.truncate(len);
+        bytes
     }
 
     fn check(lens: &[usize]) {
