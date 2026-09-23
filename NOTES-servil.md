@@ -305,7 +305,7 @@ waits a quantum behind a poller. Solo back to back, 64 KiB 12.4 → 5.3
 - *Plain loads instead of `spin_loop`* between polls: identical in the
   pool (host_lab section 5, three rounds each). `spin_loop` stays: it is
   x86's `pause`, which spares an SMT sibling.
-- *SME2 workers that never run NEON* (branch `sme-only-workers`): the
+- *SME2 workers that never run NEON* (tag `experiment/sme-only-workers`, commit 100afbc; `sme2::subtree_cv` hashes a subtree on SME2 and scalar code alone): the
   first NEON instruction after an SME2 kernel costs 3.4–4 µs on the VM;
   a subtree hasher on SME2 kernels and scalar code alone
   (`sme2::subtree_cv`, verified free of SIMD/FP instructions in the
