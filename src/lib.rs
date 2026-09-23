@@ -1233,7 +1233,7 @@ pub fn kernel_report() -> KernelReport {
             kernels.push(Kernel {
                 from_len: sme2::GROUP * CHUNK_LEN,
                 name: "SME2 hash16_chunks kernel",
-                why: "Sixteen whole chunks fill one group on 512-bit streaming vectors, up to eight groups per call; a remainder below sixteen stays on the hybrid kernels.",
+                why: "Sixteen whole chunks fill one group on 512-bit streaming vectors, up to eight groups per call; a remainder below sixteen stays on the hybrid kernels. A thread whose SME2 calls run slower than the hybrids would (another thread on the same SME unit) switches to the hybrids for a millisecond at a time.",
             });
         }
     }
@@ -1288,7 +1288,7 @@ pub fn kernel_report_many() -> KernelReport {
             kernels.push(Kernel {
                 from_len: sme2::GROUP * BLOCK_LEN,
                 name: "SME2 hash16_parents kernel",
-                why: "Sixteen one-block messages fill one group on 512-bit streaming vectors, one compression per lane, up to 64 groups per entry into streaming mode; a remainder below sixteen stays on the hybrid kernels.",
+                why: "Sixteen one-block messages fill one group on 512-bit streaming vectors, one compression per lane, up to eight groups per call; a remainder below sixteen stays on the hybrid kernels. A thread whose SME2 calls run slower than the hybrids would (another thread on the same SME unit) switches to the hybrids for a millisecond at a time.",
             });
         }
     }

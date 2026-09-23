@@ -630,3 +630,53 @@ Mac evidence: the `no_sme2` duo run above (every mt point from 128 KiB
 faster). Mac solo is unmeasured: run `perf_regress compare` there.
 Serial calls (`hash`, `hash_many`, the incremental `Hasher`, and the mt
 entry points below 64 KiB) still use SME2 unchanged.
+
+**Serial SME2, by case** (VM probes `scaling_probe.rs`, `case2_probe.rs` in
+`tmp/sme2-session/`). Three cases: (1) nothing else busy; (2) other work
+on the other cores; (3) another thread on the same SME unit. Case 2 costs
+SME2 little: one thread hashing 1 MiB beside 15 threads of ALU loops,
+NEON hashing, or 8 MiB memcpys reads 0.185-0.219 ns/B against 0.170 alone,
+NEON alone 0.25. Case 3 costs it everything: n threads of one process
+each hashing 1 MiB at once, per thread (median/slowest):
+
+    n              1      2      4          8          16
+    SME2 always   .170   .176   .322       .47/.49    .87-.94/1.2-1.35
+    NEON always   .252   .252   .258/.27   .259/.27   .31-.33/.36-.43
+    paced SME2    .165-.170  .172-.188  .27-.30  .28/.29  .32/.50-.53
+
+(batches of 4096 messages, ns/msg: SME2 11 / 11 / 19 / 29 / 57-77; NEON
+19 / 19 / 19 / 19.5 / 23-26; paced 11.1 / 11.1-11.4 / 19 / 19.7-20 /
+22.4-22.8, slowest 40-45). Case 3 is the less common case, but it is
+plausible (a program's own thread pool; Apple's Accelerate uses the SME
+unit), and there SME2 always is 3-5 times slower than NEON.
+
+Rejected on the way: one SME2 thread per process (branch
+`sme2-one-thread`, patch `one-thread.patch`): case 3 bounded, but two
+threads that would not have shared a unit lose (duo st 1 MiB .180 ->
+.251), and a lone SME2 thread beside NEON threads handed the permit back
+and forth; two permits: n=16 slowest .84. Pacing against the process's
+fastest SME2 call, or its lowest running average: SME2 calls alone vary
+2x (batch calls 1.2-2.4 µs with core work between them), so both misfired
+alone (.20 against .17; 17 against 11 ns/msg). `Instant::now()` after
+each kernel cost 15% alone: read CNTVCT_EL0 instead, and without `isb`
+(which made 512-message batches 28% slower). A backoff of 4 ms or a
+streak of 2 left worse slowest threads than 1 ms and 4.
+
+**Kept: pacing against NEON** (`pace` in `ffi_sme2.rs`). Once per
+process, time one full-size NEON call of each kernel (best of five, about
+0.2 ms). Each thread counts its full-size SME2 calls (eight groups) that
+took a quarter longer than that; four in a row send it to NEON for 1 ms.
+This is a per-thread kernel choice by measured speed; no thread waits or
+stands down (the rejected stand-down concerned pool workers). The
+benchmark's cells are level with the unpaced build (`perf_regress
+check`: no regression; A B B A: one-message cells within 3%, batches at
+16 messages 14-32% faster solo, others within noise). Unmeasured on the
+Mac: whether calibration may land on an E-core (NEON's best would then
+read slow and case 3 would switch later); run the scaling probe there.
+
+## Future work
+
+- **A GPU kernel** (Metal on Apple silicon): chunks and parents as a
+  compute shader for large inputs. Not started; this VM has no GPU, so
+  correctness and speed need the Mac (or a CPU Vulkan implementation for
+  correctness through a portable API such as wgpu).
