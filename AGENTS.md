@@ -24,6 +24,10 @@ Sixteen actions that improve writing:
 15. Name responsibility
 16. Trim metadiscourse
 
+## Presentation: every item costs the reader
+
+Every piece of information in a UI, a report, or a document costs its reader attention and risks fatigue and overflow. Review each one with two questions: who is this designed for, and which information pays that reader much more than it costs them? Keep what passes; cut the rest. Information for maintainers (diagnostics, spreads, provenance details, internal names) stays out of what users read; it belongs in maintainer notes, logs, and diagnostic flags.
+
 ## Simplicity
 
 Prefer the simplest design that meets the contract and performs well.
