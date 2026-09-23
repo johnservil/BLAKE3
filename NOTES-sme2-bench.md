@@ -323,6 +323,39 @@ idle; the NEON hybrids already interleave scalar chunks this way (k10).
 An SME2 kernel with one or two scalar chunks interleaved in its
 instruction stream is the next kernel project.
 
+## Two SME2 callers on one SME unit (M4 Max record, fork c1ec71f)
+
+The Mac's batch cells for servil and servil mt, 16 to 8192 messages, run
+at two speeds exactly 2.0x apart (about 9.5-11 and 19 ns/msg), 40-45% of
+samples slow; NEON contenders (ab-blake3, SHA-256) never are. The slow
+samples fall in the same rounds for every batch cell, and depend on the
+contender that ran before: 15% slow after servil mt, 53-70% after
+single-threaded contenders. One-message servil cells, also SME2, in the
+same rounds, are almost never slow (0-3 of 96). Hypothesis: macOS keeps a
+process's threads on one cluster unless load spreads them, and the M4 Max
+has one SME unit per P-cluster; in the batch half of a round nearly
+every contender is single-threaded, the process consolidates, and the
+two duo copies share one unit; the one-message half has Rayon and the
+pool loading every core. A real effect for programs with two SME2
+threads, not a benchmark artefact. `examples/host_lab.rs` section 6 tests
+it (two callers at once, quiet and right after an all-core burst); on the
+VM both read x1.0-1.1. Run it on the Mac. The fix, if confirmed, is a
+design choice (macOS pins no thread to a cluster): NEON when another
+thread of the process is in SME2, if NEON beats half a unit there.
+
+## Which benchmark points carry information (both records, fork c1ec71f)
+
+Each point's medians interpolated from its two neighbours (log time on log
+size), against the measured ones and against the run-to-run difference.
+Most points cost 0.7-0.8 s of an 80 s run, too little to matter. The
+plateau does not: 16 MiB 2.4 s, 32 MiB 4.3 s, 64 MiB 8.4 s, 128 MiB 18.6 s.
+16 MiB carries nothing of its own (every contender within run-to-run
+noise from 8 and 32 MiB). 64 and 128 MiB do: serial servil rises at 128 MiB
+on the Mac (0.176 -> 0.210; interpolating 64 MiB misses by 9.5% where runs
+differ by 0.8%), and Rayon is still falling there. Removing one point makes
+runs slower: rounds are a multiple of lcm(points, orders), 96 for 48 points
+and 8 contenders, 376 for 47. Kept all 48.
+
 ## Performance-regression check
 
 `tools/perf_regress.py check` (the pre-commit hook runs it for commits

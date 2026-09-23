@@ -16,7 +16,10 @@
 //!    (SME2 machines only);
 //! 5. the pool: hash_multithreaded and hash_many_multithreaded against the
 //!    serial calls, alone and two callers at once, by size;
-//! 6. WFE (AArch64): hand-off latency and how often WFE returns unprompted.
+//! 6. two SME2 callers at once: whether two threads of one process running
+//!    SME2 at the same time share one SME unit (each at half speed), before
+//!    and right after a burst of work on every core;
+//! 7. WFE (AArch64): hand-off latency and how often WFE returns unprompted.
 //!    Last, since a platform that traps WFE at EL0 would stop the program.
 
 use std::fmt::Write as _;
@@ -427,9 +430,31 @@ fn main() {
         ));
     }
 
+    report.line("6. two SME2 callers at once: per-thread time, two at once over one alone (x2.0 = sharing one SME unit)".to_owned());
+    for (name, f) in [("hash_many 4096 x 64 B", batch_serial as fn(&[u8])), ("hash 1 MiB", tree_serial)] {
+        let len = if name.starts_with("hash_many") { 4096 * 64 } else { 1 << 20 };
+        let alone = per_call(len, 1, f);
+        let mut quiet = Vec::new();
+        let mut after_burst = Vec::new();
+        for _ in 0..6 {
+            quiet.push(per_call(len, 2, f) / alone);
+            // Every core busy for 50 ms, as a multithreaded contender would
+            // leave it; then two callers at once, straight away.
+            let burst: Vec<_> = (0..cpus)
+                .map(|_| std::thread::spawn(|| busy(Duration::from_millis(50))))
+                .collect();
+            for t in burst {
+                t.join().unwrap();
+            }
+            after_burst.push(per_call(len, 2, f) / alone);
+        }
+        let show = |v: &[f64]| v.iter().map(|r| format!("x{r:.2}")).collect::<Vec<_>>().join(" ");
+        report.line(format!("  {name}: alone {:.1} µs; two at once, quiet: {}; right after an all-core burst: {}", alone / 1e3, show(&quiet), show(&after_burst)));
+    }
+
     #[cfg(target_arch = "aarch64")]
     {
-        report.line("6. WFE".to_owned());
+        report.line("7. WFE".to_owned());
         report.line(format!("  hand-off to a WFE waiter        {:7.0} ns", hand_off(Wait::Wfe)));
         let word = Arc::new(AtomicU64::new(0));
         let stop = Arc::new(AtomicBool::new(false));
