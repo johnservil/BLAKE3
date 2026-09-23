@@ -72,7 +72,7 @@ CONTENDERS = [CONTROL] + SUBJECTS
 POINTS = ["64 B", "1 KiB", "2 KiB", "3 KiB", "8 KiB", "16 KiB", "32 KiB", "64 KiB",
           "256 KiB", "1 MiB", "3 MiB", "8 MiB",
           "1", "2", "3", "8", "16", "24", "64", "256", "1024", "2048", "4096", "16384"]
-ROUNDS = 48  # a multiple of lcm(24 points, 6 orders)
+ROUNDS = 48
 QUANTILE = 0.05
 PAIRS = 4  # the runs go A B B A A B B A
 MARGIN = 0.03
