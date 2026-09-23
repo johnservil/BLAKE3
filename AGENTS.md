@@ -54,6 +54,16 @@ Judge a design by its worst plausible case first. Performing well in every situa
 - A task that takes more than proportionally longer than a smaller one is a defect: it could have done the smaller task twice.
 - Effort goes first to the cells where we lead by the least or trail.
 
+## Strategy: we own every slowdown a user could meet
+
+Our duty is to the user, so we take responsibility for every performance problem that could plausibly reach one, whatever its cause. A slowdown that comes from the operating system's scheduler, the hardware, thread placement, clocks, or an interaction we find hard to reproduce, understand, or control is still ours. We never set such a slowdown aside with "it is probably the environment, not our code". Each one gets one of three outcomes, in this order of preference:
+
+1. Control it: change the design so the slowdown cannot happen, or cannot happen from anything we did.
+2. Understand it well enough to tell users how to control it, and document that.
+3. At the least, understand it well enough to predict when it happens and how large it is, and state that in the user-facing results or docs.
+
+Until a problem reaches one of these outcomes it stays open: it goes on the next-steps list, the record or commit that shows it says so, and it blocks the claim that a change has no regression.
+
 ## Correctness tests
 
 Use reproducible inputs and fixed, independently established expected
