@@ -325,51 +325,49 @@ instruction stream is the next kernel project.
 
 ## Performance-regression check
 
-`python3 tools/perf_regress.py check` (the pre-commit hook runs it for
-commits that touch `src/`, `c/`, `build.rs`, or the manifests; install
-with `sh tools/install-git-hooks.sh`; CI runs it in
-`.github/workflows/perf-regress.yml`) measures `blake3`, `blake3-servil`,
-and `blake3-servil-mt` with bench-hashes and compares every cell of both
-use cases with `perf-baselines/<machine>.json`. `record` writes that file
-from 12 runs; commit it, as a reviewed change. Exit 0 passes, 1 is a
-confirmed regression, 2 gives no verdict (no baseline for the machine, or
-another machine, build, or state than the baseline's) and passes with a
-warning.
+`tools/perf_regress.py check` (the pre-commit hook runs it for commits
+that touch code; CI runs it on every push and pull request) builds
+bench-hashes against `HEAD` and against the working tree, the same
+benchmark source in both, and runs the builds alternately: A B B A A B B A,
+each run the contenders `sha256` (the control), `blake3-servil`, and
+`blake3-servil-mt` at 24 points that cover every code path of both use
+cases, 48 rounds, about 4.6 s. A cell is slower when all four pairs show
+the new side's 5th percentile more than 3% above the old side's; a second
+A B B A A B B A must agree. If the control, the same code on both sides,
+moves by that rule, the machine changed within the pairs: no verdict.
 
-How the rule was chosen, from 16 runs of 25e8b86 on the VM:
+How it came to be (September 2026, 16-vCPU VM on an M4 Max):
 
-- *A first design failed its own test.* A bootstrap interval of each
-  cell's 5th percentile within one run, a control-speed rescaling, and a
-  confirming run against the same baseline flagged 7% of cells on
-  unchanged code. Two causes: runs differ by more than any within-run
-  interval shows, and the control (crates.io `blake3`: NEON, one thread)
-  does not track the fork (in one run the control ran 5% fast while
-  the fork's cells were unchanged, so rescaling faked a 5% slowdown).
-- *Whole runs sit in a slow state for some cells.* The batch cells from
-  16 to 256 messages ran 20–45% slower in a quarter of the runs, every
-  such cell in the same runs, stable within each: a process-level state,
-  most likely the benchmark's two duo threads placed on vCPUs that share
-  an SME unit. A baseline has to have seen that state.
-- *The rule:* per run, a cell's 5th percentile; a baseline keeps every
-  run's; a cell is slower when every new run exceeds the baseline's
-  slowest run by more than 5%; two runs decide, a third must agree when
-  a cell is flagged; the control only gates comparability (within 7%).
-- *Measured:* with 12 baseline runs, 0.13% of checks on unchanged code
-  report a regression; a cell 10% slower is caught 66% of the time, 20%
-  88%, 50% 97%. With 5 baseline runs the false-alarm rate was 1.4%.
-  A regression usually slows many cells at once, so missing all of them
-  is far less likely than missing one.
-- *Identity matters.* The first comparison refused two builds whose
-  target features differed: `cargo --manifest-path` from another
-  directory skips bench-hashes' `.cargo/config.toml` (`target-cpu=native`).
-  The tool now builds from the benchmark's own directory and runs the
-  binary in a scratch directory, so committed records stay untouched.
+- *Stored baselines came first and were dropped.* A baseline file per
+  machine in git, compared with new runs later, needed a machine
+  identity, a control gate, per-process slow states sampled by 12-16
+  runs, and re-recording after every toolchain or host change; on the
+  VM it caught a 10% slowdown in 16-66% of cells. Host load arriving
+  mid-recording (the control x1.56, the fork x1.38) showed its
+  weakness: a baseline absorbs whatever state the machine was in.
+- *The first stored design failed its own test* (7% of cells flagged
+  on unchanged code): runs differ more than any within-run interval
+  shows, and crates.io blake3 as the control does not track the fork.
+  The control is now SHA-256 (fixed forever, shares no code with the
+  fork; blake3 may one day adopt the fork's ideas).
+- *Side by side wins.* 32 runs of one commit back to back, while the
+  host's load came and went (12 of them x1.11 slower), simulated as
+  A/B windows: no false flag in 2400 cell comparisons before
+  confirmation (under 0.13% per cell at 95%); a cell 5% slower is
+  caught 70% of the time, 10% slower 95%, 20% slower 100%. A planted
+  +20% at 16-32 KiB in serial hash() was reported in exactly its four
+  cells, +20-21% in both passes.
+- *The plateau sizes cost the most and test the least:* SHA-256 at
+  128 MiB alone took 4.9 s of a 36 s full run. The check's 24 points
+  and 48 rounds take 4.6 s a run.
+- *Each commit meets only its parent,* so before a release,
+  `check --against <last release>` sees the sum of small steps.
+- *The VM's mount drops executable bits;* cached builds live in Cargo's
+  target directory.
 
-A check takes about 75 s on the VM (two runs), a record about 7 minutes.
-
-**Bisect of 2fd3163..25e8b86** (`tools/perf_bisect.py`, six runs per code
-commit, current bench-hashes, batch API shimmed where missing; runs kept
-in `tmp/bisect/`). Serial `hash()` at 16 and 32 KiB was 27–38% slower
+**Bisect of 2fd3163..25e8b86** (the stored-baseline version of
+`tools/perf_bisect.py`, six runs per code commit, current bench-hashes,
+batch API shimmed where missing; runs kept in `tmp/bisect/`). Serial `hash()` at 16 and 32 KiB was 27–38% slower
 from b3b4bc8 through 604abc4 (seven commits: about 300 ps/B against 239
 and 220 before and 236 and 218 after) and recovered in 6485bd9; servil mt
 below its split threshold shows the same, 64 KiB and the control never

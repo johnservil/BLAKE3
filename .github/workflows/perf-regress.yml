@@ -1,12 +1,10 @@
-# The performance-regression check (tools/perf_regress.py) on every push
-# and pull request. A verdict needs a baseline recorded on the same
-# machine, committed under perf-baselines/. GitHub-hosted runners change
-# hardware between jobs, so on them the check usually gives no verdict
-# (exit 2), which passes with a warning. The reliable setup is a
-# self-hosted runner on a fixed machine (the M4 Max, or the Debian VM):
-# register it, set the repository variable PERF_RUNNER to its label,
-# record a baseline there (python3 tools/perf_regress.py record), and
-# commit the file. A confirmed regression (exit 1) fails the job.
+# The performance-regression check (tools/perf_regress.py): every push
+# against its parent commit, every pull request against its base, the two
+# sides built and run in alternating pairs (A B B A A B B A) in the same
+# job, so a shared runner's speed cancels out. A confirmed regression
+# (exit 1) fails the job; no verdict (exit 2: the control moved, the
+# runner's state changed within pairs) passes with a warning. Set the
+# repository variable PERF_RUNNER to run on a self-hosted machine instead.
 name: perf-regress
 
 on:
@@ -20,6 +18,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/checkout@v4
         with:
           repository: johnservil/bench-hashes
@@ -27,12 +27,14 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: performance-regression check
         shell: bash
+        env:
+          AGAINST: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || 'HEAD~1' }}
         run: |
           set +e
-          python3 tools/perf_regress.py check
+          python3 tools/perf_regress.py check --against "$AGAINST"
           status=$?
           if [ "$status" -eq 2 ]; then
-            echo "::warning::perf_regress gave no verdict: no baseline recorded on this runner's machine, or it differs from the baseline's"
+            echo "::warning::perf_regress gave no verdict: the runner's speed changed within the pairs"
             exit 0
           fi
           exit "$status"

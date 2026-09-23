@@ -1,48 +1,54 @@
 #!/usr/bin/env python3
-"""Performance-regression check for blake3-servil, built on bench-hashes.
+"""Performance-regression check for blake3-servil: the working tree against
+a commit, measured side by side.
 
-    python3 tools/perf_regress.py check     # exit 0 pass, 1 regression, 2 no verdict
-    python3 tools/perf_regress.py record    # this machine's baseline, 12 runs
-    python3 tools/perf_regress.py record --from A.tsv ...   # ... from saved runs
-    python3 tools/perf_regress.py compare --base A.tsv ... --new B.tsv ...
+    python3 tools/perf_regress.py check                  # against HEAD
+    python3 tools/perf_regress.py check --against v0.7.0 # against a release
+    python3 tools/perf_regress.py compare OLD NEW        # two commits
 
-`check` runs bench-hashes (the checkout at ./bench-hashes) with the
-contenders blake3 (crates.io, untouched by this fork: the control),
-blake3-servil, and blake3-servil-mt, and compares every cell of both use
-cases with perf-baselines/<machine>.json. `record` writes that file; review
-and commit it. Recording is an explicit act, as for golden vectors: nothing
-here replaces a baseline on its own. `compare` judges saved samples files
-the same way (tools/perf_bisect.py uses it).
+Exit 0: no regression. 1: a confirmed regression. 2: no verdict (the
+comparison itself was unreliable, see below).
 
-How the rule was chosen (September 2026, 16-vCPU VM on an M4 Max, 16 runs
-of one commit; NOTES-sme2-bench.md has the numbers):
+`check` builds bench-hashes twice, once against the fork at REV (a git
+worktree, cached per commit in tmp/perf-ab/) and once against this working
+tree, the same benchmark source in both, and runs the two builds in
+alternating pairs on this machine, one right after the other, each with
+the contenders sha256 (the control), blake3-servil, and blake3-servil-mt.
+Load, thermal state, and drift reach both sides of a pair alike, so there
+is nothing to record, store, or keep current, and any machine can run it.
 
-* The statistic is a cell's 5th percentile per run. A cell's median can
-  move 1.8x between runs of one commit when the host puts two vCPUs on one
-  SME unit; a low quantile moves when the code does.
-* Runs are the unit of variation. Whole runs sit in a slow state for some
-  cells (a quarter of runs, 20-45% slower in the SME2 batch cells), which
-  no interval computed inside one run can see. So a baseline is RECORD_RUNS
-  separate runs, and it keeps each cell's slowest run.
-* A cell is slower when every new run's 5th percentile exceeds the
-  baseline's slowest by more than SLOWER_BY. CHECK_RUNS runs decide; when
-  any cell is slower, one more run must agree.
-* The control gates comparability and rescales nothing: its speed does not
-  track the fork's (it uses neither SME2 nor the pool). A control more
-  than CONTROL_TOLERANCE away from the baseline's means another machine or
-  state: no verdict.
-* A different machine or toolchain (CPU brand and identity, core count,
-  OS, compiler, build target and features, kernel platform per contender)
-  also gives no verdict.
+The rule, calibrated on the 16-vCPU VM with 32 runs of one commit taken back
+to back while the host's load came and went (NOTES-sme2-bench.md):
 
-Measured with these settings: 0.13% of checks on unchanged code report a
-regression; a cell 10% slower is caught 66% of the time, 20% slower 88%,
-50% slower 97%. Exit 2 (no verdict) is not a failure: the pre-commit hook
-and CI pass it with a warning that says what to record.
+* The statistic is a cell's 5th percentile per run: a low quantile moves
+  when the code does, a median moves with the host.
+* The runs go A B B A A B B A (A the old side): four pairs of neighbours
+  in time, which share the machine's state, each side first in two of
+  them, so a steady drift across the eight runs cancels. A cell is slower
+  when, in every pair, the new side's 5th percentile exceeds the old
+  side's by more than MARGIN.
+* Any slower cell triggers another A B B A A B B A; a regression is a
+  cell slower in both.
+* The control is the same code on both sides. If the rule calls any of
+  its cells slower or faster, the comparison is unreliable: no verdict.
+
+Measured with four pairs: no false flag in 2400 cell comparisons of
+unchanged code before confirmation (under 0.13% per cell at 95%
+confidence); a cell 5% slower is caught 70% of the time, 10% slower 95%,
+20% slower 100%. A check takes eight runs, about 37 s on the VM, plus the
+builds.
+
+The check measures the 24 points in POINTS, which cover every code path
+and boundary of both use cases; the published graph's plateau sizes add
+run time and no path.
+
+Commits that predate the batch API (hash_many and friends) get a shim that
+hashes a batch one message at a time, so the current benchmark builds; a
+comparison involving such a commit judges the one-message cells alone.
 """
 import argparse
 import json
-import re
+import shutil
 import statistics
 import subprocess
 import sys
@@ -50,17 +56,58 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-BASELINES = ROOT / "perf-baselines"
-CONTROL = "blake3"
+CACHE = ROOT / "tmp/perf-ab"
+CONTROL = "sha256"
 SUBJECTS = ["blake3-servil", "blake3-servil-mt"]
 CONTENDERS = [CONTROL] + SUBJECTS
+# Every code path and boundary of both use cases, and none of the plateau
+# sizes the published graph needs (16-128 MiB and batches past 16384 cost
+# 60% of a full run and exercise no path that 8 MiB does not): one message
+# on the scalar kernel (64 B, 1 KiB), the hybrids (2, 3 KiB), the first
+# SME2 groups (8, 16, 32 KiB), the split threshold (64 KiB), bulk (256 KiB,
+# 1 MiB), unequal subtrees (3 MiB), and the memory-resident plateau
+# (8 MiB); batches of one, of the NEON parent plans (2, 3, 8), of a first
+# and a partial SME2 group (16, 24), in bulk (64, 256), at the split
+# (1024), and over the pool (2048, 4096, 16384).
+POINTS = ["64 B", "1 KiB", "2 KiB", "3 KiB", "8 KiB", "16 KiB", "32 KiB", "64 KiB",
+          "256 KiB", "1 MiB", "3 MiB", "8 MiB",
+          "1", "2", "3", "8", "16", "24", "64", "256", "1024", "2048", "4096", "16384"]
+ROUNDS = 48  # a multiple of lcm(24 points, 6 orders)
 QUANTILE = 0.05
-RECORD_RUNS = 12
-CHECK_RUNS = 2
-SLOWER_BY = 0.05
-CONTROL_TOLERANCE = 0.07
-IDENTITY_KEYS = ["cpu type", "cpu count", "os type", "cpu identity", "rust compiler",
-                 "build target", "target features"]
+PAIRS = 4  # the runs go A B B A A B B A
+MARGIN = 0.03
+
+SHIM = r'''
+
+// perf_regress.py shim: the batch API of later commits, one message at a
+// time, so the current bench-hashes builds against this commit.
+pub fn hash_many(inputs: &[&[u8]], outputs: &mut [Hash]) {
+    assert_eq!(inputs.len(), outputs.len());
+    for (input, output) in inputs.iter().zip(outputs) {
+        *output = hash(input);
+    }
+}
+#[cfg(feature = "std")]
+pub fn hash_many_multithreaded(inputs: &[&[u8]], outputs: &mut [Hash]) {
+    hash_many(inputs, outputs)
+}
+#[cfg(feature = "std")]
+pub fn hash_many_multithreaded_with_budget(inputs: &[&[u8]], outputs: &mut [Hash], _max_threads: usize) {
+    hash_many(inputs, outputs)
+}
+#[cfg(feature = "std")]
+pub fn kernel_report_many() -> KernelReport {
+    kernel_report()
+}
+#[cfg(feature = "std")]
+pub fn kernel_report_many_multithreaded() -> KernelReport {
+    kernel_report_multithreaded()
+}
+'''
+
+
+def git(*args):
+    return subprocess.run(["git", *args], cwd=ROOT, check=True, stdout=subprocess.PIPE, text=True).stdout.strip()
 
 
 def build_bench(bench):
@@ -75,161 +122,160 @@ def build_bench(bench):
     return exes[0]
 
 
-def run_bench(exe):
-    """One run of CONTENDERS in a scratch directory (the machine's committed
-    records in bench-hashes/benchmark-results stay as they are); returns
-    the samples file's text."""
+def target_dir():
+    meta = subprocess.run(["cargo", "metadata", "--format-version", "1", "--no-deps"], cwd=ROOT / "bench-hashes",
+                          check=True, stdout=subprocess.PIPE, text=True).stdout
+    return Path(json.loads(meta)["target_directory"])
+
+
+def commit_bench(rev):
+    """(bench-hashes executable built against the fork at `rev`, whether it
+    needed the shim). Built once per commit, in a worktree under CACHE, and
+    kept in the target directory."""
+    commit = git("rev-parse", "--short=12", f"{rev}^{{commit}}")
+    # Executables live in Cargo's target directory, which runs programs
+    # everywhere (a VM's shared mount may not).
+    exe = target_dir() / "perf-ab" / commit / "bench-hashes"
+    shimmed = "pub fn hash_many(" not in git("show", f"{commit}:src/lib.rs")
+    if exe.exists():
+        return str(exe), shimmed
+    exe.parent.mkdir(parents=True, exist_ok=True)
+    work = CACHE / commit
+    work.mkdir(parents=True, exist_ok=True)
+    tree = work / "src"
+    if tree.exists():
+        git("worktree", "remove", "--force", str(tree))
+    git("worktree", "add", "--detach", str(tree), commit)
+    try:
+        if shimmed:
+            lib = tree / "src/lib.rs"
+            lib.write_text(lib.read_text() + SHIM)
+        # The benchmark as it is now, so only the fork differs between sides.
+        shutil.copytree(ROOT / "bench-hashes", tree / "bench-hashes",
+                        ignore=shutil.ignore_patterns("target", "benchmark-results", "tmp", ".git"))
+        shutil.copy2(build_bench(tree / "bench-hashes"), exe)
+    finally:
+        git("worktree", "remove", "--force", str(tree))
+    return str(exe), shimmed
+
+
+def run(exe):
+    """One run in a scratch directory; {"contender|use_case|point": 5th percentile}."""
     with tempfile.TemporaryDirectory() as tmp:
-        cmd = [exe, "--contenders", ",".join(CONTENDERS)]
-        print("perf_regress: " + " ".join(cmd), file=sys.stderr, flush=True)
-        subprocess.run(cmd, cwd=tmp, check=True, stdout=subprocess.DEVNULL)
+        subprocess.run([exe, "--contenders", ",".join(CONTENDERS), "--points", ",".join(POINTS),
+                        "--rounds", str(ROUNDS)], cwd=tmp, check=True,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         found = list(Path(tmp).glob("benchmark-results/*/bench-hashes.duo.samples.tsv"))
         assert len(found) == 1, f"expected one samples file, found {found}"
-        return found[0].read_text()
+        return parse(found[0].read_text())
 
 
 def parse(text):
-    """One run: (metadata, {"contender|use_case|point": 5th percentile})."""
-    meta, cells, header = {}, {}, None
+    cells, header = {}, None
     for line in text.splitlines():
-        if line.startswith("# "):
-            key, _, value = line[2:].partition(": ")
-            meta[key] = value
-        elif header is None:
+        if line.startswith("#"):
+            continue
+        if header is None:
             header = line.split("\t")
             assert header == ["contender", "use_case", "point", "unit", "ps_per_unit"], header
         elif line:
             contender, use_case, point, _unit, values = line.split("\t")
             ordered = sorted(int(v) for v in values.split(","))
             cells[f"{contender}|{use_case}|{point}"] = ordered[int(QUANTILE * len(ordered))]
-    assert header is not None, "not a bench-hashes samples file"
-    return meta, cells
+    return cells
 
 
-def identity(meta):
-    ident = {key: meta.get(key, "") for key in IDENTITY_KEYS}
-    ident.update({k: v for k, v in meta.items() if k.startswith("kernel platform ")})
-    return ident
+def pairs(old, new, count, start):
+    """`count` pairs of (old run, new run); the side that runs first
+    alternates, beginning with old when `start` is even."""
+    out = []
+    for i in range(count):
+        if (start + i) % 2 == 0:
+            a = run(old)
+            b = run(new)
+        else:
+            b = run(new)
+            a = run(old)
+        out.append((a, b))
+        print(f"perf_regress: pair {start + i + 1} done", file=sys.stderr, flush=True)
+    return out
 
 
-def machine_name(meta):
-    import hashlib
-    digest = hashlib.sha256(json.dumps(identity(meta), sort_keys=True).encode()).hexdigest()[:12]
-    brand = re.sub(r"[^A-Za-z0-9]+", "", meta.get("cpu type", "cpu"))
-    return f"{brand}.{meta.get('cpu count', '')}cpu.{digest}"
-
-
-def baseline_from(runs):
-    """A baseline from parsed runs: identity, provenance, and per cell the
-    5th percentile of every run."""
-    metas = [m for m, _ in runs]
-    ids = [identity(m) for m in metas]
-    assert all(i == ids[0] for i in ids), "baseline runs from different machines or builds"
-    return {"identity": ids[0], "runs": len(runs),
-            "fork": metas[0].get("blake3-servil source", ""),
-            "recorded": [m.get("timestamp", "") for m in metas],
-            "cells": {k: [c[k] for _, c in runs] for k in runs[0][1]}}
-
-
-def judge(base, runs, use_cases):
-    """(verdict, report lines, slower cells) for parsed new runs against a
-    baseline. verdict: 'ok', 'slower', or 'incomparable'."""
-    lines = []
-    for meta, _ in runs:
-        diff = sorted(k for k in set(base["identity"]) | set(identity(meta))
-                      if base["identity"].get(k) != identity(meta).get(k))
-        if diff:
-            lines.append("not the baseline's machine or build:")
-            lines += [f"  {k}: baseline {base['identity'].get(k)!r}, now {identity(meta).get(k)!r}" for k in diff]
-            return "incomparable", lines, []
-    chosen = lambda key: key.split("|")[1] in use_cases
-    for i, (_, cells) in enumerate(runs):
-        ratios = [cells[k] / statistics.median(v) for k, v in base["cells"].items()
-                  if k.startswith(CONTROL + "|") and chosen(k) and k in cells]
-        factor = statistics.median(ratios)
-        lines.append(f"run {i + 1}: control ({CONTROL}) at x{factor:.3f} of the baseline's speed")
-        if abs(factor - 1) > CONTROL_TOLERANCE:
-            lines.append(f"  outside 1 +/- {CONTROL_TOLERANCE}: another machine, a busy one, or another thermal state")
-            return "incomparable", lines, []
-    slower, faster = [], []
-    for key, history in sorted(base["cells"].items()):
-        if key.split("|")[0] not in SUBJECTS or not chosen(key) or any(key not in c for _, c in runs):
+def judge(measured, use_cases, contenders):
+    """(slower, faster, ratio per cell): a cell is slower (faster) when every
+    pair's new/old ratio exceeds 1 + MARGIN (falls below 1 - MARGIN)."""
+    slower, faster, ratio = [], [], {}
+    for key in measured[0][0]:
+        contender, use_case, _ = key.split("|")
+        if contender not in contenders or use_case not in use_cases:
             continue
-        now = [c[key] for _, c in runs]
-        if min(now) > max(history) * (1 + SLOWER_BY):
+        ratios = [b[key] / a[key] for a, b in measured]
+        ratio[key] = statistics.median(ratios)
+        if min(ratios) > 1 + MARGIN:
             slower.append(key)
-            lines.append(f"  slower  {key}: best new run {min(now)} ps against the baseline's slowest {max(history)} "
-                         f"({min(now) / max(history) - 1:+.1%})")
-        elif max(now) < min(history) * (1 - SLOWER_BY):
+        elif max(ratios) < 1 - MARGIN:
             faster.append(key)
-            lines.append(f"  faster  {key}: {max(now) / min(history) - 1:+.1%}")
-    if faster:
-        lines.append(f"{len(faster)} cells faster than every baseline run: after review, `record` a new baseline")
-    return ("slower" if slower else "ok"), lines, slower
+    return slower, faster, ratio
+
+
+def compare(old_rev, new):
+    """Compare the fork at `old_rev` with `new` (a commit, or None for the
+    working tree). Returns the exit code."""
+    old, old_shim = commit_bench(old_rev)
+    if new is None:
+        new_exe, new_shim, new_name = build_bench(ROOT / "bench-hashes"), False, "the working tree"
+    else:
+        (new_exe, new_shim), new_name = commit_bench(new), new
+    use_cases = {"OneMessage"} if (old_shim or new_shim) else {"OneMessage", "ManyMessages"}
+    print(f"perf_regress: {new_name} against {old_rev}, {PAIRS} alternating pairs, "
+          f"use cases {', '.join(sorted(use_cases))}", file=sys.stderr, flush=True)
+    measured = pairs(old, new_exe, PAIRS, 0)
+
+    def unreliable(measured):
+        control = judge(measured, use_cases, [CONTROL])
+        if control[0] or control[1]:
+            print(f"perf_regress: the control ({CONTROL}, the same code on both sides) moved in "
+                  f"{len(control[0]) + len(control[1])} cells: the machine's state changed within pairs. "
+                  "No verdict (exit 2); run again when nothing else runs on the machine.")
+            return True
+        return False
+
+    if unreliable(measured):
+        return 2
+    slower, faster, ratio = judge(measured, use_cases, SUBJECTS)
+    if slower:
+        print(f"perf_regress: {len(slower)} cells slower in {PAIRS} pairs; {PAIRS} more pairs must agree",
+              file=sys.stderr, flush=True)
+        more = pairs(old, new_exe, PAIRS, PAIRS)
+        if unreliable(more):
+            return 2
+        slower2, _, ratio2 = judge(more, use_cases, SUBJECTS)
+        confirmed = sorted(set(slower) & set(slower2))
+        if confirmed:
+            print(f"perf_regress: REGRESSION: {new_name} is slower than {old_rev} in {len(confirmed)} cells "
+                  f"(5th percentile, median of pair ratios):")
+            for key in confirmed:
+                print(f"  {key}: {ratio[key] - 1:+.1%}, then {ratio2[key] - 1:+.1%}")
+            return 1
+        print(f"perf_regress: the second {PAIRS} pairs did not confirm; no regression")
+    for key in sorted(faster):
+        print(f"  faster  {key}: {ratio[key] - 1:+.1%}")
+    print(f"perf_regress: no regression against {old_rev}")
+    return 0
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ["check", "record"]:
-        p = sub.add_parser(name)
-        p.add_argument("--bench", default=str(ROOT / "bench-hashes"), help="bench-hashes checkout")
-    sub.choices["record"].add_argument("--runs", type=int, default=RECORD_RUNS)
-    sub.choices["record"].add_argument("--from", dest="saved", nargs="+",
-                                       help="record from these saved samples files instead of new runs")
-    p = sub.add_parser("compare")
-    p.add_argument("--base", nargs="+", required=True, help="samples files of the baseline runs")
-    p.add_argument("--new", nargs="+", required=True, help="samples files of the new runs")
-    for p in sub.choices.values():
-        p.add_argument("--use-cases", default="OneMessage,ManyMessages",
-                       help="comma-separated: OneMessage, ManyMessages")
+    p = sub.add_parser("check", help="the working tree against a commit")
+    p.add_argument("--against", default="HEAD")
+    p = sub.add_parser("compare", help="two commits")
+    p.add_argument("old")
+    p.add_argument("new")
     args = parser.parse_args()
-    use_cases = set(args.use_cases.split(","))
-
-    if args.command == "compare":
-        base = baseline_from([parse(Path(f).read_text()) for f in args.base])
-        verdict, lines, slower = judge(base, [parse(Path(f).read_text()) for f in args.new], use_cases)
-        print("\n".join(lines))
-        print(f"perf_regress: {verdict}" + (f" in {len(slower)} cells" if slower else ""))
-        return {"ok": 0, "slower": 1, "incomparable": 2}[verdict]
-
-    if args.command == "record" and args.saved:
-        runs = [parse(Path(f).read_text()) for f in args.saved]
-    else:
-        exe = build_bench(args.bench)
-    if args.command == "record":
-        if not args.saved:
-            runs = [parse(run_bench(exe)) for _ in range(args.runs)]
-        base = baseline_from(runs)
-        BASELINES.mkdir(exist_ok=True)
-        path = BASELINES / f"{machine_name(runs[0][0])}.json"
-        path.write_text(json.dumps(base, indent=1, sort_keys=True) + "\n")
-        print(f"perf_regress: baseline of {len(runs)} runs written to {path.relative_to(ROOT)}; review and commit it")
-        return 0
-
-    runs = [parse(run_bench(exe))]
-    path = BASELINES / f"{machine_name(runs[0][0])}.json"
-    if not path.exists():
-        print(f"perf_regress: no baseline for this machine ({path.relative_to(ROOT)}); "
-              "run `python3 tools/perf_regress.py record` and commit the file. No verdict (exit 2).")
-        return 2
-    base = json.loads(path.read_text())
-    runs += [parse(run_bench(exe)) for _ in range(CHECK_RUNS - 1)]
-    verdict, lines, slower = judge(base, runs, use_cases)
-    if verdict == "slower":
-        print("\n".join(lines))
-        print(f"perf_regress: {len(slower)} cells slower in {len(runs)} runs; one more run must agree")
-        runs.append(parse(run_bench(exe)))
-        verdict, lines, slower = judge(base, runs, use_cases)
-    print("\n".join(lines))
-    if verdict == "incomparable":
-        print("perf_regress: no verdict (exit 2)")
-        return 2
-    if verdict == "ok":
-        print(f"perf_regress: no regression ({len(runs)} runs against a baseline of {base['runs']})")
-        return 0
-    print(f"perf_regress: REGRESSION in {len(slower)} cells, in every one of {len(runs)} runs (exit 1)")
-    return 1
+    if args.command == "check":
+        return compare(args.against, None)
+    return compare(args.old, args.new)
 
 
 if __name__ == "__main__":

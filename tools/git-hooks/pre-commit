@@ -1,8 +1,8 @@
 #!/bin/sh
-# blake3-servil pre-commit hook: the performance-regression check, for
-# commits that touch code. A confirmed regression (exit 1) aborts the
-# commit; no verdict (exit 2: no baseline for this machine, or another
-# machine or state than the baseline's) warns and lets it through.
+# blake3-servil pre-commit hook: the performance-regression check (the
+# working tree against HEAD, side by side), for commits that touch code.
+# A confirmed regression (exit 1) aborts the commit; no verdict (exit 2:
+# the machine's state changed during the check) warns and lets it through.
 # `git commit --no-verify` skips the check after review.
 #
 # The check measures the working tree, which is what is being committed
@@ -11,9 +11,11 @@
 # Install: sh tools/install-git-hooks.sh (the VM's vm/setup.sh does it).
 code=$(git diff --cached --name-only -- src c build.rs Cargo.toml Cargo.lock)
 [ -z "$code" ] && exit 0
-python3 "$(git rev-parse --show-toplevel)/tools/perf_regress.py" check
+# PyPy where installed: the scripts use the standard library alone.
+python=$(command -v pypy3 || command -v python3)
+"$python" "$(git rev-parse --show-toplevel)/tools/perf_regress.py" check
 case $? in
 0) exit 0 ;;
-2) echo "pre-commit: the performance check gave no verdict (above); committing"; exit 0 ;;
+2) echo "pre-commit: the performance check gave no verdict (above); committing. Check again on a quiet machine."; exit 0 ;;
 *) echo "pre-commit: performance regression; commit aborted. After review, git commit --no-verify overrides."; exit 1 ;;
 esac
