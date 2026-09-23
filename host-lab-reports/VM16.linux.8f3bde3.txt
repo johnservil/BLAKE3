@@ -1,0 +1,39 @@
+host_lab · fork 8f3bde3 · linux · 16 CPUs · kernel platform SME2
+1. primitives
+  sched_yield on an idle CPU          187 ns
+  Instant::now                         14 ns
+  hand-off to a     Spin waiter         75 ns
+  hand-off to a    Yield waiter        172 ns
+  hand-off to a  Condvar waiter      13255 ns
+  notify_one, cost to the waker      2130 ns
+2. scaling: n threads hashing at once, ns per hash per thread (median / slowest)
+     8 KiB:  n=1 2318/2318  n=2 2362/2362  n=4 2545/2556  n=8 2566/2610  n=12 2584/2599  n=16 3147/4265
+   256 KiB:  n=1 50071/50071  n=2 53520/53520  n=4 75477/85812  n=8 122225/125836  n=12 164525/258354  n=16 235803/337527
+3. idle waiters: 8 KiB hashes, ns per hash per thread (median / slowest)
+  8 hashers, 8 idle:  none 2543/5825  Spin 2613/7394  Yield 3103/7238  Condvar 2606/3006
+  14 hashers, 2 idle:  none 2672/3598  Spin 3068/4020  Yield 3654/4473  Condvar 2789/3501
+4. SME2 → NEON on one thread
+  128 chunks on SME2 alone 19.91 µs; then a scalar 64 B hash +-0.06 µs; then one NEON chunk (alone 0.66 µs) +4.61 µs; then a 4 KiB memcpy +0.44 µs
+  first-NEON penalty after SME2 ≈ 3.95 µs
+5. the pool: ns per call (µs), serial vs multithreaded, one caller / two callers at once
+  hash     64 KiB: serial     13.9  mt      9.0  | two callers: serial     13.9  mt      9.2   (mt/serial 0.65, 0.66)
+  hash    128 KiB: serial     26.9  mt     10.1  | two callers: serial     28.0  mt     12.3   (mt/serial 0.38, 0.44)
+  hash    256 KiB: serial     51.9  mt     17.1  | two callers: serial     54.0  mt     22.9   (mt/serial 0.33, 0.42)
+  hash   1024 KiB: serial    177.7  mt     37.4  | two callers: serial    178.2  mt     64.1   (mt/serial 0.21, 0.36)
+  hash   4096 KiB: serial    728.3  mt    121.0  | two callers: serial    785.2  mt    212.5   (mt/serial 0.17, 0.27)
+  hash  16384 KiB: serial   3019.5  mt    422.7  | two callers: serial   3012.8  mt    792.6   (mt/serial 0.14, 0.26)
+  hash  65536 KiB: serial  11504.8  mt   1569.2  | two callers: serial  11473.1  mt   3591.9   (mt/serial 0.14, 0.31)
+  hash_many    512 × 64 B: serial      6.9  mt      6.9  | two callers: serial      7.2  mt      7.3   (mt/serial 1.01, 1.01)
+  hash_many   1024 × 64 B: serial     12.9  mt     11.6  | two callers: serial     13.8  mt     11.9   (mt/serial 0.90, 0.86)
+  hash_many   2048 × 64 B: serial     24.5  mt     15.3  | two callers: serial     26.2  mt     15.9   (mt/serial 0.62, 0.60)
+  hash_many   4096 × 64 B: serial     47.5  mt     25.9  | two callers: serial     50.7  mt     33.4   (mt/serial 0.55, 0.66)
+  hash_many  16384 × 64 B: serial    176.8  mt     67.7  | two callers: serial    193.5  mt     95.6   (mt/serial 0.38, 0.49)
+  hash_many  65536 × 64 B: serial    673.6  mt    220.6  | two callers: serial    675.2  mt    339.8   (mt/serial 0.33, 0.50)
+  hash_many 262144 × 64 B: serial   2661.4  mt    868.6  | two callers: serial   2709.8  mt   1286.2   (mt/serial 0.33, 0.47)
+6. two SME2 callers at once: per-thread time, two at once over one alone (x2.0 = sharing one SME unit)
+  hash_many 4096 x 64 B: alone 50.6 µs; two at once, quiet: x1.00 x1.01 x1.01 x1.01 x1.01 x1.01; right after an all-core burst: x0.95 x1.15 x0.94 x0.95 x1.02 x1.01
+  hash 1 MiB: alone 178.0 µs; two at once, quiet: x1.00 x1.08 x1.07 x1.08 x1.08 x1.08; right after an all-core burst: x1.17 x1.17 x1.01 x1.00 x1.00 x1.00
+7. WFE
+  hand-off to a WFE waiter            103 ns
+  WFE with no writer returns every 1.3 µs (a writer ticks every 20 ms); a real idle would read near 20000
+  8 hashers beside 8 WFE waiters: 3055/4220 ns per 8 KiB hash

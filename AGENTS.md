@@ -41,6 +41,15 @@ place through a concrete need and a demonstrated benefit. When approaches
 perform similarly, choose the simpler one. Apply this standard to code,
 interfaces, documentation, and performance optimizations.
 
+## Strategy: minimax
+
+Judge a design by its worst plausible case first. Performing well in every situation (or as many as possible) beats excelling in some while falling behind in others: a user meets whatever situation their own program creates. Plausible situations include several threads of one program hashing at once, other programs busy on the machine, a quiet machine, a VM, and every input size and batch size. For each candidate, find the situation where it does worst and compare those worst cases; a best case decides only between designs whose worst cases are level. Consequences here:
+
+- A resource that can be shared (an SME unit, a cluster, memory bandwidth) is judged at its shared speed, since some program will share it.
+- A multithreaded call that runs slower than the single-threaded call on the same task is a defect: it could have run single-threaded.
+- A task that takes more than proportionally longer than a smaller one is a defect: it could have done the smaller task twice.
+- Effort goes first to the cells where we lead by the least or trail.
+
 ## Correctness tests
 
 Use reproducible inputs and fixed, independently established expected
