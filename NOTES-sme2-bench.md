@@ -710,6 +710,33 @@ where the unit is not shared; NEON's worst equals its best.
   MiB); duo 0.184 from 32 MiB (two copies streaming memory). The Mac's
   0.176 -> 0.210 at 128 MiB needs a native look.
 
+**Does the NEON-only pool change where macOS puts two SME2 threads?**
+(M4 Max, bench-hashes 8e0be9f-era source, fork 8f3bde3 against 90172ae,
+`--all --thorough`, old / new / new / old plus an earlier new run; raw
+data in `tmp/sme2-session/mac-ab/`.) The share of servil's shared batch
+samples at the fast speed (both copies on their own SME unit) was 50% and
+59% on the old fork, 55%, 49%, and 28% on the new; at 64 MiB, 52% and 54%
+against 49%, 42%, and 41%. Identical runs span 28-59%, so the pool change
+shows no detectable effect; the 64 MiB ordering (every new run below
+every old) would happen by chance one time in ten, a weak hint of a small
+increase. Solo cells are identical on both forks (64 MiB 0.177); servil
+mt's shared cells gain on the new fork in every run (256 KiB .079 -> .070,
+1 MiB .057 -> .050, 8 MiB .046 -> .042, 4096 messages 5.9 -> 5.4).
+
+**The shared SME2 cells are two-speed, near half and half.** Batches of
+16-16384 messages: about 10 or 19 ns/msg; 32 MiB: 0.178 or 0.306; 64 MiB:
+0.176 or 0.242 ns/B. Each copy runs at one speed or the other depending
+on whether macOS put the two copies on one P-cluster, and the share of
+rounds in each state varies from run to run (28-59% fast), so a record's
+median for these cells lands on either mode: the first thorough Mac run
+of 90172ae read 18.9 at 256 messages, the next two 10.2 and 18.4. This is
+open under the AGENTS rule "we own every slowdown a user could meet": a
+program's two SME2 threads meet it. Wanted: control (placement, e.g. an
+`os_workgroup` per SME2 thread), or user guidance, or a prediction; and a
+report that shows such a cell as two-speed instead of a coin-toss median.
+The A/B also found that `perf_regress` cached builds by fork commit alone
+(fixed in da92669: the name carries the benchmark source's hash).
+
 ## Future work
 
 - **A GPU kernel** (Metal on Apple silicon): chunks and parents as a
