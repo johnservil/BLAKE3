@@ -343,6 +343,23 @@ VM both read x1.0-1.1. Run it on the Mac. The fix, if confirmed, is a
 design choice (macOS pins no thread to a cluster): NEON when another
 thread of the process is in SME2, if NEON beats half a unit there.
 
+**Tested and refuted on the Mac** (`host-lab-reports/M4Max.macos.5825e4d.txt`,
+section 6): two SME2 callers at once run at x1.08-1.13 of one alone for
+batches and x1.00-1.02 for the tree, quiet or right after an all-core
+burst, never x2.0. The two-speed batch cells need another cause. What
+the data says: the slow rounds follow the preceding contender, and hit
+the batch path, not the tree path. Next: one Mac run with
+`--trace-clocks` (per-sample P and E cycles) tells whether the slow
+samples ran on E-cores.
+
+**Native facts from that report, correcting earlier notes:** the first
+NEON instruction after an SME2 kernel costs 3.7 µs on the M4 Max, as on
+the VM (the "about 1 µs" above was an inference, now measured); `WFE`
+returns every 1.3 µs on macOS too, so it is a spin natively as well.
+Beside 8 hashers, 8 idle `sched_yield` pollers cost 2% on the Mac (19% on
+the VM) and `spin_loop` pollers 18% on both: the pool's poll pause is
+worth an A/B on the Mac against yield-polling.
+
 ## Which benchmark points carry information (both records, fork c1ec71f)
 
 Each point's medians interpolated from its two neighbours (log time on log
