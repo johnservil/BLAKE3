@@ -168,6 +168,152 @@ pub unsafe fn hash_many<const N: usize>(
     }
 }
 
+/*
+ * A whole subtree on the SME2 kernels alone.
+ *
+ * On the machines measured, the first NEON instruction after an SME2
+ * kernel returns costs microseconds (about 4 on a 16-vCPU VM, about 1 on
+ * an M4), while scalar code costs nothing extra; see
+ * examples/transition.rs. A thread that hashes with SME2 and never runs a
+ * NEON instruction never pays it. `subtree_cv` hashes a subtree that way:
+ *
+ * - whole chunks through the chunk kernel, a short group's spare lanes
+ *   pointed at a static zero chunk and their outputs ignored;
+ * - a final partial chunk through the scalar kernel c1 (integer
+ *   registers only);
+ * - every parent level through the parent kernel, a short level run as a
+ *   full group over the padded buffer, an odd child carried up with
+ *   scalar loads and stores.
+ *
+ * The glue between kernel calls stays scalar: buffers live in a `Scratch`
+ * zeroed once, when the thread starts; copies go through `copy_cv`, table
+ * entries through volatile stores the compiler cannot turn into vector
+ * code.
+ */
+
+/// The longest subtree `subtree_cv` takes: 128 chunks, eight groups, one
+/// chunk-kernel call.
+pub const SUBTREE_MAX: usize = DEGREE * CHUNK_LEN;
+
+/// CV slots per buffer: 128 chunks and a partial one, rounded up so a
+/// padded parent level (sixteen pairs per group) stays inside.
+const CVS: usize = 160;
+
+/// A thread's working memory for `subtree_cv`. Create it before the
+/// thread first runs an SME2 kernel: creation zeroes it with whatever
+/// instructions the compiler picks.
+#[repr(C, align(64))]
+pub struct Scratch {
+    table: [*const u8; DEGREE],
+    a: [[u8; OUT_LEN]; CVS],
+    b: [[u8; OUT_LEN]; CVS],
+    last: [u8; BLOCK_LEN],
+}
+
+impl Scratch {
+    pub fn new() -> Box<Self> {
+        Box::new(Scratch {
+            table: [core::ptr::null(); DEGREE],
+            a: [[0; OUT_LEN]; CVS],
+            b: [[0; OUT_LEN]; CVS],
+            last: [0; BLOCK_LEN],
+        })
+    }
+}
+
+static ZERO_CHUNK: [u8; CHUNK_LEN] = [0; CHUNK_LEN];
+
+/// 32 bytes through four integer registers.
+#[inline(always)]
+unsafe fn copy_cv(src: *const u8, dst: *mut u8) {
+    unsafe {
+        core::arch::asm!(
+            "ldp {a}, {b}, [{s}]",
+            "ldp {c}, {d}, [{s}, #16]",
+            "stp {a}, {b}, [{t}]",
+            "stp {c}, {d}, [{t}, #16]",
+            s = in(reg) src,
+            t = in(reg) dst,
+            a = out(reg) _,
+            b = out(reg) _,
+            c = out(reg) _,
+            d = out(reg) _,
+            options(nostack, preserves_flags),
+        );
+    }
+}
+
+/// The chaining value of `input`, a whole non-root subtree starting at
+/// chunk `counter`, into `out`, on the SME2 kernels and scalar code alone.
+/// `input` holds 1 to SUBTREE_MAX bytes.
+///
+/// Unsafe because the CPU must report SME2 with a 512-bit streaming
+/// vector length, and `out` must be valid for 32 bytes of writes.
+pub unsafe fn subtree_cv(input: &[u8], key: &CVWords, counter: u64, flags: u8, scratch: &mut Scratch, out: *mut u8) {
+    assert!(!input.is_empty() && input.len() <= SUBTREE_MAX, "a subtree of 1 to {SUBTREE_MAX} bytes");
+    let full = input.len() / CHUNK_LEN;
+    let rem = input.len() % CHUNK_LEN;
+    let (mut src, mut dst) = (scratch.a.as_mut_ptr() as *mut u8, scratch.b.as_mut_ptr() as *mut u8);
+    let mut count = 0;
+    if full > 0 {
+        let groups = full.div_ceil(GROUP);
+        for i in 0..groups * GROUP {
+            let lane = if i < full { unsafe { input.as_ptr().add(i * CHUNK_LEN) } } else { ZERO_CHUNK.as_ptr() };
+            unsafe { core::ptr::write_volatile(&mut scratch.table[i], lane) };
+        }
+        let packed = flags as u32 | (crate::CHUNK_START as u32) << 8 | (crate::CHUNK_END as u32) << 16;
+        let lanes = unsafe {
+            ffi::blake3_sme2_hash16_chunks_512(scratch.table.as_ptr() as *const u8, key.as_ptr(), counter, packed, src, groups as u64)
+        };
+        assert_eq!(lanes, 16, "SME2 streaming vector length changed under us");
+        count = full;
+    }
+    if rem > 0 {
+        let blocks = rem.div_ceil(BLOCK_LEN);
+        let whole = (blocks - 1) * BLOCK_LEN;
+        let tail = rem - whole;
+        let base = unsafe { input.as_ptr().add(full * CHUNK_LEN) };
+        let last: *const [u8; BLOCK_LEN] = if tail == BLOCK_LEN {
+            unsafe { base.add(whole) as *const [u8; BLOCK_LEN] }
+        } else {
+            for i in 0..BLOCK_LEN {
+                let byte = if i < tail { unsafe { core::ptr::read_volatile(base.add(whole + i)) } } else { 0 };
+                unsafe { core::ptr::write_volatile(&mut scratch.last[i], byte) };
+            }
+            &scratch.last
+        };
+        unsafe {
+            crate::neon_hybrid::hash_chunk(
+                base,
+                blocks,
+                &*last,
+                tail as u8,
+                key,
+                counter + full as u64,
+                flags,
+                crate::CHUNK_START,
+                crate::CHUNK_END,
+                &mut *(src.add(count * OUT_LEN) as *mut [u8; OUT_LEN]),
+            );
+        }
+        count += 1;
+    }
+    while count > 1 {
+        let pairs = count / 2;
+        let groups = pairs.div_ceil(GROUP);
+        let lanes = unsafe {
+            ffi::blake3_sme2_hash16_parents_512(src, key.as_ptr(), 0, (flags | crate::PARENT) as u32, dst, groups as u64)
+        };
+        assert_eq!(lanes, 16, "SME2 streaming vector length changed under us");
+        if count % 2 == 1 {
+            unsafe { copy_cv(src.add((count - 1) * OUT_LEN), dst.add(pairs * OUT_LEN)) };
+        }
+        count = pairs + count % 2;
+        core::mem::swap(&mut src, &mut dst);
+    }
+    unsafe { copy_cv(src, out) };
+}
+
 pub mod ffi {
     unsafe extern "C" {
         /// Sixteen whole 1024-byte chunks per group. `inputs` is a table of
@@ -210,5 +356,34 @@ mod test {
             return;
         }
         crate::test::test_hash_many_fn(hash_many, hash_many);
+    }
+
+    /// The SME2-only subtree against the ordinary subtree code, for every
+    /// chunk count up to 128 whole or with a partial chunk, at counters
+    /// where such a subtree is valid.
+    #[test]
+    fn test_subtree_cv_matches() {
+        if !crate::platform::sme2_detected() {
+            return;
+        }
+        let mut input = vec![0u8; SUBTREE_MAX];
+        crate::test::paint_test_input(&mut input);
+        let mut scratch = Scratch::new();
+        let key = *crate::IV;
+        let mut lens: Vec<usize> = (1..=128).map(|c| c * CHUNK_LEN).collect();
+        lens.extend([1, 63, 64, 65, 1023, 1025, 2047, 3 * CHUNK_LEN + 700, 17 * CHUNK_LEN + 1, 100 * CHUNK_LEN + 64, SUBTREE_MAX - 1]);
+        for len in lens {
+            // A counter that is a multiple of the subtree's power-of-two
+            // span keeps it a whole subtree at that position.
+            let span = len.div_ceil(CHUNK_LEN).next_power_of_two() as u64;
+            for counter in [0, span, 5 * span] {
+                let want = crate::hash_all_at_once::<crate::join::SerialJoin>(
+                    &input[..len], &key, counter, crate::KEYED_HASH, crate::platform::Platform::NEON,
+                ).chaining_value();
+                let mut got = [0u8; OUT_LEN];
+                unsafe { subtree_cv(&input[..len], &key, counter, crate::KEYED_HASH, &mut scratch, got.as_mut_ptr()) };
+                assert_eq!(got, want, "len {len}, counter {counter}");
+            }
+        }
     }
 }

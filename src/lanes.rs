@@ -81,7 +81,7 @@ use crate::platform::Platform;
 use crate::{CHUNK_LEN, Hash};
 #[cfg(test)]
 use crate::{Hasher, KEY_LEN};
-use std::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex, OnceLock};
 
 /// Inputs below this length are hashed on the calling thread. A split
@@ -97,15 +97,31 @@ const MIN_PIECE_LEN: usize = 8 * CHUNK_LEN;
 /// The longest piece: one SME2 kernel call of the platform's degree.
 const MAX_PIECE_LEN: usize = 128 * CHUNK_LEN;
 
-/// Pieces shorter than this run on the NEON hybrids without asking for
-/// an SME2 permit: a piece on SME2 pays one switch out of streaming mode
-/// and back (about a microsecond on an M4, several on a virtual machine),
-/// which at 8 KiB is what SME2 would gain over NEON.
-const MIN_SME_PIECE_LEN: usize = 16 * CHUNK_LEN;
+/// Working memory of a worker that hashes on the SME2 kernels alone; an
+/// uninhabited type where there are none.
+#[cfg(blake3_sme2)]
+type SmeScratch = crate::sme2::Scratch;
+#[cfg(not(blake3_sme2))]
+enum SmeScratch {}
 
 /// How long a worker or a waiting caller spins before sleeping. Long
 /// enough to bridge the gap between back-to-back hashes in a busy caller;
 /// short enough that an idle process is quiet within it.
+const RANK_STAGGER_NS: u64 = STAGGER;
+const STAGGER: u64 = 20;
+
+/// Between polls: spin in user space, and every YIELD_EVERY hand the CPU
+/// to any runnable thread.
+const YIELD_EVERY: std::time::Duration = std::time::Duration::from_micros(20);
+#[inline]
+fn poll_pause(yielded: &mut std::time::Instant) {
+    for _ in 0..8 { std::hint::spin_loop(); }
+    if yielded.elapsed() >= YIELD_EVERY {
+        std::thread::yield_now();
+        *yielded = std::time::Instant::now();
+    }
+}
+
 pub(crate) const SPIN_BEFORE_SLEEP: std::time::Duration = std::time::Duration::from_micros(200);
 
 /// The length of the next piece when `remaining` bytes are uncut and
@@ -145,7 +161,7 @@ fn hash_over_pool(input: &[u8], mode: Mode, max_threads: usize) -> Hash {
     let callers = pool.callers.fetch_add(1, Ordering::SeqCst) + 1;
     let _caller = Caller(&pool.callers);
     if callers >= pool.cpus {
-        return pool.hash_subtree(input, &mode.key_words(), 0, mode.flags_byte()).root_hash();
+        return crate::hash_serial(input, &mode.key_words(), mode.flags_byte());
     }
     let pieces = cut_subtrees(input.len(), pool.cpus.min(max_threads));
     let mut cvs = vec![ChainingValue::default(); pieces.len()];
@@ -180,11 +196,11 @@ fn hash_many_over_pool(inputs: &[&[u8]], outputs: &mut [Hash], total: usize, max
     let callers = pool.callers.fetch_add(1, Ordering::SeqCst) + 1;
     let _caller = Caller(&pool.callers);
     if callers >= pool.cpus {
-        return pool.hash_messages(inputs, outputs, total);
+        return crate::many::hash_many_on(inputs, outputs, Platform::detect());
     }
     let pieces = cut_messages(inputs, total, pool.cpus.min(max_threads));
     if pieces.len() < 2 {
-        return pool.hash_messages(inputs, outputs, total);
+        return crate::many::hash_many_on(inputs, outputs, Platform::detect());
     }
     let work = Work::Messages { inputs, pieces: &pieces, outputs: outputs.as_mut_ptr() };
     pool.run_job(work, pieces.len(), max_threads);
@@ -207,6 +223,9 @@ impl Drop for Caller<'_> {
 /// every worker access falls inside the caller's frame.
 struct Job<'a> {
     work: Work<'a>,
+    /// When the job was registered, in nanoseconds of the pool's epoch;
+    /// a worker of rank r takes from it only r × RANK_STAGGER later.
+    registered_ns: u64,
     /// How many pieces the work has; `cursor` counts up to it.
     pieces: usize,
     /// The next piece to take.
@@ -269,34 +288,40 @@ fn reserve_thread(active: &AtomicUsize, max_threads: usize) -> bool {
 
 impl Job<'_> {
     /// Hash piece `index` into its slot. The caller has taken `index`
-    /// through `cursor`.
-    unsafe fn hash_piece(&self, index: usize) {
+    /// through `cursor`. A thread with `sme` hashes on the SME2 kernels
+    /// and scalar code alone; every other thread on the NEON hybrids.
+    unsafe fn hash_piece(&self, index: usize, sme: Option<&mut SmeScratch>) {
         match &self.work {
             Work::Tree { input, pieces, cvs, key, flags } => {
                 let piece = pieces[index];
                 let bytes = &input[piece.offset..][..piece.len];
-                let cv = pool().hash_subtree(bytes, key, (piece.offset / CHUNK_LEN) as u64, *flags).chaining_value();
-                unsafe { *cvs.add(index) = cv };
+                let counter = (piece.offset / CHUNK_LEN) as u64;
+                match sme {
+                    #[cfg(blake3_sme2)]
+                    Some(scratch) => unsafe { crate::sme2::subtree_cv(bytes, key, counter, *flags, scratch, cvs.add(index) as *mut u8) },
+                    #[cfg(not(blake3_sme2))]
+                    Some(never) => match *never {},
+                    None => {
+                        let cv = crate::hash_all_at_once::<crate::join::SerialJoin>(bytes, key, counter, *flags, other_platform()).chaining_value();
+                        unsafe { *cvs.add(index) = cv };
+                    }
+                }
             }
             Work::Messages { inputs, pieces, outputs } => {
                 let piece = pieces[index];
                 let messages = &inputs[piece.offset..][..piece.len];
                 // Sound: this range of outputs belongs to piece `index` alone.
                 let digests = unsafe { core::slice::from_raw_parts_mut(outputs.add(piece.offset), piece.len) };
-                let bytes = messages.iter().map(|m| m.len()).sum();
-                pool().hash_messages(messages, digests, bytes);
+                let platform = if sme.is_some() { Platform::detect() } else { other_platform() };
+                crate::many::hash_many_on(messages, digests, platform);
             }
         }
     }
 }
 
-/// The platform a piece runs on with an SME2 permit: the detected one.
-fn fast_platform() -> Platform {
-    Platform::detect()
-}
-
-/// The platform a piece runs on without a permit. On an SME2 CPU the NEON
-/// hybrids, which no other core slows down; elsewhere the detected one.
+/// The platform every thread but the SME2 workers hashes on. On an SME2 CPU
+/// the NEON hybrids, which no other core slows down and which never meet
+/// an SME2 kernel on the same thread; elsewhere the detected one.
 fn other_platform() -> Platform {
     #[cfg(blake3_sme2)]
     if matches!(Platform::detect(), Platform::SME2) {
@@ -448,12 +473,11 @@ struct Pool {
     slots: [Slot; MAX_JOBS],
     /// Callers inside hash_over_pool.
     callers: AtomicUsize,
-    /// SME2 permits free.
-    sme_free: AtomicUsize,
+    /// The workers of the highest ranks, this many, hash on the SME2
+    /// kernels alone: one per SME unit, zero without SME2.
+    sme_workers: usize,
     cpus: usize,
-    /// When the last job was registered, in nanoseconds of `epoch`; a
-    /// worker sleeps only when this is SPIN_BEFORE_SLEEP old.
-    last_job_ns: AtomicU64,
+    /// The clock jobs' registration times count from.
     epoch: std::time::Instant,
     /// Workers asleep on `posted`.
     sleepers: AtomicUsize,
@@ -495,9 +519,8 @@ fn pool() -> &'static Pool {
         let pool = Pool {
             slots: std::array::from_fn(|_| Slot { job: AtomicPtr::new(std::ptr::null_mut()), readers: AtomicUsize::new(0) }),
             callers: AtomicUsize::new(0),
-            sme_free: AtomicUsize::new(sme_permits()),
+            sme_workers: sme_units().min(cpus.saturating_sub(1)),
             cpus,
-            last_job_ns: AtomicU64::new(0),
             epoch: std::time::Instant::now(),
             sleepers: AtomicUsize::new(0),
             notified: AtomicUsize::new(0),
@@ -510,7 +533,7 @@ fn pool() -> &'static Pool {
         for worker in 1..cpus {
             std::thread::Builder::new()
                 .name(format!("blake3-worker-{worker}"))
-                .spawn(worker_main)
+                .spawn(move || worker_main(worker - 1))
                 .expect("spawning a BLAKE3 worker");
         }
         pool
@@ -518,36 +541,13 @@ fn pool() -> &'static Pool {
 }
 
 impl Pool {
-    /// Hash a subtree with the same kernel policy on callers and workers.
-    /// `input` tiles a valid subtree at `counter`, as hash_all_at_once requires.
-    /// Even a call hashing alone shares SME permits with the pool's jobs.
-    fn hash_subtree(&self, input: &[u8], key: &crate::CVWords, counter: u64, flags: u8) -> crate::Output {
-        let permit = input.len() >= MIN_SME_PIECE_LEN && self.take_sme_permit();
-        let platform = if permit { fast_platform() } else { other_platform() };
-        let output = crate::hash_all_at_once::<crate::join::SerialJoin>(input, key, counter, flags, platform);
-        if permit {
-            self.release_sme_permit();
-        }
-        output
-    }
-
-    /// Hash a batch of messages (`bytes` in all) with the same kernel
-    /// policy as [`Pool::hash_subtree`].
-    fn hash_messages(&self, inputs: &[&[u8]], outputs: &mut [Hash], bytes: usize) {
-        let permit = bytes >= MIN_SME_PIECE_LEN && self.take_sme_permit();
-        let platform = if permit { fast_platform() } else { other_platform() };
-        crate::many::hash_many_on(inputs, outputs, platform);
-        if permit {
-            self.release_sme_permit();
-        }
-    }
-
     /// Register `work` of `pieces` pieces, take pieces on this thread until
     /// none remain, and return once every piece is finished, on whichever
     /// thread took it. At most `max_threads` threads hold a piece at once.
     fn run_job(&self, work: Work, pieces: usize, max_threads: usize) {
         let job = Job {
             work,
+            registered_ns: self.epoch.elapsed().as_nanos() as u64,
             pieces,
             cursor: Line(AtomicUsize::new(0)),
             active: Line(AtomicUsize::new(1)),
@@ -561,7 +561,7 @@ impl Pool {
             }
             // Sound: this thread took index through the cursor, so it alone
             // writes slot index.
-            unsafe { job.hash_piece(index) };
+            unsafe { job.hash_piece(index, None) };
         }
         job.active.fetch_sub(1, Ordering::SeqCst);
         // Every piece is taken; the slot has nothing more to give from this
@@ -586,7 +586,6 @@ impl Pool {
         let slot = (0..MAX_JOBS).find(|&i| {
             self.slots[i].job.compare_exchange(std::ptr::null_mut(), ptr, Ordering::SeqCst, Ordering::Relaxed).is_ok()
         })?;
-        self.last_job_ns.store(self.epoch.elapsed().as_nanos() as u64, Ordering::SeqCst);
         // Sleepers already notified are on their way (a wake takes tens
         // of microseconds to land); a second caller in that window counts
         // them as awake and pays nothing. The lock-free reads are a hint;
@@ -596,21 +595,12 @@ impl Pool {
             let _guard = self.sleep_lock.lock().unwrap();
             let sleepers = self.sleepers.load(Ordering::SeqCst);
             let unnotified = sleepers - self.notified.load(Ordering::SeqCst);
-            if unnotified > 0 && (self.cpus - 1 - unnotified) < job.pieces {
+            if unnotified > 0 && (self.cpus - 1 - unnotified) < job.pieces - 1 {
                 self.notified.store(sleepers, Ordering::SeqCst);
                 self.posted.notify_all();
             }
         }
         Some(slot)
-    }
-
-    /// Whether a job was registered within SPIN_BEFORE_SLEEP: while calls
-    /// keep coming, workers stay awake. A registration between this
-    /// thread's clock read and its load of `last_job_ns` reads as recent.
-    fn jobs_recently(&self) -> bool {
-        let now = self.epoch.elapsed().as_nanos() as u64;
-        let last = self.last_job_ns.load(Ordering::SeqCst);
-        now.saturating_sub(last) < SPIN_BEFORE_SLEEP.as_nanos() as u64
     }
 
     /// Clear the slot and wait out any worker mid-take on it.
@@ -621,33 +611,18 @@ impl Pool {
         }
     }
 
-    /// One SME2 permit, when one is free.
-    fn take_sme_permit(&self) -> bool {
-        let mut free = self.sme_free.load(Ordering::Relaxed);
-        while free > 0 {
-            match self.sme_free.compare_exchange_weak(free, free - 1, Ordering::AcqRel, Ordering::Relaxed) {
-                Ok(_) => return true,
-                Err(now) => free = now,
-            }
-        }
-        false
-    }
-
-    fn release_sme_permit(&self) {
-        self.sme_free.fetch_add(1, Ordering::AcqRel);
-    }
-
     /// Wait for the last active thread. The caller has exhausted the cursor,
     /// released its reservation, and unregistered the job (including draining
     /// slot readers), so no new reservations can arrive. Poll first, then
     /// sleep on the condition variable that finishing workers signal.
     fn wait_done(&self, active: &AtomicUsize) {
         let started = std::time::Instant::now();
+        let mut yielded = started;
         while started.elapsed() < SPIN_BEFORE_SLEEP {
             if active.load(Ordering::SeqCst) == 0 {
                 return;
             }
-            std::thread::yield_now();
+            poll_pause(&mut yielded);
         }
         let mut guard = self.finished.lock().unwrap();
         self.waiters.fetch_add(1, Ordering::SeqCst);
@@ -671,7 +646,8 @@ impl Pool {
     /// from `start`, that has one and room under its thread cap.
     /// The pointer stays valid until
     /// this worker's `piece_done` (see the pool's comment).
-    fn take_piece(&self, start: &mut usize) -> Option<(*const Job<'static>, usize)> {
+    fn take_piece(&self, start: &mut usize, rank: usize) -> Option<(*const Job<'static>, usize)> {
+        let now = self.epoch.elapsed().as_nanos() as u64;
         for k in 0..MAX_JOBS {
             let at = (*start + k) % MAX_JOBS;
             let slot = &self.slots[at];
@@ -687,7 +663,8 @@ impl Pool {
             if !ptr.is_null() {
                 // Sound: a reader of the slot; the caller waits for readers.
                 let job = unsafe { &*ptr };
-                if job.cursor.load(Ordering::SeqCst) < job.pieces
+                if now.saturating_sub(job.registered_ns) >= rank as u64 * RANK_STAGGER_NS
+                    && job.cursor.load(Ordering::SeqCst) < job.pieces
                     && job.active.load(Ordering::SeqCst) < job.max_threads
                 {
                     if reserve_thread(&job.active, job.max_threads) {
@@ -712,14 +689,15 @@ impl Pool {
     /// The next piece for a worker: polled for a while (yielding the CPU
     /// between polls, so a thread that has work on this CPU runs), then
     /// waited for.
-    fn next_piece(&self, start: &mut usize) -> (*const Job<'static>, usize) {
+    fn next_piece(&self, start: &mut usize, rank: usize) -> (*const Job<'static>, usize) {
         let taken = 'taken: loop {
             let started = std::time::Instant::now();
-            while started.elapsed() < SPIN_BEFORE_SLEEP || self.jobs_recently() {
-                if let Some(taken) = self.take_piece(start) {
+            let mut yielded = started;
+            while started.elapsed() < SPIN_BEFORE_SLEEP {
+                if let Some(taken) = self.take_piece(start, rank) {
                     break 'taken taken;
                 }
-                std::thread::yield_now();
+                poll_pause(&mut yielded);
             }
             // Asleep until a wake, then back to polling: a woken worker
             // that finds nothing yet stays available for the next call.
@@ -731,7 +709,7 @@ impl Pool {
             // never counted as notified.
             let mut guard = self.sleep_lock.lock().unwrap();
             self.sleepers.fetch_add(1, Ordering::SeqCst);
-            let taken = self.take_piece(start);
+            let taken = self.take_piece(start, rank);
             if taken.is_none() {
                 guard = self.posted.wait(guard).unwrap();
                 // Awake: one fewer notified sleeper on the way (a wake
@@ -748,33 +726,28 @@ impl Pool {
     }
 }
 
-fn worker_main() {
+fn worker_main(rank: usize) {
     let pool = pool();
+    // Zeroed here, before this thread's first SME2 kernel.
+    #[cfg(blake3_sme2)]
+    let mut scratch = (rank + pool.sme_workers >= pool.cpus - 1).then(crate::sme2::Scratch::new);
+    #[cfg(not(blake3_sme2))]
+    let mut scratch: Option<Box<SmeScratch>> = None;
     let mut start = 0;
     loop {
-        let (job_ptr, index) = pool.next_piece(&mut start);
+        let (job_ptr, index) = pool.next_piece(&mut start, rank);
         // Sound by the pool's contract: our active reservation keeps the job alive.
         let job = unsafe { &*job_ptr };
-        unsafe { job.hash_piece(index) };
+        unsafe { job.hash_piece(index, scratch.as_deref_mut()) };
         pool.piece_done(&job.active);
     }
 }
 
-/// Whether pieces take SME2 permits: the detected platform is SME2.
-fn uses_sme_permits() -> bool {
+/// The SME units this machine has when the detected platform is SME2,
+/// else 0. Calls the measurement where one is needed.
+fn sme_units() -> usize {
     #[cfg(blake3_sme2)]
     if matches!(Platform::detect(), Platform::SME2) {
-        return true;
-    }
-    false
-}
-
-/// The number of SME2 permits: the SME units this machine has, when the
-/// detected platform is SME2; otherwise nothing takes one, so any value
-/// serves and 0 says so. Calls the measurement where one is needed.
-fn sme_permits() -> usize {
-    if uses_sme_permits() {
-        #[cfg(blake3_sme2)]
         return sme_unit_count().max(1);
     }
     0
@@ -982,7 +955,7 @@ mod test {
             let want = crate::hash(&input);
             for threads in [2, 3, 5, 16, 64] {
                 let pieces = cut_subtrees(len, threads);
-                for platform in [fast_platform(), other_platform()] {
+                for platform in [Platform::detect(), other_platform()] {
                     let mut cvs: Vec<ChainingValue> = pieces
                         .iter()
                         .map(|p| {
