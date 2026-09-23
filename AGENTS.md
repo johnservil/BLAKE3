@@ -74,9 +74,27 @@ Read `/workspace/bench-hashes/NEXT-STEPS.md` first: it says what the work is now
 
 **Virtual machines are first-class optimization targets.** People run BLAKE3 inside VMs like the Debian guest this repository is developed in, and its speed there matters as much as on the native Mac. A change is good when it helps both, or helps one and leaves the other level; a change that wins natively and loses in a VM (or the reverse) needs a decision on the record, not a default. VMs behave differently in ways that matter here: an idle vCPU that spins or calls `sched_yield` steals host time from the vCPUs that hash, `WFE` returns at once instead of idling, the first NEON instruction after an SME2 kernel costs about 4 µs (about 1 µs natively), and a 16-vCPU guest may sit on fewer fast host cores than it has vCPUs. `examples/host_lab.rs` measures each of these; run it on both and keep both reports.
 
-# Performance regressions
+# Performance regressions: check every code commit
 
-`python3 tools/perf_regress.py check` compares this checkout against the committed baseline for the machine it runs on (`perf-baselines/`); the pre-commit hook runs it for code changes and aborts on a confirmed regression. A new machine, toolchain, or OS gives no verdict until someone records a baseline there (`record`, about 7 minutes, then commit the file). Recording a new baseline after an improvement is a reviewed change, like regenerating golden vectors. `NOTES-sme2-bench.md` explains the rule and its measured false-alarm rate.
+Speed is this fork's purpose, so no commit that makes it slower may enter git unnoticed. **Every commit that touches `src/`, `c/`, `build.rs`, `Cargo.toml`, or `Cargo.lock` must pass the performance-regression check on the machine where it is made.** The check is `tools/perf_regress.py`; it measures `blake3` (the control), `blake3-servil`, and `blake3-servil-mt` with bench-hashes and compares every cell of both use cases with the committed baseline for this machine in `perf-baselines/`.
+
+**Install the pre-commit hook once per checkout**, and the check runs by itself on every code commit:
+
+- macOS host: `sh tools/install-git-hooks.sh`
+- the Debian VM: `sh /workspace/vm/setup.sh` (after every VM restart; the mount drops executable bits, so the guest's hook lives in `/tmp/git-hooks`)
+
+**Run it by hand** when the hook is not installed, before pushing, or to see where you stand: `python3 tools/perf_regress.py check` (in the VM with the usual `HOME=/workspace/vm/home CARGO_TARGET_DIR=/tmp/target CC=clang-19 TMPDIR=/tmp` prefix). It takes about 75 seconds on the VM. It measures the working tree, so commit with everything the commit contains in the tree (`git commit -a`, or stash unrelated edits first).
+
+**What each result obliges you to do:**
+
+- *Exit 0, no regression:* commit.
+- *Exit 1, a confirmed regression:* the hook aborts the commit. Do not commit around it. Find the cause and fix it, or, when the slowdown is the deliberate price of something worth more (correctness, simplicity with a measured cost), stop and ask the user; if they accept it, commit with `git commit --no-verify` and state the regressed cells, their numbers, and the user's decision in the commit message.
+- *Exit 2, no verdict:* there is no baseline for this machine, or this machine, toolchain, OS, or state differs from the baseline's (the output says which). Record a baseline on a quiet machine, `python3 tools/perf_regress.py record` (about 7 minutes on the VM; nothing else running), and commit `perf-baselines/<machine>.json` **in a commit of its own, made before the code change**, so the baseline measures the code as it was. Then run the check again. A new rustc, OS kernel, or VM host means a new baseline file.
+- *Cells reported faster:* after the commit that made them faster, record a new baseline and commit it on its own with the before and after numbers, so the next regression is measured against the new speed. Replacing a baseline is a reviewed change, like regenerating golden vectors; never do it to make a failing check pass.
+
+**Commits that skipped the check** (made with `--no-verify`, on a machine without a baseline, or in another checkout) must be checked before they are pushed: `python3 tools/perf_bisect.py <last checked commit> <each later code commit> ...` measures each commit and judges it against the one before (see its docstring). Its runs are kept in `tmp/bisect/`.
+
+Keep baselines current on both targets, the Mac and the VM: VMs are first-class (above). `NOTES-sme2-bench.md` ("Performance-regression check") explains the rule and its measured false-alarm rate (0.13% of checks on unchanged code).
 
 # Environment
 
