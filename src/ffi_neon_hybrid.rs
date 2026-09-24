@@ -15,12 +15,12 @@
 //! | 4      | k4            | p4             |
 //! | 5      | k5            | p4 + k1        |
 //! | 6      | k6            | p4 + p2        |
-//! | 7      | k4 + k3       | p4 + p2 + k1   |
+//! | 7      | k7            | p4 + p2 + k1   |
 //! | 8      | k8            | p8             |
 //! | 9      | k9            | p8 + k1        |
 //! | 10     | k10           | p8 + p2        |
 //! | 11     | k8 + k3       | p8 + p2 + k1   |
-//! | 12     | k8 + k4       | p8 + p4        |
+//! | 12     | k9 + k3       | p8 + p4        |
 //! | 13     | k10 + k3      | p8 + p4 + k1   |
 //! | 14     | k10 + k4      | p8 + p4 + p2   |
 //! | 15     | k10 + k5      | p8 + p4 + p2 + k1 |
@@ -32,6 +32,13 @@
 //! from 13 up lead with it, and `Platform::NEON` reports a degree of 16 so
 //! the tree walk hands over sixteen chunks at a time (0.23 ns/B in bulk,
 //! against 0.29 at a degree of four).
+//!
+//! Plans are judged on an M4 Max P-core, its E-core, and the VM together.
+//! Seven chunks on k7 and twelve on k9 + k3 beat k4 + k3 and k8 + k4 on all
+//! three (cycles per byte P / E: 1.00 / 1.51 against 1.19 / 2.08, and
+//! 1.02 / 1.52 against 1.10 / 1.89). E-cores have fewer integer units, so
+//! kernels with two scalar chunks (k4, k6, k10) run twice the P-core's
+//! cycles there, the others 1.1 to 1.6 times.
 //!
 //! The scalar kernel also serves every single-chunk job: `hash_chunk` runs
 //! a whole input of one chunk or less, root compression included, in one
@@ -109,6 +116,14 @@ mod asm {
             packed_flags: u64,
             out: *mut u8,
         );
+        pub fn blake3_hybrid_k7(
+            inputs: *const *const u8,
+            blocks: u64,
+            key: *const u32,
+            counter: u64,
+            packed_flags: u64,
+            out: *mut u8,
+        );
         pub fn blake3_hybrid_k8(
             inputs: *const *const u8,
             blocks: u64,
@@ -176,7 +191,7 @@ const CHUNK_KERNELS: [Option<Kernel>; 11] = [
     Some(asm::blake3_hybrid_k4),
     Some(asm::blake3_hybrid_k5),
     Some(asm::blake3_hybrid_k6),
-    None,
+    Some(asm::blake3_hybrid_k7),
     Some(asm::blake3_hybrid_k8),
     Some(asm::blake3_hybrid_k9),
     Some(asm::blake3_hybrid_k10),
@@ -191,12 +206,12 @@ const CHUNK_PLANS: [&[usize]; 17] = [
     &[4],
     &[5],
     &[6],
-    &[4, 3],
+    &[7],
     &[8],
     &[9],
     &[10],
     &[8, 3],
-    &[8, 4],
+    &[9, 3],
     &[10, 3],
     &[10, 4],
     &[10, 5],
