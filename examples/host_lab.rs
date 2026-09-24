@@ -64,6 +64,61 @@ fn beside<T: Send + 'static>(work: impl Fn() + Send + 'static, body: impl FnOnce
     (out, h.join().unwrap())
 }
 
+/// Two persistent threads, like the benchmark's shared copies: `run` posts
+/// a job, blocks on a condvar until both copies finish.
+struct Duo {
+    state: std::sync::Mutex<(u64, usize, u8)>, // (generation, done count, job kind)
+    posted: std::sync::Condvar,
+    done: std::sync::Condvar,
+}
+impl Duo {
+    fn new(big: Arc<Vec<u8>>) -> &'static Duo {
+        let duo: &'static Duo = Box::leak(Box::new(Duo { state: std::sync::Mutex::new((0, 0, 0)), posted: std::sync::Condvar::new(), done: std::sync::Condvar::new() }));
+        for _ in 0..2 {
+            let big = big.clone();
+            std::thread::spawn(move || {
+                let neon = Platform::neon().unwrap();
+                let mut seen = 0;
+                loop {
+                    let kind = {
+                        let mut g = duo.state.lock().unwrap();
+                        while g.0 == seen { g = duo.posted.wait(g).unwrap(); }
+                        seen = g.0;
+                        g.2
+                    };
+                    work(kind, &big, &neon);
+                    let mut g = duo.state.lock().unwrap();
+                    g.1 += 1;
+                    if g.1 == 2 { duo.done.notify_one(); }
+                }
+            });
+        }
+        duo
+    }
+    fn run(&self, kind: u8) {
+        let mut g = self.state.lock().unwrap();
+        g.0 += 1; g.1 = 0; g.2 = kind;
+        self.posted.notify_all();
+        while g.1 < 2 { g = self.done.wait(g).unwrap(); }
+    }
+}
+
+/// 0: 4 KiB hash; 1: 8 MiB hash (SME2); 2: 8 MiB on NEON.
+fn work(kind: u8, big: &[u8], neon: &Platform) {
+    match kind {
+        0 => { black_box(blake3_servil::hash(&big[..4096])); }
+        1 => { black_box(blake3_servil::hash(big)); }
+        _ => {
+            let chunks: Vec<&[u8; 1024]> = big.chunks_exact(1024).map(|c| c.try_into().unwrap()).collect();
+            let mut out = vec![0u8; 32 * 16];
+            for g in chunks.chunks(16) {
+                neon.hash_many::<1024>(g, &IV, 0, IncrementCounter::Yes, 0, 1, 2, &mut out);
+            }
+            black_box(&out);
+        }
+    }
+}
+
 fn main() {
     let big: Arc<Vec<u8>> = Arc::new((0..8 << 20).map(|i| (i * 7 + (i >> 11)) as u8).collect());
     let small: Vec<u8> = big[..4096].to_vec();
@@ -102,6 +157,14 @@ fn main() {
             black_box(&out);
         });
         println!("  3n one thread, 8 MiB NEON before each       {e:4} / {n}");
+        let duo = Duo::new(big.clone());
+        for (label, own, copies) in [("7 own 8 MiB SME2, then copies 4 KiB, block", 1u8, 0u8), ("8 own 8 MiB NEON, then copies 4 KiB, block", 2, 0), ("9 own 8 MiB SME2, then copies 8 MiB SME2, block", 1, 1), ("9n own 8 MiB NEON, then copies 8 MiB NEON, block", 2, 2), ("10 copies 8 MiB SME2 only, block", 3, 1)] {
+            let (e, n) = samples(1000, &small, || {
+                if own != 3 { work(own, &big, &neon); }
+                duo.run(copies);
+            });
+            println!("  {label:48} {e:4} / {n}");
+        }
         // Afterwards: does the effect linger once SME2 stops?
         let (e, n) = samples(2000, &small, || {});
         println!("  6 alone again, right after                {e:4} / {n}");
