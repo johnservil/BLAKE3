@@ -83,7 +83,7 @@ use crate::hazmat::{self, ChainingValue, Mode};
 #[cfg(test)]
 use crate::hazmat::HasherExt;
 use crate::platform::Platform;
-use crate::{CHUNK_LEN, Hash};
+use crate::{BLOCK_LEN, CHUNK_LEN, Hash};
 #[cfg(test)]
 use crate::{Hasher, KEY_LEN};
 use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
@@ -189,8 +189,26 @@ fn hash_over_pool(input: &[u8], mode: Mode, max_threads: usize) -> Hash {
 pub(crate) fn hash_many(inputs: &[&[u8]], outputs: &mut [Hash], max_threads: usize) {
     assert!(max_threads >= 1, "a hash needs at least the calling thread");
     assert_eq!(inputs.len(), outputs.len(), "one output per message");
+    if max_threads == 1 || inputs.len() < 2 {
+        return crate::many::hash_many_on(inputs, outputs, Platform::detect());
+    }
+    // Fewer than MIN_SPLIT_LEN / BLOCK_LEN messages of a block or less hold
+    // less than MIN_SPLIT_LEN: they are hashed here, with no pass over the
+    // lengths first, up to the first longer message, and the split is
+    // decided for the rest. A pass before the SME2 kernels, even one that
+    // reads the lengths alone, made 512 one-block messages 25% slower on an
+    // M4 Max and on the VM (NOTES-servil.md).
+    let mut done = 0;
+    if inputs.len() < MIN_SPLIT_LEN / BLOCK_LEN {
+        done = crate::many::hash_many_until_longer(inputs, outputs, Platform::detect(), BLOCK_LEN);
+        if done == inputs.len() {
+            return;
+        }
+    }
+    let (inputs, outputs) = (&inputs[done..], &mut outputs[done..]);
     let total: usize = inputs.iter().map(|m| m.len()).sum();
-    if total < MIN_SPLIT_LEN || max_threads == 1 || inputs.len() < 2 {
+    // The messages already hashed held at most a block each.
+    if done * BLOCK_LEN + total < MIN_SPLIT_LEN || inputs.len() < 2 {
         return crate::many::hash_many_on(inputs, outputs, Platform::detect());
     }
     hash_many_over_pool(inputs, outputs, total, max_threads)
@@ -969,6 +987,31 @@ mod test {
         assert!(pieces[..pieces.len() - 1].iter().all(|p| bytes(p) <= MAX_PIECE_LEN && bytes(p) >= MIN_PIECE_LEN / 2));
         assert!(bytes(&pieces[0]) >= bytes(&pieces[pieces.len() - 2]));
         assert_eq!(cut_messages(&inputs[200..300], 100 * 64, 16).len(), 1);
+    }
+
+    /// Batches of fewer than MIN_SPLIT_LEN / BLOCK_LEN messages: one-block
+    /// and shorter messages up to a long one, then a rest that reaches the
+    /// split threshold (the pool) or not (this thread), with the long
+    /// message first, in the middle, and last; every budget.
+    #[test]
+    fn test_short_batches_split_at_the_first_long_message() {
+        let mut buffer = vec![0u8; 2 * MIN_SPLIT_LEN];
+        crate::test::paint_test_input(&mut buffer);
+        let block = |i: usize| &buffer[i * crate::BLOCK_LEN..][..crate::BLOCK_LEN];
+        for count in [2, 3, 200, MIN_SPLIT_LEN / crate::BLOCK_LEN - 1] {
+            for long_at in [0, count / 2, count - 1] {
+                for long_len in [crate::BLOCK_LEN + 1, 3 * CHUNK_LEN, MIN_SPLIT_LEN + 5] {
+                    let mut inputs: Vec<&[u8]> = (0..count).map(|i| if i % 7 == 3 { &block(i)[..9] } else { block(i) }).collect();
+                    inputs[long_at] = &buffer[..long_len];
+                    let want: Vec<Hash> = inputs.iter().map(|m| crate::hash(m)).collect();
+                    for cap in [1, 2, usize::MAX] {
+                        let mut got = vec![Hash::from_bytes([0; 32]); count];
+                        hash_many(&inputs, &mut got, cap);
+                        assert_eq!(want, got, "count {count}, long message of {long_len} at {long_at}, cap {cap}");
+                    }
+                }
+            }
+        }
     }
 
     /// Every budget gives hash_many()'s digests, on contiguous and on

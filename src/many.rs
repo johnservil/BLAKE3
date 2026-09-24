@@ -28,11 +28,27 @@ pub(crate) const TABLE: usize = 128;
 /// `outputs[i] = hash(inputs[i])` for every message, on `platform`.
 /// Requires `inputs.len() == outputs.len()`.
 pub(crate) fn hash_many_on(inputs: &[&[u8]], outputs: &mut [Hash], platform: Platform) {
+    let done = hash_many_until_longer(inputs, outputs, platform, usize::MAX);
+    debug_assert_eq!(done, inputs.len());
+}
+
+/// [`hash_many_on`] in order up to the first message longer than `longest`
+/// bytes; returns how many messages it hashed (all of them when none is
+/// longer). Requires `inputs.len() == outputs.len()`.
+pub(crate) fn hash_many_until_longer(
+    inputs: &[&[u8]],
+    outputs: &mut [Hash],
+    platform: Platform,
+    longest: usize,
+) -> usize {
     assert_eq!(inputs.len(), outputs.len(), "one output per message");
     if inputs.len() == 1 {
         // One message costs what hash() costs; the run scan below is not free.
+        if inputs[0].len() > longest {
+            return 0;
+        }
         outputs[0] = crate::hash_serial_on(inputs[0], IV, 0, platform);
-        return;
+        return 1;
     }
     // Filled up to `run` before each use; an initialised table would cost
     // 8 KiB of stores per call, twice a single message's hash.
@@ -45,6 +61,9 @@ pub(crate) fn hash_many_on(inputs: &[&[u8]], outputs: &mut [Hash], platform: Pla
             .take_while(|message| message.len() == BLOCK_LEN)
             .count();
         if run == 0 {
+            if inputs[i].len() > longest {
+                return i;
+            }
             outputs[i] = crate::hash_serial_on(inputs[i], IV, 0, platform);
             i += 1;
             continue;
@@ -67,6 +86,7 @@ pub(crate) fn hash_many_on(inputs: &[&[u8]], outputs: &mut [Hash], platform: Pla
         );
         i += run;
     }
+    inputs.len()
 }
 
 /// The digests as one byte slice, for the kernels to write into. Sound:
