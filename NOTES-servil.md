@@ -850,6 +850,21 @@ share one (batches 16-64 18.9 -> 12.3). `perf_regress` gave no verdict
 on either machine: the control moved, on the new side, in 2-3 cells,
 since the change alters what the shared cells leave behind.
 
+**SME2 batch calls want to run back to back** (`probe/sme2-gap`, job 063;
+`tmp/ecore/mt512.rs`, the benchmark's `servil_batch` replayed). On the
+Mac, 128 one-block messages in one SME2 call take 1292 ns back to back and
+1500 after any gap of 0.25-16 µs of pure ALU work (NEON: 2084-2125
+whatever the gap; the VM shows no ALU-gap cost). A pass over memory before
+the call costs more: 512 messages, 9.74 ns each back to back, 12.3-12.6
+after a vectorised length sum, a scalar one, or a read of the digests (256:
+the vectorised sum is free, the other two +33%); the VM reads the same
+(10.06 against 12.6-12.9). So the 512-message defect of servil mt is any
+pass at all, and servil's own step at 1024 messages (11.8) is the
+benchmark's longer digest loop between calls. Realistic SME2 batch rates,
+with a program's own work between calls, are the 12 ns/msg noted above.
+Hypothesis (untested): the SME unit reads memory at L2, so lines the core
+has just touched cost coherence traffic.
+
 **Tooling fixes.** The pre-commit check inherited git's GIT_INDEX_FILE and
 checked HEAD out into the index being committed, so a commit made with
 paths recorded its parent's tree (a227f6d is empty; fixed in 2a69249, and
