@@ -121,7 +121,8 @@ mod test {
 
     #[test]
     fn test_hash_many_runs_of_blocks() {
-        for count in [0, 1, 2, 3, 15, 16, 17, 31, 32, 33, 127, 128, 129, 1023, 1024, 1025, 2049] {
+        // Every NEON parent plan (1 to 16), then SME2 groups and their remainders.
+        for count in (0..=17).chain([24, 31, 32, 33, 127, 128, 129, 1023, 1024, 1025, 2049]) {
             check(&vec![BLOCK_LEN; count]);
         }
     }

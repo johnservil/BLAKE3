@@ -998,10 +998,18 @@ def build():
     ppair = lambda idx, slots: Pair(idx, slots, u0 if idx == 0 else u1, idx == 1, "v28", "v29", **P)
     plone = lambda slots: Pair(0, slots, u0, False, "v28", "v29", msg_regs=list(range(16, 32)), **P)
     pquad = lambda idx, slots: Quad(idx, slots, u0 if idx == 0 else u1, idx == 1, "v28", "v29", rtemp="v30", **P)
+    # A parent (or one-block message) on the integer units beside NEON parents.
+    psc1 = lambda slot: [Scalar(0, slot, one, "w23", preg="x24", ctr_step=0)]
     return {
         "p2": kernel("blake3_hybrid_p2", [], [plone((0, 1))]),
         "p4": kernel("blake3_hybrid_p4", [], [ppair(0, (0, 1)), ppair(1, (2, 3))]),
         "p8": kernel("blake3_hybrid_p8", [], [pquad(0, (0, 1, 2, 3)), pquad(1, (4, 5, 6, 7))]),
+        # p3, p5, p7, p9: one block more on the integer units beside the
+        # NEON parents, as k3, k5, k7, k9 do for chunks.
+        "p3": kernel("blake3_hybrid_p3", psc1(0), [plone((1, 2))]),
+        "p5": kernel("blake3_hybrid_p5", psc1(0), [ppair(0, (1, 2)), ppair(1, (3, 4))]),
+        "p7": kernel("blake3_hybrid_p7", psc1(0), [pquad(0, (1, 2, 3, 4)), ppair(1, (5, 6))]),
+        "p9": kernel("blake3_hybrid_p9", psc1(0), [pquad(0, (1, 2, 3, 4)), pquad(1, (5, 6, 7, 8))]),
         "k1": kernel("blake3_hybrid_k1", sc1(0), []),
         "k2": kernel("blake3_hybrid_k2", [], [lone_pair((0, 1))]),
         "k3": kernel("blake3_hybrid_k3", sc1(0), [lone_pair((1, 2))]),

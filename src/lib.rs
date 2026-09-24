@@ -1345,7 +1345,7 @@ pub fn kernel_report_many() -> KernelReport {
         if neon_hybrid::sha3_detected() {
             kernels.push(Kernel {
                 from_len: 2 * BLOCK_LEN,
-                name: "NEON hybrid parent kernels p8/p4/p2 + k1",
+                name: "NEON hybrid parent kernels p2-p9",
                 why: "Two or more one-block messages are compressed together on the NEON hybrid kernels, up to eight lanes beside a scalar lane per call; on SME2 this remains the path for the messages left over below a group of sixteen.",
             });
         } else {

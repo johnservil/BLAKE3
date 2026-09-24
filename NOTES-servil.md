@@ -22,7 +22,7 @@ tune to the hardware, never to its harness.
 | Piece | Where | Role |
 |---|---|---|
 | SME2 kernels | `c/blake3_sme2_aarch64.S`, `src/ffi_sme2.rs` | 16 chunks or 16 parent blocks per group on 512-bit streaming vectors; `DEGREE = 128` (eight groups per entry into streaming mode) |
-| NEON hybrid kernels | `c/blake3_neon_hybrid_aarch64.S`, **generated** by `tools/gen_neon_hybrid.py`; `src/ffi_neon_hybrid.rs` | k1-k10 (whole chunks), q1-q9 (whole chunks plus a partial one), p2/p4/p8 (parents); scalar chunks run on the integer units beside NEON work |
+| NEON hybrid kernels | `c/blake3_neon_hybrid_aarch64.S`, **generated** by `tools/gen_neon_hybrid.py`; `src/ffi_neon_hybrid.rs` | k1-k10 (whole chunks), q1-q9 (whole chunks plus a partial one), p2-p9 (parents, one-block messages; p3/p5/p7/p9 with a scalar lane); scalar chunks run on the integer units beside NEON work |
 | One SME2 call at a time | `Sme2Turn` in `src/platform.rs` | Calls large enough for SME2 take a process-wide turn; a call finding it taken runs NEON |
 | Batches | `src/many.rs` | One digest per message; runs of 64-byte messages go to the parent kernels many lanes at a time |
 | Multithreaded | `src/lanes.rs` | One pool over every CPU, NEON only; public contract speaks of threads alone |

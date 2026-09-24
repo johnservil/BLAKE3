@@ -11,19 +11,19 @@
 //! |--------|---------------|----------------|
 //! | 1      | k1            | k1             |
 //! | 2      | k2            | p2             |
-//! | 3      | k3            | p2 + k1        |
+//! | 3      | k3            | p3             |
 //! | 4      | k4            | p4             |
-//! | 5      | k5            | p4 + k1        |
-//! | 6      | k6            | p4 + p2        |
-//! | 7      | k7            | p4 + p2 + k1   |
+//! | 5      | k5            | p5             |
+//! | 6      | k6            | p3 + p3        |
+//! | 7      | k7            | p7             |
 //! | 8      | k8            | p8             |
-//! | 9      | k9            | p8 + k1        |
-//! | 10     | k10           | p8 + p2        |
-//! | 11     | k8 + k3       | p8 + p2 + k1   |
-//! | 12     | k9 + k3       | p8 + p4        |
-//! | 13     | k10 + k3      | p8 + p4 + k1   |
-//! | 14     | k10 + k4      | p8 + p4 + p2   |
-//! | 15     | k10 + k5      | p8 + p4 + p2 + k1 |
+//! | 9      | k9            | p9             |
+//! | 10     | k10           | p9 + k1        |
+//! | 11     | k8 + k3       | p9 + p2        |
+//! | 12     | k9 + k3       | p9 + p3        |
+//! | 13     | k10 + k3      | p9 + p4        |
+//! | 14     | k10 + k4      | p9 + p5        |
+//! | 15     | k10 + k5      | p8 + p7        |
 //! | 16     | k10 + k6      | p8 + p8        |
 //!
 //! Longer input lists are hashed sixteen at a time. k10 is the fastest
@@ -244,6 +244,38 @@ mod asm {
             packed_flags: u64,
             out: *mut u8,
         );
+        pub fn blake3_hybrid_p3(
+            inputs: *const *const u8,
+            blocks: u64,
+            key: *const u32,
+            counter: u64,
+            packed_flags: u64,
+            out: *mut u8,
+        );
+        pub fn blake3_hybrid_p5(
+            inputs: *const *const u8,
+            blocks: u64,
+            key: *const u32,
+            counter: u64,
+            packed_flags: u64,
+            out: *mut u8,
+        );
+        pub fn blake3_hybrid_p7(
+            inputs: *const *const u8,
+            blocks: u64,
+            key: *const u32,
+            counter: u64,
+            packed_flags: u64,
+            out: *mut u8,
+        );
+        pub fn blake3_hybrid_p9(
+            inputs: *const *const u8,
+            blocks: u64,
+            key: *const u32,
+            counter: u64,
+            packed_flags: u64,
+            out: *mut u8,
+        );
         pub fn blake3_hybrid_p4(
             inputs: *const *const u8,
             blocks: u64,
@@ -307,36 +339,45 @@ const CHUNK_PLANS: [&[usize]; 17] = [
 ];
 
 /// Parent kernel per exact input count.
-const PARENT_KERNELS: [Option<Kernel>; 9] = [
+const PARENT_KERNELS: [Option<Kernel>; 10] = [
     None,
     Some(asm::blake3_hybrid_k1),
     Some(asm::blake3_hybrid_p2),
-    None,
+    Some(asm::blake3_hybrid_p3),
     Some(asm::blake3_hybrid_p4),
+    Some(asm::blake3_hybrid_p5),
     None,
-    None,
-    None,
+    Some(asm::blake3_hybrid_p7),
     Some(asm::blake3_hybrid_p8),
+    Some(asm::blake3_hybrid_p9),
 ];
 
-/// Kernel sizes per parent count 1..=16: the binary decomposition.
+/// Kernel sizes per parent count 1..=16. p3, p5, p7, and p9 hash one
+/// block on the integer units beside the NEON ones, as k3, k5, k7, and k9
+/// do for chunks; against the binary decomposition over p2, p4, p8, and
+/// k1 run one after another, one-block batches on the VM: 3 messages
+/// -30%, 5 -22%, 6 (p3 + p3, against p5 + k1 -6% and p4 + p2) -24%, 7
+/// -25%, 9 -16%, 10 (p9 + k1, against p5 + p5 and p8 + p2) -6 to -9%,
+/// 11-15 -10 to -16%; 13, 14, 15, and 16 level with the alternatives
+/// tried (p7 + p3 + p3, p7 + p7, p7 + p8, p9 + p7). Two scalar lanes stay
+/// out: E-cores pay for a second one what P-cores save.
 const PARENT_PLANS: [&[usize]; 17] = [
     &[],
     &[1],
     &[2],
-    &[2, 1],
+    &[3],
     &[4],
-    &[4, 1],
-    &[4, 2],
-    &[4, 2, 1],
+    &[5],
+    &[3, 3],
+    &[7],
     &[8],
-    &[8, 1],
-    &[8, 2],
-    &[8, 2, 1],
-    &[8, 4],
-    &[8, 4, 1],
-    &[8, 4, 2],
-    &[8, 4, 2, 1],
+    &[9],
+    &[9, 1],
+    &[9, 2],
+    &[9, 3],
+    &[9, 4],
+    &[9, 5],
+    &[8, 7],
     &[8, 8],
 ];
 
