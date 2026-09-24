@@ -1,0 +1,1 @@
+gate: suites pass (67/66/56 lib, 19 doc, 2 vectors); VM perf_regress against e34a29d: no regression (pre-commit); Mac perf_regress compare e34a29d d89fadd: no regression (runner job 104); Mac cycles probe (job 105 against 096): 1100 B level, 1300 B P level / E -15%, 1500 B -12% / -22%, 1800 B -26% / -31%, 2000 B -32% / -35%
