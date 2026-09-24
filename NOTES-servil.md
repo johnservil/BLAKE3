@@ -815,6 +815,19 @@ solo and shared, for servil and servil mt; a batch of one message; and
 servil mt at 512 messages (+25% against servil; in the benchmark only: a
 tight loop on the Mac reads 9.47 against 9.39).
 
+**servil mt at 512 messages** (the list's one SME2-only loss; `no_sme2`
+reads 18.8 for servil and servil mt alike, runner jobs 046-047).
+`hash_many_multithreaded` sums every message length before choosing the
+calling thread or the pool; skipping that pass for batches of 1000 or
+fewer (`probe/mt-no-sum`) makes servil mt equal servil at 512 (9.81
+against 9.82 in a short run, 9.74 against 9.74 thorough; jobs 048-051).
+A scalar pass that stops at the threshold is 31% slower at 256 messages
+on the VM (any work before an SME2 call slows it there, NOTES above), so
+no pass is good on both machines; a rule without one must still find a
+large message in a small batch, and keep the pool for batches such as 500
+messages of 1 KiB. Open. (Runner jobs 052-053 are void: the branch they
+name still pointed at servil.)
+
 **Tooling fixes.** The pre-commit check inherited git's GIT_INDEX_FILE and
 checked HEAD out into the index being committed, so a commit made with
 paths recorded its parent's tree (a227f6d is empty; fixed in 2a69249, and
