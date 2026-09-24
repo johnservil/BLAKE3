@@ -129,11 +129,30 @@ def git(*args):
 
 
 
+# bench-hashes depends on the fork's git repository at a pinned commit; this
+# patch points it at the enclosing checkout instead (`..` from bench-hashes),
+# the working tree or a worktree at a commit. Cargo then rewrites
+# bench-hashes' Cargo.lock, which `patched_cargo` puts back.
+PATCH = 'patch."https://github.com/johnservil/BLAKE3".blake3-servil.path=".."'
+
+
+def patched_cargo(bench, *args):
+    """cargo ARGS in `bench`, with the fork patched to `bench/..`; its stdout.
+    Cargo.lock is left as it was."""
+    lock = bench / "Cargo.lock"
+    saved = lock.read_bytes()
+    try:
+        return subprocess.run(["cargo", "--config", PATCH, *args], cwd=bench, env=ENV, check=True,
+                              stdout=subprocess.PIPE, text=True).stdout
+    finally:
+        lock.write_bytes(saved)
+
+
 def build_bench(bench):
     """Build bench-hashes from its own directory, where its .cargo/config.toml
-    (target-cpu=native) applies, and return the executable's path."""
-    out = subprocess.run(["cargo", "build", "--release", "--message-format=json-render-diagnostics"],
-                         cwd=bench, env=ENV, check=True, stdout=subprocess.PIPE, text=True).stdout
+    (target-cpu=native) applies, against the fork checkout enclosing it, and
+    return the executable's path."""
+    out = patched_cargo(bench, "build", "--release", "--message-format=json-render-diagnostics")
     exes = [m["executable"] for m in map(json.loads, out.splitlines())
             if m.get("reason") == "compiler-artifact" and m.get("executable")
             and m["target"]["name"] == "bench-hashes"]
@@ -142,8 +161,7 @@ def build_bench(bench):
 
 
 def target_dir():
-    meta = subprocess.run(["cargo", "metadata", "--format-version", "1", "--no-deps"], cwd=ROOT / "bench-hashes",
-                          env=ENV, check=True, stdout=subprocess.PIPE, text=True).stdout
+    meta = patched_cargo(ROOT / "bench-hashes", "metadata", "--format-version", "1", "--no-deps")
     return Path(json.loads(meta)["target_directory"])
 
 

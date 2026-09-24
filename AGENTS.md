@@ -89,6 +89,16 @@ We never write "defensive code" — code that complicates a contract to ease the
 
 A highly desirable property of an interface and its contract: the user learns the fewest new concepts. Zero new concepts earns a perfect score. Each new term (a resource unit, a sharing rule, a tuning knob) taxes working memory and needs a place in prediction and control. Prefer familiar concepts the caller already holds (threads, inputs, budgets), keep implementation units unnamed in public docs, and express observable behavior (speed, thread count, fairness beside concurrent calls) in those familiar terms.
 
+# Audiences: three sets of documents
+
+Each document serves one audience; keep it to that audience's needs.
+
+1. **The servil team** (Zooko, and John Servil, his AI assistant; future sessions of both), who change these two repositories: this file, `NOTES-servil.md`, and bench-hashes' `AGENTS.md`, `NEXT-STEPS.md`, and `NOTES.md`. Everything we know, need, or decided goes here.
+2. **People who run the benchmark or use the crate**: bench-hashes' `README.md` (how to run it, read the results, and share them; also the GitHub Pages home page), its `METHODOLOGY.md` (how it measures, for readers who investigate), the graph itself, and the servil preface of this repository's `README.md`. They need no development setup and none of our conventions.
+3. **Other developer teams, human and AI**, who change the code and cooperate with us: `CONTRIBUTING.md` here and in bench-hashes. It holds the bare necessities (layout, build and test, the regression check, the rules that keep results comparable) and points at our notes without asking anyone to follow them.
+
+A fact that concerns several audiences goes in each audience's document, phrased for it.
+
 # Where to start
 
 Read `/workspace/bench-hashes/NEXT-STEPS.md` first: it says what the work is now (optimising this fork against the benchmark) and where the last session left both repositories. `NOTES-servil.md` in this directory holds the fork's design notes and the measurements behind each change.
@@ -135,12 +145,14 @@ A candidate reaches `servil` only when all of these hold, and never without the 
 
 A regression the user accepts, as the section above describes, lands with the user's decision, the regressed cells, and their numbers in the merge's message. A candidate waiting on the Mac waits on its branch; the VM's verdict alone does not promote it.
 
+After a promotion, pin bench-hashes to the new tip (`cargo update -p blake3-servil` in bench-hashes, commit the `Cargo.lock`, push): that pin is what users measure, and records are made on it.
+
 # Environment
 
 ## Where things are
 
 - `/workspace` is the host checkout of this fork (github.com/johnservil/BLAKE3, main branch `servil`, work on `candidate/<topic>` branches), mounted through sandboxfs. It persists across VM restarts.
-- `/workspace/bench-hashes` is the benchmark's own repository (github.com/johnservil/bench-hashes, branch `main`), nested inside the fork. Its `Cargo.toml` and `build.rs` point the `blake3-servil` path dependency at `..`, so edits to the fork take effect on the benchmark's next build. `/workspace/.git/info/exclude` keeps it, `benchmark-results/`, `tmp/`, `vm/`, and the token out of the fork's status.
+- `/workspace/bench-hashes` is the benchmark's own repository (github.com/johnservil/bench-hashes, branch `main`), nested inside the fork. It depends on the fork by git (`servil` branch) at the commit its `Cargo.lock` pins, so a user's `cargo run --release` measures that commit. Builds against this checkout's working tree add `--config 'patch."https://github.com/johnservil/BLAKE3".blake3-servil.path=".."'` to the cargo command; `perf_regress` and the Mac runner do it themselves and put `Cargo.lock` back. After a manual patched build, `git checkout Cargo.lock` in bench-hashes. `/workspace/.git/info/exclude` keeps it, `benchmark-results/`, `tmp/`, `vm/`, and the token out of the fork's status.
 - `/workspace/vm/` holds everything the guest needs that a restart would otherwise remove:
   - `vm/home/` is `HOME` for `git` and `cargo`: `.gitconfig` with `safe.directory = *`, John Servil's `user.name`/`user.email`, and the credential helper.
   - `vm/home/bin/gh-cred.sh` speaks the git credential protocol and reads the johnservil classic token from `/workspace/ghtokenclassic.txt` (never print that file). Both repos have `credential.helper = !sh /workspace/vm/home/bin/gh-cred.sh` (the mount drops executable bits, hence `!sh`).
@@ -154,7 +166,7 @@ A regression the user accepts, as the section above describes, lands with the us
 - Every `git` and `cargo` command takes `HOME=/workspace/vm/home`. Files on the mount show as uid 501 while the guest runs as uid 0, which is what `safe.directory` covers.
 - Build the fork: `HOME=/workspace/vm/home CARGO_TARGET_DIR=/tmp/target CC=clang-19 TMPDIR=/tmp cargo build --release`
 - Test the fork: `cargo test --release` (add `--features no_sme2` or `--features pure` for the other platform paths), and the official published vectors with `--manifest-path /workspace/test_vectors/Cargo.toml`, all with the same environment prefix.
-- Run the benchmark from `/workspace/bench-hashes`, since it writes `benchmark-results/` relative to the current directory: `cd /workspace/bench-hashes && HOME=/workspace/vm/home CARGO_TARGET_DIR=/tmp/target CC=clang-19 TMPDIR=/tmp cargo run --release -- --contenders blake3,blake3-servil`
+- Run the benchmark from `/workspace/bench-hashes`, since it writes `benchmark-results/` relative to the current directory: `cd /workspace/bench-hashes && HOME=/workspace/vm/home CARGO_TARGET_DIR=/tmp/target CC=clang-19 TMPDIR=/tmp cargo run --release -- --quick --contenders blake3,blake3-servil` measures the pinned fork commit; the same with `cargo --config 'patch."https://github.com/johnservil/BLAKE3".blake3-servil.path=".."' run ...` measures the working tree (then `git checkout Cargo.lock`). A full run is the default; `--quick` takes seconds.
 - `CARGO_TARGET_DIR=/tmp/target` is a tmpfs build cache (rebuilt after a restart); `CARGO_HOME=/usr/local/cargo`. The toolchain is rustc 1.98.1 without the `rustfmt` component, so there is no formatting check in the guest.
 - Commands for the user go on one line, with no `\` continuations.
 - Never `sleep` in commands.

@@ -224,7 +224,20 @@ listed cell also shows its 90th-percentile ratio, which the verdict ignores
 only its points; a kernel no point exercises can change unseen (4 KiB was
 added for that). `check --against <last release>` before a release.
 
+**bench-hashes depends on the fork by git** at the commit its
+`Cargo.lock` pins (what users measure). `perf_regress` and the Mac runner
+build it against a local checkout with `cargo --config
+'patch."https://github.com/johnservil/BLAKE3".blake3-servil.path=".."'`
+(bench-hashes nested in that checkout); `perf_regress` restores the
+`Cargo.lock` the patch rewrites. Records of fork commit X: pin X in
+bench-hashes (`cargo update -p blake3-servil --precise X`), run
+unpatched, commit the lock with the records.
+
 Pitfalls met (keep them in mind):
+- Records made through the runner before September 25, 2026 show the fork
+  as `dirty-…`: the fresh clone's nested bench-hashes was an untracked
+  directory in the fork's status. bench-hashes' `build.rs` now leaves it
+  out.
 - The hook runs `perf_regress` inside `git commit`, where git's GIT_*
   variables once made `git worktree add` overwrite the index being
   committed: commit a227f6d is empty. Fixed (every subprocess drops GIT_*;

@@ -3,8 +3,20 @@
 This is the `servil` branch of John Servil's fork, published as the
 crate `blake3-servil` so it links beside crates.io `blake3`. It adds SME2
 and integer + NEON kernels for AArch64, `hash_multithreaded` over a pool
-shared by every caller, and `kernel_report()`. `NOTES-servil.md`
-describes the design and its measurements; the text below is upstream's.
+shared by every caller, `hash_many` for batches of messages, and
+`kernel_report()`. To use it:
+
+```toml
+[dependencies]
+blake3-servil = { git = "https://github.com/johnservil/BLAKE3", branch = "servil" }
+```
+
+and call `blake3_servil::hash` as you would `blake3::hash`.
+[bench-hashes](https://github.com/johnservil/bench-hashes) compares it
+with the official crate and with SHA-256 on your own machine; its
+[results](https://johnservil.github.io/bench-hashes/benchmark-results/AppleM4Max.darwin25/bench-hashes.graph.svg)
+include an Apple M4 Max. `CONTRIBUTING.md` says how to work on the fork.
+The text below is upstream's.
 
 BLAKE3 is a cryptographic hash function that is:
 

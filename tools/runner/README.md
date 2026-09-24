@@ -3,7 +3,8 @@
 `runner.py` runs benchmark jobs on the Mac as the hidden standard account
 `benchrunner`, with code cloned from GitHub at the commits each job names.
 Jobs go in the checkout's `runner/jobs/`; results come back in
-`runner/results/<job>.<time>/`. Both folders stay out of git
+`runner/results/<job>.<time>/`. Benchmark jobs build bench-hashes inside
+the fork's clone, patched to use that clone at the job's `fork_commit`. Both folders stay out of git
 (`.git/info/exclude`). The job format is the docstring at the top of
 `runner.py`.
 

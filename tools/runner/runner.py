@@ -12,8 +12,11 @@ Jobs (commits as 7-40 hex digits; time_limit_seconds optional, default 1800,
 at most 7200):
 
     {"type": "benchmark", "fork_commit": "...", "bench_commit": "...",
-     "flags": ["--all", "--thorough"], "contenders": [...], "points": [...],
+     "flags": ["--all", "--quick"], "contenders": [...], "points": [...],
      "rounds": N, "trace_clocks": true}
+
+(bench-hashes before its git dependency on the fork took `--thorough` for
+a full run; later ones run in full by default and take `--quick`.)
     {"type": "perf_regress", "old_commit": "...", "new_commit": "...",
      "bench_commit": "..."}
     {"type": "example", "example": "scaling" | "host_lab", "fork_commit": "...",
@@ -39,7 +42,11 @@ HOME = Path.home()
 DONE_FILE = HOME / ".benchrunner_done"
 CARGO_BIN = HOME / ".cargo" / "bin"
 
-BENCHMARK_FLAGS = {"--all", "--thorough"}
+BENCHMARK_FLAGS = {"--all", "--quick", "--thorough"}
+# bench-hashes depends on the fork's git repository at a pinned commit; this
+# patch builds it against the fork checkout enclosing it (`..`), the one the
+# job names. Older bench-hashes, with a path dependency on `..`, ignore it.
+PATCH = 'patch."https://github.com/johnservil/BLAKE3".blake3-servil.path=".."'
 CONTENDERS = {"blake3", "ab-blake3", "blake3-servil", "blake3-servil-mt", "blake3-mt",
               "sha256", "sha256-ring", "sha256-cc", "sha1dc"}
 EXAMPLES = {"scaling", "host_lab"}
@@ -124,7 +131,7 @@ def benchmark(job, run, work, out):
         args += ["--trace-clocks", str(out / "trace.csv")]
     fork = run.checkouts(work, hex_commit(job, "fork_commit"), hex_commit(job, "bench_commit"))
     bench = fork / "bench-hashes"
-    messages = run.run(["cargo", "build", "--release", "--message-format=json-render-diagnostics"],
+    messages = run.run(["cargo", "--config", PATCH, "build", "--release", "--message-format=json-render-diagnostics"],
                        cwd=bench, capture=True)
     exes = [m["executable"] for m in map(json.loads, messages.splitlines())
             if m.get("reason") == "compiler-artifact" and m.get("executable")
