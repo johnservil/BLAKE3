@@ -119,6 +119,19 @@ in tight loops: 1000 one-block messages 11.67 ns each, 1024 only 9.45 (the
 last eight run on NEON after seven SME2 calls). Padding the remainder onto
 SME2 lost everywhere at 24 messages; open (`probe/transition`).
 
+**SME2 remainders: a penalty that follows machine state, not the
+remainder** (probe/neon-cold, jobs 125-126, September 25, 2026). With the
+same pieces for every variant, the NEON remainder after the SME2 groups
+and before them cost the same on P- and E-cores. Some sizes pay 20-28%
+on P-cores (31, 111, 215, 500-511, 1023 messages) and others with the same
+remainder do not (24, 100, 104, 200, 1016); 500 paid nothing in job 125
+and 25% in job 126. Padding the remainder into one more SME2 group
+removes the penalty where it strikes (-18 to -20%) and costs 20-70% where
+it does not, and E-core cycles: a trade. The first probe's "NEON first
+wins 19-27%" came from its harness (hash_many rebuilds its pointer table
+per call; the variants did not): compare variants built from the same
+pieces.
+
 **Idle threads cost the busy ones.** Beside eight hashing threads, eight
 idle ones: asleep, free; spinning on loads +18% (VM and Mac); `sched_yield`
 in a loop +36% on the VM, +2% on the Mac. `WFE` returns every 0.1-1.3 µs
