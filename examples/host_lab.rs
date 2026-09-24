@@ -74,15 +74,16 @@ struct Duo {
     generation: std::sync::atomic::AtomicU64,
     finished: std::sync::Mutex<usize>,
     done: std::sync::Condvar,
+    n: usize,
 }
 impl Duo {
-    fn new(big: Arc<Vec<u8>>) -> &'static Duo {
+    fn new(big: Arc<Vec<u8>>, copies: u8) -> &'static Duo {
         let duo: &'static Duo = Box::leak(Box::new(Duo {
             job: std::sync::Mutex::new(None), posted: std::sync::Condvar::new(),
             ready: std::sync::atomic::AtomicUsize::new(0), generation: std::sync::atomic::AtomicU64::new(0),
-            finished: std::sync::Mutex::new(0), done: std::sync::Condvar::new(),
+            finished: std::sync::Mutex::new(0), done: std::sync::Condvar::new(), n: copies as usize,
         }));
-        for copy in 0..2u8 {
+        for copy in 0..copies {
             // Each copy hashes its own buffer, as in the benchmark.
             let big: Arc<Vec<u8>> = Arc::new(big.iter().map(|b| b ^ (copy + 1)).collect());
             std::thread::spawn(move || {
@@ -96,7 +97,7 @@ impl Duo {
                                 if *taken & (1 << copy) == 0 {
                                     *taken |= 1 << copy;
                                     let k = *kind;
-                                    if *taken == 0b11 { *job = None; }
+                                    if *taken as usize == (1 << duo.n) - 1 { *job = None; }
                                     break k;
                                 }
                             }
@@ -106,7 +107,7 @@ impl Duo {
                     duo.ready.fetch_add(1, Ordering::AcqRel);
                     while duo.generation.load(Ordering::Acquire) == seen { std::thread::yield_now(); }
                     seen = duo.generation.load(Ordering::Acquire);
-                    work(kind, &big, &neon);
+                    work(if kind == 4 { if copy == 0 { 1 } else { 2 } } else { kind }, &big, &neon);
                     let mut f = duo.finished.lock().unwrap();
                     *f += 1;
                     duo.done.notify_all();
@@ -117,11 +118,11 @@ impl Duo {
     }
     fn run(&self, kind: u8) {
         { *self.job.lock().unwrap() = Some((kind, 0)); self.posted.notify_all(); }
-        while self.ready.load(Ordering::Acquire) < 2 { std::thread::yield_now(); }
+        while self.ready.load(Ordering::Acquire) < self.n { std::thread::yield_now(); }
         self.ready.store(0, Ordering::Release);
         self.generation.fetch_add(1, Ordering::AcqRel);
         let mut f = self.finished.lock().unwrap();
-        while *f < 2 { f = self.done.wait(f).unwrap(); }
+        while *f < self.n { f = self.done.wait(f).unwrap(); }
         *f = 0;
     }
 }
@@ -180,7 +181,14 @@ fn main() {
             black_box(&out);
         });
         println!("  3n one thread, 8 MiB NEON before each       {e:4} / {n}");
-        let duo = Duo::new(big.clone());
+        let duo = Duo::new(big.clone(), 2);
+        let trio = Duo::new(big.clone(), 3);
+        for (label, own, kind) in [("11 own 8 MiB NEON (SME2 used long before), copies SME2", 2u8, 1u8), ("12 own SME2, copies one SME2 + one NEON", 1, 4)] {
+            let (e, n) = samples(1000, &small, || { work(own, &big, &neon); duo.run(kind); });
+            println!("  {label:48} {e:4} / {n}");
+        }
+        let (e, n) = samples(1000, &small, || { work(1, &big, &neon); trio.run(1); });
+        println!("  {:48} {e:4} / {n}", "13 own SME2, three copies SME2");
         for (label, own, copies) in [("7 own 8 MiB SME2, then copies 4 KiB, block", 1u8, 0u8), ("8 own 8 MiB NEON, then copies 4 KiB, block", 2, 0), ("9 own 8 MiB SME2, then copies 8 MiB SME2, block", 1, 1), ("9n own 8 MiB NEON, then copies 8 MiB NEON, block", 2, 2), ("10 copies 8 MiB SME2 only, block", 3, 1)] {
             let (e, n) = samples(1000, &small, || {
                 if own != 3 { work(own, &big, &neon); }
