@@ -36,11 +36,10 @@ fn kernel(name: &str) -> (Kernel, usize) {
     }
 }
 
-/// (old plan, new plan) per message count 2..=16.
+/// (old plan, candidate) pairs: ten messages, three candidates, each
+/// against the old plan (repeated so each pairing is timed side by side).
 const PLANS: &[(&str, &str)] = &[
-    ("p2", "p2"), ("p2+k1", "p3"), ("p4", "p4"), ("p4+k1", "p5"), ("p4+p2", "p3+p3"),
-    ("p4+p2+k1", "p7"), ("p8", "p8"), ("p8+k1", "p9"), ("p8+p2", "p9+k1"), ("p8+p2+k1", "p9+p2"),
-    ("p8+p4", "p9+p3"), ("p8+p4+k1", "p9+p4"), ("p8+p4+p2", "p9+p5"), ("p8+p4+p2+k1", "p8+p7"), ("p8+p8", "p8+p8"),
+    ("p8+p2", "p9+k1"), ("p8+p2", "p5+p5"), ("p8+p2", "p7+p3"), ("p8+p2", "p8+p2"),
 ];
 
 /// One-block messages: CHUNK_START | CHUNK_END | ROOT, block length 64, counter 0.
