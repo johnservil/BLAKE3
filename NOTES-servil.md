@@ -857,8 +857,11 @@ generic layers (60-100 cycles at 4 KiB, 1-2%, duplicating tree logic);
 parents and root folded into k4 (about 190 cycles, 3.6%, intricate
 assembly for one size).
 
-**One SME2 call at a time per process** (`candidate/one-sme2-call`, for
-the user's decision). A process-wide flag, taken by calls large enough
+**One SME2 call at a time per process** (landed as 30c599b on the user's
+decision; the commit message lists the accepted shared-batch costs).
+The flag is a plain load and store: an atomic swap cost a batch of 24
+messages 3-9% solo, which the first review of the data missed (Mac jobs
+061/062 already showed +6% there). A process-wide flag, taken by calls large enough
 for the SME2 kernels; a call finding it taken runs NEON. Acquire/release
 ordering on the flag cost about 1 µs per call beside the SME2 kernels on
 the VM (256 one-block messages 3.43 µs against 2.50); relaxed costs
