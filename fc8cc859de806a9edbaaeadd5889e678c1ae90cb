@@ -1,0 +1,1 @@
+gate: suites pass (64/63/54 lib, 19 doc, 2 vectors); VM perf_regress against 0436e04: no regression (pre-commit); Mac perf_regress compare 0436e04 fc8cc85: no regression (runner job 064); Mac A/B jobs 065-068 solo: servil mt 512 messages 12.40 -> 9.86 ns/msg (servil 9.83), other points level; shared cells swung for servil too (unchanged code): the SME-unit coin toss
