@@ -41,7 +41,7 @@ confidence); a cell 5% slower is caught 70% of the time, 10% slower 95%,
 20% slower 100%. A check takes eight runs, about 37 s on the VM, plus the
 builds.
 
-The check measures the 25 points in POINTS, which cover the code paths
+The check measures the 29 points in POINTS, which cover the code paths
 and boundaries of both use cases at the benchmark's points; the published graph's plateau sizes add
 run time and no path.
 
@@ -69,13 +69,14 @@ CONTENDERS = [CONTROL] + SUBJECTS
 # points, and none of the plateau sizes the published graph needs (16-128
 # MiB and batches past 16384 cost 60% of a full run and exercise no path
 # that 8 MiB does not): one message on the scalar kernel (64 B, 1 KiB), the
-# hybrids (2, 3, 4, 8 KiB; 5-7 KiB are no benchmark point), the first SME2
+# hybrids (2, 3, 4, 8 KiB; a partial final chunk beside whole ones at
+# 2304, 3839, 4470, 7935 B, the q kernels), the first SME2
 # groups (16, 32 KiB), the split threshold (64 KiB), bulk (256 KiB,
 # 1 MiB), unequal subtrees (3 MiB), and the memory-resident plateau
 # (8 MiB); batches of one, of the NEON parent plans (2, 3, 8), of a first
 # and a partial SME2 group (16, 24), in bulk (64, 256), at the split
 # (1024), and over the pool (2048, 4096, 16384).
-POINTS = ["64 B", "1 KiB", "2 KiB", "3 KiB", "4 KiB", "8 KiB", "16 KiB", "32 KiB", "64 KiB",
+POINTS = ["64 B", "1 KiB", "2 KiB", "2304 B", "3 KiB", "3839 B", "4 KiB", "4470 B", "7935 B", "8 KiB", "16 KiB", "32 KiB", "64 KiB",
           "256 KiB", "1 MiB", "3 MiB", "8 MiB",
           "1", "2", "3", "8", "16", "24", "64", "256", "1024", "2048", "4096", "16384"]
 ROUNDS = 48
