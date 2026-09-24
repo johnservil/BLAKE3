@@ -19,27 +19,52 @@ fn set_qos(class: u32) {
 #[cfg(not(target_vendor = "apple"))]
 fn set_qos(_class: u32) {}
 
-/// Best of 7 batches, each about 3 ms, of `f`; ns per call.
-fn time(mut f: impl FnMut()) -> f64 {
+
+/// (P cycles, E cycles) this thread has run, from thread_selfcounts.
+#[cfg(target_vendor = "apple")]
+fn cycles() -> (u64, u64) {
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    struct Cpi { instructions: u64, cycles: u64, user: u64, system: u64 }
+    unsafe extern "C" {
+        fn thread_selfcounts(kind: u32, dst: *mut std::ffi::c_void, size: usize) -> i32;
+    }
+    let mut levels = [Cpi::default(); 2];
+    assert_eq!(unsafe { thread_selfcounts(4, levels.as_mut_ptr().cast(), std::mem::size_of_val(&levels)) }, 0);
+    (levels[0].cycles, levels[1].cycles)
+}
+#[cfg(not(target_vendor = "apple"))]
+fn cycles() -> (u64, u64) { (0, 0) }
+
+/// Best of 7 batches of `f`, each about 3 ms: (cycles per call, share of
+/// the batch's cycles on E-cores, GHz). Off Apple: ns per call, 0, 0.
+fn time(mut f: impl FnMut()) -> (f64, f64, f64) {
     let started = Instant::now();
     let mut reps = 0u64;
     while started.elapsed().as_micros() < 3000 {
         f();
         reps += 1;
     }
-    let mut best = f64::MAX;
+    let mut best = (f64::MAX, 0.0, 0.0);
     for _ in 0..7 {
+        let (p0, e0) = cycles();
         let t = Instant::now();
         for _ in 0..reps {
             f();
         }
-        best = best.min(t.elapsed().as_nanos() as f64 / reps as f64);
+        let ns = t.elapsed().as_nanos() as f64;
+        let (p1, e1) = cycles();
+        let total = ((p1 - p0) + (e1 - e0)) as f64;
+        let per_call = if total > 0.0 { total / reps as f64 } else { ns / reps as f64 };
+        if per_call < best.0 {
+            best = (per_call, if total > 0.0 { (e1 - e0) as f64 / total } else { 0.0 }, total / ns);
+        }
     }
     best
 }
 
-/// A dependent scalar chain: ns per 1000 steps. P and E differ by clock alone.
-fn reference() -> f64 {
+/// A dependent scalar chain: cycles (or ns) per 1000 steps.
+fn reference() -> (f64, f64, f64) {
     time(|| {
         let mut x = black_box(0x1234_5678_9abc_def0u64);
         for _ in 0..1000 {
@@ -47,6 +72,10 @@ fn reference() -> f64 {
         }
         black_box(x);
     })
+}
+
+fn cell(label: impl std::fmt::Display, t: (f64, f64, f64), bytes: usize) -> String {
+    format!(" {label}:{:.2}{}", t.0 / bytes as f64, if t.1 > 0.05 && t.1 < 0.95 { "~" } else { "" })
 }
 
 fn main() {
@@ -57,7 +86,7 @@ fn main() {
     let detected = Platform::detect();
     let portable = Platform::portable();
     println!("probe: ecore kernels; detected platform chunks via {}", detected.hash_many_name());
-    let classes = [("P (user-interactive)", 0x21u32), ("E (background)", 0x09u32)];
+    let classes = [("user-interactive", 0x21u32), ("utility", 0x11u32), ("background", 0x09u32)];
     let sizes = [64usize, 256, 512, 1024, 2048, 3072, 4096, 6144, 8192, 12288, 16384, 32768, 65536];
     for round in 0..3 {
         for &(name, class) in &classes {
@@ -67,34 +96,30 @@ fn main() {
             while t.elapsed().as_millis() < 30 {
                 black_box(reference());
             }
-            println!("\nround {round} · {name} · reference {:.0} ns / 1000 steps", reference());
-            let mut line = String::from("  NEON chunks, ns/B by count:");
+            let r = reference();
+            println!("\nround {round} · {name} · E share {:.2} · {:.2} GHz · reference {:.0} cycles / 1000 steps (cycles per byte below; ~ marks a mixed batch)", r.1, r.2, r.0);
+            let mut line = String::from("  NEON chunks by count:");
             for n in 1..=16 {
-                let ns = time(|| unsafe_many(&neon, &chunks[..n], &mut out));
-                line += &format!(" {n}:{:.3}", ns / (n * 1024) as f64);
+                line += &cell(n, time(|| unsafe_many(&neon, &chunks[..n], &mut out)), n * 1024);
             }
             println!("{line}");
-            let mut line = String::from("  detected platform chunks, ns/B:");
+            let mut line = String::from("  detected platform chunks:");
             for n in [16, 32, 64, 128] {
-                let ns = time(|| unsafe_many(&detected, &chunks[..n], &mut out));
-                line += &format!(" {n}:{:.3}", ns / (n * 1024) as f64);
+                line += &cell(n, time(|| unsafe_many(&detected, &chunks[..n], &mut out)), n * 1024);
             }
             println!("{line}");
-            let mut line = String::from("  portable chunks, ns/B:");
+            let mut line = String::from("  portable chunks:");
             for n in [1, 4, 16] {
-                let ns = time(|| unsafe_many(&portable, &chunks[..n], &mut out));
-                line += &format!(" {n}:{:.3}", ns / (n * 1024) as f64);
+                line += &cell(n, time(|| unsafe_many(&portable, &chunks[..n], &mut out)), n * 1024);
             }
             println!("{line}");
-            let mut line = String::from("  hash(), ns/B by size:");
+            let mut line = String::from("  hash() by size:");
             for &len in &sizes {
-                let ns = time(|| {
-                    black_box(blake3_servil::hash(black_box(&data[..len])));
-                });
-                line += &format!(" {len}:{:.3}", ns / len as f64);
+                line += &cell(len, time(|| { black_box(blake3_servil::hash(black_box(&data[..len]))); }), len);
             }
             println!("{line}");
-            println!("  reference after: {:.0} ns / 1000 steps", reference());
+            let r = reference();
+            println!("  after: E share {:.2} · {:.2} GHz · reference {:.0}", r.1, r.2, r.0);
         }
     }
 }
