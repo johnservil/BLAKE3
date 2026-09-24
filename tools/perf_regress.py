@@ -108,21 +108,27 @@ pub fn kernel_report_many_multithreaded() -> KernelReport {
 '''
 
 
+# Every command runs in this environment: this one without git's repository
+# variables. Inside a pre-commit hook git sets GIT_INDEX_FILE (for
+# `git commit PATH...`, a temporary index that becomes the commit) and
+# GIT_DIR; `git worktree add` would check out into that index, committing
+# HEAD's tree, and bench-hashes' build script would run git against the
+# fork's repository.
+ENV = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+
+
 def git(*args):
-    return subprocess.run(["git", *args], cwd=ROOT, check=True, stdout=subprocess.PIPE, text=True).stdout.strip()
+    return subprocess.run(["git", *args], cwd=ROOT, env=ENV, check=True, stdout=subprocess.PIPE,
+                          text=True).stdout.strip()
 
 
-# The environment for builds: this one without git's repository variables.
-# Inside a pre-commit hook git sets GIT_DIR and GIT_INDEX_FILE to the fork's
-# repository, and bench-hashes' build script runs git in its own.
-BUILD_ENV = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
 
 
 def build_bench(bench):
     """Build bench-hashes from its own directory, where its .cargo/config.toml
     (target-cpu=native) applies, and return the executable's path."""
     out = subprocess.run(["cargo", "build", "--release", "--message-format=json-render-diagnostics"],
-                         cwd=bench, env=BUILD_ENV, check=True, stdout=subprocess.PIPE, text=True).stdout
+                         cwd=bench, env=ENV, check=True, stdout=subprocess.PIPE, text=True).stdout
     exes = [m["executable"] for m in map(json.loads, out.splitlines())
             if m.get("reason") == "compiler-artifact" and m.get("executable")
             and m["target"]["name"] == "bench-hashes"]
@@ -132,7 +138,7 @@ def build_bench(bench):
 
 def target_dir():
     meta = subprocess.run(["cargo", "metadata", "--format-version", "1", "--no-deps"], cwd=ROOT / "bench-hashes",
-                          env=BUILD_ENV, check=True, stdout=subprocess.PIPE, text=True).stdout
+                          env=ENV, check=True, stdout=subprocess.PIPE, text=True).stdout
     return Path(json.loads(meta)["target_directory"])
 
 
@@ -185,7 +191,7 @@ def run(exe):
     """One run in a scratch directory; {"contender|scenario|use_case|point": 5th percentile}."""
     with tempfile.TemporaryDirectory() as tmp:
         subprocess.run([exe, "--contenders", ",".join(CONTENDERS), "--points", ",".join(POINTS),
-                        "--rounds", str(ROUNDS)], cwd=tmp, check=True,
+                        "--rounds", str(ROUNDS)], cwd=tmp, env=ENV, check=True,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         found = list(Path(tmp).glob("benchmark-results/*/bench-hashes.samples.tsv"))
         assert len(found) == 1, f"expected one samples file, found {found}"

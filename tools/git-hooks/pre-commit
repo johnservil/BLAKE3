@@ -13,8 +13,16 @@ code=$(git diff --cached --name-only -- src c build.rs Cargo.toml Cargo.lock)
 [ -z "$code" ] && exit 0
 # PyPy where installed: the scripts use the standard library alone.
 python=$(command -v pypy3 || command -v python3)
+# The tree being committed, before and after: the check must leave it alone
+# (a check that rewrote the index once committed HEAD's tree instead).
+tree=$(git write-tree)
 "$python" "$(git rev-parse --show-toplevel)/tools/perf_regress.py" check
-case $? in
+verdict=$?
+if [ "$(git write-tree)" != "$tree" ]; then
+    echo "pre-commit: the performance check changed the index being committed; commit aborted."
+    exit 1
+fi
+case $verdict in
 0) exit 0 ;;
 2) echo "pre-commit: the performance check gave no verdict (above); committing. Check again on a quiet machine."; exit 0 ;;
 *) echo "pre-commit: performance regression; commit aborted. After review, git commit --no-verify overrides."; exit 1 ;;
