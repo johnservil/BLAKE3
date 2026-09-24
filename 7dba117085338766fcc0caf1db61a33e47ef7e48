@@ -1,0 +1,1 @@
+gate: suites pass (67/66/56 lib, 19 doc, 2 vectors, bench 7) on this tree, and 66 lib with the system GCC 12 (no SME2); VM perf_regress against bff617e: no regression (pre-commit check); Mac perf_regress compare bff617e 7dba117: no regression (runner job 113, bench b628f65)
