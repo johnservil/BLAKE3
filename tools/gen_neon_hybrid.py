@@ -224,7 +224,12 @@ class Scalar:
 
     def store(self, outp):
         s, o = self.state, 32 * self.slot
-        return [f"stp {s[i]}, {s[i + 1]}, [{outp}, #{o + 4 * i}]" for i in range(0, 8, 2)]
+        # A 32-bit stp reaches 252 bytes; slots 8 and up go through x4
+        # (free wherever a kernel stores its chaining values).
+        pre = []
+        if o + 28 > 252:
+            pre, outp, o = [f"add x4, {outp}, #{o}"], "x4", 0
+        return pre + [f"stp {s[i]}, {s[i + 1]}, [{outp}, #{o + 4 * i}]" for i in range(0, 8, 2)]
 
 
 class Unit:
@@ -1012,7 +1017,11 @@ def build():
         "q2": kernel("blake3_hybrid_q2", sc1(2), [lone_pair((0, 1))], partial=True),
         "q3": kernel("blake3_hybrid_q3", sc2(0, 3), [lone_pair((1, 2))], partial=True),
         "q4": kernel("blake3_hybrid_q4", sc1(4), [pair(0, (0, 1)), pair(1, (2, 3))], partial=True),
+        "q5": kernel("blake3_hybrid_q5", sc2(0, 5), [pair(0, (1, 2)), pair(1, (3, 4))], partial=True),
+        "q6": kernel("blake3_hybrid_q6", sc1(6), [quad(0, (0, 1, 2, 3)), pair(1, (4, 5))], partial=True),
         "q7": kernel("blake3_hybrid_q7", sc2(0, 7), [quad(0, (1, 2, 3, 4)), pair(1, (5, 6))], partial=True),
+        "q8": kernel("blake3_hybrid_q8", sc1(8), [quad(0, (0, 1, 2, 3)), quad(1, (4, 5, 6, 7))], partial=True),
+        "q9": kernel("blake3_hybrid_q9", sc2(0, 9), [quad(0, (1, 2, 3, 4)), quad(1, (5, 6, 7, 8))], partial=True),
     }
 
 

@@ -1115,14 +1115,14 @@ fn test_kernel_reports() {
     }
 }
 
-/// Every length from two whole chunks to eight, against the reference
+/// Every length from two whole chunks to seventeen, against the reference
 /// implementation: the whole-plus-partial kernels and the plans around
 /// them, on this machine's platform.
 #[test]
-fn test_every_length_2_to_8_chunks_against_reference() {
-    let mut input = vec![0u8; 8 * CHUNK_LEN];
+fn test_every_length_2_to_17_chunks_against_reference() {
+    let mut input = vec![0u8; 17 * CHUNK_LEN];
     paint_test_input(&mut input);
-    for len in 2 * CHUNK_LEN..=8 * CHUNK_LEN {
+    for len in 2 * CHUNK_LEN..=17 * CHUNK_LEN {
         let mut reference = reference_impl::Hasher::new();
         reference.update(&input[..len]);
         let mut want = [0u8; OUT_LEN];

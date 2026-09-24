@@ -188,6 +188,42 @@ mod asm {
             out: *mut u8,
             partial: u64,
         );
+        pub fn blake3_hybrid_q5(
+            inputs: *const *const u8,
+            blocks: u64,
+            key: *const u32,
+            counter: u64,
+            packed_flags: u64,
+            out: *mut u8,
+            partial: u64,
+        );
+        pub fn blake3_hybrid_q6(
+            inputs: *const *const u8,
+            blocks: u64,
+            key: *const u32,
+            counter: u64,
+            packed_flags: u64,
+            out: *mut u8,
+            partial: u64,
+        );
+        pub fn blake3_hybrid_q8(
+            inputs: *const *const u8,
+            blocks: u64,
+            key: *const u32,
+            counter: u64,
+            packed_flags: u64,
+            out: *mut u8,
+            partial: u64,
+        );
+        pub fn blake3_hybrid_q9(
+            inputs: *const *const u8,
+            blocks: u64,
+            key: *const u32,
+            counter: u64,
+            packed_flags: u64,
+            out: *mut u8,
+            partial: u64,
+        );
         pub fn blake3_hybrid_p2(
             inputs: *const *const u8,
             blocks: u64,
@@ -413,22 +449,38 @@ pub unsafe fn hash_chunk(
 /// [`Kernel`] and the partial chunk's `blocks | last_len << 8`.
 type PartialKernel = unsafe extern "C" fn(*const *const u8, u64, *const u32, u64, u64, *mut u8, u64);
 
-/// The q kernel for `n` whole chunks plus a partial chunk, where one exists.
-pub fn partial_kernel(n: usize) -> Option<PartialKernel> {
+/// The q kernel for `n` whole chunks plus a partial chunk, `n` in 2..=9.
+fn partial_kernel(n: usize) -> PartialKernel {
     match n {
-        2 => Some(asm::blake3_hybrid_q2),
-        3 => Some(asm::blake3_hybrid_q3),
-        4 => Some(asm::blake3_hybrid_q4),
-        7 => Some(asm::blake3_hybrid_q7),
-        _ => None,
+        2 => asm::blake3_hybrid_q2,
+        3 => asm::blake3_hybrid_q3,
+        4 => asm::blake3_hybrid_q4,
+        5 => asm::blake3_hybrid_q5,
+        6 => asm::blake3_hybrid_q6,
+        7 => asm::blake3_hybrid_q7,
+        8 => asm::blake3_hybrid_q8,
+        9 => asm::blake3_hybrid_q9,
+        _ => panic!("no q kernel for {n} whole chunks"),
     }
 }
 
+/// Whether [`hash_chunks_with_partial`] takes `n` whole chunks: 2 through
+/// 15 but 10 (from 16 the SME2 kernels or a second call take the whole
+/// chunks). Ten whole chunks are one k10 call, the kernel with the fewest
+/// cycles per byte; every split into a lead plan and a q kernel costs more
+/// than the partial chunk after it (VM, 10 KiB + 500 B: 3097 ns against
+/// 2790), where 11 to 15 gain 1-11%.
+pub fn partial_covers(n: usize) -> bool {
+    (2..GROUP).contains(&n) && n != 10
+}
+
 /// The chaining values of `chunks` (whole, at `counter` on) and of
-/// `partial` (1 to 1023 bytes, the chunk after them) into `out`, in one
-/// kernel call: the partial chunk runs on the scalar units beside the
-/// whole ones. Requires a kernel for `chunks.len()` ([`partial_kernel`]),
-/// room in `out` for `chunks.len() + 1` values, and the SHA-3 extension.
+/// `partial` (1 to 1023 bytes, the chunk after them) into `out`: the last
+/// up to nine whole chunks and the partial chunk in one q kernel call, the
+/// partial chunk on the scalar units beside them; any whole chunks before
+/// those through the usual plans. Requires [`partial_covers`] for
+/// `chunks.len()`, room in `out` for `chunks.len() + 1` values, and the
+/// SHA-3 extension.
 pub unsafe fn hash_chunks_with_partial(
     chunks: &[&[u8; CHUNK_LEN]],
     partial: &[u8],
@@ -439,17 +491,38 @@ pub unsafe fn hash_chunks_with_partial(
     flags_end: u8,
     out: &mut [u8],
 ) {
-    let n = chunks.len();
-    let kernel = partial_kernel(n).expect("a q kernel for this many whole chunks");
+    assert!(partial_covers(chunks.len()), "2 to 15 whole chunks");
     assert!(!partial.is_empty() && partial.len() < CHUNK_LEN, "a partial chunk holds 1 to 1023 bytes");
-    assert!(out.len() >= (n + 1) * OUT_LEN);
+    assert!(out.len() >= (chunks.len() + 1) * OUT_LEN);
+    // Ten whole chunks and more: the first ones through the usual plans,
+    // so the q kernel takes the last nine or fewer.
+    let lead = chunks.len().saturating_sub(9);
+    if lead > 0 {
+        let packed = flags as u64 | (flags_start as u64) << 8 | (flags_end as u64) << 16 | (BLOCK_LEN as u64) << 24;
+        unsafe {
+            run_plan(
+                CHUNK_PLANS[lead],
+                &CHUNK_KERNELS,
+                chunks.as_ptr() as *const *const u8,
+                CHUNK_LEN / BLOCK_LEN,
+                key,
+                counter,
+                1,
+                packed,
+                out,
+            );
+        }
+    }
+    let (chunks, counter, out) = (&chunks[lead..], counter + lead as u64, &mut out[lead * OUT_LEN..]);
+    let n = chunks.len();
+    let kernel = partial_kernel(n);
     let blocks = partial.len().div_ceil(BLOCK_LEN);
     let last_len = partial.len() - (blocks - 1) * BLOCK_LEN;
     // The partial chunk as whole blocks: its bytes, then zeros to the end
     // of its last block.
     let mut padded = [0u8; CHUNK_LEN];
     padded[..partial.len()].copy_from_slice(partial);
-    let mut table = [core::ptr::null::<u8>(); 8];
+    let mut table = [core::ptr::null::<u8>(); 10];
     for (slot, chunk) in table.iter_mut().zip(chunks) {
         *slot = chunk.as_ptr();
     }
@@ -793,7 +866,7 @@ mod test {
         if !sha3_detected() {
             return;
         }
-        let mut input = [0u8; 8 * CHUNK_LEN];
+        let mut input = [0u8; 16 * CHUNK_LEN];
         crate::test::paint_test_input(&mut input);
         let key: CVWords = core::array::from_fn(|i| 0x0102_0304u32.wrapping_mul(i as u32 + 7));
         let chunk_cv = |bytes: &[u8], key: &CVWords, counter: u64, flags: u8| {
@@ -814,7 +887,7 @@ mod test {
             }
             crate::platform::le_bytes_from_words_32(&cv)
         };
-        for n in (1..=7).filter(|&n| partial_kernel(n).is_some()) {
+        for n in (1..16).filter(|&n| partial_covers(n)) {
             let chunks: Vec<&[u8; CHUNK_LEN]> =
                 input[..n * CHUNK_LEN].chunks_exact(CHUNK_LEN).map(|c| c.try_into().unwrap()).collect();
             for len in 1..CHUNK_LEN {

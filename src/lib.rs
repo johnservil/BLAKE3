@@ -757,7 +757,7 @@ fn compress_chunks_parallel(
     #[cfg(blake3_neon_hybrid)]
     if !chunks_exact.remainder().is_empty()
         && hybrids
-        && neon_hybrid::partial_kernel(chunks_array.len()).is_some()
+        && neon_hybrid::partial_covers(chunks_array.len())
         && neon_hybrid::sha3_detected()
     {
         // Safe: the kernel exists for this count and the CPU has SHA-3.
