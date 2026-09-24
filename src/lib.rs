@@ -747,6 +747,27 @@ fn compress_chunks_parallel(
     for chunk in &mut chunks_exact {
         chunks_array.push(chunk.try_into().unwrap());
     }
+    // Whole chunks and a partial one, on the NEON hybrids: where a q kernel
+    // covers the count, the partial chunk runs on the scalar units beside
+    // the whole chunks rather than after them.
+    #[cfg(blake3_neon_hybrid)]
+    let hybrids = matches!(platform, Platform::NEON);
+    #[cfg(blake3_sme2)]
+    let hybrids = hybrids || matches!(platform, Platform::SME2);
+    #[cfg(blake3_neon_hybrid)]
+    if !chunks_exact.remainder().is_empty()
+        && hybrids
+        && neon_hybrid::partial_kernel(chunks_array.len()).is_some()
+        && neon_hybrid::sha3_detected()
+    {
+        // Safe: the kernel exists for this count and the CPU has SHA-3.
+        unsafe {
+            neon_hybrid::hash_chunks_with_partial(
+                &chunks_array, chunks_exact.remainder(), key, chunk_counter, flags, CHUNK_START, CHUNK_END, out,
+            );
+        }
+        return chunks_array.len() + 1;
+    }
     platform.hash_many(
         &chunks_array,
         key,

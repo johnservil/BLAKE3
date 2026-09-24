@@ -1114,3 +1114,19 @@ fn test_kernel_reports() {
         assert!(!kernel.name.is_empty() && !kernel.why.is_empty());
     }
 }
+
+/// Every length from two whole chunks to eight, against the reference
+/// implementation: the whole-plus-partial kernels and the plans around
+/// them, on this machine's platform.
+#[test]
+fn test_every_length_2_to_8_chunks_against_reference() {
+    let mut input = vec![0u8; 8 * CHUNK_LEN];
+    paint_test_input(&mut input);
+    for len in 2 * CHUNK_LEN..=8 * CHUNK_LEN {
+        let mut reference = reference_impl::Hasher::new();
+        reference.update(&input[..len]);
+        let mut want = [0u8; OUT_LEN];
+        reference.finalize(&mut want);
+        assert_eq!(crate::hash(&input[..len]).as_bytes(), &want, "len = {len}");
+    }
+}

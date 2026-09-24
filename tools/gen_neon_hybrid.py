@@ -78,6 +78,7 @@ F_MSG = F_DSPILL + 64                 # per unit: 16 transposed message vectors 
 F_PTR = F_MSG + 2 * 256               # running input pointers, one per input (8 bytes each)
 MAX_INPUTS = 10
 F_REMAIN = F_PTR + 8 * MAX_INPUTS     # blocks remaining, for kernels whose x1 carries a pointer
+F_PART = F_REMAIN + 8                 # a partial lane's blocks (byte 0) and final block length (byte 1)
 FRAME = F_REMAIN + 16
 # `stp q, q, [sp, #imm]` reaches 1008; every paired store must stay below.
 assert F_MSG + 2 * 256 - 32 <= 1008, F_MSG
@@ -756,8 +757,14 @@ def lean_kernel(name, sc, last):
     return L
 
 
-def kernel(name, scalars, units):
+def kernel(name, scalars, units, partial=False):
+    """A kernel over whole chunks. With `partial`, the last scalar hashes a
+    partial chunk: its block count and final block length arrive in x6 as
+    `blocks | last_len << 8` (blocks in 1..=the others' count, last_len in
+    1..=64, its input read as whole zero-padded blocks), and it runs beside
+    the others for its own blocks only; a second loop finishes the rest."""
     if not units and len(scalars) == 1:
+        assert not partial
         return lean_kernel(name, scalars[0], last="x25")
     n_inputs = len(scalars) + sum(len(u.slots) for u in units)
     assert n_inputs <= MAX_INPUTS
@@ -773,6 +780,8 @@ def kernel(name, scalars, units):
     e(f"str x4, [sp, #{F_PACKED}]")
     e(f"str x1, [sp, #{F_TOTAL}]")
     e(f"str x5, [sp, #{F_OUT}]")
+    if partial:
+        e(f"str x6, [sp, #{F_PART}]")
     # Running input pointers, advanced by one block per iteration: in a
     # register where the scalar has one, in the frame otherwise.
     pregs = {sc.slot: sc.preg for sc in scalars if sc.preg}
@@ -825,77 +834,127 @@ def kernel(name, scalars, units):
     for i in range(n_inputs):
         if pregs.get(i) == "x0":
             e(f"ldr x0, [x0, #{8 * i}]")
-    e(f"{name}_loop:")
-    e(f"ldr w3, [sp, #{F_PACKED}]")
-    e(f"ldr x4, [sp, #{F_TOTAL}]")
-    if x1_is_pointer:
-        e(f"ldr x5, [sp, #{F_REMAIN}]")
     rem = "x5" if x1_is_pointer else "x1"
-    # Block flags into w2 = flags | (first ? start : 0) | (last ? end : 0).
-    # w3 holds the packed flags and w4 the total; both are dead afterwards.
-    e("and w2, w3, #0xff")
-    e(f"cmp {rem}, x4")
-    e("ubfx w4, w3, #8, #8")
-    e("csel w4, w4, wzr, eq")
-    e("orr w2, w2, w4")
-    e(f"cmp {rem}, #1")
-    e("ubfx w3, w3, #16, #8")
-    e("csel w3, w3, wzr, eq")
-    e("orr w2, w2, w3")
-    if units:
-        # c and d rows of every unit are dead here: use them as transposition temps.
-        # c and d rows of every unit are dead here: use them as transposition
-        # temps. A unit with register-resident messages must not have its
-        # message registers used as temps.
-        temps = [n for u in units for n in u.state[8:]]
-        if not any(u.msg_regs for u in units):
-            temps += [int(units[0].mtemp[1:]), int(units[0].dtemp[1:])]
-            if isinstance(units[0], Quad):
-                temps.append(int(units[0].rtemp[1:]))
-        for u in units:
-            L += u.transpose(temps)
-    # Block length into w3: the packed final length on the last block, 64
-    # before it. The transposes above used x3/x4 as pointer temps, so this
-    # comes after them; the flags in w2 survive.
-    e(f"ldr w3, [sp, #{F_PACKED}]")
-    e("lsr w3, w3, #24")
-    e("mov w4, #64")
-    e(f"cmp {rem}, #1")
-    e("csel w3, w3, w4, eq")
-    if units:
-        for u in units:
-            L += u.start_rows("w2", "w3")
-    for sc in scalars:
-        L += sc.block_start("w2", "w3")
-    for r in range(7):
-        for quads, base in ((COLS, 0), (DIAGS, 8)):
-            lists = [sc.half_step(quads, SCHEDULE[r], base) for sc in scalars]
-            vec = []
+    part = scalars[-1] if partial else None
+
+    def body(label, lanes):
+        """One block for the scalar lanes `lanes` and every unit, from the
+        loop label to the decrement of the blocks remaining (flags set)."""
+        e(f"{label}:")
+        e(f"ldr w3, [sp, #{F_PACKED}]")
+        e(f"ldr x4, [sp, #{F_TOTAL}]")
+        if x1_is_pointer:
+            e(f"ldr x5, [sp, #{F_REMAIN}]")
+        # Block flags into w2 = flags | (first ? start : 0) | (last ? end : 0).
+        # w3 holds the packed flags and w4 the total; both are dead afterwards.
+        e("and w2, w3, #0xff")
+        e(f"cmp {rem}, x4")
+        e("ubfx w4, w3, #8, #8")
+        e("csel w4, w4, wzr, eq")
+        e("orr w2, w2, w4")
+        e(f"cmp {rem}, #1")
+        e("ubfx w3, w3, #16, #8")
+        e("csel w3, w3, wzr, eq")
+        e("orr w2, w2, w3")
+        if units:
+            # c and d rows of every unit are dead here: use them as transposition
+            # temps. A unit with register-resident messages must not have its
+            # message registers used as temps.
+            temps = [n for u in units for n in u.state[8:]]
+            if not any(u.msg_regs for u in units):
+                temps += [int(units[0].mtemp[1:]), int(units[0].dtemp[1:])]
+                if isinstance(units[0], Quad):
+                    temps.append(int(units[0].rtemp[1:]))
             for u in units:
-                vec += u.half_step(quads, SCHEDULE[r], base)
-            if vec:
-                lists.append(vec)
-            L += interleave(lists)
-    for sc in scalars:
-        L += sc.block_end()
-    for u in units:
-        L += u.block_end()
-    for i in range(n_inputs):
-        if i in pregs:
-            e(f"add {pregs[i]}, {pregs[i]}, #64")
+                L.extend(u.transpose(temps))
+        # Block length into w3: the packed final length on the last block, 64
+        # before it. The transposes above used x3/x4 as pointer temps, so this
+        # comes after them; the flags in w2 survive.
+        e(f"ldr w3, [sp, #{F_PACKED}]")
+        e("lsr w3, w3, #24")
+        e("mov w4, #64")
+        e(f"cmp {rem}, #1")
+        e("csel w3, w3, w4, eq")
+        for u in units:
+            L.extend(u.start_rows("w2", "w3"))
+        for sc in lanes:
+            if sc is part:
+                # The partial lane's own flags and length, into w2 and w3:
+                # start on the first block as for the others, end and the
+                # final length on its own last block, where the blocks done
+                # so far (total - remaining) are one short of its count.
+                e(f"ldr w3, [sp, #{F_PACKED}]")
+                e("and w2, w3, #0xff")
+                e(f"ldr x4, [sp, #{F_TOTAL}]")
+                if x1_is_pointer:
+                    e(f"ldr x5, [sp, #{F_REMAIN}]")
+                e(f"cmp {rem}, x4")
+                e("ubfx w4, w3, #8, #8")
+                e("csel w4, w4, wzr, eq")
+                e("orr w2, w2, w4")
+                e(f"ldrb w4, [sp, #{F_PART}]")
+                e(f"add x4, x4, {rem}")
+                e(f"ldr x5, [sp, #{F_TOTAL}]")
+                e("add x5, x5, #1")
+                e("cmp x4, x5")
+                e("ubfx w4, w3, #16, #8")
+                e("csel w4, w4, wzr, eq")
+                e("orr w2, w2, w4")
+                e(f"ldrb w4, [sp, #{F_PART + 1}]")
+                e("mov w5, #64")
+                e("csel w3, w4, w5, eq")
+            L.extend(sc.block_start("w2", "w3"))
+        for r in range(7):
+            for quads, base in ((COLS, 0), (DIAGS, 8)):
+                lists = [sc.half_step(quads, SCHEDULE[r], base) for sc in lanes]
+                vec = []
+                for u in units:
+                    vec += u.half_step(quads, SCHEDULE[r], base)
+                if vec:
+                    lists.append(vec)
+                L.extend(interleave(lists))
+        for sc in lanes:
+            L.extend(sc.block_end())
+        for u in units:
+            L.extend(u.block_end())
+        advanced = [sc.slot for sc in lanes] + [slot for u in units for slot in u.slots]
+        for i in sorted(advanced):
+            if i in pregs:
+                e(f"add {pregs[i]}, {pregs[i]}, #64")
+            else:
+                e(f"ldr x3, [sp, #{F_PTR + 8 * i}]")
+                e("add x3, x3, #64")
+                e(f"str x3, [sp, #{F_PTR + 8 * i}]")
+        if x1_is_pointer:
+            e(f"ldr x3, [sp, #{F_REMAIN}]")
+            e("subs x3, x3, #1")
+            e(f"str x3, [sp, #{F_REMAIN}]")
         else:
-            e(f"ldr x3, [sp, #{F_PTR + 8 * i}]")
-            e("add x3, x3, #64")
-            e(f"str x3, [sp, #{F_PTR + 8 * i}]")
-    if x1_is_pointer:
-        e(f"ldr x3, [sp, #{F_REMAIN}]")
-        e("subs x3, x3, #1")
-        e(f"str x3, [sp, #{F_REMAIN}]")
+            e("subs x1, x1, #1")
+
+    if not partial:
+        body(f"{name}_loop", scalars)
+        e(f"b.ne {name}_loop")
     else:
-        e("subs x1, x1, #1")
-    e(f"b.ne {name}_loop")
+        # Loop 1: every lane, until the partial lane's last block. Blocks
+        # done = total - remaining; the partial lane is done when that
+        # equals its count, and its chaining value goes out then.
+        after = "x3" if x1_is_pointer else "x1"
+        body(f"{name}_loop", scalars)
+        e(f"ldr x4, [sp, #{F_TOTAL}]")
+        e(f"sub x4, x4, {after}")
+        e(f"ldrb w5, [sp, #{F_PART}]")
+        e("cmp x4, x5")
+        e(f"b.ne {name}_loop")
+        e(f"ldr x2, [sp, #{F_OUT}]")
+        L.extend(part.store("x2"))
+        e(f"cbz {after}, {name}_done")
+        # Loop 2: the other lanes' remaining blocks.
+        body(f"{name}_rest", scalars[:-1])
+        e(f"b.ne {name}_rest")
+        e(f"{name}_done:")
     e(f"ldr x2, [sp, #{F_OUT}]")
-    for sc in scalars:
+    for sc in (scalars[:-1] if partial else scalars):
         L += sc.store("x2")
     if units:
         temps = [n for u in units for n in u.state[8:]] + [int(units[0].mtemp[1:]), int(units[0].dtemp[1:])]
@@ -948,6 +1007,12 @@ def build():
         "k8": kernel("blake3_hybrid_k8", [], [quad(0, (0, 1, 2, 3)), quad(1, (4, 5, 6, 7))]),
         "k9": kernel("blake3_hybrid_k9", sc1(0), [quad(0, (1, 2, 3, 4)), quad(1, (5, 6, 7, 8))]),
         "k10": kernel("blake3_hybrid_k10", sc2(0, 1), [quad(0, (2, 3, 4, 5)), quad(1, (6, 7, 8, 9))]),
+        # q<n>: n whole chunks and, in the last slot, a partial chunk on the
+        # scalar side, which finishes early; the others run on alone.
+        "q2": kernel("blake3_hybrid_q2", sc1(2), [lone_pair((0, 1))], partial=True),
+        "q3": kernel("blake3_hybrid_q3", sc2(0, 3), [lone_pair((1, 2))], partial=True),
+        "q4": kernel("blake3_hybrid_q4", sc1(4), [pair(0, (0, 1)), pair(1, (2, 3))], partial=True),
+        "q7": kernel("blake3_hybrid_q7", sc2(0, 7), [quad(0, (1, 2, 3, 4)), pair(1, (5, 6))], partial=True),
     }
 
 

@@ -148,6 +148,46 @@ mod asm {
             packed_flags: u64,
             out: *mut u8,
         );
+        /// q<n>: n whole chunks and a partial chunk, `n + 1` inputs. The
+        /// partial chunk is the last input, read as `blocks` whole blocks
+        /// (zero-padded), its final block recording `last_len` bytes;
+        /// `partial` is `blocks | last_len << 8`.
+        pub fn blake3_hybrid_q2(
+            inputs: *const *const u8,
+            blocks: u64,
+            key: *const u32,
+            counter: u64,
+            packed_flags: u64,
+            out: *mut u8,
+            partial: u64,
+        );
+        pub fn blake3_hybrid_q3(
+            inputs: *const *const u8,
+            blocks: u64,
+            key: *const u32,
+            counter: u64,
+            packed_flags: u64,
+            out: *mut u8,
+            partial: u64,
+        );
+        pub fn blake3_hybrid_q4(
+            inputs: *const *const u8,
+            blocks: u64,
+            key: *const u32,
+            counter: u64,
+            packed_flags: u64,
+            out: *mut u8,
+            partial: u64,
+        );
+        pub fn blake3_hybrid_q7(
+            inputs: *const *const u8,
+            blocks: u64,
+            key: *const u32,
+            counter: u64,
+            packed_flags: u64,
+            out: *mut u8,
+            partial: u64,
+        );
         pub fn blake3_hybrid_p2(
             inputs: *const *const u8,
             blocks: u64,
@@ -365,6 +405,65 @@ pub unsafe fn hash_chunk(
             packed,
             out.as_mut_ptr(),
             last.as_ptr(),
+        );
+    }
+}
+
+/// A kernel for whole chunks plus a partial chunk: the arguments of
+/// [`Kernel`] and the partial chunk's `blocks | last_len << 8`.
+type PartialKernel = unsafe extern "C" fn(*const *const u8, u64, *const u32, u64, u64, *mut u8, u64);
+
+/// The q kernel for `n` whole chunks plus a partial chunk, where one exists.
+pub fn partial_kernel(n: usize) -> Option<PartialKernel> {
+    match n {
+        2 => Some(asm::blake3_hybrid_q2),
+        3 => Some(asm::blake3_hybrid_q3),
+        4 => Some(asm::blake3_hybrid_q4),
+        7 => Some(asm::blake3_hybrid_q7),
+        _ => None,
+    }
+}
+
+/// The chaining values of `chunks` (whole, at `counter` on) and of
+/// `partial` (1 to 1023 bytes, the chunk after them) into `out`, in one
+/// kernel call: the partial chunk runs on the scalar units beside the
+/// whole ones. Requires a kernel for `chunks.len()` ([`partial_kernel`]),
+/// room in `out` for `chunks.len() + 1` values, and the SHA-3 extension.
+pub unsafe fn hash_chunks_with_partial(
+    chunks: &[&[u8; CHUNK_LEN]],
+    partial: &[u8],
+    key: &CVWords,
+    counter: u64,
+    flags: u8,
+    flags_start: u8,
+    flags_end: u8,
+    out: &mut [u8],
+) {
+    let n = chunks.len();
+    let kernel = partial_kernel(n).expect("a q kernel for this many whole chunks");
+    assert!(!partial.is_empty() && partial.len() < CHUNK_LEN, "a partial chunk holds 1 to 1023 bytes");
+    assert!(out.len() >= (n + 1) * OUT_LEN);
+    let blocks = partial.len().div_ceil(BLOCK_LEN);
+    let last_len = partial.len() - (blocks - 1) * BLOCK_LEN;
+    // The partial chunk as whole blocks: its bytes, then zeros to the end
+    // of its last block.
+    let mut padded = [0u8; CHUNK_LEN];
+    padded[..partial.len()].copy_from_slice(partial);
+    let mut table = [core::ptr::null::<u8>(); 8];
+    for (slot, chunk) in table.iter_mut().zip(chunks) {
+        *slot = chunk.as_ptr();
+    }
+    table[n] = padded.as_ptr();
+    let packed = flags as u64 | (flags_start as u64) << 8 | (flags_end as u64) << 16 | (BLOCK_LEN as u64) << 24;
+    unsafe {
+        kernel(
+            table.as_ptr(),
+            (CHUNK_LEN / BLOCK_LEN) as u64,
+            key.as_ptr(),
+            counter,
+            packed,
+            out.as_mut_ptr(),
+            blocks as u64 | (last_len as u64) << 8,
         );
     }
 }
@@ -686,6 +785,52 @@ mod test {
     /// hash_chunk for every input length 0..=1024 (every block count and
     /// every final block length), with root and non-root flags, against
     /// the portable compressor run block by block.
+    /// Every q kernel, every partial length: the whole chunks' and the
+    /// partial chunk's chaining values against the portable compressor,
+    /// with a counter past zero and keyed flags as well as plain ones.
+    #[test]
+    fn test_partial_kernels_against_portable() {
+        if !sha3_detected() {
+            return;
+        }
+        let mut input = [0u8; 8 * CHUNK_LEN];
+        crate::test::paint_test_input(&mut input);
+        let key: CVWords = core::array::from_fn(|i| 0x0102_0304u32.wrapping_mul(i as u32 + 7));
+        let chunk_cv = |bytes: &[u8], key: &CVWords, counter: u64, flags: u8| {
+            let mut cv = *key;
+            let blocks = core::cmp::max(1, bytes.len().div_ceil(BLOCK_LEN));
+            for b in 0..blocks {
+                let mut block = [0u8; BLOCK_LEN];
+                let part = &bytes[b * BLOCK_LEN..core::cmp::min(bytes.len(), (b + 1) * BLOCK_LEN)];
+                block[..part.len()].copy_from_slice(part);
+                let mut block_flags = flags;
+                if b == 0 {
+                    block_flags |= CHUNK_START;
+                }
+                if b + 1 == blocks {
+                    block_flags |= CHUNK_END;
+                }
+                crate::portable::compress_in_place(&mut cv, &block, part.len() as u8, counter, block_flags);
+            }
+            crate::platform::le_bytes_from_words_32(&cv)
+        };
+        for n in (1..=7).filter(|&n| partial_kernel(n).is_some()) {
+            let chunks: Vec<&[u8; CHUNK_LEN]> =
+                input[..n * CHUNK_LEN].chunks_exact(CHUNK_LEN).map(|c| c.try_into().unwrap()).collect();
+            for len in 1..CHUNK_LEN {
+                let partial = &input[n * CHUNK_LEN..][..len];
+                for (key, flags, counter) in [(*IV, 0u8, 0u64), (key, KEYED_HASH, (1u64 << 32) - 2)] {
+                    let mut got = vec![0u8; (n + 1) * OUT_LEN];
+                    unsafe { hash_chunks_with_partial(&chunks, partial, &key, counter, flags, CHUNK_START, CHUNK_END, &mut got) };
+                    for (i, cv) in got.chunks_exact(OUT_LEN).enumerate() {
+                        let bytes: &[u8] = if i < n { &chunks[i][..] } else { partial };
+                        assert_eq!(cv, chunk_cv(bytes, &key, counter + i as u64, flags), "q{n}, partial of {len} bytes, chunk {i}, flags {flags:#x}");
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn test_hash_chunk_against_portable() {
         let mut input = [0u8; CHUNK_LEN];
