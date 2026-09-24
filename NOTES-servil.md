@@ -125,6 +125,16 @@ in a loop +36% on the VM, +2% on the Mac. `WFE` returns every 0.1-1.3 µs
 on both, so it is a spin. A wake costs the waker 12-20 µs on the VM and the
 sleeper arrives 40-60 µs later.
 
+**`hash()` has no fixed cost to shave.** 1 to 16 blocks on the VM fit
+42.8-43.5 ns per block and -2 to -3 ns fixed (September 25, 2026): up to
+1 KiB the time is the compression chain alone.
+
+**One scalar lane beside NEON pays on both core kinds; a second does
+not.** Parent plans p3/p5/p7/p9 (a scalar lane beside the NEON parents)
+beat running p2/p4/p8 and k1 in turn by 8-38% on P- and E-cores alike
+(probe/mixed-parents, jobs 121-122); the second scalar lane of k4, k6, k8,
+k10 is what E-cores pay for.
+
 **Frames and zeroing matter at small sizes.** `compress_subtree_to_parent_node`
 is `inline(never)` (its arrays in `hash()`'s frame made every call probe
 and zero them); arrays sized for 16 chaining values at 2-16 KiB in place
@@ -210,6 +220,14 @@ back-to-back effect; not measured natively.
   E-cores 16-24% faster, P-cores up to 17% slower; the user rejected them.
 - A direct small-tree path (1-2% at 4 KiB) and parents plus root folded
   into k4 (about 3.6%): estimated, not built; complexity for one size.
+- q4 as one quad for the four whole chunks (September 25, 2026): 15%
+  slower at 4470 B on the VM than two pairs; the quad transposes its
+  messages through the stack every block.
+- Whole chunks, then the partial chunk alone, for 4, 6, or 8 whole chunks
+  and a short partial one (k4/k6/k8 + c1 in place of q4/q6/q8): VM up to
+  8% faster at 8 KiB + 1 block, 4-5% to three blocks; a trade, since it
+  keeps two scalar lanes, which E-cores pay for (k8 14170 E cycles against
+  two quads' 13310).
 
 ## Tooling and its pitfalls
 
