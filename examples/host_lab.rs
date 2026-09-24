@@ -6,7 +6,9 @@
 //! message at a time (the integer-only kernel, no NEON). ns per call and
 //! cycles per call (thread_selfcounts), every variant checked against
 //! hash() first. Second run: V0 built from the same pieces as V1 and V2
-//! (no table fill), variant order rotated per round, V3 dropped.
+//! (no table fill), variant order rotated per round, V3 dropped. Third
+//! run: V1 is the overlap group (the last sixteen messages as one more
+//! SME2 group, in place), against V0, by remainder 1-15 at four sizes.
 use blake3_servil::platform::Platform;
 use blake3_servil::{Hash, IncrementCounter};
 use std::hint::black_box;
@@ -32,8 +34,14 @@ fn variant(v: usize, msgs: &[&[u8]], blocks: &[&[u8; 64]], out: &mut [Hash]) {
             digests(Platform::NEON, &blocks[whole..], &mut out[whole..]);
         }
         1 => {
-            digests(Platform::NEON, &blocks[whole..], &mut out[whole..]);
+            // Overlap: the last sixteen messages as one more SME2 group,
+            // read in place; only the remainder's digests are kept.
             digests(Platform::SME2, &blocks[..whole], &mut out[..whole]);
+            if whole < n {
+                let mut cvs = [Hash::from_bytes([0; 32]); 16];
+                digests(Platform::SME2, &blocks[n - 16..], &mut cvs);
+                out[whole..].copy_from_slice(&cvs[16 - (n - whole)..]);
+            }
         }
         2 => {
             digests(Platform::SME2, &blocks[..whole], &mut out[..whole]);
@@ -106,8 +114,13 @@ fn time(mut f: impl FnMut()) -> (f64, f64) {
     best
 }
 
-const COUNTS: &[usize] = &[16, 17, 24, 31, 32, 96, 100, 104, 111, 112, 200, 208, 215, 496, 500, 504, 511, 512, 1008, 1009, 1016, 1023, 1024];
-const VARIANTS: usize = 3;
+const COUNTS: &[usize] = &[
+    17, 20, 24, 25, 26, 28, 31,
+    97, 100, 104, 105, 106, 108, 111,
+    497, 500, 504, 505, 506, 508, 511,
+    1009, 1012, 1016, 1017, 1018, 1020, 1023,
+];
+const VARIANTS: usize = 2;
 
 fn main() {
     assert!(matches!(Platform::detect(), Platform::SME2), "this probe needs SME2");
@@ -134,7 +147,7 @@ fn main() {
         }
         for read in [false, true] {
             println!("{label}, {}", if read { "digests read between calls" } else { "back to back" });
-            println!("{:>6} {:>18} {:>18} {:>18}", "n", "V0 SME2, NEON", "V1 NEON, SME2", "V2 padded");
+            println!("{:>6} {:>18} {:>18}", "n", "V0 SME2, NEON", "V1 overlap group");
             for &n in COUNTS {
                 let mut out = vec![Hash::from_bytes([0; 32]); n];
                 let mut row = format!("{n:>6}");
