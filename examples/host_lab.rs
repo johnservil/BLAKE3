@@ -64,43 +64,65 @@ fn beside<T: Send + 'static>(work: impl Fn() + Send + 'static, body: impl FnOnce
     (out, h.join().unwrap())
 }
 
-/// Two persistent threads, like the benchmark's shared copies: `run` posts
-/// a job, blocks on a condvar until both copies finish.
+/// Two persistent threads with the benchmark's hand-off: the caller posts a
+/// job, yield-polls until both copies have arrived, releases them together
+/// (they yield-poll for the release), then sleeps until both finish.
 struct Duo {
-    state: std::sync::Mutex<(u64, usize, u8)>, // (generation, done count, job kind)
+    job: std::sync::Mutex<Option<(u8, u8)>>, // (kind, taken bits)
     posted: std::sync::Condvar,
+    ready: std::sync::atomic::AtomicUsize,
+    generation: std::sync::atomic::AtomicU64,
+    finished: std::sync::Mutex<usize>,
     done: std::sync::Condvar,
 }
 impl Duo {
     fn new(big: Arc<Vec<u8>>) -> &'static Duo {
-        let duo: &'static Duo = Box::leak(Box::new(Duo { state: std::sync::Mutex::new((0, 0, 0)), posted: std::sync::Condvar::new(), done: std::sync::Condvar::new() }));
+        let duo: &'static Duo = Box::leak(Box::new(Duo {
+            job: std::sync::Mutex::new(None), posted: std::sync::Condvar::new(),
+            ready: std::sync::atomic::AtomicUsize::new(0), generation: std::sync::atomic::AtomicU64::new(0),
+            finished: std::sync::Mutex::new(0), done: std::sync::Condvar::new(),
+        }));
         for copy in 0..2u8 {
             // Each copy hashes its own buffer, as in the benchmark.
             let big: Arc<Vec<u8>> = Arc::new(big.iter().map(|b| b ^ (copy + 1)).collect());
             std::thread::spawn(move || {
                 let neon = Platform::neon().unwrap();
-                let mut seen = 0;
+                let mut seen = duo.generation.load(Ordering::Acquire);
                 loop {
                     let kind = {
-                        let mut g = duo.state.lock().unwrap();
-                        while g.0 == seen { g = duo.posted.wait(g).unwrap(); }
-                        seen = g.0;
-                        g.2
+                        let mut job = duo.job.lock().unwrap();
+                        loop {
+                            if let Some((kind, taken)) = job.as_mut() {
+                                if *taken & (1 << copy) == 0 {
+                                    *taken |= 1 << copy;
+                                    let k = *kind;
+                                    if *taken == 0b11 { *job = None; }
+                                    break k;
+                                }
+                            }
+                            job = duo.posted.wait(job).unwrap();
+                        }
                     };
+                    duo.ready.fetch_add(1, Ordering::AcqRel);
+                    while duo.generation.load(Ordering::Acquire) == seen { std::thread::yield_now(); }
+                    seen = duo.generation.load(Ordering::Acquire);
                     work(kind, &big, &neon);
-                    let mut g = duo.state.lock().unwrap();
-                    g.1 += 1;
-                    if g.1 == 2 { duo.done.notify_one(); }
+                    let mut f = duo.finished.lock().unwrap();
+                    *f += 1;
+                    duo.done.notify_all();
                 }
             });
         }
         duo
     }
     fn run(&self, kind: u8) {
-        let mut g = self.state.lock().unwrap();
-        g.0 += 1; g.1 = 0; g.2 = kind;
-        self.posted.notify_all();
-        while g.1 < 2 { g = self.done.wait(g).unwrap(); }
+        { *self.job.lock().unwrap() = Some((kind, 0)); self.posted.notify_all(); }
+        while self.ready.load(Ordering::Acquire) < 2 { std::thread::yield_now(); }
+        self.ready.store(0, Ordering::Release);
+        self.generation.fetch_add(1, Ordering::AcqRel);
+        let mut f = self.finished.lock().unwrap();
+        while *f < 2 { f = self.done.wait(f).unwrap(); }
+        *f = 0;
     }
 }
 
