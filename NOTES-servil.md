@@ -132,6 +132,30 @@ wins 19-27%" came from its harness (hash_many rebuilds its pointer table
 per call; the variants did not): compare variants built from the same
 pieces.
 
+The slow state is visible in the cycle counter (jobs 127-133, the Mac
+quiet): 3.93 core cycles per ns when the SME unit runs fast, 3.20-3.30
+when it runs slow; the difference is time the core waits on the unit.
+Each measurement can be classified by that ratio, which beats comparing
+wall times across runs (unchanged code paths moved up to +-35% between
+jobs as the state flipped). What puts the unit in the slow state, as far
+as measured: the digests read between calls when the pass takes about
+0.25 us or more (1008 and more digests slow, 512 fast); NEON leftovers
+of about 210 ns or more after the groups (p8 + p7 always; p9 + p3 after 96
+messages); leftovers of 4-8 after about 500 messages. Not explained:
+after two or more groups the overlap group below also runs slow though it
+leaves no NEON work.
+
+Tried: 13-15 one-block leftovers as one more, overlapping, SME2 group
+read in place (candidate/overlap-group, not promoted). Against servil
+through the API (jobs 130-133, old/new/new/old): 29-31 messages -20 to
+-22% on P-cores in both modes (old slow, new fast), 45-47 -18 to -20%
+back to back but +4 to +5% with reads, 109-111 +8 to +11% (both slow; the
+second streaming session costs), 253-511 -3 to +4%, 1021 and up level. A
+trade. A Pareto version needs the extra group inside the same streaming
+session (a kernel entry taking a separate last group), whose cost (about
+150 ns per group) is below the NEON leftovers' (250-280 ns) in either
+state.
+
 **Idle threads cost the busy ones.** Beside eight hashing threads, eight
 idle ones: asleep, free; spinning on loads +18% (VM and Mac); `sched_yield`
 in a loop +36% on the VM, +2% on the Mac. `WFE` returns every 0.1-1.3 µs
