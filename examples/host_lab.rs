@@ -5,7 +5,8 @@
 //! SME2 group from a scratch copy; V3 the remainder through hash() one
 //! message at a time (the integer-only kernel, no NEON). ns per call and
 //! cycles per call (thread_selfcounts), every variant checked against
-//! hash() first.
+//! hash() first. Second run: V0 built from the same pieces as V1 and V2
+//! (no table fill), variant order rotated per round, V3 dropped.
 use blake3_servil::platform::Platform;
 use blake3_servil::{Hash, IncrementCounter};
 use std::hint::black_box;
@@ -26,7 +27,10 @@ fn variant(v: usize, msgs: &[&[u8]], blocks: &[&[u8; 64]], out: &mut [Hash]) {
     let n = blocks.len();
     let whole = n / 16 * 16;
     match v {
-        0 => blake3_servil::hash_many(msgs, out),
+        0 => {
+            digests(Platform::SME2, &blocks[..whole], &mut out[..whole]);
+            digests(Platform::NEON, &blocks[whole..], &mut out[whole..]);
+        }
         1 => {
             digests(Platform::NEON, &blocks[whole..], &mut out[whole..]);
             digests(Platform::SME2, &blocks[..whole], &mut out[..whole]);
@@ -102,7 +106,8 @@ fn time(mut f: impl FnMut()) -> (f64, f64) {
     best
 }
 
-const COUNTS: &[usize] = &[17, 20, 24, 28, 31, 40, 48, 100, 200, 500, 1000, 1009, 1016, 1023, 1024];
+const COUNTS: &[usize] = &[16, 17, 24, 31, 32, 96, 100, 104, 111, 112, 200, 208, 215, 496, 500, 504, 511, 512, 1008, 1009, 1016, 1023, 1024];
+const VARIANTS: usize = 3;
 
 fn main() {
     assert!(matches!(Platform::detect(), Platform::SME2), "this probe needs SME2");
@@ -111,7 +116,7 @@ fn main() {
     let msgs: Vec<&[u8]> = data.chunks(64).collect();
     let blocks: Vec<&[u8; 64]> = data.chunks_exact(64).map(|c| c.try_into().unwrap()).collect();
     for &n in COUNTS {
-        for v in 0..4 {
+        for v in 0..VARIANTS {
             let mut out = vec![Hash::from_bytes([0; 32]); n];
             variant(v, &msgs[..n], &blocks[..n], &mut out);
             for (i, o) in out.iter().enumerate() {
@@ -129,13 +134,14 @@ fn main() {
         }
         for read in [false, true] {
             println!("{label}, {}", if read { "digests read between calls" } else { "back to back" });
-            println!("{:>6} {:>18} {:>18} {:>18} {:>18}", "n", "V0 today", "V1 NEON first", "V2 padded", "V3 hash()");
+            println!("{:>6} {:>18} {:>18} {:>18}", "n", "V0 SME2, NEON", "V1 NEON, SME2", "V2 padded");
             for &n in COUNTS {
                 let mut out = vec![Hash::from_bytes([0; 32]); n];
                 let mut row = format!("{n:>6}");
-                let mut results = [(0.0, 0.0); 4];
-                for _round in 0..3 {
-                    for v in 0..4 {
+                let mut results = [(0.0, 0.0); VARIANTS];
+                for round in 0..5 {
+                    for i in 0..VARIANTS {
+                        let v = (i + round) % VARIANTS;
                         let r = time(|| {
                             variant(v, black_box(&msgs[..n]), &blocks[..n], &mut out);
                             if read {
