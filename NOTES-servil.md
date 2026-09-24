@@ -828,6 +828,28 @@ large message in a small batch, and keep the pool for batches such as 500
 messages of 1 KiB. Open. (Runner jobs 052-053 are void: the branch they
 name still pointed at servil.)
 
+**hash() at 2-16 KiB: arrays sized to the input** (ee073d4). The subtree
+condenser zeroed 6 KiB (room for SME2's degree of 128) on every call; an
+input of sixteen chunks or fewer now gets arrays for sixteen chaining
+values. Mac A/B (jobs 055-058): 2 KiB -5.1%, 3 KiB -4.7%, 4 KiB -3.6%, 8
+KiB -2.0%, 16 KiB -2.6%. What remains at 3-8 KiB (P-core cycles, job
+059): 3 KiB = k3 3803 + parent 205 + root 191 + 90 other; 4 KiB = k4
+4753 + two parents 218 + root 191 + 143 other; k3 is bound by its NEON
+pair (k2 alone 3768).
+
+**One SME2 call at a time per process** (`candidate/one-sme2-call`, for
+the user's decision). A process-wide flag, taken by calls large enough
+for the SME2 kernels; a call finding it taken runs NEON. Acquire/release
+ordering on the flag cost about 1 µs per call beside the SME2 kernels on
+the VM (256 one-block messages 3.43 µs against 2.50); relaxed costs
+nothing measurable. Mac thorough runs (jobs 061, 062): solo cells and
+every other contender unchanged; solo samples on E-cores 3.7% -> 0.0%;
+shared cells lose the mode where both copies hold an SME unit (1 MiB
+0.178 -> 0.224; batches 128 and up +25-50%) and gain the one where they
+share one (batches 16-64 18.9 -> 12.3). `perf_regress` gave no verdict
+on either machine: the control moved, on the new side, in 2-3 cells,
+since the change alters what the shared cells leave behind.
+
 **Tooling fixes.** The pre-commit check inherited git's GIT_INDEX_FILE and
 checked HEAD out into the index being committed, so a commit made with
 paths recorded its parent's tree (a227f6d is empty; fixed in 2a69249, and
