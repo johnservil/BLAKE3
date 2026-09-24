@@ -900,6 +900,42 @@ the hook now refuses a check that changes the index). perf_regress now
 measures 4 KiB (kernel k4). Git notes under refs/notes/perf record each
 promotion's gate verdicts.
 
+## Session: partial chunks beside whole ones (September 24, 2026)
+
+The benchmark gained four sizes from real data between 2 and 8 KiB (2304,
+3839, 4470, 7935 B: 802.11 frame and A-MSDU maxima, the POS MTU), and each
+lost to SHA-256 ring by 7-65%: a trailing partial chunk ran after the whole
+chunks, block by block on the scalar kernel.
+
+**q kernels** (`kernel(..., partial=True)` in the generator): the last
+scalar lane hashes a partial chunk (block count and final length in a
+seventh argument, bytes from a zero-padded copy) beside the whole chunks for
+its own blocks, stores its chaining value, and a second loop finishes the
+whole chunks. q2 pair; q3 scalar + pair; q4 two pairs; q5 scalar + two
+pairs; q6 quad + pair; q7 scalar + quad + pair; q8 two quads; q9 scalar +
+two quads; eleven whole chunks and up run their first ones through the
+usual plans and the last nine with q9. Ten whole chunks keep k10 and the
+partial chunk after it (every split costs more). One whole chunk: q1, a NEON
+pair with a duplicate in its second lane beside the partial chunk, from
+five partial blocks (below that P-cores paid up to 14%; two scalar lanes
+instead cost E-cores 14-27% at every size). Mac, solo, against the same
+code before (runner jobs 087-105):
+
+    2304 B -11%  3839 B -19%  4470 B -4.5%  7935 B -19% (0.89x SHA-256 ring)
+    n KiB + 500 B: n=5 -13%, 6 -4%, 8 -12%, 9 -11%, 11 -9%, 12 -7%,
+    13 -2%, 14 -4%, 15 -4%; 1300-2000 B P 0 to -32%, E -15 to -35%
+
+**2, 3, 4 KiB, whole chunks, stay where they are** (Mac P-core cycles):
+2 KiB is one NEON pair (k2, 3760 cycles), its chain the floor of this
+design (a scalar chunk beside it is free, two scalar chunks spill); 3 KiB
+is k3, the pair with a free scalar chunk, plus two compressions; 4 KiB is
+k4, two scalar chunks beside a pair, bound by the integer units. Measured
+trades: k4 as two pairs (P +14%, E -24%); k8s, two scalars + quad + pair
+for eight whole chunks (P -18%, E +6.5%).
+
+**The turn landed** (30c599b; the user's decision). A plain load and store:
+the atomic swap had cost solo batches of 24 messages 3-9%.
+
 ## Future work
 
 - **A GPU kernel** (Metal on Apple silicon): chunks and parents as a
