@@ -1,0 +1,1 @@
+gate: suites pass (63/62/53 lib, 19 doc, 2 vectors); VM perf_regress against f91491b: no regression (pre-commit); Mac perf_regress compare f91491b ee073d4: no regression, 2-4 KiB 4-5% faster (runner job 054); Mac A/B jobs 055-058: 2 KiB -5.1%, 3 KiB -4.7%, 4 KiB -3.6%, 8 KiB -2.0%, 16 KiB -2.6% solo
