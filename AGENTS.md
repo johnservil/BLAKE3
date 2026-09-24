@@ -99,6 +99,10 @@ Each document serves one audience; keep it to that audience's needs.
 
 A fact that concerns several audiences goes in each audience's document, phrased for it.
 
+# Measuring: wall time and cycles, both, always
+
+Wall time is what a caller waits for; the thread's core cycles (per core kind on macOS) do not change with the clock speed and do not count time the core waits on the SME unit; their ratio, cycles per ns, says which state a measurement ran in (the core kind's clock; the SME unit's fast or slow state). Every probe records all three per batch, through `examples/support/clocks.rs`. Speed verdicts use wall time, compared within one state, with the state mix reported; a change that shifts the mix has that shift as part of its effect. Cycles explain and locate time, and are the finer comparison for core-only kernels across core kinds. When the two disagree, that is a finding to investigate, never a reason to prefer one. The benchmark and `perf_regress` judge wall time; `--trace-clocks` records the cycles beside it. The Linux VM gives no per-thread cycle counts, and its probes say so.
+
 # Where to start
 
 Read `/workspace/bench-hashes/NEXT-STEPS.md` first: it says what the work is now (optimising this fork against the benchmark) and where the last session left both repositories. `NOTES-servil.md` in this directory holds the fork's design notes and the measurements behind each change.

@@ -315,6 +315,14 @@ Nothing heavy may run in the VM during a Mac job (they share cores). Its
 results matched the user's own Terminal runs (704 cells, median ratio
 1.001). Results belong to the runner's account: they cannot be moved.
 
+**Probe timing**: `examples/support/clocks.rs` (included with `#[path]`)
+measures wall time and cycles per core kind together, per batch, and
+shows their ratio; use it in every probe (AGENTS.md, "Measuring"). The
+record of switching between the two: cycle normalization in the benchmark
+until September 2026 (removed: it hid SME2 waits), cycles for the E-core
+kernel probes (wall time swings 2x with the E clock), wall time for the
+SME2 remainder probes, where cycles per ns then exposed the slow state.
+
 **Probes on the Mac**: the runner runs only allow-listed examples, so a
 probe replaces `examples/host_lab.rs` on a `probe/<topic>` branch (never
 merged; examples only, so the hook skips it) and runs as a `host_lab`
