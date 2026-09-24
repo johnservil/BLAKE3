@@ -1,0 +1,1 @@
+gate: suites pass (67/66/56 lib, 19 doc, 2 vectors, bench 7) on this tree; VM perf_regress against 7dba117: no regression (pre-commit checks of 535fcc0 and 7ded63f; 3 messages -35%); Mac perf_regress compare 7dba117 7ded63f: no regression (runner job 123, bench ec65830; 3 messages -35%); Mac E-core probe probe/mixed-parents jobs 121-122: every changed plan faster on P and E
