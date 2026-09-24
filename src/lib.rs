@@ -1064,6 +1064,11 @@ fn hash_all_at_once<J: join::Join>(
 ///
 /// This function is always single-threaded. For the same hash over several
 /// threads, see [`hash_multithreaded`] and [`hash_multithreaded_with_budget`].
+///
+/// On Apple M4 and later, inputs of 16 KiB and more hash fastest when one
+/// thread of the program hashes them at a time: when several threads do at
+/// once, one runs at that speed and the others at about two thirds of it,
+/// the speed every thread keeps however many hash beside it.
 pub fn hash(input: &[u8]) -> Hash {
     hash_serial(input, IV, 0)
 }
@@ -1134,8 +1139,17 @@ pub fn initialize() {
 /// through here.
 #[inline]
 fn hash_serial(input: &[u8], key: &CVWords, flags: u8) -> Hash {
-    hash_serial_on(input, key, flags, Platform::detect())
+    let turn = platform::Sme2Turn::take(Platform::detect(), input.len() >= SME2_SIZED_LEN);
+    hash_serial_on(input, key, flags, turn.platform())
 }
+
+/// The smallest input the SME2 kernels take part in: one group of sixteen
+/// chunks. Below it the SME2 platform runs the NEON hybrids.
+const SME2_SIZED_LEN: usize = 16 * CHUNK_LEN;
+
+/// The fewest messages a batch has when the SME2 kernels take part: one
+/// group of sixteen one-block messages.
+pub(crate) const SME2_SIZED_BATCH: usize = 16;
 
 /// [`hash_serial`] with the tree's kernels chosen by the caller (a pool
 /// piece runs the NEON hybrids); one chunk or less runs the scalar kernel
@@ -1155,7 +1169,10 @@ fn hash_serial_on(input: &[u8], key: &CVWords, flags: u8, platform: Platform) ->
 /// Messages of exactly one block (64 bytes) are compressed several at a
 /// time on the platform's SIMD kernels, sixteen per group on SME2, so a
 /// batch of them hashes at a multiple of one [`hash`] call's rate; every
-/// other message costs what [`hash`] costs. Always single-threaded; see
+/// other message costs what [`hash`] costs. On Apple M4 and later, batches
+/// of sixteen messages or more follow [`hash`]'s rule for large inputs:
+/// when several threads hash them at once, one runs at the full rate and
+/// the others at about half of it. Always single-threaded; see
 /// [`hash_many_multithreaded`] for the same digests over several threads.
 ///
 /// ```
@@ -1165,7 +1182,8 @@ fn hash_serial_on(input: &[u8], key: &CVWords, flags: u8, platform: Platform) ->
 /// assert_eq!(digests[1], blake3_servil::hash(&[7u8; 64]));
 /// ```
 pub fn hash_many(inputs: &[&[u8]], outputs: &mut [Hash]) {
-    many::hash_many_on(inputs, outputs, Platform::detect());
+    let turn = platform::Sme2Turn::take(Platform::detect(), inputs.len() >= SME2_SIZED_BATCH);
+    many::hash_many_on(inputs, outputs, turn.platform());
 }
 
 /// [`hash_many`] over several threads. Writes the same digests for every
@@ -1722,6 +1740,7 @@ impl Hasher {
         //   chunks. We have to complete the current subtree first.
         // Because we might need to break up the input to form powers of 2, or
         // to evenly divide what we already have, this part runs in a loop.
+        let turn = platform::Sme2Turn::take(self.chunk_state.platform, input.len() >= SME2_SIZED_LEN);
         while input.len() > CHUNK_LEN {
             debug_assert_eq!(self.chunk_state.count(), 0, "no partial chunk data");
             debug_assert_eq!(CHUNK_LEN.count_ones(), 1, "power of 2 chunk len");
@@ -1773,7 +1792,7 @@ impl Hasher {
                     &self.key,
                     self.chunk_state.chunk_counter,
                     self.chunk_state.flags,
-                    self.chunk_state.platform,
+                    turn.platform(),
                 );
                 let left_cv = (&cv_pair[..32]).try_into().unwrap();
                 let right_cv = (&cv_pair[32..64]).try_into().unwrap();

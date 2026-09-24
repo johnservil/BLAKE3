@@ -71,6 +71,73 @@ pub enum Platform {
     WASM32_SIMD,
 }
 
+/// One SME2 call at a time per process (all but always: two calls taking
+/// the turn at the same instant can both get it): the turn a call takes
+/// before it runs SME2 kernels, and the platform it runs on. A call finding
+/// another SME2 call running takes NEON instead. Two SME2 threads of a process can
+/// share one SME unit, each at half speed or less, slower than NEON; and
+/// three of them at once sent the process's other threads to E-cores on an
+/// M4 Max (NOTES-servil.md). Calls too small for the SME2 kernels
+/// (`sme2_sized` false) leave the turn alone.
+pub(crate) struct Sme2Turn {
+    platform: Platform,
+    #[cfg(blake3_sme2)]
+    held: bool,
+}
+
+/// The turn's flag, on a 128-byte line of its own (Apple's cache line), so
+/// no other state's writes invalidate it.
+#[cfg(blake3_sme2)]
+#[repr(align(128))]
+struct Busy(core::sync::atomic::AtomicBool);
+
+#[cfg(blake3_sme2)]
+static SME2_BUSY: Busy = Busy(core::sync::atomic::AtomicBool::new(false));
+
+impl Sme2Turn {
+    #[inline]
+    pub(crate) fn take(platform: Platform, sme2_sized: bool) -> Self {
+        #[cfg(blake3_sme2)]
+        if sme2_sized && matches!(platform, Platform::SME2) {
+            use core::sync::atomic::Ordering;
+            // A load, and a store when the turn is free: two calls that
+            // look at the same instant can both take it, which costs what
+            // running SME2 at once always did, and nothing else depends on
+            // the flag. An atomic swap cost 3-9% for a batch of 24
+            // messages (on the VM, 282 ns against 273, and 9-10% in the
+            // regression check); acquire and release ordering about 1 µs
+            // per call beside the SME2 kernels (256 one-block messages:
+            // 3.43 µs against 2.50).
+            let held = !SME2_BUSY.0.load(Ordering::Relaxed);
+            if held {
+                SME2_BUSY.0.store(true, Ordering::Relaxed);
+            }
+            return Sme2Turn { platform: if held { Platform::SME2 } else { Platform::NEON }, held };
+        }
+        let _ = sme2_sized;
+        Sme2Turn {
+            platform,
+            #[cfg(blake3_sme2)]
+            held: false,
+        }
+    }
+
+    #[inline]
+    pub(crate) fn platform(&self) -> Platform {
+        self.platform
+    }
+}
+
+impl Drop for Sme2Turn {
+    #[inline]
+    fn drop(&mut self) {
+        #[cfg(blake3_sme2)]
+        if self.held {
+            SME2_BUSY.0.store(false, core::sync::atomic::Ordering::Relaxed);
+        }
+    }
+}
+
 impl Platform {
     #[allow(unreachable_code)]
     pub fn detect() -> Self {
@@ -810,4 +877,28 @@ fn sme2_reported() -> bool {
     const HWCAP2_SME2: libc::c_ulong = 1 << 37;
     let hwcap2 = unsafe { libc::getauxval(AT_HWCAP2) };
     hwcap2 & HWCAP2_SME2 != 0
+}
+
+#[cfg(test)]
+mod sme2_turn_test {
+    use super::*;
+
+    /// While one call holds the SME2 turn, another runs NEON; calls too
+    /// small for the SME2 kernels keep their platform. Other tests may hold
+    /// the turn meanwhile, so only what holding it guarantees is asserted.
+    #[test]
+    fn test_one_sme2_call_at_a_time() {
+        let detected = Platform::detect();
+        let small = Sme2Turn::take(detected, false);
+        assert!(core::mem::discriminant(&small.platform()) == core::mem::discriminant(&detected));
+        #[cfg(blake3_sme2)]
+        if matches!(detected, Platform::SME2) {
+            let first = Sme2Turn::take(detected, true);
+            if first.held {
+                let second = Sme2Turn::take(detected, true);
+                assert!(matches!(second.platform(), Platform::NEON) && !second.held);
+                assert!(matches!(first.platform(), Platform::SME2));
+            }
+        }
+    }
 }

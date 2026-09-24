@@ -190,7 +190,7 @@ pub(crate) fn hash_many(inputs: &[&[u8]], outputs: &mut [Hash], max_threads: usi
     assert!(max_threads >= 1, "a hash needs at least the calling thread");
     assert_eq!(inputs.len(), outputs.len(), "one output per message");
     if max_threads == 1 || inputs.len() < 2 {
-        return crate::many::hash_many_on(inputs, outputs, Platform::detect());
+        return crate::hash_many(inputs, outputs);
     }
     // Fewer than MIN_SPLIT_LEN / BLOCK_LEN messages of a block or less hold
     // less than MIN_SPLIT_LEN: they are hashed here, with no pass over the
@@ -200,7 +200,8 @@ pub(crate) fn hash_many(inputs: &[&[u8]], outputs: &mut [Hash], max_threads: usi
     // M4 Max and on the VM (NOTES-servil.md).
     let mut done = 0;
     if inputs.len() < MIN_SPLIT_LEN / BLOCK_LEN {
-        done = crate::many::hash_many_until_longer(inputs, outputs, Platform::detect(), BLOCK_LEN);
+        let turn = crate::platform::Sme2Turn::take(Platform::detect(), inputs.len() >= crate::SME2_SIZED_BATCH);
+        done = crate::many::hash_many_until_longer(inputs, outputs, turn.platform(), BLOCK_LEN);
         if done == inputs.len() {
             return;
         }
@@ -209,7 +210,7 @@ pub(crate) fn hash_many(inputs: &[&[u8]], outputs: &mut [Hash], max_threads: usi
     let total: usize = inputs.iter().map(|m| m.len()).sum();
     // The messages already hashed held at most a block each.
     if done * BLOCK_LEN + total < MIN_SPLIT_LEN || inputs.len() < 2 {
-        return crate::many::hash_many_on(inputs, outputs, Platform::detect());
+        return crate::hash_many(inputs, outputs);
     }
     hash_many_over_pool(inputs, outputs, total, max_threads)
 }
