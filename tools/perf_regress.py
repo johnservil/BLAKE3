@@ -31,6 +31,9 @@ to back while the host's load came and went (NOTES-servil.md):
   cell slower in both.
 * The control is the same code on both sides. If the rule calls any of
   its cells slower or faster, the comparison is unreliable: no verdict.
+* Each listed cell also shows the median pair ratio of 90th percentiles,
+  which a two-speed cell's slow speed reaches; it informs, and the
+  verdict ignores it (the rule is calibrated for the 5th percentile).
 
 Measured with four pairs: no false flag in 2400 cell comparisons of
 unchanged code before confirmation (under 0.13% per cell at 95%
@@ -210,7 +213,11 @@ def parse(text):
         elif line:
             contender, scenario, use_case, point, _unit, values = line.split("\t")
             ordered = sorted(int(v) for v in values.split(","))
-            cells[f"{contender}|{scenario}|{use_case}|{point}"] = ordered[int(QUANTILE * len(ordered))]
+            # The statistic, and the 90th percentile, which a two-speed
+            # cell's slow speed reaches (reported beside verdicts, never
+            # judged: the rule's calibration is for the 5th percentile).
+            cells[f"{contender}|{scenario}|{use_case}|{point}"] = (
+                ordered[int(QUANTILE * len(ordered))], ordered[int(0.9 * len(ordered))])
     return cells
 
 
@@ -231,20 +238,22 @@ def pairs(old, new, count, start):
 
 
 def judge(measured, use_cases, contenders):
-    """(slower, faster, ratio per cell): a cell is slower (faster) when every
-    pair's new/old ratio exceeds 1 + MARGIN (falls below 1 - MARGIN)."""
-    slower, faster, ratio = [], [], {}
+    """(slower, faster, ratio per cell, 90th-percentile ratio per cell): a
+    cell is slower (faster) when every pair's new/old ratio of 5th
+    percentiles exceeds 1 + MARGIN (falls below 1 - MARGIN)."""
+    slower, faster, ratio, slow = [], [], {}, {}
     for key in measured[0][0]:
         contender, _scenario, use_case, _ = key.split("|")
         if contender not in contenders or use_case not in use_cases:
             continue
-        ratios = [b[key] / a[key] for a, b in measured]
+        ratios = [b[key][0] / a[key][0] for a, b in measured]
         ratio[key] = statistics.median(ratios)
+        slow[key] = statistics.median(b[key][1] / a[key][1] for a, b in measured)
         if min(ratios) > 1 + MARGIN:
             slower.append(key)
         elif max(ratios) < 1 - MARGIN:
             faster.append(key)
-    return slower, faster, ratio
+    return slower, faster, ratio, slow
 
 
 def compare(old_rev, new):
@@ -265,30 +274,35 @@ def compare(old_rev, new):
         if control[0] or control[1]:
             print(f"perf_regress: the control ({CONTROL}, the same code on both sides) moved in "
                   f"{len(control[0]) + len(control[1])} cells: the machine's state changed within pairs. "
-                  "No verdict (exit 2); run again when nothing else runs on the machine.")
+                  "No verdict (exit 2); run again when nothing else runs on the machine. A control that "
+                  "moves on the new side run after run points at the change itself (it alters what its "
+                  "cells leave behind for the next).")
+            for key in sorted(control[0] + control[1]):
+                print(f"  control {key}: {control[2][key] - 1:+.1%}")
             return True
         return False
 
     if unreliable(measured):
         return 2
-    slower, faster, ratio = judge(measured, use_cases, SUBJECTS)
+    slower, faster, ratio, slow = judge(measured, use_cases, SUBJECTS)
     if slower:
         print(f"perf_regress: {len(slower)} cells slower in {PAIRS} pairs; {PAIRS} more pairs must agree",
               file=sys.stderr, flush=True)
         more = pairs(old, new_exe, PAIRS, PAIRS)
         if unreliable(more):
             return 2
-        slower2, _, ratio2 = judge(more, use_cases, SUBJECTS)
+        slower2, _, ratio2, _ = judge(more, use_cases, SUBJECTS)
         confirmed = sorted(set(slower) & set(slower2))
         if confirmed:
             print(f"perf_regress: REGRESSION: {new_name} is slower than {old_rev} in {len(confirmed)} cells "
                   f"(5th percentile, median of pair ratios):")
             for key in confirmed:
-                print(f"  {key}: {ratio[key] - 1:+.1%}, then {ratio2[key] - 1:+.1%}")
+                print(f"  {key}: {ratio[key] - 1:+.1%}, then {ratio2[key] - 1:+.1%} "
+                      f"(90th percentile {slow[key] - 1:+.1%})")
             return 1
         print(f"perf_regress: the second {PAIRS} pairs did not confirm; no regression")
     for key in sorted(faster):
-        print(f"  faster  {key}: {ratio[key] - 1:+.1%}")
+        print(f"  faster  {key}: {ratio[key] - 1:+.1%} (90th percentile {slow[key] - 1:+.1%})")
     print(f"perf_regress: no regression against {old_rev}")
     return 0
 
