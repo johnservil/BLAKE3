@@ -740,6 +740,88 @@ report that shows such a cell as two-speed instead of a coin-toss median.
 The A/B also found that `perf_regress` cached builds by fork commit alone
 (fixed in da92669: the name carries the benchmark source's hash).
 
+## Session: kernels by core kind, the E-core trigger, the minimax list (September 24, 2026)
+
+Measured natively through the Mac benchmark runner (`tools/runner/`; runs
+kept in `runner/results/`, outside git, numbered by job).
+
+**Cycles per byte by core kind** (`thread_selfcounts` per perf level;
+user-interactive QoS runs on P-cores, background QoS on E-cores; probe
+branches `probe/ecore-kernels`, `probe/ecore-after`). Counts are steady to
+1% where wall times at background QoS vary 2x with the E clock:
+
+    kernel (chunks)       P      E     E/P
+    k1 scalar (1)       2.89   4.07   1.41
+    k2 pair (2)         1.84   2.08   1.13
+    k3 scalar+pair (3)  1.24   1.64   1.32
+    k4 2 scalars+pair   1.16   2.41   2.07
+    k6 2 scalars+2 pairs 1.00  2.07   2.07
+    k8 2 quads          1.07   1.63   1.52
+    k9 scalar+2 quads   0.95   1.48   1.57
+    k10 2 scalars+2 quads 0.86 1.63   1.89
+    SME2, 16+ chunks    0.57   0.57   1.00
+
+E-cores have fewer integer units, so a second scalar chunk costs there
+what it saves on a P-core. SME2 runs the E cluster's unit at P-core
+cycles per byte. At 4 KiB on an E-core, upstream blake3 (1.98) beat servil
+(2.71), the one cell where another BLAKE3 won; `candidate/neon-k4-pairs`
+and `candidate/neon-plans-minimax` hold the trade (P-core cost 14% at 4
+KiB), for the user's decision. Taken: k7 (scalar + quad + pair) and k9 + k3
+for seven and twelve chunks, faster on P, E, and the VM (fe9fdb4).
+
+**What sends threads to E-cores on an idle Mac** (open problem 4). In the
+benchmark, about 4% of every contender's solo samples ran on E-cores, but
+only in runs where servil hashed a large input: upstream blake3 and SHA-256
+with an 8 MiB point, 0 of 3072; servil and SHA-256, 113 and 125 of 3072;
+servil built `no_sme2`, 0; servil with a 64 KiB point in place of 8 MiB,
+0; the benchmark without its shared copies, 0; with shared copies at 8 MiB
+only, 127 (the small cells without copies were hit as well); with copy 1
+idle, 0. Reproduced outside the benchmark (`probe/ecore-trigger`, runner
+jobs 042-043): a thread that runs a long SME2 call itself, then hands work
+to two copy threads that run long SME2 calls together (released at once,
+as the benchmark does) and sleeps until they finish, takes 4-10% of its
+next 1 ms samples on an E-core. Without its own SME2 call, 0; with only one
+copy in SME2, 0; after SME2 stops, 0 at once; with a staggered start of the
+copies, about 0.1%. Three copies in SME2 read 0-1 in 1000, so "the
+scheduler seeks a free SME unit" does not fit as it stands. Mechanism open.
+
+**NEON after SME2** (`probe/transition`, job 045): on the Mac the first
+NEON work after 20 µs of scalar code took 1667 ns against about 900 warm;
+after long SME2 work it is no slower than that. The cost is NEON going
+cold during a stretch without vector work, not the switch out of streaming
+mode. It shows in tight loops: 1000 one-block messages took 11.67 ns each,
+1024 took 9.45 (the last eight run on NEON after seven 128-message SME2
+calls). Padding that remainder onto SME2 lost on the VM every way tried
+(a batch of 24: +85% with a second call, +290% with one call and a memcpy
+of the digests after it, +190% with scalar stores), since at 24 NEON is
+still warm; not adopted.
+
+**Folding the scalar G's rotations into its xors** (`eor d, d, a, ror #n`
+after rotating d and b in place; the same instruction count, a four-step
+chain in place of six) is 7-13% slower on the VM's M4 cores at 64 B, 1
+KiB, and 4 KiB: an xor with a rotated operand takes two cycles. With
+single-cycle operations G's chain of six steps per half is the floor (add,
+eor, ror, add, eor, ror; ADD takes no rotated operand), so one 64-byte
+block needs 168 cycles, 2.6 cycles per byte, against hardware SHA-256's
+1.4-1.6. Single-chunk inputs (to 1 KiB, and 2 KiB where a pair of chunks
+runs its own chain) cannot catch SHA-256 on this hardware: understood and
+predicted, per AGENTS.
+
+**The minimax list** (`tools/losses.py SAMPLES.tsv`): every cell where
+another contender's median beats servil (single-threaded contenders) or
+servil mt (every contender), by more than 3%. Thorough Mac run of 0f00288:
+37 cells: SHA-256 and SHA-256 ring at every one-message size to 4 KiB,
+solo and shared, for servil and servil mt; a batch of one message; and
+servil mt at 512 messages (+25% against servil; in the benchmark only: a
+tight loop on the Mac reads 9.47 against 9.39).
+
+**Tooling fixes.** The pre-commit check inherited git's GIT_INDEX_FILE and
+checked HEAD out into the index being committed, so a commit made with
+paths recorded its parent's tree (a227f6d is empty; fixed in 2a69249, and
+the hook now refuses a check that changes the index). perf_regress now
+measures 4 KiB (kernel k4). Git notes under refs/notes/perf record each
+promotion's gate verdicts.
+
 ## Future work
 
 - **A GPU kernel** (Metal on Apple silicon): chunks and parents as a
