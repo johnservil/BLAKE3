@@ -121,8 +121,9 @@ mod test {
 
     #[test]
     fn test_hash_many_runs_of_blocks() {
-        // Every NEON parent plan (1 to 16), then SME2 groups and their remainders.
-        for count in (0..=17).chain([24, 31, 32, 33, 127, 128, 129, 1023, 1024, 1025, 2049]) {
+        // Every NEON parent plan (1 to 16), then SME2 groups and their
+        // remainders (13 to 15 left over take an overlapping group).
+        for count in (0..=17).chain([24, 29, 30, 31, 32, 33, 45, 61, 127, 128, 129, 1021, 1022, 1023, 1024, 1025, 2049]) {
             check(&vec![BLOCK_LEN; count]);
         }
     }
@@ -139,7 +140,8 @@ mod test {
     /// same path as a contiguous one and agrees with it.
     #[test]
     fn test_hash_many_scattered_blocks() {
-        let contiguous = message(200 * BLOCK_LEN, 7);
+        // 205: the last platform call's 77 messages leave 13 over an SME2 group.
+        let contiguous = message(205 * BLOCK_LEN, 7);
         let inputs: Vec<&[u8]> = contiguous.chunks_exact(BLOCK_LEN).collect();
         let copies: Vec<Vec<u8>> = inputs.iter().map(|m| m.to_vec()).collect();
         let scattered: Vec<&[u8]> = copies.iter().map(|m| m.as_slice()).collect();
@@ -148,7 +150,9 @@ mod test {
         crate::hash_many(&inputs, &mut a);
         crate::hash_many(&scattered, &mut b);
         assert_eq!(a, b);
-        assert_eq!(a[199], crate::hash(inputs[199]));
+        for (digest, input) in a.iter().zip(&inputs) {
+            assert_eq!(*digest, crate::hash(input));
+        }
     }
 
     #[test]

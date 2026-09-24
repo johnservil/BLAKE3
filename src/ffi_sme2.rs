@@ -27,6 +27,14 @@ pub const GROUP: usize = 16;
 /// (NEON: 424). 128 also keeps `compress_subtree_wide`'s stack arrays at 8 KiB.
 pub const DEGREE: usize = 128;
 
+/// Fewest one-block inputs left over after the SME2 groups that go to
+/// one more, overlapping, SME2 group rather than the NEON kernels: from 13
+/// (p9 + p4 and up), NEON runs past the SME unit's idle threshold. Below it
+/// the NEON kernels are cheaper than a second streaming session (M4 Max,
+/// probe/neon-cold job 129: 15 left over, overlap -19 to -28% on P-cores;
+/// 1 to 12 left over, +2 to +69% where the SME unit stayed fast).
+const OVERLAP_MIN: usize = 13;
+
 /// Chunk-group and parent-group entry points share one signature.
 type Kernel = unsafe extern "C" fn(*const u8, *const u32, u64, u32, *mut u8, u64) -> u64;
 
@@ -126,6 +134,23 @@ pub unsafe fn hash_many<const N: usize>(
         };
         assert_eq!(lanes, 16, "SME2 streaming vector length changed under us");
         done = count;
+    }
+
+    // One-block inputs after SME2 groups, with OVERLAP_MIN or more left over:
+    // the last sixteen as one more group, overlapping the one before, and
+    // only the remainder's values kept. The NEON kernels for that many run
+    // past the idle time (about a quarter of a microsecond) after which the
+    // SME unit drops to a state about 20% slower that lasts tens of
+    // microseconds, so the next SME2 work, this call's or the next one's,
+    // runs slow (NOTES-servil.md, "SME2 remainders").
+    let rest = inputs.len() - done;
+    if N == BLOCK_LEN && !increment_counter.yes() && done > 0 && rest >= OVERLAP_MIN {
+        let mut last = [0u8; GROUP * OUT_LEN];
+        unsafe {
+            hash_many(&inputs[inputs.len() - GROUP..], key, counter, increment_counter, flags, flags_start, flags_end, &mut last);
+        }
+        out[done * OUT_LEN..inputs.len() * OUT_LEN].copy_from_slice(&last[(GROUP - rest) * OUT_LEN..]);
+        return;
     }
 
     if done < inputs.len() {
