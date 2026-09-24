@@ -1,0 +1,1 @@
+gate: suites pass (65/64/55 lib, 19 doc, 2 vectors, bench 7); VM perf_regress compare 5cc2fe3: regression in shared batch cells only (24/64/256 messages, numbers in the message), every solo cell level; Mac perf_regress (runner job 084, same tree as 9ce440f): regression in shared batches 16/24 only; accepted by the user (their decision, September 24, 2026)
