@@ -945,6 +945,12 @@ def build():
         "k8": kernel("blake3_hybrid_k8", [], [quad(0, (0, 1, 2, 3)), quad(1, (4, 5, 6, 7))]),
         "k9": kernel("blake3_hybrid_k9", sc1(0), [quad(0, (1, 2, 3, 4)), quad(1, (5, 6, 7, 8))]),
         "k10": kernel("blake3_hybrid_k10", sc2(0, 1), [quad(0, (2, 3, 4, 5)), quad(1, (6, 7, 8, 9))]),
+        # Probe-only layouts, for E-cores.
+        "k4q": kernel("blake3_hybrid_k4q", [], [quad(0, (0, 1, 2, 3))]),
+        "k4pp": kernel("blake3_hybrid_k4pp", [], [pair(0, (0, 1)), pair(1, (2, 3))]),
+        "k5q": kernel("blake3_hybrid_k5q", sc1(0), [quad(0, (1, 2, 3, 4))]),
+        "k6qp": kernel("blake3_hybrid_k6qp", [], [quad(0, (0, 1, 2, 3)), pair(1, (4, 5))]),
+        "k7qp": kernel("blake3_hybrid_k7qp", sc1(0), [quad(0, (1, 2, 3, 4)), pair(1, (5, 6))]),
     }
 
 
