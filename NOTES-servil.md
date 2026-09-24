@@ -842,6 +842,21 @@ KiB -2.0%, 16 KiB -2.6%. What remains at 3-8 KiB (P-core cycles, job
 4753 + two parents 218 + root 191 + 143 other; k3 is bound by its NEON
 pair (k2 alone 3768).
 
+**hash() to 1 KiB reads a full final block in place** (2c3382b; the copy
+into a zeroed buffer stays for a short one). Mac A/B (jobs 078-081): 64 B
+-1.3% solo, -1.9% shared, which puts servil 1.6-1.8% ahead of ab-blake3
+there (the closest BLAKE3 cell); a batch of one -2.0 to -2.7%; 128 B-1 KiB
++0.0 to +0.7%, where servil leads ab-blake3 and blake3 by about 5%.
+
+**3 and 4 KiB are near their floor.** k3 is bound by its NEON pair (k2
+alone 3768 cycles; at zero overhead 3 KiB would be 4% faster, SHA-256 ring
+leads by 11-17%). k4 is bound by its two scalar chunks' integer throughput
+(the pre-rotation trick saves no instruction, and ADD takes no rotated
+operand). Estimated and not built: a direct small-tree path skipping the
+generic layers (60-100 cycles at 4 KiB, 1-2%, duplicating tree logic);
+parents and root folded into k4 (about 190 cycles, 3.6%, intricate
+assembly for one size).
+
 **One SME2 call at a time per process** (`candidate/one-sme2-call`, for
 the user's decision). A process-wide flag, taken by calls large enough
 for the SME2 kernels; a call finding it taken runs NEON. Acquire/release
