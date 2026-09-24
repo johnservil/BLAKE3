@@ -74,8 +74,9 @@ struct Duo {
 impl Duo {
     fn new(big: Arc<Vec<u8>>) -> &'static Duo {
         let duo: &'static Duo = Box::leak(Box::new(Duo { state: std::sync::Mutex::new((0, 0, 0)), posted: std::sync::Condvar::new(), done: std::sync::Condvar::new() }));
-        for _ in 0..2 {
-            let big = big.clone();
+        for copy in 0..2u8 {
+            // Each copy hashes its own buffer, as in the benchmark.
+            let big: Arc<Vec<u8>> = Arc::new(big.iter().map(|b| b ^ (copy + 1)).collect());
             std::thread::spawn(move || {
                 let neon = Platform::neon().unwrap();
                 let mut seen = 0;
