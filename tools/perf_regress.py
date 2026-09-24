@@ -49,6 +49,7 @@ comparison involving such a commit judges the one-message cells alone.
 import argparse
 import hashlib
 import json
+import os
 import shutil
 import statistics
 import subprocess
@@ -111,11 +112,17 @@ def git(*args):
     return subprocess.run(["git", *args], cwd=ROOT, check=True, stdout=subprocess.PIPE, text=True).stdout.strip()
 
 
+# The environment for builds: this one without git's repository variables.
+# Inside a pre-commit hook git sets GIT_DIR and GIT_INDEX_FILE to the fork's
+# repository, and bench-hashes' build script runs git in its own.
+BUILD_ENV = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+
+
 def build_bench(bench):
     """Build bench-hashes from its own directory, where its .cargo/config.toml
     (target-cpu=native) applies, and return the executable's path."""
     out = subprocess.run(["cargo", "build", "--release", "--message-format=json-render-diagnostics"],
-                         cwd=bench, check=True, stdout=subprocess.PIPE, text=True).stdout
+                         cwd=bench, env=BUILD_ENV, check=True, stdout=subprocess.PIPE, text=True).stdout
     exes = [m["executable"] for m in map(json.loads, out.splitlines())
             if m.get("reason") == "compiler-artifact" and m.get("executable")
             and m["target"]["name"] == "bench-hashes"]
@@ -125,7 +132,7 @@ def build_bench(bench):
 
 def target_dir():
     meta = subprocess.run(["cargo", "metadata", "--format-version", "1", "--no-deps"], cwd=ROOT / "bench-hashes",
-                          check=True, stdout=subprocess.PIPE, text=True).stdout
+                          env=BUILD_ENV, check=True, stdout=subprocess.PIPE, text=True).stdout
     return Path(json.loads(meta)["target_directory"])
 
 
