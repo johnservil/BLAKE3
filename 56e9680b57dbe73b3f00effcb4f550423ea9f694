@@ -1,0 +1,1 @@
+gate: suites pass (67/66/56 lib, 19 doc, 2 vectors); VM perf_regress: no regression, 8 KiB -13 to -14% (pre-commit); Mac perf_regress compare c42b76a 56e9680: no regression, 8 KiB -11 to -12%, servil mt 256 KiB -12% (runner job 106); Mac cycles (jobs 107-110): 8 KiB P -15.6% / E +6.7%, 11 KiB P -10.6% / E +6.8% (the E-core cost the user accepted)
