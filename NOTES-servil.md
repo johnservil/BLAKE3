@@ -930,8 +930,10 @@ code before (runner jobs 087-105):
 design (a scalar chunk beside it is free, two scalar chunks spill); 3 KiB
 is k3, the pair with a free scalar chunk, plus two compressions; 4 KiB is
 k4, two scalar chunks beside a pair, bound by the integer units. Measured
-trades: k4 as two pairs (P +14%, E -24%); k8s, two scalars + quad + pair
-for eight whole chunks (P -18%, E +6.5%).
+trades: k4 as two pairs (P +14%, E -24%) and the minimax plans, both
+rejected by the user (the candidates are deleted); k8 as two scalars +
+quad + pair, taken (56e9680): 8 KiB P -15.6% / E +6.7%, 11 KiB P -10.6% /
+E +6.8%, servil mt 256 KiB -12%.
 
 **The turn landed** (30c599b; the user's decision). A plain load and store:
 the atomic swap had cost solo batches of 24 messages 3-9%.
