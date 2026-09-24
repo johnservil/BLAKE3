@@ -157,7 +157,32 @@ def build_bench(bench):
             if m.get("reason") == "compiler-artifact" and m.get("executable")
             and m["target"]["name"] == "bench-hashes"]
     assert len(exes) == 1, f"expected the bench-hashes executable, found {exes}"
+    require_sme2_kernel(exes[0])
     return exes[0]
+
+
+def machine_has_sme2():
+    """Whether this CPU reports SME2 (Linux: /proc/cpuinfo; macOS: sysctl)."""
+    if sys.platform == "darwin":
+        out = subprocess.run(["sysctl", "-n", "hw.optional.arm.FEAT_SME2"], env=ENV, stdout=subprocess.PIPE,
+                             stderr=subprocess.DEVNULL, text=True).stdout.strip()
+        return out == "1"
+    cpuinfo = Path("/proc/cpuinfo")
+    return cpuinfo.exists() and " sme2" in cpuinfo.read_text()
+
+
+def require_sme2_kernel(exe):
+    """Fail stop when this machine has SME2 and the build left the kernel
+    out (the fork builds without it when the C compiler cannot assemble
+    SME2): the check would measure NEON alone and miss every SME2 change."""
+    if not machine_has_sme2():
+        return
+    with tempfile.TemporaryDirectory() as tmp:
+        out = subprocess.run([exe, "--contenders", "blake3-servil,sha256", "--points", "16 KiB", "--rounds", "1"],
+                             cwd=tmp, env=ENV, check=True, stdout=subprocess.PIPE,
+                             stderr=subprocess.DEVNULL, text=True).stdout
+    assert "SME2" in out, ("this CPU has SME2, and the fork was built without its SME2 kernel: "
+                           "point CC at a compiler that assembles SME2 (CC=clang-19 in the VM)")
 
 
 def target_dir():

@@ -243,9 +243,12 @@ Pitfalls met (keep them in mind):
   committed: commit a227f6d is empty. Fixed (every subprocess drops GIT_*;
   the hook refuses a check that changes the index).
 - In the VM every commit that touches code needs the build environment
-  (`CC=clang-19 ...`) on the `git commit` itself, or the hook's build fails
-  and aborts the commit, silently leaving the branch where it was: check
-  `git log` before pushing or naming a commit in a job.
+  (`CC=clang-19 ...`) on the `git commit` itself. Without it the fork
+  builds without SME2 (a warning; since September 25, 2026, the user's
+  choice for Linux systems with older compilers), and `perf_regress` fails
+  stop on an SME2 machine, which aborts the commit and silently leaves the
+  branch where it was: check `git log` before pushing or naming a commit
+  in a job.
 - `git reset --soft X && git commit` records the index; add `-a`.
 - Rebases and `--no-verify` skip the hook: compare such commits by hand.
 

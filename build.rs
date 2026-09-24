@@ -284,25 +284,23 @@ fn build_avx512_assembly() {
 
 // The SME2 assembly implementation needs an assembler that understands
 // `.arch armv9-a+sme2` (Clang/LLVM 17+, Xcode 15+, or binutils 2.41+ with
-// GCC 14+). This branch exists to measure SME2, so a toolchain without it is
-// a contract violation: fail the build with the fix in the message. Callers
-// who want a NEON-only build of this crate say so with the `no_sme2` feature.
-fn require_c_compiler_supports_sme2() {
+// GCC 14+). With an older compiler the crate builds without the SME2 kernel,
+// with a warning: only CPUs with SME2 (Apple M4 and later) run it, and the
+// NEON and scalar kernels serve every AArch64 CPU. Common Linux systems
+// (Debian 12, Raspberry Pi OS) ship such compilers. Callers who want a
+// NEON-only build regardless say so with the `no_sme2` feature.
+fn c_compiler_supports_sme2() -> bool {
     let build = new_build();
     let compiler = build.get_compiler().path().to_owned();
-    match build.is_flag_supported("-march=armv9-a+sme2") {
-        Ok(true) => {}
-        Ok(false) => panic!(
-            "blake3-servil requires a C compiler that assembles SME2, and {compiler:?} \
-             rejects -march=armv9-a+sme2. Point the cc crate at Clang/LLVM 17 or \
-             later (for example CC=clang-19), or Xcode 15 or later on macOS. To \
-             build this crate without the SME2 kernel, enable its `no_sme2` feature."
-        ),
-        Err(e) => panic!(
-            "blake3-servil requires a C compiler that assembles SME2, and none was \
-             found at {compiler:?}: {e:?}. Install Clang/LLVM 17 or later and set CC."
-        ),
+    let supported = matches!(build.is_flag_supported("-march=armv9-a+sme2"), Ok(true));
+    if !supported {
+        warn(&format!(
+            "blake3-servil: {compiler:?} cannot assemble SME2 (-march=armv9-a+sme2), so this \
+             build leaves out the SME2 kernel, which Apple M4 and later CPUs run. Clang/LLVM 17 \
+             or later (for example CC=clang-19), Xcode 15 or later, or GCC 14 or later builds it."
+        ));
     }
+    supported
 }
 
 fn build_sme2_assembly() {
@@ -436,15 +434,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // inputs that don't fill a group of sixteen. It is built on every
         // AArch64 target with NEON enabled and runtime detection (Apple
         // platforms and Linux, the same cfg as platform.rs's sme2_reported
-        // and Cargo.toml's libc dependency), and the build fails when the
-        // assembler lacks SME2 support. Platform::detect() selects the SME2
-        // kernels when the CPU reports SME2 with 512-bit streaming vectors
-        // and the NEON hybrids otherwise.
+        // and Cargo.toml's libc dependency) whose C compiler assembles SME2.
+        // Platform::detect() selects the SME2 kernels when the CPU reports
+        // SME2 with 512-bit streaming vectors and the NEON hybrids otherwise.
         let target_vendor = env::var("CARGO_CFG_TARGET_VENDOR").unwrap_or_default();
         let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
         if is_aarch64() && !is_no_sme2() && (target_vendor == "apple" || target_os == "linux") {
-            require_c_compiler_supports_sme2();
-            build_sme2_assembly();
+            if c_compiler_supports_sme2() {
+                build_sme2_assembly();
+            }
         }
     }
 
