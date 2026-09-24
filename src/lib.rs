@@ -967,8 +967,8 @@ fn condense_subtree<J: join::Join, const CVS: usize, const HALF: usize>(
 }
 
 // The root hash of an input of one chunk or less, in one kernel call. The
-// whole blocks are read in place; the final block (the only block, for an
-// input under 65 bytes, and the empty block for the empty input) is copied
+// whole blocks are read in place, the final one too when it is full; a
+// short final block (and the empty block for the empty input) is copied
 // into a zero-padded buffer, which is the copy ChunkState::update() makes
 // too. The scalar kernel runs on every AArch64 core, so this path needs no
 // platform check.
@@ -979,15 +979,23 @@ fn hash_one_chunk_root(input: &[u8], key: &CVWords, flags: u8) -> Hash {
     let blocks = cmp::max(1, input.len().div_ceil(BLOCK_LEN));
     let whole = (blocks - 1) * BLOCK_LEN;
     let tail = &input[whole..];
-    let mut last = Aligned64([0; BLOCK_LEN]);
-    last[..tail.len()].copy_from_slice(tail);
+    let padded;
+    let last: &[u8; BLOCK_LEN] = match tail.try_into() {
+        Ok(full) => full,
+        Err(_) => {
+            let mut block = Aligned64([0; BLOCK_LEN]);
+            block[..tail.len()].copy_from_slice(tail);
+            padded = block;
+            &padded
+        }
+    };
     let mut out = [0u8; OUT_LEN];
     // Safe: `input` holds `whole` bytes before `tail`, and blocks is 1..=16.
     unsafe {
         neon_hybrid::hash_chunk(
             input.as_ptr(),
             blocks,
-            &last,
+            last,
             tail.len() as u8,
             key,
             0,
