@@ -825,8 +825,13 @@ A scalar pass that stops at the threshold is 31% slower at 256 messages
 on the VM (any work before an SME2 call slows it there, NOTES above), so
 no pass is good on both machines; a rule without one must still find a
 large message in a small batch, and keep the pool for batches such as 500
-messages of 1 KiB. Open. (Runner jobs 052-053 are void: the branch they
-name still pointed at servil.)
+messages of 1 KiB. (Runner jobs 052-053 are void: the branch they name
+still pointed at servil.) **Fixed in fc8cc85:** fewer than 1024 messages
+of a block or less always hold under the threshold, and the serial scan
+reads each length right before its kernel call anyway; such batches go
+straight to it, which stops at the first longer message, and the split is
+decided for the rest. Mac A/B (jobs 065-068): servil mt at 512 messages
+12.40 -> 9.86 ns/msg (servil 9.83), every other point level.
 
 **hash() at 2-16 KiB: arrays sized to the input** (ee073d4). The subtree
 condenser zeroed 6 KiB (room for SME2's degree of 128) on every call; an
