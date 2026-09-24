@@ -19,7 +19,7 @@ Kernels: k<n> hashes n chunks. Composition per kernel:
   k2: pair                       k3: scalar + pair
   k4: two scalars + pair         k5: scalar + two pairs
   k6: two scalars + two pairs    k7: scalar + quad + pair
-  k8: two quads                  k9: scalar + two quads
+  k8: two scalars + quad + pair  k9: scalar + two quads
   k10: two scalars + two quads
 
 C ABI, every kernel:
@@ -1009,7 +1009,7 @@ def build():
         "k5": kernel("blake3_hybrid_k5", sc1(0), [pair(0, (1, 2)), pair(1, (3, 4))]),
         "k6": kernel("blake3_hybrid_k6", sc2(0, 1), [pair(0, (2, 3)), pair(1, (4, 5))]),
         "k7": kernel("blake3_hybrid_k7", sc1(0), [quad(0, (1, 2, 3, 4)), pair(1, (5, 6))]),
-        "k8": kernel("blake3_hybrid_k8", [], [quad(0, (0, 1, 2, 3)), quad(1, (4, 5, 6, 7))]),
+        "k8": kernel("blake3_hybrid_k8", sc2(0, 1), [quad(0, (2, 3, 4, 5)), pair(1, (6, 7))]),
         "k9": kernel("blake3_hybrid_k9", sc1(0), [quad(0, (1, 2, 3, 4)), quad(1, (5, 6, 7, 8))]),
         "k10": kernel("blake3_hybrid_k10", sc2(0, 1), [quad(0, (2, 3, 4, 5)), quad(1, (6, 7, 8, 9))]),
         # q<n>: n whole chunks and, in the last slot, a partial chunk on the
@@ -1044,10 +1044,10 @@ HEADER = """\
 // the input pointer itself instead of a table, and in x6 the address of the
 // last block, wherever it lies); k2 one NEON pair; k3 scalar +
 // pair; k4 two scalars + pair; k5 scalar + two pairs; k6 two scalars + two
-// pairs; k7 scalar + quad + pair; k8 two four-lane quads; k9 scalar + two
-// quads; k10 two scalars + two quads. p<n> hashes n contiguous 64-byte
-// parent blocks with one shared counter: p2 pair, p4 two pairs, p8 two
-// quads. Messages are transposed onto
+// pairs; k7 scalar + quad + pair; k8 two scalars + quad + pair; k9
+// scalar + two quads; k10 two scalars + two quads. p<n> hashes n
+// contiguous 64-byte parent blocks with one shared counter: p2 pair, p4
+// two pairs, p8 two quads. Messages are transposed onto
 // the stack each block and the second NEON unit's d row lives there too,
 // which is what lets two units of state share 32 vector registers.
 //

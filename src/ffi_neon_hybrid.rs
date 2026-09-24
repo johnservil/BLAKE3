@@ -38,7 +38,10 @@
 //! three (cycles per byte P / E: 1.00 / 1.51 against 1.19 / 2.08, and
 //! 1.02 / 1.52 against 1.10 / 1.89). E-cores have fewer integer units, so
 //! kernels with two scalar chunks (k4, k6, k10) run twice the P-core's
-//! cycles there, the others 1.1 to 1.6 times.
+//! cycles there, the others 1.1 to 1.6 times. k8 is two scalar chunks
+//! beside a quad and a pair, the user's choice over two quads: 18% fewer
+//! cycles on a P-core (7180 against 8718 for eight chunks), 6.5% more on an
+//! E-core (14170 against 13310).
 //!
 //! The scalar kernel also serves every single-chunk job: `hash_chunk` runs
 //! a whole input of one chunk or less, root compression included, in one
