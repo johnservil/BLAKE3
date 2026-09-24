@@ -1,0 +1,1 @@
+gate: suites pass (63/62/53 lib, 19 doc, 2 vectors, bench 6) on this tree; VM perf_regress against 2a69249: no regression (pre-commit check); Mac perf_regress compare 2a69249 fe9fdb4: no regression (runner job 009, bench 3b20911); Mac hash() 12 KiB P 1.24 -> 1.16, E 2.10 -> 1.72 cycles/B (job 010)
