@@ -1014,6 +1014,9 @@ def build():
         "k10": kernel("blake3_hybrid_k10", sc2(0, 1), [quad(0, (2, 3, 4, 5)), quad(1, (6, 7, 8, 9))]),
         # q<n>: n whole chunks and, in the last slot, a partial chunk on the
         # scalar side, which finishes early; the others run on alone.
+        # q1: one whole chunk on a NEON pair (its second lane, slot 2, a
+        # duplicate whose value is dropped) and the partial chunk in slot 1.
+        "q1": kernel("blake3_hybrid_q1", sc1(1), [lone_pair((0, 2))], partial=True),
         "q2": kernel("blake3_hybrid_q2", sc1(2), [lone_pair((0, 1))], partial=True),
         "q3": kernel("blake3_hybrid_q3", sc2(0, 3), [lone_pair((1, 2))], partial=True),
         "q4": kernel("blake3_hybrid_q4", sc1(4), [pair(0, (0, 1)), pair(1, (2, 3))], partial=True),

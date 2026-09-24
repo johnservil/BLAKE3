@@ -152,6 +152,15 @@ mod asm {
         /// partial chunk is the last input, read as `blocks` whole blocks
         /// (zero-padded), its final block recording `last_len` bytes;
         /// `partial` is `blocks | last_len << 8`.
+        pub fn blake3_hybrid_q1(
+            inputs: *const *const u8,
+            blocks: u64,
+            key: *const u32,
+            counter: u64,
+            packed_flags: u64,
+            out: *mut u8,
+            partial: u64,
+        );
         pub fn blake3_hybrid_q2(
             inputs: *const *const u8,
             blocks: u64,
@@ -449,9 +458,10 @@ pub unsafe fn hash_chunk(
 /// [`Kernel`] and the partial chunk's `blocks | last_len << 8`.
 type PartialKernel = unsafe extern "C" fn(*const *const u8, u64, *const u32, u64, u64, *mut u8, u64);
 
-/// The q kernel for `n` whole chunks plus a partial chunk, `n` in 2..=9.
+/// The q kernel for `n` whole chunks plus a partial chunk, `n` in 1..=9.
 fn partial_kernel(n: usize) -> PartialKernel {
     match n {
+        1 => asm::blake3_hybrid_q1,
         2 => asm::blake3_hybrid_q2,
         3 => asm::blake3_hybrid_q3,
         4 => asm::blake3_hybrid_q4,
@@ -464,23 +474,33 @@ fn partial_kernel(n: usize) -> PartialKernel {
     }
 }
 
-/// Whether [`hash_chunks_with_partial`] takes `n` whole chunks: 2 through
+/// Whether [`hash_chunks_with_partial`] takes `n` whole chunks: 1 through
 /// 15 but 10 (from 16 the SME2 kernels or a second call take the whole
-/// chunks). Ten whole chunks are one k10 call, the kernel with the fewest
-/// cycles per byte; every split into a lead plan and a q kernel costs more
-/// than the partial chunk after it (VM, 10 KiB + 500 B: 3097 ns against
-/// 2790), where 11 to 15 gain 1-11%.
-pub fn partial_covers(n: usize) -> bool {
-    (2..GROUP).contains(&n) && n != 10
+/// chunks).
+fn partial_covers(n: usize) -> bool {
+    (1..GROUP).contains(&n) && n != 10
+}
+
+/// Whether `n` whole chunks and a partial chunk of `len` bytes hash
+/// faster through [`hash_chunks_with_partial`] than the whole chunks and
+/// then the partial one. Ten whole chunks are one k10 call, the kernel with
+/// the fewest cycles per byte; every split into a lead plan and a q kernel
+/// costs more than the partial chunk after it (VM, 10 KiB + 500 B: 3097 ns
+/// against 2790), where 11 to 15 gain 1-11%. One whole chunk moves from the
+/// scalar kernel to q1's NEON pair, whose time does not grow with the
+/// partial chunk: from five blocks on, the M4 Max's P-cores are level or
+/// faster and its E-cores faster (1300 B: P level, E -14%; 2000 B: P -32%,
+/// E -36%); at two blocks (1100 B) P-cores paid 14%.
+pub fn partial_pays(n: usize, len: usize) -> bool {
+    partial_covers(n) && (n > 1 || len > 4 * BLOCK_LEN)
 }
 
 /// The chaining values of `chunks` (whole, at `counter` on) and of
 /// `partial` (1 to 1023 bytes, the chunk after them) into `out`: the last
 /// up to nine whole chunks and the partial chunk in one q kernel call, the
 /// partial chunk on the scalar units beside them; any whole chunks before
-/// those through the usual plans. Requires [`partial_covers`] for
-/// `chunks.len()`, room in `out` for `chunks.len() + 1` values, and the
-/// SHA-3 extension.
+/// those through the usual plans. Requires 1 to 15 whole chunks but 10,
+/// room in `out` for `chunks.len() + 1` values, and the SHA-3 extension.
 pub unsafe fn hash_chunks_with_partial(
     chunks: &[&[u8; CHUNK_LEN]],
     partial: &[u8],
@@ -491,7 +511,7 @@ pub unsafe fn hash_chunks_with_partial(
     flags_end: u8,
     out: &mut [u8],
 ) {
-    assert!(partial_covers(chunks.len()), "2 to 15 whole chunks");
+    assert!(partial_covers(chunks.len()), "1 to 15 whole chunks but 10");
     assert!(!partial.is_empty() && partial.len() < CHUNK_LEN, "a partial chunk holds 1 to 1023 bytes");
     assert!(out.len() >= (chunks.len() + 1) * OUT_LEN);
     // Ten whole chunks and more: the first ones through the usual plans,
@@ -516,6 +536,30 @@ pub unsafe fn hash_chunks_with_partial(
     let (chunks, counter, out) = (&chunks[lead..], counter + lead as u64, &mut out[lead * OUT_LEN..]);
     let n = chunks.len();
     let kernel = partial_kernel(n);
+    if n == 1 {
+        // q1's pair takes the whole chunk twice (slots 0 and 2); the
+        // partial chunk is slot 1; the duplicate's value is dropped.
+        let blocks = partial.len().div_ceil(BLOCK_LEN);
+        let last_len = partial.len() - (blocks - 1) * BLOCK_LEN;
+        let mut padded = [0u8; CHUNK_LEN];
+        padded[..partial.len()].copy_from_slice(partial);
+        let table = [chunks[0].as_ptr(), padded.as_ptr(), chunks[0].as_ptr()];
+        let mut cvs = [0u8; 3 * OUT_LEN];
+        let packed = flags as u64 | (flags_start as u64) << 8 | (flags_end as u64) << 16 | (BLOCK_LEN as u64) << 24;
+        unsafe {
+            kernel(
+                table.as_ptr(),
+                (CHUNK_LEN / BLOCK_LEN) as u64,
+                key.as_ptr(),
+                counter,
+                packed,
+                cvs.as_mut_ptr(),
+                blocks as u64 | (last_len as u64) << 8,
+            );
+        }
+        out[..2 * OUT_LEN].copy_from_slice(&cvs[..2 * OUT_LEN]);
+        return;
+    }
     let blocks = partial.len().div_ceil(BLOCK_LEN);
     let last_len = partial.len() - (blocks - 1) * BLOCK_LEN;
     // The partial chunk as whole blocks: its bytes, then zeros to the end
