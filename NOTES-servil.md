@@ -868,7 +868,12 @@ shared cells lose the mode where both copies hold an SME unit (1 MiB
 0.178 -> 0.224; batches 128 and up +25-50%) and gain the one where they
 share one (batches 16-64 18.9 -> 12.3). `perf_regress` gave no verdict
 on either machine: the control moved, on the new side, in 2-3 cells,
-since the change alters what the shared cells leave behind.
+since the change alters what the shared cells leave behind. Four more
+Mac runs (jobs 069-072): list 36/37/38/36, E-core share 5.1/0.0/0.0/4.4%.
+On the VM (four thorough runs, `tmp/vm-thorough-*`) the two SME2 copies
+nearly always share a unit: servil shared 64 KiB-8 MiB 0.311-0.316 ns/B,
+behind SHA-256 ring (0.30); with the turn, median 0.173-0.218 and 90th
+percentile 0.263-0.288; list 43/36/37/43.
 
 **SME2 batch calls want to run back to back** (`probe/sme2-gap`, job 063;
 `tmp/ecore/mt512.rs`, the benchmark's `servil_batch` replayed). On the
