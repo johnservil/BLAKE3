@@ -914,7 +914,9 @@ fn compress_subtree_wide<J: join::Join>(
 // Kept out of line, that frame belongs to this function alone; inlined into
 // hash() or update(), it would grow their frames past a page, and every call
 // (including the one-chunk path that never touches these arrays) would pay
-// for stack probing and zeroing.
+// for stack probing and zeroing. An input of sixteen chunks or fewer has
+// sixteen chaining values at most, and gets arrays of that size (768 bytes)
+// in place of zeroing 6 KiB for a few chunks.
 #[inline(never)]
 fn compress_subtree_to_parent_node<J: join::Join>(
     input: &[u8],
@@ -924,18 +926,41 @@ fn compress_subtree_to_parent_node<J: join::Join>(
     platform: Platform,
 ) -> [u8; BLOCK_LEN] {
     debug_assert!(input.len() > CHUNK_LEN);
-    let mut cv_array = [0; MAX_SIMD_DEGREE_OR_2 * OUT_LEN];
-    let mut num_cvs =
-        compress_subtree_wide::<J>(input, &key, chunk_counter, flags, platform, &mut cv_array);
+    if input.len() <= SMALL_TREE_CHUNKS * CHUNK_LEN {
+        condense_subtree::<J, SMALL_TREE_CHUNKS, { SMALL_TREE_CHUNKS / 2 }>(input, key, chunk_counter, flags, platform)
+    } else {
+        condense_subtree::<J, MAX_SIMD_DEGREE_OR_2, { MAX_SIMD_DEGREE_OR_2 / 2 }>(input, key, chunk_counter, flags, platform)
+    }
+}
+
+/// Chaining values the small arrays of `compress_subtree_to_parent_node`
+/// hold: an input of this many chunks has no more.
+const SMALL_TREE_CHUNKS: usize = 16;
+
+/// `compress_subtree_to_parent_node` with room for `CVS` chaining values,
+/// which must cover the most `compress_subtree_wide` returns for `input`,
+/// and `HALF` = `CVS / 2` parents.
+#[inline(always)]
+fn condense_subtree<J: join::Join, const CVS: usize, const HALF: usize>(
+    input: &[u8],
+    key: &CVWords,
+    chunk_counter: u64,
+    flags: u8,
+    platform: Platform,
+) -> [u8; BLOCK_LEN] {
+    let mut cv_array = [[0u8; OUT_LEN]; CVS];
+    let cv_array = cv_array.as_flattened_mut();
+    let mut num_cvs = compress_subtree_wide::<J>(input, &key, chunk_counter, flags, platform, cv_array);
     debug_assert!(num_cvs >= 2);
 
     // If MAX_SIMD_DEGREE is greater than 2 and there's enough input,
     // compress_subtree_wide() returns more than 2 chaining values. Condense
     // them into 2 by forming parent nodes repeatedly.
-    let mut out_array = [0; MAX_SIMD_DEGREE_OR_2 * OUT_LEN / 2];
+    let mut out_array = [[0u8; OUT_LEN]; HALF];
+    let out_array = out_array.as_flattened_mut();
     while num_cvs > 2 {
         let cv_slice = &cv_array[..num_cvs * OUT_LEN];
-        num_cvs = compress_parents_parallel(cv_slice, key, flags, platform, &mut out_array);
+        num_cvs = compress_parents_parallel(cv_slice, key, flags, platform, out_array);
         cv_array[..num_cvs * OUT_LEN].copy_from_slice(&out_array[..num_cvs * OUT_LEN]);
     }
     cv_array[..2 * OUT_LEN].try_into().unwrap()
