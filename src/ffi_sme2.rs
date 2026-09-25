@@ -268,6 +268,7 @@ unsafe fn flat_walk(input: &[u8], key: &CVWords, chunk_counter: u64, flags: u8, 
     assert!(flat_takes(input.len()), "a whole subtree of 32 to 1024 chunks");
     assert!(keep == DEGREE || keep == 2 || keep == 1, "the flat walk keeps DEGREE, 2, or 1 chaining values");
     assert!(out.len() >= keep * OUT_LEN, "room for the chaining values kept");
+    assert!(keep < input.len() / CHUNK_LEN, "the flat walk keeps fewer chaining values than its subtree has chunks");
     let n = input.len() / CHUNK_LEN;
     #[cfg(feature = "std")]
     if let Ok(base) = SCRATCH_BLOCK.try_with(|block| block.get() as *mut u8) {
@@ -471,7 +472,7 @@ mod test {
         let mut chunks = FLAT_MIN_CHUNKS;
         while chunks <= FLAT_MAX_CHUNKS {
             let data = &input[..chunks * CHUNK_LEN];
-            for keep in [2, DEGREE] {
+            for keep in [1, 2, DEGREE].into_iter().filter(|&keep| keep < chunks) {
                 let (mut a, mut b) = ([0u8; DEGREE * OUT_LEN], [0u8; DEGREE * OUT_LEN]);
                 unsafe {
                     flat_walk(data, &key, 7 * chunks as u64, 0, keep, &mut a);
