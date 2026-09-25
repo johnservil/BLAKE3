@@ -311,6 +311,7 @@ fn build_sme2_assembly() {
     println!("cargo::rustc-cfg=blake3_sme2");
     let mut build = new_build();
     build.file("c/blake3_sme2_aarch64.S");
+    build.file("c/blake3_sme2_hybrid_aarch64.S");
     build.flag("-march=armv9-a+sme2");
     build.compile("blake3_sme2_assembly");
 }
