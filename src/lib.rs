@@ -1315,6 +1315,11 @@ pub fn kernel_report() -> KernelReport {
                 name: "SME2 hash16_chunks kernel",
                 why: "Sixteen whole chunks fill one group on 512-bit streaming vectors, up to eight groups per call; a remainder below sixteen stays on the hybrid kernels.",
             });
+            kernels.push(Kernel {
+                from_len: sme2::FLAT_MIN_CHUNKS * CHUNK_LEN,
+                name: "SME2 groups with an integer lane, flat walk",
+                why: "Each whole subtree of 256 KiB to 1 MiB is hashed bottom up on SME2 alone: its chunks in groups of eighteen (sixteen on the streaming vectors, two on the integer units beside them) and sixteen, then every parent level on the SME2 parent kernel, so the SME unit never waits on other work.",
+            });
         }
     }
     #[cfg(not(blake3_neon_hybrid))]
@@ -1405,11 +1410,12 @@ pub fn kernel_report_many_multithreaded() -> KernelReport {
 }
 
 /// What [`hash_multithreaded`] runs at each input length: [`kernel_report`]
-/// plus, from the length at which a call may leave the calling thread,
-/// the split across threads.
+/// below the length at which a call may leave the calling thread, and from
+/// there the split across threads (its pieces run the kernels below it).
 #[cfg(feature = "std")]
 pub fn kernel_report_multithreaded() -> KernelReport {
     let mut report = kernel_report();
+    report.kernels.retain(|kernel| kernel.from_len < lanes::MIN_SPLIT_LEN);
     report.kernels.push(Kernel {
         from_len: lanes::MIN_SPLIT_LEN,
         name: "subtrees over threads",
