@@ -481,10 +481,10 @@ all); marks two-speed cells.
 
 ## Testing
 
-    cargo test --release --lib                      # 67 tests
-    cargo test --release --features no_sme2 --lib   # 66
-    cargo test --release --features pure --lib      # 56
-    cargo test --release --doc                      # 19
+    cargo test --release --lib                      # 71 tests
+    cargo test --release --features no_sme2 --lib   # 67
+    cargo test --release --features pure --lib      # 57
+    cargo test --release --doc                      # 20
     cargo test --release --manifest-path test_vectors/Cargo.toml   # 2
     cargo test --release --manifest-path bench-hashes/Cargo.toml   # 7
 
