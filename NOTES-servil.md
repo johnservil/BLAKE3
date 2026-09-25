@@ -229,6 +229,44 @@ and zero them); arrays sized for 16 chaining values at 2-16 KiB in place
 of 6 KiB made 2-4 KiB 4-5% faster. Watch frame sizes whenever
 `MAX_SIMD_DEGREE` or a stack buffer changes.
 
+**Energy per byte** (probe/energy, jobs 154-160, September 25, 2026, M4
+Max, the Mac quiet). The process's `proc_pid_rusage` RUSAGE_INFO_V6
+counters: `ri_energy_nj` and `ri_penergy_nj` read sleep as 0.000-0.009 W
+and a scalar spin loop as a steady 2.7-3.4 W on a P-core, 0.046-0.057 W
+on an E-core; `ri_billed_energy` reads 0 always (unused). They are the
+kernel's estimate; whether it includes the SME unit's own power is
+unknown (powermetrics, which needs root, would tell). pJ/B, median of 5
+stretches, spread under 5% unless noted:
+
+    kernel (single thread)        P-core QoS          E-core QoS
+    SME2, 1-8 MiB                 689  (4.5 W)        85-89 (0.15-0.18 W)
+    SME2, 16 KiB-256 KiB          620-703             67-81
+    SME2 batches (1024 x 64 B)    522-571             67-70
+    NEON (no_sme2), 16 KiB-8 MiB  1850-1990 (7.5-7.9 W) 222-228
+    NEON hybrids, 8 KiB           1891-2023           210-239
+    scalar c1, 1 KiB              2585-2741           318-345
+
+So SME2 costs 2.5-3x less energy per byte than NEON on both core kinds,
+and E-cores 8-9x less than P-cores for the same kernel (3x slower). The
+multithreaded calls, 8 MiB: all threads 1816-1891 pJ/B (72 W); with a
+budget of 2 threads 2743 (20 W) against 1226 for the caller and one
+scoped thread each running `hash`: the pool's idle workers, polling on
+P-cores through the call, cost about half of it. At background QoS the
+pool's workers stay on P-cores (95-97% of the energy is P-core energy).
+
+Candidate efficient designs, 8 MiB in 64 KiB pieces pulled from a cursor
+(threads spawned per call; job 158, then 160), caller at P QoS: the
+caller on `hash` beside 4 E-core helpers on NEON (background QoS) 0.120 /
+0.138 ns/B and 464 / 454 pJ/B, against `hash` alone 0.152 and 689:
+faster and a third less energy. At 1 MiB level (0.157 against 0.152); at
+256 KiB 1.7x slower (spawn and the helpers' first pieces). The caller
+beside one E-core thread on `hash` (both SME units) 0.177: slower than the
+caller alone, rejected. The caller beside 4 P-core NEON threads 0.060
+ns/B at 1450 pJ/B, against the pool with 4 threads, 0.074 at 2300: the
+caller's own pieces on SME2 and no idle pollers beat the pool on both.
+At background QoS the helpers make the call 2.2x faster at about twice
+the energy (NEON on E-cores 225 pJ/B against SME2's 85).
+
 ## The design, and why
 
 **Single chunk (to 1 KiB)**: c1 does the whole chunk and root in one call,
