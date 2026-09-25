@@ -320,7 +320,7 @@ unsafe fn walk_in(input: &[u8], key: &CVWords, chunk_counter: u64, flags: u8, ke
     let (mut src, mut dst) = unsafe { (base.add(cvs_at), base.add(half_at)) };
 
     let chunk_flags = flags as u32 | (crate::CHUNK_START as u32) << 8 | (crate::CHUNK_END as u32) << 16;
-    let lane_groups = 8 * (n / 144);
+    let lane_groups = 0 * (n / 144);
     let plain_groups = (n - HYBRID_GROUP * lane_groups) / GROUP;
     debug_assert_eq!(HYBRID_GROUP * lane_groups + GROUP * plain_groups, n);
     unsafe {
