@@ -353,6 +353,20 @@ Polls are loads only; `cursor` and `active` sit on their own lines
 `initialize()` spawns the workers; the first multithreaded call does if the
 program has not (documented: up to tens of milliseconds, once).
 
+**The SME2 thread** (0366e48, September 25, 2026): a multithreaded call
+that gets the SME2 turn hashes a prefix of its input itself, in whole
+subtrees of up to 1 MiB back to back, sized to 1.65 NEON threads' worth
+(none below 128 KiB), then helps on NEON. The split came from a sweep
+(probe/sme2-thread, job 187: 62% beside one NEON thread, 38% beside three,
+12% beside fifteen, on both machines). Budgets, against the NEON pool
+(jobs 188-191): Mac 2 threads -20 to -25%, 4 -8 to -14%, 8 -3 to -8%, all
+level to -7%; VM 2 -24 to -29%, 4 -13 to -19%, 8 -3 to -11%, all level. Two
+threads now beat one at every size (they did not: 1 MiB 0.160 against
+0.146 on the Mac). A 24 KiB prefix at 256 KiB over 16 threads cost 18-20%
+(VM), hence the floor. **Two SME units are reachable**: two threads running
+the raw chunk kernel at once, 2.0-2.4x one's throughput on the Mac, 1.7-2.0x
+on the VM (job 187); a second SME2 thread in the pool is the next idea.
+
 **Batches over the pool**: messages gathered into ranges by
 `next_piece_len`; servil mt below the split threshold hashes on the
 calling thread, and fewer than 1024 messages of a block or less go there
