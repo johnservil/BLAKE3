@@ -1,0 +1,1 @@
+gate: suites pass (71/67/57 lib, 20 doc, 2 vectors, bench 7); VM perf_regress against 67e88b9 (servil): no regression (pre-commit), Hasher probe 256 KiB pieces -4%; Mac perf_regress compare 67e88b9 0220e69: no regression (runner job 180); Mac probe jobs 176-179 (old/new/new/old): Hasher 256 KiB pieces 0.1676 -> 0.1596 ns/B (-4.8%), 64 KiB pieces level
