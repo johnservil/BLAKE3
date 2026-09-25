@@ -28,6 +28,30 @@ Sixteen actions that improve writing:
 
 Every piece of information in a UI, a report, or a document costs its reader attention and risks fatigue and overflow. Review each one with two questions: who is this designed for, and which information pays that reader much more than it costs them? Keep what passes; cut the rest. Information for maintainers (diagnostics, spreads, provenance details, internal names) stays out of what users read; it belongs in maintainer notes, logs, and diagnostic flags.
 
+## Presentation: write each page for a reader who holds only the page
+
+A page (a graph, a report, a README, a docstring) carries its own context:
+
+- **Its terms:** each is common knowledge or introduced on the page.
+- **Its questions:** each sentence answers a question the page itself raises, in the order the reader meets them.
+- **Its tense:** the page describes what is, as it is now. How it got here belongs to commit messages and notes.
+
+**Three readers.** Picture the page's readers at three depths of context and serve them together:
+
+- the *newcomer*, who landed on the page from idle curiosity and holds only the page;
+- the *regular*, who knows the tool and opens its details;
+- the *maintainer* (Zooko, John Servil, and their like), who knows its history; maintainers' documents and comments in the page's source serve this reader.
+
+Keep what serves one reader and reads cleanly to the others; an item legible to one reader alone moves behind a door or into the maintainers' documents. Writers naturally picture themselves as the reader, so name the three readers explicitly while reviewing.
+
+**Show before you tell.** Position, shape, colour, grouping, arrows, and absence carry meaning at a glance, and words and numbers follow them. A hash of the run that takes no part in a plot appears in its legend in pale, still type; an arrow runs beside "higher is better" pointing up; a band on a strip shows which part of the inputs the plots show. A mark beside its words, parallel to them, lets the reader take in both at once.
+
+**Doors.** Details sit behind doors (a collapsed section, a tooltip, a panel that opens on a click), each placed for the reader who wants what is behind it. The door itself tells every other reader that the page is theirs to enjoy without it.
+
+**Generated text is computed from what the page shows.** A sentence about the page's own contents is built from the same data as the page, so it names only what is on the page, whatever options produced it.
+
+**A revision ends with a fresh reading.** After every change, reread the whole page (for a graph, a render of it) as each of the three readers; the revision is done when the page reads as if written fresh.
+
 ## Simplicity
 
 Prefer the simplest design that meets the contract and performs well.
