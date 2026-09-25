@@ -1,6 +1,8 @@
 [package]
 name = "blake3-servil"
-version = "1.8.7"
+# The fork's own version series (servil-v<version> tags), from 0.1.0; it is
+# based on upstream BLAKE3 1.8.7.
+version = "0.1.0"
 authors = ["Jack O'Connor <oconnor663@gmail.com>", "Samuel Neves", "John Servil"]
 description = "the BLAKE3 hash function, with SME2 and integer + NEON kernels for AArch64 and a shared thread pool"
 repository = "https://github.com/johnservil/BLAKE3"
