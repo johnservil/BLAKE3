@@ -2,7 +2,8 @@
 
 This is the `servil` branch of John Servil's fork, published as the
 crate `blake3-servil` so it links beside crates.io `blake3`. It has its
-own version series (tags `servil-v0.1.0` and on), based on BLAKE3 1.8.7. It adds SME2
+own version series from 0.1.0 (tags `vX.Y.Z+<commit>`), based on BLAKE3
+1.8.7. It adds SME2
 and integer + NEON kernels for AArch64, `hash_multithreaded` over a pool
 shared by every caller, `hash_many` for batches of messages, and
 `kernel_report()`. To use it:
