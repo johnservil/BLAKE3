@@ -352,7 +352,7 @@ mod test {
             hasher.finalize(&mut out);
             out
         };
-        for chunks in [FLAT_MIN_CHUNKS - 1, FLAT_MIN_CHUNKS, FLAT_MIN_CHUNKS + 1, 2 * FLAT_MIN_CHUNKS, FLAT_MAX_CHUNKS, FLAT_MAX_CHUNKS + 1, 2 * FLAT_MAX_CHUNKS, 3 * FLAT_MAX_CHUNKS] {
+        for chunks in [FLAT_MIN_CHUNKS - 1, FLAT_MIN_CHUNKS, FLAT_MIN_CHUNKS + 1, 2 * FLAT_MIN_CHUNKS, LANE_MIN_CHUNKS / 2, LANE_MIN_CHUNKS - 1, LANE_MIN_CHUNKS, 2 * LANE_MIN_CHUNKS, FLAT_MAX_CHUNKS, FLAT_MAX_CHUNKS + 1, 2 * FLAT_MAX_CHUNKS, 3 * FLAT_MAX_CHUNKS] {
             for extra in [0, 1, 1000] {
                 let data = &input[..chunks * CHUNK_LEN + extra];
                 assert_eq!(*crate::hash(data).as_bytes(), reference(data, false), "{chunks} chunks + {extra}");
