@@ -33,6 +33,19 @@ unsafe fn walk(piece: &[u8], n: usize, s: *mut u8, platform: blake3_servil::plat
     }
 }
 
+#[inline(never)]
+fn at_depth(depth: usize, f: &mut dyn FnMut() -> f64) -> (usize, f64) {
+    let pad = [0u8; 64];
+    black_box(&pad);
+    if depth == 0 {
+        let at = black_box(&pad) as *const _ as usize;
+        return (at, f());
+    }
+    let r = at_depth(depth - 1, f);
+    black_box(&pad);
+    r
+}
+
 fn main() {
     clocks::set_qos(clocks::USER_INTERACTIVE);
     let platform = blake3_servil::platform::Platform::detect();
@@ -40,23 +53,32 @@ fn main() {
     let mut arena = vec![0u8; 64 << 10];
     let base = arena.as_mut_ptr();
     let input_at = input.as_ptr() as usize;
-    println!("probe/scratch-offset: platform {}, input at {:#x}", blake3_servil::kernel_report().platform, input_at);
-    for n in [32usize, 64] {
-        for round in 0..2 {
-            let mut line = format!("{} KiB round {round}:", n);
-            for step in 0..64 {
-                let delta = step * 64;
-                // scratch ≡ input + delta (mod 4096), 128-byte aligned where delta allows.
-                let want = (input_at + delta) % 4096;
-                let off = (want + 4096 - (base as usize % 4096)) % 4096;
-                let s = unsafe { base.add(off) };
+    println!("probe/stack-vs-scratch: platform {}, input at {:#x}", blake3_servil::kernel_report().platform, input_at);
+    let s = unsafe { base.add((input_at + 1024 + 4096 - base as usize % 4096) % 4096) };
+    for round in 0..2 {
+        let mut rows = Vec::new();
+        for depth in 0..48 {
+            let mut f = || {
                 let m = clocks::measure(5, 8_000, || {
-                    for piece in black_box(&input).chunks(n * 1024) { unsafe { walk(piece, n, s, platform) } }
+                    for piece in black_box(&input).chunks(32 * 1024) { unsafe { walk(piece, 32, s, platform) } }
                 }).fastest();
-                line += &format!(" {delta}:{:.2}", m.per_ns());
-                if step == 0 { line += &format!("[{:.4} ns/B]", m.ns / input.len() as f64); }
-            }
-            println!("{line}");
+                m.per_ns()
+            };
+            rows.push(at_depth(depth, &mut f));
         }
+        rows.sort_by_key(|r| r.0 % 4096);
+        println!("round {round}, 32 KiB, heap scratch, by stack address mod 4K: {}", rows.iter().map(|(a, c)| format!("{}:{:.2}", a % 4096, c)).collect::<Vec<_>>().join(" "));
+        let mut rows = Vec::new();
+        for depth in 0..48 {
+            let mut f = || {
+                let m = clocks::measure(5, 8_000, || {
+                    for piece in black_box(&input).chunks(32 * 1024) { black_box(blake3_servil::hash(piece)); }
+                }).fastest();
+                m.per_ns()
+            };
+            rows.push(at_depth(depth, &mut f));
+        }
+        rows.sort_by_key(|r| r.0 % 4096);
+        println!("round {round}, 32 KiB, hash(), by stack address mod 4K: {}", rows.iter().map(|(a, c)| format!("{}:{:.2}", a % 4096, c)).collect::<Vec<_>>().join(" "));
     }
 }
