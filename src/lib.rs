@@ -30,6 +30,33 @@
 //! # }
 //! ```
 //!
+//! # For best performance
+//!
+//! - **Hand over whole inputs.** One [`hash`] call on a whole input runs
+//!   fastest. When the input arrives in pieces, feed [`Hasher::update`]
+//!   pieces of 1 MiB or more: on an Apple M4 Max, 8 MiB in 1 MiB pieces
+//!   hashes at the speed of one call, in 256 KiB pieces about 12% slower,
+//!   in 64 KiB pieces about 40% slower.
+//! - **Use [`hash_multithreaded`] for inputs of 64 KiB and more** when the
+//!   program can spare the CPUs (8 MiB: about 6x [`hash`]'s speed on an M4
+//!   Max), and [`Hasher::update_multithreaded`] for large pieces of a
+//!   stream. Call [`initialize`] at start-up: the first multithreaded call
+//!   of a process otherwise starts the worker threads, about a millisecond.
+//! - **Batch small messages with [`hash_many`]**: 1024 messages of 64
+//!   bytes hash about 5x faster in one call than in a loop of [`hash`].
+//! - **Make the calls from one thread.** The multithreaded functions
+//!   spread the work themselves. On Apple M4 and later, several threads
+//!   hashing at once share one SME unit: one runs at full speed and the
+//!   others slower.
+//! - **For the least energy**, hash single-threaded, and at background
+//!   priority (macOS: `QOS_CLASS_BACKGROUND`) when the time allows: on an
+//!   M4 Max, E-cores hash a byte for about an eighth of the energy that
+//!   P-cores spend, at a third to a quarter of the speed, and
+//!   multithreaded calls spend about 2.7x the energy per byte of [`hash`].
+//!
+//! [`kernel_report`] says which code paths run at each input length on
+//! this machine.
+//!
 //! # Cargo Features
 //!
 //! The `std` feature (the only feature enabled by default) enables the

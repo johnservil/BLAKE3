@@ -13,7 +13,10 @@ shared by every caller, `hash_many` for batches of messages, and
 blake3-servil = { git = "https://github.com/johnservil/BLAKE3", branch = "servil" }
 ```
 
-and call `blake3_servil::hash` as you would `blake3::hash`.
+and call `blake3_servil::hash` as you would `blake3::hash`. The crate
+documentation's "For best performance" section says how to call it for
+full speed: whole inputs or large pieces, `hash_multithreaded` for large
+inputs, `hash_many` for batches, and all calls from one thread.
 [bench-hashes](https://github.com/johnservil/bench-hashes) compares it
 with the official crate and with SHA-256 on your own machine; its
 [results](https://johnservil.github.io/bench-hashes/benchmark-results/AppleM4Max.darwin25/bench-hashes.graph.svg)
