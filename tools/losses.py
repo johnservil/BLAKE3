@@ -27,10 +27,9 @@ import statistics
 from collections import defaultdict
 
 SUBJECTS = ["blake3-servil-st", "blake3-servil-mt"]
-MULTITHREADED = {"blake3-mt", "blake3-servil-mt"}
-# Records before September 25, 2026 name the single-threaded contender
-# blake3-servil.
-RENAMED = {"blake3-servil": "blake3-servil-st"}
+MULTITHREADED = {"blake3-official-mt", "blake3-servil-mt"}
+# Records before September 25, 2026 name the contenders by their old keys.
+RENAMED = {"blake3-servil": "blake3-servil-st", "blake3": "blake3-official", "blake3-mt": "blake3-official-mt"}
 
 
 def speeds(values):
