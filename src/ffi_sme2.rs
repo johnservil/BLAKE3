@@ -251,12 +251,22 @@ pub unsafe fn compress_subtree_flat_to_parent(input: &[u8], key: &CVWords, chunk
     out
 }
 
-/// The flat walk until `keep` chaining values remain (DEGREE or 2), which
-/// it copies into `out`.
+/// The flat walk down to the subtree's own chaining value, for a subtree
+/// that cannot be the root (input comes before it). Unsafe for the
+/// reasons of [`compress_subtree_flat`].
+#[inline(never)]
+pub unsafe fn compress_subtree_flat_to_cv(input: &[u8], key: &CVWords, chunk_counter: u64, flags: u8) -> crate::CVBytes {
+    let mut out = [0u8; OUT_LEN];
+    unsafe { flat_walk(input, key, chunk_counter, flags, 1, &mut out) };
+    out
+}
+
+/// The flat walk until `keep` chaining values remain (DEGREE, 2, or 1),
+/// which it copies into `out`.
 #[inline(always)]
 unsafe fn flat_walk(input: &[u8], key: &CVWords, chunk_counter: u64, flags: u8, keep: usize, out: &mut [u8]) -> usize {
     assert!(flat_takes(input.len()), "a whole subtree of 32 to 1024 chunks");
-    assert!(keep == DEGREE || keep == 2, "the flat walk keeps DEGREE or 2 chaining values");
+    assert!(keep == DEGREE || keep == 2 || keep == 1, "the flat walk keeps DEGREE, 2, or 1 chaining values");
     assert!(out.len() >= keep * OUT_LEN, "room for the chaining values kept");
     let n = input.len() / CHUNK_LEN;
     #[cfg(feature = "std")]

@@ -1865,6 +1865,26 @@ impl Hasher {
             // that one chunk by itself. Otherwise, compress the subtree into a
             // pair of CVs.
             let subtree_chunks = (subtree_len / CHUNK_LEN) as u64;
+            // After the first input, no subtree is the root: on SME2 the flat
+            // walk runs it down to its own chaining value, so one value goes
+            // on the stack and about one merge runs on the core between
+            // SME2 kernels (about 0.2 us of other work between them puts the
+            // SME unit in its slow state; NOTES-servil.md).
+            #[cfg(blake3_sme2)]
+            if !pooled
+                && self.chunk_state.chunk_counter > self.initial_chunk_counter
+                && matches!(turn.platform(), Platform::SME2)
+                && sme2::flat_takes(subtree_len)
+            {
+                // Safe: the SME2 platform is selected only where the CPU has it.
+                let cv = unsafe {
+                    sme2::compress_subtree_flat_to_cv(&input[..subtree_len], &self.key, self.chunk_state.chunk_counter, self.chunk_state.flags)
+                };
+                self.push_cv(&cv, self.chunk_state.chunk_counter);
+                self.chunk_state.chunk_counter += subtree_chunks;
+                input = &input[subtree_len..];
+                continue;
+            }
             if subtree_len <= CHUNK_LEN {
                 debug_assert_eq!(subtree_len, CHUNK_LEN);
                 self.push_cv(
