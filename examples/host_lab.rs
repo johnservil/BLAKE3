@@ -133,25 +133,27 @@ fn hash_piece(kernel: Kernel, piece: &[u8]) {
 /// when `caller_works`, and otherwise waits in join (asleep). Thread
 /// creation is inside the call, as a design with sleeping workers pays a
 /// wake per worker instead.
-fn pulled(input: &[u8], caller_works: bool, helpers: usize, helper_qos: u32, helper_kernel: Kernel) {
+/// `helpers` is a list of (QoS, kernel) per helper thread; helpers take
+/// `helper_piece` bytes per pull, the caller PIECE.
+fn pulled(input: &[u8], caller_works: bool, helpers: &[(u32, Kernel)], helper_piece: usize) {
     use std::sync::atomic::{AtomicUsize, Ordering};
     let cursor = AtomicUsize::new(0);
-    let pull = |kernel: Kernel| loop {
-        let start = cursor.fetch_add(PIECE, Ordering::Relaxed);
+    let pull = |kernel: Kernel, piece: usize| loop {
+        let start = cursor.fetch_add(piece, Ordering::Relaxed);
         if start >= input.len() {
             break;
         }
-        hash_piece(kernel, &input[start..(start + PIECE).min(input.len())]);
+        hash_piece(kernel, &input[start..(start + piece).min(input.len())]);
     };
     std::thread::scope(|scope| {
-        for _ in 0..helpers {
-            scope.spawn(|| {
-                clocks::set_qos(helper_qos);
-                pull(helper_kernel)
+        for &(qos, kernel) in helpers {
+            scope.spawn(move || {
+                clocks::set_qos(qos);
+                pull(kernel, helper_piece)
             });
         }
         if caller_works {
-            pull(Kernel::Hash);
+            pull(Kernel::Hash, PIECE);
         }
     });
 }
@@ -194,7 +196,7 @@ fn main() {
             );
         }
 
-        let sizes = [1024usize, 8 * 1024, 16 * 1024, 64 * 1024, 1024 * 1024, 8 * 1024 * 1024];
+        let sizes = [1024usize, 8 * 1024, 16 * 1024, 256 * 1024, 1024 * 1024, 8 * 1024 * 1024];
         let inputs: Vec<Vec<u8>> = sizes.iter().map(|&n| (0..n).map(|i| (i * 7 + (i >> 10) * 13) as u8).collect()).collect();
         let messages: Vec<[u8; 64]> = (0..1024).map(|i| [i as u8; 64]).collect();
         let refs: Vec<&[u8]> = messages.iter().map(|m| &m[..]).collect();
@@ -206,7 +208,7 @@ fn main() {
                 1024 => "hash 1 KiB",
                 8192 => "hash 8 KiB",
                 16384 => "hash 16 KiB",
-                65536 => "hash 64 KiB",
+                262144 => "hash 256 KiB",
                 1048576 => "hash 1 MiB",
                 _ => "hash 8 MiB",
             };
@@ -241,19 +243,26 @@ fn main() {
             })));
         }
 
-        // Candidate efficient designs, 8 MiB in 64 KiB pieces pulled from a cursor.
-        let designs: [(&'static str, bool, usize, u32, Kernel); 8] = [
-            ("4 E threads NEON, caller waits", false, 4, clocks::BACKGROUND, Kernel::Neon),
-            ("4 E threads hash, caller waits", false, 4, clocks::BACKGROUND, Kernel::Hash),
-            ("2 E threads hash, caller waits", false, 2, clocks::BACKGROUND, Kernel::Hash),
-            ("1 E thread hash, caller waits", false, 1, clocks::BACKGROUND, Kernel::Hash),
-            ("caller hash + 4 E threads NEON", true, 4, clocks::BACKGROUND, Kernel::Neon),
-            ("caller hash + 2 E threads NEON", true, 2, clocks::BACKGROUND, Kernel::Neon),
-            ("caller hash + 4 P threads NEON", true, 4, clocks::USER_INTERACTIVE, Kernel::Neon),
-            ("caller hash + 1 P thread hash", true, 1, clocks::USER_INTERACTIVE, Kernel::Hash),
+        // Candidate efficient designs, pieces pulled from a cursor.
+        const E: u32 = clocks::BACKGROUND;
+        const P: u32 = clocks::USER_INTERACTIVE;
+        use Kernel::{Hash, Neon};
+        let designs: Vec<(&'static str, usize, bool, Vec<(u32, Kernel)>, usize)> = vec![
+            ("4 E threads NEON, caller waits", 5, false, vec![(E, Neon); 4], PIECE),
+            ("1 E thread hash, caller waits", 5, false, vec![(E, Hash)], PIECE),
+            ("caller hash + 4 E NEON", 5, true, vec![(E, Neon); 4], PIECE),
+            ("caller hash + 4 E NEON, 16 KiB", 5, true, vec![(E, Neon); 4], 16 * 1024),
+            ("caller hash + 2 E NEON, 16 KiB", 5, true, vec![(E, Neon); 2], 16 * 1024),
+            ("caller hash + 1 E hash", 5, true, vec![(E, Hash)], PIECE),
+            ("caller hash + 1 E hash + 3 E NEON, 16 KiB", 5, true, vec![(E, Hash), (E, Neon), (E, Neon), (E, Neon)], 16 * 1024),
+            ("caller hash + 4 P NEON", 5, true, vec![(P, Neon); 4], PIECE),
+            ("1 MiB: caller hash + 4 E NEON, 16 KiB", 4, true, vec![(E, Neon); 4], 16 * 1024),
+            ("256 KiB: caller hash + 4 E NEON, 16 KiB", 3, true, vec![(E, Neon); 4], 16 * 1024),
+            ("256 KiB: caller hash + 2 E NEON, 16 KiB", 3, true, vec![(E, Neon); 2], 16 * 1024),
         ];
-        for (name, caller_works, helpers, qos, kernel) in designs {
-            works.push((name, big.len(), Box::new(move || pulled(big, caller_works, helpers, qos, kernel))));
+        for (name, input, caller_works, helpers, piece) in designs {
+            let input = &inputs[input];
+            works.push((name, input.len(), Box::new(move || pulled(input, caller_works, &helpers, piece))));
         }
 
         // Rounds interleave the workloads, so drift reaches them alike.
@@ -265,7 +274,7 @@ fn main() {
             }
         }
         println!(
-            "  {:<38} {:>9} {:>17} {:>8} {:>7} {:>9} {:>9} {:>6}",
+            "  {:<44} {:>9} {:>17} {:>8} {:>7} {:>9} {:>9} {:>6}",
             "workload (8 MiB unless named)", "ns/B", "pJ/B (min-max)", "W", "P nJ %", "billed/B", "proc cyc/B", "E cyc%"
         );
         for (i, (name, bytes, _)) in works.iter().enumerate() {
@@ -281,7 +290,7 @@ fn main() {
                 rows[i].iter().map(|s| 100.0 * s.thread_cycles.1 / (s.thread_cycles.0 + s.thread_cycles.1).max(1.0)).collect(),
             );
             println!(
-                "  {:<38} {:>9.4} {:>7.1} ({:>4.0}-{:<4.0}) {:>8.3} {:>7.1} {:>9.4} {:>9.3} {:>6.1}",
+                "  {:<44} {:>9.4} {:>7.1} ({:>4.0}-{:<4.0}) {:>8.3} {:>7.1} {:>9.4} {:>9.3} {:>6.1}",
                 name, ns, median(pj.clone()), lo, hi, watts, p_share, billed, cyc, e_share
             );
         }
