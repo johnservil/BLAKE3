@@ -147,7 +147,7 @@ A candidate reaches `servil` only when all of these hold, and never without the 
 3. `pypy3 tools/perf_regress.py compare servil candidate/<topic>` reports no regression on the VM.
 4. The same comparison reports no regression natively on the Mac.
 
-A regression the user accepts, as the section above describes, lands with the user's decision, the regressed cells, and their numbers in the merge's message. A candidate waiting on the Mac waits on its branch; the VM's verdict alone does not promote it.
+A regression the user accepts, as the section above describes, lands with the user's decision, the regressed cells, and their numbers in the merge's message (for a fast-forward, the promoted commit's message; amend the message only, leaving the measured tree unchanged). The user accepts such trades under this rule (September 25, 2026): every slowed cell stays ahead of every competitor, the gains outweigh the losses, and the user decides; the minimax cells, where we trail or lead narrowly, may not slow. A candidate waiting on the Mac waits on its branch; the VM's verdict alone does not promote it.
 
 After a promotion, pin bench-hashes to the new tip (`cargo update -p blake3-servil` in bench-hashes, commit the `Cargo.lock`, push): that pin is what users measure, and records are made on it.
 
