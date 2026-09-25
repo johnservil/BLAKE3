@@ -207,6 +207,48 @@ session (a kernel entry taking a separate last group), whose cost (about
 150 ns per group) is below the NEON leftovers' (250-280 ns) in either
 state.
 
+**The slow state, measured directly** (probe/piece-sizes and
+probe/stack-map, jobs 162-173, September 25, 2026, M4 Max P-core; the VM
+alike). The raw kernels over 8 MiB in 64 KiB pieces (chunks, then parent
+levels): 0.152 ns/B at 3.94 cycles per ns back to back and with 0.1 us of
+scalar work between pieces; 0.179 (3.41/ns) at 0.25 us; 0.195-0.20
+(3.20/ns) from 0.5 us. So about 0.2 us of other work between SME2 kernels
+puts the unit in its slow state for the next ones, about 2.5 us per 64
+KiB piece. Streaming sessions back to back cost no state (three per piece
+ran at 3.94). Three placements also put it there, each at some addresses
+and not others:
+
+- 32-byte chaining-value stores off a 32-byte boundary (VM, heap
+  buffers: aligned 0.159 ns/B, odd multiples of 16 bytes up to 0.193).
+- The walk's buffers on the stack: a 64 KiB frame is probed with a store
+  into each 4 KiB page on every call (`str xzr, [sp]`), and those stores
+  land among the buffers the SME unit is about to use. hash(32 KiB) by
+  stack depth, Mac, deterministic per address: 0.178-0.245 ns/B with the
+  buffers on the stack, 0.177-0.181 at every depth with them on the heap
+  (jobs 169-173).
+- Buffers at the same address mod 4 KiB (the stack arrays of 8, 32, and 16
+  KiB all started at one residue); with distinct residues the heap scratch
+  ran fast at all 64 offsets from the input (job 170).
+
+The flat walk now runs down to the two children on SME2 (padded groups
+below sixteen parents), in a per-thread 64 KiB scratch on 128-byte lines
+with its buffers at 0, 1, and 3 KiB mod 4 KiB (483162d). Mac, hash() in a
+loop, ns/B before / after: 32 KiB 0.213 / 0.181, 64 KiB 0.205 / 0.166, 128
+KiB 0.201 / 0.160, 256 KiB 0.172 / 0.1695, 1 MiB 0.152 / 0.151. Open:
+
+- 256 KiB now takes 2.12x as long as 128 KiB (0.1695 against 0.160 ns/B;
+  3.48 cycles per ns, so the unit waits): the kernel with an integer lane
+  starts there; its two core-written chaining values share 128-byte lines
+  with the unit's (a hypothesis).
+- The Hasher in 64 KiB pieces stays at 0.204 ns/B (3.21/ns): between
+  pieces it pushes two chaining values and merges about two parents on
+  the core, over the 0.2 us line. Ideas: return one value when the
+  subtree cannot be the root, and fold the stack's merges into the walk's
+  padded levels.
+- The VM stays two-speed per process at 32-64 KiB (0.172 or 0.210), with
+  the scratch on or off the stack: guest pages land at host addresses the
+  guest cannot see, so a placement effect above 4 KiB would show this way.
+
 **Idle threads cost the busy ones.** Beside eight hashing threads, eight
 idle ones: asleep, free; spinning on loads +18% (VM and Mac); `sched_yield`
 in a loop +36% on the VM, +2% on the Mac. `WFE` returns every 0.1-1.3 µs
