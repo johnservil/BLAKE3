@@ -51,8 +51,8 @@ run time and no path.
 Commits that predate the batch API (hash_many and friends) get a shim that
 hashes a batch one message at a time, so the current benchmark builds; a
 comparison involving such a commit judges the one-message cells alone.
-Commits that predate Hasher::update_multithreaded get a shim that calls
-update (the check measures no streamed cells).
+Commits that predate Stream get a shim over a Hasher on the calling
+thread (the check measures no streamed cells).
 """
 import argparse
 import hashlib
@@ -119,15 +119,20 @@ pub fn kernel_report_many_multithreaded() -> KernelReport {
 '''
 
 
-SHIM_UPDATE = r'''
+SHIM_STREAM = r'''
 
-// perf_regress.py shim: Hasher::update_multithreaded of later commits, as
-// update, so the current bench-hashes builds against this commit.
+// perf_regress.py shim: the Stream of later commits, over a Hasher on the
+// calling thread, so the current bench-hashes builds against this commit
+// (the check measures no streamed cells).
 #[cfg(feature = "std")]
-impl Hasher {
-    pub fn update_multithreaded(&mut self, input: &[u8]) -> &mut Self {
-        self.update(input)
-    }
+pub struct Stream { hasher: Hasher, buffer: Vec<u8> }
+#[cfg(feature = "std")]
+impl Stream {
+    pub fn new() -> Self { Stream { hasher: Hasher::new(), buffer: vec![0; 1 << 16] } }
+    pub fn new_multithreaded() -> Self { Self::new() }
+    pub fn buffer(&mut self) -> &mut [u8] { &mut self.buffer }
+    pub fn filled(&mut self, n: usize) { let b = std::mem::take(&mut self.buffer); self.hasher.update(&b[..n]); self.buffer = b; }
+    pub fn finalize(self) -> Hash { self.hasher.finalize() }
 }
 '''
 
@@ -233,7 +238,7 @@ def commit_bench(rev):
     exe = target_dir() / "perf-ab" / f"{commit}-{bench_fingerprint()}" / "bench-hashes"
     lib_source = git("show", f"{commit}:src/lib.rs")
     shimmed = "pub fn hash_many(" not in lib_source
-    update_shimmed = "pub fn update_multithreaded(" not in lib_source
+    stream_shimmed = "pub use stream::Stream" not in lib_source
     if exe.exists():
         return str(exe), shimmed
     exe.parent.mkdir(parents=True, exist_ok=True)
@@ -247,8 +252,8 @@ def commit_bench(rev):
         lib = tree / "src/lib.rs"
         if shimmed:
             lib.write_text(lib.read_text() + SHIM)
-        if update_shimmed:
-            lib.write_text(lib.read_text() + SHIM_UPDATE)
+        if stream_shimmed:
+            lib.write_text(lib.read_text() + SHIM_STREAM)
         # The benchmark as it is now, so only the fork differs between sides.
         shutil.copytree(ROOT / "bench-hashes", tree / "bench-hashes",
                         ignore=shutil.ignore_patterns("target", "benchmark-results", "tmp", ".git"))
