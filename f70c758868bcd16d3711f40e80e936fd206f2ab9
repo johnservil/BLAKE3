@@ -1,0 +1,1 @@
+gate: suites pass (76/72/62 lib, 21 doc, 2 vectors, bench 7 against it); VM perf_regress (pre-commit) and compare servil candidate: no regression; Mac perf_regress compare 87c3bbf f70c758: no regression (runner job 234, bench c01b878). API: Hasher::update_multithreaded crate-internal; Stream loses update and io::Write, gains update_reader and Debug
