@@ -200,6 +200,7 @@ pub const FLAT_MIN_CHUNKS: usize = 32;
 /// The fewest chunks, a power of two, that split exactly into groups of 18
 /// (the integer lane's kernel) and 16: 256 = 8 x 18 + 7 x 16. Smaller
 /// subtrees take groups of 16 alone.
+#[cfg_attr(not(feature = "std"), allow(dead_code))]
 pub const LANE_MIN_CHUNKS: usize = 256;
 /// The most chunks the flat walk takes; its chaining values sit in 48 KiB
 /// of stack. Larger subtrees are split by the tree walk above it.
@@ -254,26 +255,59 @@ pub unsafe fn compress_subtree_flat_to_parent(input: &[u8], key: &CVWords, chunk
 /// it copies into `out`.
 #[inline(always)]
 unsafe fn flat_walk(input: &[u8], key: &CVWords, chunk_counter: u64, flags: u8, keep: usize, out: &mut [u8]) -> usize {
-    use core::mem::MaybeUninit;
     assert!(flat_takes(input.len()), "a whole subtree of 32 to 1024 chunks");
     assert!(keep == DEGREE || keep == 2, "the flat walk keeps DEGREE or 2 chaining values");
     assert!(out.len() >= keep * OUT_LEN, "room for the chaining values kept");
     let n = input.len() / CHUNK_LEN;
-    // Every buffer the kernels touch sits on 128-byte lines (Apple's): the
-    // kernels store each 32-byte chaining value with one vector store, and
-    // stores placed off a 32-byte boundary cost up to 21% of the whole walk
-    // (VM, 64 KiB pieces: 0.159 ns/B aligned, up to 0.193 at odd multiples
-    // of 16 bytes).
-    #[repr(C, align(128))]
-    struct Lines<T: Copy, const N: usize>([MaybeUninit<T>; N]);
-    let mut table = Lines([MaybeUninit::<*const u8>::uninit(); FLAT_MAX_CHUNKS]);
-    for (i, slot) in table.0[..n].iter_mut().enumerate() {
-        slot.write(unsafe { input.as_ptr().add(i * CHUNK_LEN) });
+    #[cfg(feature = "std")]
+    if let Ok(base) = SCRATCH_BLOCK.try_with(|block| block.get() as *mut u8) {
+        // Sound: this thread's block outlives the call, and the walk calls
+        // nothing that re-enters it, so the block has one user at a time.
+        return unsafe { walk_in(input, key, chunk_counter, flags, keep, out, n, base) };
     }
-    let table = table.0.as_ptr() as *const *const u8;
-    let mut cvs = Lines([MaybeUninit::<u8>::uninit(); FLAT_MAX_CHUNKS * OUT_LEN]);
-    let mut half = Lines([MaybeUninit::<u8>::uninit(); FLAT_MAX_CHUNKS / 2 * OUT_LEN]);
-    let (mut src, mut dst) = (cvs.0.as_mut_ptr() as *mut u8, half.0.as_mut_ptr() as *mut u8);
+    // Without std, or in a thread's teardown after its block is gone.
+    unsafe { walk_on_stack(input, key, chunk_counter, flags, keep, out, n) }
+}
+
+/// [`walk_in`] with the scratch on the stack, out of line so the usual
+/// path keeps a small frame.
+#[inline(never)]
+unsafe fn walk_on_stack(input: &[u8], key: &CVWords, chunk_counter: u64, flags: u8, keep: usize, out: &mut [u8], n: usize) -> usize {
+    let mut block = Scratch([core::mem::MaybeUninit::<u8>::uninit(); SCRATCH]);
+    unsafe { walk_in(input, key, chunk_counter, flags, keep, out, n, block.0.as_mut_ptr() as *mut u8) }
+}
+
+/// The flat walk's scratch, on 128-byte lines (Apple's).
+#[repr(C, align(128))]
+struct Scratch([core::mem::MaybeUninit<u8>; SCRATCH]);
+
+// Each thread's scratch for the flat walk, allocated on its first walk.
+// Off the stack: a 64 KiB stack frame is probed with a store into each
+// page on every call, and those stores, landing among the buffers the SME
+// unit is about to use, put it in its slow state at some stack depths
+// (M4 Max, hash(32 KiB) 0.178-0.245 ns/B by depth with the buffers on the
+// stack, 0.177 at every depth off it; probe/stack-map, jobs 169-171).
+#[cfg(feature = "std")]
+std::thread_local! {
+    static SCRATCH_BLOCK: Box<core::cell::UnsafeCell<Scratch>> =
+        Box::new(core::cell::UnsafeCell::new(Scratch([core::mem::MaybeUninit::uninit(); SCRATCH])));
+}
+
+/// The flat walk in `block`, SCRATCH bytes on 128-byte lines, which
+/// holds the pointer table at its start and the chaining values where
+/// [`scratch_layout`] puts them: 1 KiB and 3 KiB mod 4 KiB, so the three
+/// buffers never share an address mod 4 KiB. The kernels' 32-byte stores
+/// also want 32-byte boundaries (VM, up to 21% slower off them).
+#[allow(clippy::too_many_arguments)]
+#[inline(always)]
+unsafe fn walk_in(input: &[u8], key: &CVWords, chunk_counter: u64, flags: u8, keep: usize, out: &mut [u8], n: usize, base: *mut u8) -> usize {
+    let (cvs_at, half_at) = scratch_layout(n);
+    let table = base as *mut *const u8;
+    for i in 0..n {
+        unsafe { table.add(i).write(input.as_ptr().add(i * CHUNK_LEN)) };
+    }
+    let table = table as *const *const u8;
+    let (mut src, mut dst) = unsafe { (base.add(cvs_at), base.add(half_at)) };
 
     let chunk_flags = flags as u32 | (crate::CHUNK_START as u32) << 8 | (crate::CHUNK_END as u32) << 16;
     let lane_groups = 8 * (n / 144);
@@ -296,8 +330,8 @@ unsafe fn flat_walk(input: &[u8], key: &CVWords, chunk_counter: u64, flags: u8, 
         assert_eq!(lanes, 16, "SME2 streaming vector length changed under us");
         // Parent levels: pairs of adjacent chaining values, contiguous, from
         // `src` into `dst`, until `keep` values remain. A level of fewer than
-        // sixteen parents reads past its values within `src`'s room (at least
-        // FLAT_MAX_CHUNKS / 2 values) and writes a whole group into `dst`'s.
+        // sixteen parents reads 32 values from `src` and writes 16 into
+        // `dst`, within the room scratch_layout leaves.
         let mut count = n;
         while count > keep {
             let parents = count / 2;
@@ -310,6 +344,23 @@ unsafe fn flat_walk(input: &[u8], key: &CVWords, chunk_counter: u64, flags: u8, 
         core::ptr::copy_nonoverlapping(src, out.as_mut_ptr(), keep * OUT_LEN);
     }
     keep
+}
+
+/// Bytes of the flat walk's scratch: the pointer table, the chaining
+/// values, and the level above them for FLAT_MAX_CHUNKS, as
+/// [`scratch_layout`] places them.
+const SCRATCH: usize = 64 * 1024;
+
+/// Where the flat walk of `n` chunks keeps its chaining values and the
+/// level above them, in bytes from the scratch's start (the pointer table
+/// sits at 0): at 1 KiB and 3 KiB mod 4 KiB, past the table and the
+/// values before them, with room for a padded group of 16 parents' inputs
+/// (32 values) at either.
+fn scratch_layout(n: usize) -> (usize, usize) {
+    let cvs = (8 * n).next_multiple_of(4096) + 1024;
+    let half = cvs + (32 * n.max(32)).saturating_sub(2048).next_multiple_of(4096) + 2048;
+    debug_assert!(half + 16 * n.max(64) <= SCRATCH, "the flat walk's scratch holds its buffers");
+    (cvs, half)
 }
 
 /// Chunks per group of the kernel with an integer lane: sixteen on SME2,
