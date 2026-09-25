@@ -870,6 +870,14 @@ fn compress_subtree_wide<J: join::Join>(
     if input.len() <= platform.simd_degree() * CHUNK_LEN {
         return compress_chunks_parallel(input, key, chunk_counter, flags, platform, out);
     }
+    // Whole subtrees of 256 KiB to 1 MiB on SME2: the flat walk, SME2 alone,
+    // with an integer lane beside its groups (see sme2::compress_subtree_flat).
+    #[cfg(blake3_sme2)]
+    if matches!(platform, Platform::SME2) && sme2::flat_takes(input.len()) {
+        // Safe: the SME2 platform is selected only where the CPU has it,
+        // and `out` holds simd_degree() values, which is sme2::DEGREE.
+        return unsafe { sme2::compress_subtree_flat(input, key, chunk_counter, flags, out) };
+    }
 
     // With more than simd_degree chunks, we need to recurse. Start by dividing
     // the input into left and right subtrees. (Note that this is only optimal
