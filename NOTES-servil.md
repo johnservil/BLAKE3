@@ -337,6 +337,15 @@ back-to-back effect; not measured natively.
   shared copies into a mode slower than NEON, 112-135 switches a run);
   SME-only workers (tag `experiment/sme-only-workers`, 5-14% faster for mt
   on the Mac, level on the VM; superseded by the NEON pool and the turn).
+- The pool's caller hashing its own pieces on SME2 under the turn, the
+  workers on NEON (probe/sme2-caller, September 25, 2026): slower on both
+  machines and faster nowhere. VM: servil mt 256 KiB +18%, batches
+  2048-16384 +5 to +18%; Mac (job 161): 256 KiB +8 to +10%, batches
+  4096-16384 +8 to +11%, shared 1024 messages +35 to +46%. The scoped
+  probe's caller-on-SME2 gain (probe/energy) compared unequal thread
+  counts. Hypotheses, untested: a streaming entry per piece (8-128 KiB)
+  and the SME unit's slow state between pieces; the cluster's clock
+  lowered for the NEON workers beside a streaming core.
 - Folding G's rotations into its xors: 7-13% slower.
 - Two scalar chunks for 2 KiB (0.587 against k2's 0.455 ns/B, VM); two
   scalar lanes for one chunk plus a partial (E-cores 14-27% slower).
