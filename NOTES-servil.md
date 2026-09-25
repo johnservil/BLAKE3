@@ -236,14 +236,16 @@ with its buffers at 0, 1, and 3 KiB mod 4 KiB (483162d). Mac, hash() in a
 loop, ns/B before / after: 32 KiB 0.213 / 0.181, 64 KiB 0.205 / 0.166, 128
 KiB 0.201 / 0.160, 256 KiB 0.172 / 0.1695, 1 MiB 0.152 / 0.151. Open:
 
-- 256 KiB now takes 2.12x as long as 128 KiB (0.1695 against 0.160 ns/B;
-  3.48 cycles per ns, so the unit waits): the kernel with an integer lane
-  starts there; its two core-written chaining values share 128-byte lines
-  with the unit's (a hypothesis).
-- The Hasher in 64 KiB pieces stays at 0.204 ns/B (3.21/ns): between
-  pieces it pushes two chaining values and merges about two parents on
-  the core, over the 0.2 us line. Ideas: return one value when the
-  subtree cannot be the root, and fold the stack's merges into the walk's
+- 256 KiB takes 2.12x as long as 128 KiB (0.1695 against 0.160 ns/B;
+  3.48-3.50 cycles per ns). Not the integer lane: without it 256 KiB runs
+  0.1768 at 3.50/ns and 1 MiB 0.164 against 0.151 with it (probe/no-lane,
+  jobs 181-184), so the lane stays. The Hasher's 256 KiB pieces run the
+  same kernels at 3.70/ns and 0.1596; what hash(256 KiB) adds is open.
+- The Hasher in 64 KiB pieces stays at 0.204 ns/B (3.21-3.25/ns). Past
+  the first input it now pushes one chaining value per subtree (the walk
+  runs down to it, 0220e69): 256 KiB pieces 0.1676 -> 0.1596 (-4.8%, jobs
+  176-179), 64 KiB level. What else falls between its SME2 kernels is
+  open; the next idea is folding the stack's merges into the walk's
   padded levels.
 - The VM stays two-speed per process at 32-64 KiB (0.172 or 0.210), with
   the scratch on or off the stack: guest pages land at host addresses the
