@@ -119,6 +119,21 @@ in tight loops: 1000 one-block messages 11.67 ns each, 1024 only 9.45 (the
 last eight run on NEON after seven SME2 calls). Padding the remainder onto
 SME2 lost everywhere at 24 messages; open (`probe/transition`).
 
+**The core's integer units run beside the SME unit** (probe/sme-scalar,
+job 142, M4 Max, cycles per loop iteration of 24 SME2 vector ops and
+24-192 integer ops of BLAKE3's add/xor/rotate pattern): P-core, SME2 alone
+24.0, integer alone 16.5 (96 ops) or 33.2 (192), both 24.0 and 31.9;
+E-core 24.2, 24.4, 48.5, both 24.4 and 48.4. Both together cost the
+longer, never the sum: the unit takes one vector op per core cycle, and
+the core does about 4 integer ops per cycle beside it. So an SME2
+kernel can carry integer BLAKE3 lanes for free: one latency-bound chain
+(168 cycles a block) fits about 4 blocks beside each 16-lane group
+compression (about 680 cycles), a group of 16 SME2 chunks plus 4 integer
+chunks, +25% throughput. **Streaming mode lowers the P-core clock**: the
+same integer loop, same cycles, 3.93 cycles per ns inside streaming mode
+against 4.51 outside (13% more wall time); on E-cores 2.5 either way.
+The "fast state" of the SME2 remainders below is the streaming clock.
+
 **SME2 remainders: a penalty that follows machine state, not the
 remainder** (probe/neon-cold, jobs 125-126, September 25, 2026). With the
 same pieces for every variant, the NEON remainder after the SME2 groups
