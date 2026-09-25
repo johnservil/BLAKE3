@@ -311,6 +311,24 @@ caller's own pieces on SME2 and no idle pollers beat the pool on both.
 At background QoS the helpers make the call 2.2x faster at about twice
 the energy (NEON on E-cores 225 pJ/B against SME2's 85).
 
+**A user's Apple M3 Ultra** (20 P + 8 E cores, two dies, no SME2; fork
+b74b59e, bench d28326e, quiet; kept in the fork's tmp/AppleM3Ultra.darwin25/).
+What it tells us about the machines without SME2 (every M1-M3):
+
+- servil st from 8 KiB runs the NEON hybrids at 0.283-0.290 ns/B, a lead
+  of only 12-14% over SHA-256 ring's 0.32-0.33; on the M4 SME2 doubles it.
+  On pre-M4 Apple chips this is a minimax cell: the NEON path's bulk rate.
+- servil mt, 28 CPUs: 128 MiB 0.016 ns/B; 64-128 KiB only 2x servil st
+  (0.143, 0.137), as on the M4 Max. There, and only there, two copies ran
+  faster than one (shared 0.128 and 0.123): the M4 Max and the VM show the
+  opposite. Unexplained; a guess is a solo call's workers straddling the
+  two dies. Nothing to test it on.
+- Batches: 18.8-19.2 ns per message from 8 messages (SHA-256 34), servil
+  mt 2.3 at 262144.
+- Streamed (the old Hasher): 2304-7935 B took up to 1.8x one call of the
+  same size (3 KiB 0.604 against 0.358 ns/B); Stream hashes such inputs in
+  one call (M4 record: 0.362 against 0.350).
+
 ## The design, and why
 
 **Single chunk (to 1 KiB)**: c1 does the whole chunk and root in one call,
