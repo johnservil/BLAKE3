@@ -10,6 +10,41 @@ mod clocks;
 use std::hint::black_box;
 use std::time::Instant;
 
+unsafe extern "C" {
+    fn blake3_sme2_hash16_chunks_512(i: *const *const u8, k: *const u32, c: u64, f: u32, o: *mut u8, g: u64) -> u64;
+    fn blake3_sme2_hash16_parents_512(i: *const u8, k: *const u32, c: u64, f: u32, o: *mut u8, g: u64) -> u64;
+}
+const IV: [u32; 8] = [0x6A09E667, 0xBB67AE85, 0x3C6EF372, 0xA54FF53A, 0x510E527F, 0x9B05688C, 0x1F83D9AB, 0x5BE0CD19];
+
+/// The raw SME2 kernels over `table` (one pointer per chunk) in pieces of
+/// `piece_chunks`: the chunk kernel per piece, then with `parents` the
+/// flat walk's parent levels down to 16 values (each its own streaming
+/// session), and with `gap_ns` that much scalar work between pieces.
+fn raw_pieces(table: &[*const u8], piece_chunks: usize, parents: bool, gap_ns: u64, cvs: &mut [u8], half: &mut [u8]) {
+    let flags = 1u32 << 8 | 2 << 16;
+    for (p, piece) in table.chunks(piece_chunks).enumerate() {
+        unsafe {
+            blake3_sme2_hash16_chunks_512(piece.as_ptr(), IV.as_ptr(), (p * piece_chunks) as u64, flags, cvs.as_mut_ptr(), (piece_chunks / 16) as u64);
+            if parents {
+                let mut count = piece_chunks;
+                let (mut src, mut dst) = (cvs.as_mut_ptr(), half.as_mut_ptr());
+                while count > 16 {
+                    blake3_sme2_hash16_parents_512(src, IV.as_ptr(), 0, 4, dst, (count / 32) as u64);
+                    count /= 2;
+                    std::mem::swap(&mut src, &mut dst);
+                }
+            }
+        }
+        if gap_ns > 0 {
+            let t = Instant::now();
+            while (t.elapsed().as_nanos() as u64) < gap_ns {
+                black_box(0);
+            }
+        }
+    }
+    black_box(&cvs);
+}
+
 fn main() {
     println!("probe/piece-sizes: platform {}", blake3_servil::kernel_report().platform);
     // The first multithreaded call, cold (before initialize), then warm.
@@ -45,6 +80,33 @@ fn main() {
                 black_box(h.finalize());
             }).fastest();
             println!("  pieces of {:>5} KiB: update {:.4} [{}]   update_multithreaded {:.4}", piece >> 10, s.ns / input.len() as f64, s.show(), m.ns / input.len() as f64);
+        }
+        if matches!(blake3_servil::platform::Platform::detect(), blake3_servil::platform::Platform::SME2) {
+            let table: Vec<*const u8> = input.chunks(1024).map(|c| c.as_ptr()).collect();
+            let (mut cvs, mut half) = (vec![0u8; 32 * 1024], vec![0u8; 32 * 512]);
+            for (label, piece, parents, gap) in [
+                ("raw 64 KiB: chunk kernel only", 64usize, false, 0u64),
+                ("raw 64 KiB: chunks + parent levels", 64, true, 0),
+                ("raw 64 KiB: chunks + parents + 0.1 us scalar", 64, true, 100),
+                ("raw 64 KiB: chunks + parents + 0.25 us scalar", 64, true, 250),
+                ("raw 64 KiB: chunks + parents + 0.5 us scalar", 64, true, 500),
+                ("raw 64 KiB: chunks + parents + 1 us scalar", 64, true, 1000),
+                ("raw 64 KiB: chunks + parents + 3 us scalar", 64, true, 3000),
+                ("raw 256 KiB: chunks + parent levels", 256, true, 0),
+                ("raw 1 MiB: chunks + parent levels", 1024, true, 0),
+                ("raw 8 MiB: chunk kernel only", 8192, false, 0),
+            ] {
+                let big = if piece > 1024 { vec![0u8; 32 * piece] } else { Vec::new() };
+                let s = clocks::measure(9, 20_000, || {
+                    if piece > 1024 {
+                        let mut big = big.clone();
+                        raw_pieces(&table, piece, parents, gap, &mut big, &mut half);
+                    } else {
+                        raw_pieces(&table, piece, parents, gap, &mut cvs, &mut half);
+                    }
+                }).fastest();
+                println!("  {label:<44} {:.4}  [{}]", s.ns / input.len() as f64, s.show());
+            }
         }
         let messages: Vec<[u8; 64]> = (0..1024).map(|i| [i as u8; 64]).collect();
         let refs: Vec<&[u8]> = messages.iter().map(|m| &m[..]).collect();
