@@ -350,14 +350,15 @@ fn reserve_thread(active: &AtomicUsize, max_threads: usize) -> bool {
 }
 
 impl Job<'_> {
-    /// Hash piece `index` into its slot. The caller has taken `index`
-    /// through `cursor`.
-    unsafe fn hash_piece(&self, index: usize) {
+    /// Hash piece `index` into its slot on `platform`. The caller has
+    /// taken `index` through `cursor`.
+    unsafe fn hash_piece(&self, index: usize, platform: Platform) {
         match &self.work {
             Work::Tree { input, pieces, cvs, key, counter, flags } => {
                 let piece = pieces[index];
                 let bytes = &input[piece.offset..][..piece.len];
-                let cv = pool().hash_subtree(bytes, key, counter + (piece.offset / CHUNK_LEN) as u64, *flags).chaining_value();
+                let counter = counter + (piece.offset / CHUNK_LEN) as u64;
+                let cv = crate::hash_all_at_once::<crate::join::SerialJoin>(bytes, key, counter, *flags, platform).chaining_value();
                 unsafe { *cvs.add(index) = cv };
             }
             Work::Messages { inputs, pieces, outputs } => {
@@ -365,7 +366,7 @@ impl Job<'_> {
                 let messages = &inputs[piece.offset..][..piece.len];
                 // Sound: this range of outputs belongs to piece `index` alone.
                 let digests = unsafe { core::slice::from_raw_parts_mut(outputs.add(piece.offset), piece.len) };
-                pool().hash_messages(messages, digests);
+                crate::many::hash_many_on(messages, digests, platform);
             }
         }
     }
@@ -618,6 +619,9 @@ impl Pool {
             max_threads,
         };
         let slot = self.register(&job);
+        // The caller's own pieces run on SME2 when it gets the turn (see
+        // the module docs, "Kernels"); the workers' on NEON.
+        let turn = crate::platform::Sme2Turn::take(Platform::detect(), true);
         loop {
             let index = job.cursor.fetch_add(1, Ordering::SeqCst);
             if index >= pieces {
@@ -625,8 +629,9 @@ impl Pool {
             }
             // Sound: this thread took index through the cursor, so it alone
             // writes slot index.
-            unsafe { job.hash_piece(index) };
+            unsafe { job.hash_piece(index, turn.platform()) };
         }
+        drop(turn);
         job.active.fetch_sub(1, Ordering::SeqCst);
         // Every piece is taken; the slot has nothing more to give from this
         // job. Unregister drains readers still making a reservation; afterwards
@@ -797,7 +802,7 @@ fn worker_main(rank: usize) {
         let (job_ptr, index) = pool.next_piece(&mut start, rank);
         // Sound by the pool's contract: our active reservation keeps the job alive.
         let job = unsafe { &*job_ptr };
-        unsafe { job.hash_piece(index) };
+        unsafe { job.hash_piece(index, pool_platform()) };
         pool.piece_done(&job.active);
     }
 }
