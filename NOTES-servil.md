@@ -138,10 +138,17 @@ The "fast state" of the SME2 remainders below is the streaming clock.
 probe/sme2-hybrid, job 143): 16 SME2 chunks plus k chunks on the integer
 lane, k blocks beside each SME2 block step. Per chunk against the plain
 kernel, M4 Max P-core: k = 1 -5.2%, k = 2 -9.5% (0.145 -> 0.131 ns/B), k = 4
-+1% (integer-bound); E-core: +3.2%, +4.0% (cycles -2.7%, clock dipped),
-+44%. VM (P): -5.1%, -9.1%, level. E-cores have fewer integer units, so the
-lane competes with the SME2 instruction stream there: a P-for-E trade, as
-with the NEON kernels' second scalar chunk. Integration is open: groups of
++1% (integer-bound); rerun (job 144, the Mac quiet): -6.0%, -10.1%, +0.5%.
+E-core cycles, which the E clock does not move: +3.3%, -2.7%, +44% (job
+143) and +2.2%, -2.2%, +44% (job 144); E wall time swung with the clock
+(143: k = 2 +4.0% at 2.42 cycles per ns against the baseline's 2.58; 144:
+-1.5% at equal clocks). So k = 2 is faster on both core kinds, not a
+trade; k = 4 is integer-bound on E-cores. A case for judging wall time
+within one state: the first reading of E wall time called it a trade.
+Earlier two-SME2-unit evidence (github.io/blake3-sme2, an earlier project
+of ours): two SME2 threads at 83.7 ps/B against one's 163.3 over 1 GiB,
+and SME2 threads on both P clusters and the E cluster plus NEON threads
+the fastest all-core plan. Integration is open: groups of
 18 fit no power-of-two chunk count, which the tree walk hands hash_many
 (128 = 7 x 18 + 2; exact mixes of 18- and 16-chunk groups start at 256 = 8 x
 18 + 7 x 16, 6.25% of the chunks on the lane; 512 = 24 x 18 + 5 x 16, 9.4%).
