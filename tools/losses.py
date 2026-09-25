@@ -26,8 +26,11 @@ import argparse
 import statistics
 from collections import defaultdict
 
-SUBJECTS = ["blake3-servil", "blake3-servil-mt"]
+SUBJECTS = ["blake3-servil-st", "blake3-servil-mt"]
 MULTITHREADED = {"blake3-mt", "blake3-servil-mt"}
+# Records before September 25, 2026 name the single-threaded contender
+# blake3-servil.
+RENAMED = {"blake3-servil": "blake3-servil-st"}
 
 
 def speeds(values):
@@ -58,6 +61,7 @@ def load(path):
             assert header == ["contender", "scenario", "use_case", "point", "unit", "ps_per_unit"], header
             continue
         contender, scenario, use_case, point, unit, values = fields
+        contender = RENAMED.get(contender, contender)
         cells[(contender, scenario, use_case, point)] = speeds([int(v) for v in values.split(",")])
     return cells
 

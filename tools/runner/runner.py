@@ -47,7 +47,8 @@ BENCHMARK_FLAGS = {"--all", "--quick", "--thorough"}
 # patch builds it against the fork checkout enclosing it (`..`), the one the
 # job names. Older bench-hashes, with a path dependency on `..`, ignore it.
 PATCH = 'patch."https://github.com/johnservil/BLAKE3".blake3-servil.path=".."'
-CONTENDERS = {"blake3", "ab-blake3", "blake3-servil", "blake3-servil-mt", "blake3-mt",
+# blake3-servil: the single-threaded key of bench-hashes before September 25, 2026.
+CONTENDERS = {"blake3", "ab-blake3", "blake3-servil-st", "blake3-servil", "blake3-servil-mt", "blake3-mt",
               "sha256", "sha256-ring", "sha256-cc", "sha1dc"}
 EXAMPLES = {"scaling", "host_lab"}
 FEATURES = {"no_sme2", "pure"}

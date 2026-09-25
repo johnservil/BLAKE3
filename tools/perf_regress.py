@@ -13,7 +13,7 @@ comparison itself was unreliable, see below).
 worktree, cached per commit in tmp/perf-ab/) and once against this working
 tree, the same benchmark source in both, and runs the two builds in
 alternating pairs on this machine, one right after the other, each with
-the contenders sha256 (the control), blake3-servil, and blake3-servil-mt.
+the contenders sha256 (the control), blake3-servil-st, and blake3-servil-mt.
 Load, thermal state, and drift reach both sides of a pair alike, so there
 is nothing to record, store, or keep current, and any machine can run it.
 
@@ -68,7 +68,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 CACHE = ROOT / "tmp/perf-ab"
 CONTROL = "sha256"
-SUBJECTS = ["blake3-servil", "blake3-servil-mt"]
+SUBJECTS = ["blake3-servil-st", "blake3-servil-mt"]
 CONTENDERS = [CONTROL] + SUBJECTS
 # The code paths and boundaries of both use cases among the benchmark's
 # points, and none of the plateau sizes the published graph needs (16-128
@@ -197,7 +197,7 @@ def require_sme2_kernel(exe):
     if not machine_has_sme2():
         return
     with tempfile.TemporaryDirectory() as tmp:
-        out = subprocess.run([exe, "--contenders", "blake3-servil,sha256", "--points", "16 KiB", "--rounds", "1"],
+        out = subprocess.run([exe, "--contenders", "blake3-servil-st,sha256", "--points", "16 KiB", "--rounds", "1"],
                              cwd=tmp, env=ENV, check=True, stdout=subprocess.PIPE,
                              stderr=subprocess.DEVNULL, text=True).stdout
     assert "SME2" in out, ("this CPU has SME2, and the fork was built without its SME2 kernel: "
