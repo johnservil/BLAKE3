@@ -60,6 +60,9 @@ struct Stretch {
 }
 
 fn stretch(ms: u64, mut f: impl FnMut()) -> Stretch {
+    // The pool's workers spin up to 200 us after a multithreaded call and
+    // then sleep; 5 ms of sleep keeps their energy out of the next stretch.
+    std::thread::sleep(Duration::from_millis(5));
     let (tp0, te0) = clocks::cycles();
     let e0 = energy();
     let t = Instant::now();
@@ -101,12 +104,7 @@ fn main() {
         println!("probe/energy: macOS only (proc_pid_rusage energy counters)");
         return;
     }
-    let sme2 = blake3_servil::platform::sme2_detected() && !cfg!(feature = "no_sme2");
-    println!(
-        "probe/energy: platform {}, SME2 kernels {}",
-        blake3_servil::kernel_report().platform,
-        if sme2 { "on" } else { "off (no_sme2 build or no SME2)" }
-    );
+    println!("probe/energy: platform {}", blake3_servil::kernel_report().platform);
     blake3_servil::initialize();
 
     for &(label, class) in &[("P (user-interactive)", clocks::USER_INTERACTIVE), ("E (background)", clocks::BACKGROUND)] {
@@ -139,17 +137,18 @@ fn main() {
             );
         }
 
-        let sizes = [1024usize, 8 * 1024, 64 * 1024, 1024 * 1024, 8 * 1024 * 1024];
+        let sizes = [1024usize, 8 * 1024, 16 * 1024, 64 * 1024, 1024 * 1024, 8 * 1024 * 1024];
         let inputs: Vec<Vec<u8>> = sizes.iter().map(|&n| (0..n).map(|i| (i * 7 + (i >> 10) * 13) as u8).collect()).collect();
         let messages: Vec<[u8; 64]> = (0..1024).map(|i| [i as u8; 64]).collect();
         let refs: Vec<&[u8]> = messages.iter().map(|m| &m[..]).collect();
         let mut outs = vec![blake3_servil::Hash::from([0; 32]); 1024];
-        let big = &inputs[4];
+        let big = &inputs[5];
         let mut works: Vec<Work> = Vec::new();
         for input in &inputs {
             let name: &'static str = match input.len() {
                 1024 => "hash 1 KiB",
                 8192 => "hash 8 KiB",
+                16384 => "hash 16 KiB",
                 65536 => "hash 64 KiB",
                 1048576 => "hash 1 MiB",
                 _ => "hash 8 MiB",
