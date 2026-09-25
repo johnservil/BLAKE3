@@ -367,6 +367,18 @@ threads now beat one at every size (they did not: 1 MiB 0.160 against
 the raw chunk kernel at once, 2.0-2.4x one's throughput on the Mac, 1.7-2.0x
 on the VM (job 187); a second SME2 thread in the pool is the next idea.
 
+**Stream** (59ad5c1, c242b2e): hashing behind the caller. Four 1 MiB
+buffers (whole subtrees, the flat walk's largest) per stream; the caller
+fills one (`buffer()`/`filled(n)`, or `update`/`io::Write` by copy) while
+a hashing thread runs `Hasher::update` (or `update_multithreaded`) on full
+ones; `buffer()` blocks when all four are out. The hashing thread and the
+buffers are the calling thread's, kept asleep for its next stream (a
+thread-local); a stream shorter than a buffer is hashed in place at
+finalize. Mac, streamed 64 KiB pieces with the producer's copy (record
+ec5de66): servil 1 MiB 0.161 ns/B, 8 MiB 0.157, 128 MiB 0.150; servil mt 1
+MiB 0.046, 8 MiB 0.041. Open: short streams' fill and drain, the per-stream
+wake, 64 B overhead (0.91 against hash()'s 0.70 ns/B).
+
 **Batches over the pool**: messages gathered into ranges by
 `next_piece_len`; servil mt below the split threshold hashes on the
 calling thread, and fewer than 1024 messages of a block or less go there
@@ -495,10 +507,10 @@ all); marks two-speed cells.
 
 ## Testing
 
-    cargo test --release --lib                      # 71 tests
-    cargo test --release --features no_sme2 --lib   # 67
-    cargo test --release --features pure --lib      # 57
-    cargo test --release --doc                      # 20
+    cargo test --release --lib                      # 75 tests
+    cargo test --release --features no_sme2 --lib   # 71
+    cargo test --release --features pure --lib      # 61
+    cargo test --release --doc                      # 21
     cargo test --release --manifest-path test_vectors/Cargo.toml   # 2
     cargo test --release --manifest-path bench-hashes/Cargo.toml   # 7
 
