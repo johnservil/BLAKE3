@@ -12,7 +12,7 @@
 //! never fills a buffer wakes no thread: `finalize` hashes it in place.
 
 use crate::{Hash, Hasher};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 
 /// Bytes per buffer: 1 MiB, the flat walk's largest subtree, at which
@@ -45,13 +45,22 @@ struct Link {
 thread_local! {
     /// This thread's idle hashing thread and spare buffers, for its next stream.
     static IDLE: RefCell<(Option<Link>, Vec<Buffer>)> = const { RefCell::new((None, Vec::new())) };
+    /// The first spare buffer, in a slot of its own: a stream shorter than
+    /// a buffer takes and returns only this one, with no borrow and no
+    /// list (it cost a short stream 3-4 ns against a Hasher's update).
+    static FIRST: Cell<Option<Buffer>> = const { Cell::new(None) };
 }
 
 fn spare_buffer() -> Buffer {
+    if let Some(buffer) = FIRST.take() {
+        return buffer;
+    }
     IDLE.with(|idle| idle.borrow_mut().1.pop()).unwrap_or_else(|| vec![0u8; BUFFER_LEN].into_boxed_slice())
 }
 
 fn keep_buffer(buffer: Buffer) {
+    /* The first slot takes it; a buffer already there goes to the list. */
+    let Some(buffer) = FIRST.replace(Some(buffer)) else { return };
     IDLE.with(|idle| {
         let spare = &mut idle.borrow_mut().1;
         if spare.len() < BUFFERS {
@@ -151,12 +160,14 @@ pub struct Stream {
 impl Stream {
     /// A stream whose buffers are each hashed on one thread, behind the
     /// caller's, as [`Hasher::update`] hashes them.
+    #[inline]
     pub fn new() -> Self {
         Stream { multithreaded: false, current: None, filled: 0, out: 0, link: None }
     }
 
     /// A stream whose buffers are each hashed over this crate's worker
     /// threads, as [`Hasher::update_multithreaded`] hashes them.
+    #[inline]
     pub fn new_multithreaded() -> Self {
         Stream { multithreaded: true, current: None, filled: 0, out: 0, link: None }
     }
@@ -164,6 +175,7 @@ impl Stream {
     /// The free part of the current buffer, never empty: the next bytes
     /// of the input go here, then [`filled`](Stream::filled) says how many.
     /// Blocks while every buffer is with the hashing thread.
+    #[inline]
     pub fn buffer(&mut self) -> &mut [u8] {
         if self.filled == BUFFER_LEN {
             self.hand_over();
@@ -174,6 +186,7 @@ impl Stream {
 
     /// The first `n` bytes of [`buffer`](Stream::buffer) now hold the
     /// next `n` bytes of the input. `n` is at most that buffer's length.
+    #[inline]
     pub fn filled(&mut self, n: usize) {
         let room = self.current.as_ref().map_or(0, |_| BUFFER_LEN - self.filled);
         assert!(n <= room, "filled {n} bytes of a buffer with {room} free; call buffer() first");
@@ -182,6 +195,7 @@ impl Stream {
 
     /// Copy `input` into the stream: [`buffer`](Stream::buffer) and
     /// [`filled`](Stream::filled) until all of it is in.
+    #[inline]
     pub fn update(&mut self, mut input: &[u8]) -> &mut Self {
         while !input.is_empty() {
             let buffer = self.buffer();
@@ -195,6 +209,7 @@ impl Stream {
 
     /// Send the full current buffer to the hashing thread and take a free
     /// one, waiting for it when all are out.
+    #[inline(never)]
     fn hand_over(&mut self) {
         let full = self.current.take().expect("a full buffer to hand over");
         let link = self.link.get_or_insert_with(|| {
@@ -239,7 +254,23 @@ impl Stream {
     }
 
     /// The hash of every byte filled, in order.
+    #[inline]
     pub fn finalize(mut self) -> Hash {
+        /* A stream shorter than one buffer: hashed in place, the buffer kept. */
+        if self.link.is_none() {
+            let tail = self.current.take();
+            let bytes = tail.as_ref().map_or(&[][..], |b| &b[..self.filled]);
+            let hash = if self.multithreaded { crate::hash_multithreaded(bytes) } else { crate::hash(bytes) };
+            if let Some(buffer) = tail {
+                keep_buffer(buffer);
+            }
+            return hash;
+        }
+        self.finalize_handed_over()
+    }
+
+    #[inline(never)]
+    fn finalize_handed_over(mut self) -> Hash {
         let tail = self.current.take();
         let tail_bytes = tail.as_ref().map_or(&[][..], |b| &b[..self.filled]);
         let hash = match self.finish() {
@@ -268,8 +299,11 @@ impl Default for Stream {
 }
 
 impl Drop for Stream {
+    #[inline]
     fn drop(&mut self) {
-        self.finish();
+        if self.link.is_some() {
+            self.finish();
+        }
         if let Some(buffer) = self.current.take() {
             keep_buffer(buffer);
         }
