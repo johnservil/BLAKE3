@@ -99,6 +99,63 @@ fn spread(v: &[f64]) -> (f64, f64) {
 
 type Work<'a> = (&'a str, usize, Box<dyn FnMut() + 'a>);
 
+/// How a thread hashes a 64 KiB piece: `hash` (the default path: SME2
+/// where built and present) or NEON alone (the platform's hash_many on
+/// the piece's 64 chunks; the chaining values are dropped, the energy is
+/// the chunks').
+#[derive(Clone, Copy, PartialEq)]
+enum Kernel {
+    Hash,
+    Neon,
+}
+
+const PIECE: usize = 64 * 1024;
+
+fn hash_piece(kernel: Kernel, piece: &[u8]) {
+    match kernel {
+        Kernel::Hash => {
+            black_box(blake3_servil::hash(black_box(piece)));
+        }
+        Kernel::Neon => {
+            let platform = blake3_servil::platform::Platform::neon().expect("AArch64 has NEON");
+            let chunks: Vec<&[u8; 1024]> = piece.chunks_exact(1024).map(|c| c.try_into().unwrap()).collect();
+            let mut out = [0u8; 32 * 64];
+            const IV: [u32; 8] = [0x6A09E667, 0xBB67AE85, 0x3C6EF372, 0xA54FF53A, 0x510E527F, 0x9B05688C, 0x1F83D9AB, 0x5BE0CD19];
+            platform.hash_many::<1024>(black_box(&chunks), &IV, 0, blake3_servil::IncrementCounter::Yes, 0, 1, 2, &mut out[..32 * chunks.len()]);
+            black_box(&out);
+        }
+    }
+}
+
+/// One call's worth of a candidate efficient design: `helpers` scoped
+/// threads at QoS `helper_qos` pull 64 KiB pieces of `input` from a shared
+/// cursor with `helper_kernel`; the calling thread pulls too with `hash`
+/// when `caller_works`, and otherwise waits in join (asleep). Thread
+/// creation is inside the call, as a design with sleeping workers pays a
+/// wake per worker instead.
+fn pulled(input: &[u8], caller_works: bool, helpers: usize, helper_qos: u32, helper_kernel: Kernel) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let cursor = AtomicUsize::new(0);
+    let pull = |kernel: Kernel| loop {
+        let start = cursor.fetch_add(PIECE, Ordering::Relaxed);
+        if start >= input.len() {
+            break;
+        }
+        hash_piece(kernel, &input[start..(start + PIECE).min(input.len())]);
+    };
+    std::thread::scope(|scope| {
+        for _ in 0..helpers {
+            scope.spawn(|| {
+                clocks::set_qos(helper_qos);
+                pull(helper_kernel)
+            });
+        }
+        if caller_works {
+            pull(Kernel::Hash);
+        }
+    });
+}
+
 fn main() {
     if !cfg!(target_vendor = "apple") {
         println!("probe/energy: macOS only (proc_pid_rusage energy counters)");
@@ -184,6 +241,21 @@ fn main() {
             })));
         }
 
+        // Candidate efficient designs, 8 MiB in 64 KiB pieces pulled from a cursor.
+        let designs: [(&'static str, bool, usize, u32, Kernel); 8] = [
+            ("4 E threads NEON, caller waits", false, 4, clocks::BACKGROUND, Kernel::Neon),
+            ("4 E threads hash, caller waits", false, 4, clocks::BACKGROUND, Kernel::Hash),
+            ("2 E threads hash, caller waits", false, 2, clocks::BACKGROUND, Kernel::Hash),
+            ("1 E thread hash, caller waits", false, 1, clocks::BACKGROUND, Kernel::Hash),
+            ("caller hash + 4 E threads NEON", true, 4, clocks::BACKGROUND, Kernel::Neon),
+            ("caller hash + 2 E threads NEON", true, 2, clocks::BACKGROUND, Kernel::Neon),
+            ("caller hash + 4 P threads NEON", true, 4, clocks::USER_INTERACTIVE, Kernel::Neon),
+            ("caller hash + 1 P thread hash", true, 1, clocks::USER_INTERACTIVE, Kernel::Hash),
+        ];
+        for (name, caller_works, helpers, qos, kernel) in designs {
+            works.push((name, big.len(), Box::new(move || pulled(big, caller_works, helpers, qos, kernel))));
+        }
+
         // Rounds interleave the workloads, so drift reaches them alike.
         const ROUNDS: usize = 5;
         let mut rows: Vec<Vec<Stretch>> = (0..works.len()).map(|_| Vec::new()).collect();
@@ -194,7 +266,7 @@ fn main() {
         }
         println!(
             "  {:<38} {:>9} {:>17} {:>8} {:>7} {:>9} {:>9} {:>6}",
-            "workload", "ns/B", "pJ/B (min-max)", "W", "P nJ %", "billed/B", "proc cyc/B", "E cyc%"
+            "workload (8 MiB unless named)", "ns/B", "pJ/B (min-max)", "W", "P nJ %", "billed/B", "proc cyc/B", "E cyc%"
         );
         for (i, (name, bytes, _)) in works.iter().enumerate() {
             let per_byte = |s: &Stretch, v: f64| v / (s.calls as f64 * *bytes as f64);
