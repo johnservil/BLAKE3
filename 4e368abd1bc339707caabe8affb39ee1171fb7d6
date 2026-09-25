@@ -1,0 +1,1 @@
+gate: suites pass (70/67/57 lib, 20 doc, 2 vectors, bench 7) on this tree; VM perf_regress compare servil (8a66cf5) candidate/sme2-flat: no regression, 256 KiB -5.2%, 1 MiB -11.5%, 3 MiB -10.7%; Mac perf_regress compare 8a66cf5 4e368ab: no regression (runner job 145, bench af88fac), solo 256 KiB -5.0%, 1 MiB -12.0%, 3 MiB -15.3%, 8 MiB -11.3%, shared 1-8 MiB -13 to -15%
