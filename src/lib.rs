@@ -1708,10 +1708,33 @@ impl Hasher {
     /// Note that the degree of SIMD parallelism that `update` can use is limited by the size of
     /// this input buffer. See [`update_reader`](#method.update_reader).
     pub fn update(&mut self, input: &[u8]) -> &mut Self {
-        self.update_with_join::<join::SerialJoin>(input)
+        self.update_with_join::<join::SerialJoin>(input, false)
     }
 
-    fn update_with_join<J: join::Join>(&mut self, mut input: &[u8]) -> &mut Self {
+    /// [`update`](Hasher::update) over several threads, with the same
+    /// result. The whole subtrees of 64 KiB and more in `input` are cut into
+    /// pieces that the calling thread and this crate's worker threads hash
+    /// at once, under the rules of [`hash_multithreaded`]; the rest runs on
+    /// the calling thread as `update` does.
+    ///
+    /// ```
+    /// let input = vec![7u8; 1 << 20];
+    /// let mut hasher = blake3_servil::Hasher::new();
+    /// for piece in input.chunks(64 * 1024) {
+    ///     hasher.update_multithreaded(piece);
+    /// }
+    /// assert_eq!(hasher.finalize(), blake3_servil::hash(&input));
+    /// ```
+    #[cfg(feature = "std")]
+    pub fn update_multithreaded(&mut self, input: &[u8]) -> &mut Self {
+        self.update_with_join::<join::SerialJoin>(input, true)
+    }
+
+    /// `update`'s loop; with `pooled`, whole subtrees of
+    /// `lanes::MIN_SPLIT_LEN` and more go to the pool.
+    fn update_with_join<J: join::Join>(&mut self, mut input: &[u8], pooled: bool) -> &mut Self {
+        #[cfg(not(feature = "std"))]
+        let _ = pooled;
         let input_offset = self.initial_chunk_counter * CHUNK_LEN as u64;
         if let Some(max) = hazmat::max_subtree_len(input_offset) {
             let remaining = max - self.count();
@@ -1761,7 +1784,9 @@ impl Hasher {
         //   chunks. We have to complete the current subtree first.
         // Because we might need to break up the input to form powers of 2, or
         // to evenly divide what we already have, this part runs in a loop.
-        let turn = platform::Sme2Turn::take(self.chunk_state.platform, input.len() >= SME2_SIZED_LEN);
+        // Pooled, the subtrees below take the lock one at a time, and the
+        // pool's own never use SME2.
+        let turn = platform::Sme2Turn::take(self.chunk_state.platform, !pooled && input.len() >= SME2_SIZED_LEN);
         while input.len() > CHUNK_LEN {
             debug_assert_eq!(self.chunk_state.count(), 0, "no partial chunk data");
             debug_assert_eq!(CHUNK_LEN.count_ones(), 1, "power of 2 chunk len");
@@ -1808,13 +1833,41 @@ impl Hasher {
             } else {
                 // This is the high-performance happy path, though getting here
                 // depends on the caller giving us a long enough input.
-                let cv_pair = compress_subtree_to_parent_node::<J>(
-                    &input[..subtree_len],
-                    &self.key,
-                    self.chunk_state.chunk_counter,
-                    self.chunk_state.flags,
-                    turn.platform(),
-                );
+                #[cfg(feature = "std")]
+                let pool_takes = pooled && subtree_len >= lanes::MIN_SPLIT_LEN;
+                #[cfg(not(feature = "std"))]
+                let pool_takes = false;
+                let cv_pair = if pool_takes {
+                    #[cfg(feature = "std")]
+                    {
+                        lanes::subtree_children(
+                            &input[..subtree_len],
+                            &self.key,
+                            self.chunk_state.chunk_counter,
+                            self.chunk_state.flags,
+                            usize::MAX,
+                        )
+                    }
+                    #[cfg(not(feature = "std"))]
+                    unreachable!()
+                } else if pooled {
+                    let own = platform::Sme2Turn::take(self.chunk_state.platform, subtree_len >= SME2_SIZED_LEN);
+                    compress_subtree_to_parent_node::<J>(
+                        &input[..subtree_len],
+                        &self.key,
+                        self.chunk_state.chunk_counter,
+                        self.chunk_state.flags,
+                        own.platform(),
+                    )
+                } else {
+                    compress_subtree_to_parent_node::<J>(
+                        &input[..subtree_len],
+                        &self.key,
+                        self.chunk_state.chunk_counter,
+                        self.chunk_state.flags,
+                        turn.platform(),
+                    )
+                };
                 let left_cv = (&cv_pair[..32]).try_into().unwrap();
                 let right_cv = (&cv_pair[32..64]).try_into().unwrap();
                 // Push the two CVs we received into the CV stack in order. Because
@@ -2002,7 +2055,7 @@ impl Hasher {
     /// the `rayon` and `mmap` Cargo features.
     #[cfg(feature = "rayon")]
     pub fn update_rayon(&mut self, input: &[u8]) -> &mut Self {
-        self.update_with_join::<join::RayonJoin>(input)
+        self.update_with_join::<join::RayonJoin>(input, false)
     }
 
     /// As [`update`](Hasher::update), but reading the contents of a file using memory mapping.
