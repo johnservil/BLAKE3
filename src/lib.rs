@@ -148,6 +148,10 @@ mod portable;
 #[cfg(blake3_sme2)]
 #[path = "ffi_sme2.rs"]
 mod sme2;
+#[cfg(feature = "std")]
+mod stream;
+#[cfg(feature = "std")]
+pub use stream::Stream;
 #[cfg(blake3_sse2_rust)]
 #[path = "rust_sse2.rs"]
 mod sse2;
