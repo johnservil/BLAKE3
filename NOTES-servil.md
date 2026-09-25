@@ -42,7 +42,9 @@ generator, check that existing kernels stay byte-identical unless meant.
   included); 2-15 chunks the NEON hybrids by the plans in
   `ffi_neon_hybrid.rs` (a trailing partial chunk beside the whole ones, q
   kernels); 16 chunks and up SME2 for full groups, NEON for the rest.
-  Parents: SME2 for groups of 16, NEON below. Root: scalar.
+  Parents: SME2 for groups of 16, NEON below. Root: scalar. Whole
+  power-of-two subtrees of 32 KiB to 1 MiB: the flat walk, SME2 alone,
+  with two integer chunks beside each group of 16 from 256 KiB.
 - `hash_many()`: runs of 16+ one-block messages on SME2, fewer on NEON,
   other lengths through `hash()`.
 - `hash_multithreaded()`: below 64 KiB, `hash()`'s path; from 64 KiB the
@@ -148,10 +150,25 @@ within one state: the first reading of E wall time called it a trade.
 Earlier two-SME2-unit evidence (github.io/blake3-sme2, an earlier project
 of ours): two SME2 threads at 83.7 ps/B against one's 163.3 over 1 GiB,
 and SME2 threads on both P clusters and the E cluster plus NEON threads
-the fastest all-core plan. Integration is open: groups of
+the fastest all-core plan. Integration: groups of
 18 fit no power-of-two chunk count, which the tree walk hands hash_many
 (128 = 7 x 18 + 2; exact mixes of 18- and 16-chunk groups start at 256 = 8 x
 18 + 7 x 16, 6.25% of the chunks on the lane; 512 = 24 x 18 + 5 x 16, 9.4%).
+
+**The flat walk** (`sme2::compress_subtree_flat`, a3aa406 and 23b8b42):
+each whole power-of-two subtree of 32 to 1024 chunks goes bottom up on
+SME2 alone, chunks in groups of 18 (from 256 chunks) and 16, then every
+parent level on the SME2 parent kernel; nothing runs on NEON between SME2
+kernels. From 256 KiB (a3aa406, perf_regress against 8a66cf5): Mac solo
+256 KiB -5.0%, 1 MiB -12.0%, 3 MiB -15.3%, 8 MiB -11.3%, shared 1-8 MiB
+-13 to -15% (job 145); VM 256 KiB -5.2%, 1 MiB -11.5%, 3 MiB -10.7%.
+Widened to 32 KiB (23b8b42, groups of 16 alone below 256 chunks): single-
+threaded level on both machines (32-128 KiB, and streamed, whose 64 KiB
+pieces take it: Mac jobs 149-152, VM A/B -0.7 to -1.2% streamed solo);
+servil mt 64 KiB faster on the Mac, solo -6.7% / -11.1%, shared -19.4% /
+-5.6%. Its CV arrays (56 KiB of stack, uninitialised) cost nothing
+measurable at 32 KiB. Open: the Hasher's piece sizes other than powers of
+two from 32 KiB, and inputs below 32 KiB (15 or fewer parents per level).
 
 **SME2 remainders: a penalty that follows machine state, not the
 remainder** (probe/neon-cold, jobs 125-126, September 25, 2026). With the
