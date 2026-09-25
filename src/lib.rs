@@ -870,8 +870,9 @@ fn compress_subtree_wide<J: join::Join>(
     if input.len() <= platform.simd_degree() * CHUNK_LEN {
         return compress_chunks_parallel(input, key, chunk_counter, flags, platform, out);
     }
-    // Whole subtrees of 256 KiB to 1 MiB on SME2: the flat walk, SME2 alone,
-    // with an integer lane beside its groups (see sme2::compress_subtree_flat).
+    // Whole subtrees of 32 KiB to 1 MiB on SME2: the flat walk, SME2 alone,
+    // with an integer lane beside its groups from 256 KiB (see
+    // sme2::compress_subtree_flat).
     #[cfg(blake3_sme2)]
     if matches!(platform, Platform::SME2) && sme2::flat_takes(input.len()) {
         // Safe: the SME2 platform is selected only where the CPU has it,
@@ -1313,10 +1314,10 @@ pub fn kernel_report() -> KernelReport {
             kernels.push(Kernel {
                 from_len: sme2::GROUP * CHUNK_LEN,
                 name: "SME2 hash16_chunks kernel",
-                why: "Sixteen whole chunks fill one group on 512-bit streaming vectors, up to eight groups per call; a remainder below sixteen stays on the hybrid kernels.",
+                why: "Sixteen whole chunks fill one group on 512-bit streaming vectors, up to eight groups per call; a remainder below sixteen stays on the hybrid kernels. From 32 KiB each whole subtree is hashed bottom up on SME2 alone, its parents included.",
             });
             kernels.push(Kernel {
-                from_len: sme2::FLAT_MIN_CHUNKS * CHUNK_LEN,
+                from_len: sme2::LANE_MIN_CHUNKS * CHUNK_LEN,
                 name: "SME2 groups with an integer lane, flat walk",
                 why: "Each whole subtree of 256 KiB to 1 MiB is hashed bottom up on SME2 alone: its chunks in groups of eighteen (sixteen on the streaming vectors, two on the integer units beside them) and sixteen, then every parent level on the SME2 parent kernel, so the SME unit never waits on other work.",
             });

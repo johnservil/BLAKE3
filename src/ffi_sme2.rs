@@ -194,10 +194,13 @@ pub unsafe fn hash_many<const N: usize>(
 }
 
 /// Whole subtrees from this many chunks to FLAT_MAX_CHUNKS, powers of two,
-/// take the flat walk ([`compress_subtree_flat`]): 256 chunks are the
-/// fewest that split exactly into groups of 18 (the integer lane's
-/// kernel) and 16 (8 x 18 + 7 x 16).
-pub const FLAT_MIN_CHUNKS: usize = 256;
+/// take the flat walk ([`compress_subtree_flat`]): 32 chunks are the
+/// fewest whose first parent level fills a group of 16.
+pub const FLAT_MIN_CHUNKS: usize = 32;
+/// The fewest chunks, a power of two, that split exactly into groups of 18
+/// (the integer lane's kernel) and 16: 256 = 8 x 18 + 7 x 16. Smaller
+/// subtrees take groups of 16 alone.
+pub const LANE_MIN_CHUNKS: usize = 256;
 /// The most chunks the flat walk takes; its chaining values sit in 48 KiB
 /// of stack. Larger subtrees are split by the tree walk above it.
 pub const FLAT_MAX_CHUNKS: usize = 1024;
@@ -209,7 +212,7 @@ pub fn flat_takes(len: usize) -> bool {
 }
 
 /*
- * A whole subtree of 256 to 1024 chunks, bottom up, on SME2 alone: what
+ * A whole subtree of 32 to 1024 chunks, bottom up, on SME2 alone: what
  * `compress_subtree_wide` returns for it, its DEGREE chaining values
  * (each covering n / DEGREE chunks). The chunks go to the kernel with an
  * integer lane in groups of 18 (8 of them per 144 chunks), the rest to the
@@ -231,7 +234,7 @@ pub unsafe fn compress_subtree_flat(
     out: &mut [u8],
 ) -> usize {
     use core::mem::MaybeUninit;
-    assert!(flat_takes(input.len()), "a whole subtree of 256 to 1024 chunks");
+    assert!(flat_takes(input.len()), "a whole subtree of 32 to 1024 chunks");
     assert!(out.len() >= DEGREE * OUT_LEN, "room for DEGREE chaining values");
     let n = input.len() / CHUNK_LEN;
     let mut table = [MaybeUninit::<*const u8>::uninit(); FLAT_MAX_CHUNKS];
