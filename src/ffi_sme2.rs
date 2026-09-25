@@ -233,18 +233,47 @@ pub unsafe fn compress_subtree_flat(
     flags: u8,
     out: &mut [u8],
 ) -> usize {
+    unsafe { flat_walk(input, key, chunk_counter, flags, DEGREE, out) }
+}
+
+/// The flat walk down to the subtree's two children: what
+/// `compress_subtree_to_parent_node` returns for it. The levels below
+/// sixteen parents run as one padded SME2 group each (lanes past the
+/// level's parents compress bytes nobody reads), so no NEON or scalar work
+/// falls between the SME2 kernels: 0.25 µs of other work between them puts
+/// the SME unit in its slow state for the next ones (NOTES-servil.md,
+/// "SME2 remainders"). Unsafe for the reasons of [`compress_subtree_flat`].
+#[inline(never)]
+pub unsafe fn compress_subtree_flat_to_parent(input: &[u8], key: &CVWords, chunk_counter: u64, flags: u8) -> [u8; crate::BLOCK_LEN] {
+    let mut out = [0u8; crate::BLOCK_LEN];
+    unsafe { flat_walk(input, key, chunk_counter, flags, 2, &mut out) };
+    out
+}
+
+/// The flat walk until `keep` chaining values remain (DEGREE or 2), which
+/// it copies into `out`.
+#[inline(always)]
+unsafe fn flat_walk(input: &[u8], key: &CVWords, chunk_counter: u64, flags: u8, keep: usize, out: &mut [u8]) -> usize {
     use core::mem::MaybeUninit;
     assert!(flat_takes(input.len()), "a whole subtree of 32 to 1024 chunks");
-    assert!(out.len() >= DEGREE * OUT_LEN, "room for DEGREE chaining values");
+    assert!(keep == DEGREE || keep == 2, "the flat walk keeps DEGREE or 2 chaining values");
+    assert!(out.len() >= keep * OUT_LEN, "room for the chaining values kept");
     let n = input.len() / CHUNK_LEN;
-    let mut table = [MaybeUninit::<*const u8>::uninit(); FLAT_MAX_CHUNKS];
-    for (i, slot) in table[..n].iter_mut().enumerate() {
+    // Every buffer the kernels touch sits on 128-byte lines (Apple's): the
+    // kernels store each 32-byte chaining value with one vector store, and
+    // stores placed off a 32-byte boundary cost up to 21% of the whole walk
+    // (VM, 64 KiB pieces: 0.159 ns/B aligned, up to 0.193 at odd multiples
+    // of 16 bytes).
+    #[repr(C, align(128))]
+    struct Lines<T: Copy, const N: usize>([MaybeUninit<T>; N]);
+    let mut table = Lines([MaybeUninit::<*const u8>::uninit(); FLAT_MAX_CHUNKS]);
+    for (i, slot) in table.0[..n].iter_mut().enumerate() {
         slot.write(unsafe { input.as_ptr().add(i * CHUNK_LEN) });
     }
-    let table = table.as_ptr() as *const *const u8;
-    let mut cvs = [MaybeUninit::<u8>::uninit(); FLAT_MAX_CHUNKS * OUT_LEN];
-    let mut half = [MaybeUninit::<u8>::uninit(); FLAT_MAX_CHUNKS / 2 * OUT_LEN];
-    let (mut src, mut dst) = (cvs.as_mut_ptr() as *mut u8, half.as_mut_ptr() as *mut u8);
+    let table = table.0.as_ptr() as *const *const u8;
+    let mut cvs = Lines([MaybeUninit::<u8>::uninit(); FLAT_MAX_CHUNKS * OUT_LEN]);
+    let mut half = Lines([MaybeUninit::<u8>::uninit(); FLAT_MAX_CHUNKS / 2 * OUT_LEN]);
+    let (mut src, mut dst) = (cvs.0.as_mut_ptr() as *mut u8, half.0.as_mut_ptr() as *mut u8);
 
     let chunk_flags = flags as u32 | (crate::CHUNK_START as u32) << 8 | (crate::CHUNK_END as u32) << 16;
     let lane_groups = 8 * (n / 144);
@@ -266,18 +295,21 @@ pub unsafe fn compress_subtree_flat(
         );
         assert_eq!(lanes, 16, "SME2 streaming vector length changed under us");
         // Parent levels: pairs of adjacent chaining values, contiguous, from
-        // `src` into `dst`, until DEGREE values remain.
+        // `src` into `dst`, until `keep` values remain. A level of fewer than
+        // sixteen parents reads past its values within `src`'s room (at least
+        // FLAT_MAX_CHUNKS / 2 values) and writes a whole group into `dst`'s.
         let mut count = n;
-        while count > DEGREE {
+        while count > keep {
             let parents = count / 2;
-            let lanes = ffi::blake3_sme2_hash16_parents_512(src, key.as_ptr(), 0, (flags | crate::PARENT) as u32, dst, (parents / GROUP) as u64);
+            let groups = parents.div_ceil(GROUP);
+            let lanes = ffi::blake3_sme2_hash16_parents_512(src, key.as_ptr(), 0, (flags | crate::PARENT) as u32, dst, groups as u64);
             assert_eq!(lanes, 16, "SME2 streaming vector length changed under us");
             count = parents;
             core::mem::swap(&mut src, &mut dst);
         }
-        core::ptr::copy_nonoverlapping(src, out.as_mut_ptr(), DEGREE * OUT_LEN);
+        core::ptr::copy_nonoverlapping(src, out.as_mut_ptr(), keep * OUT_LEN);
     }
-    DEGREE
+    keep
 }
 
 /// Chunks per group of the kernel with an integer lane: sixteen on SME2,

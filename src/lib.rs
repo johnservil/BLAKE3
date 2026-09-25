@@ -956,6 +956,13 @@ fn compress_subtree_to_parent_node<J: join::Join>(
     platform: Platform,
 ) -> [u8; BLOCK_LEN] {
     debug_assert!(input.len() > CHUNK_LEN);
+    // Whole subtrees of 32 KiB to 1 MiB on SME2: the flat walk down to the
+    // two children, SME2 alone (see sme2::compress_subtree_flat_to_parent).
+    #[cfg(blake3_sme2)]
+    if matches!(platform, Platform::SME2) && sme2::flat_takes(input.len()) {
+        // Safe: the SME2 platform is selected only where the CPU has it.
+        return unsafe { sme2::compress_subtree_flat_to_parent(input, key, chunk_counter, flags) };
+    }
     if input.len() <= SMALL_TREE_CHUNKS * CHUNK_LEN {
         condense_subtree::<J, SMALL_TREE_CHUNKS, { SMALL_TREE_CHUNKS / 2 }>(input, key, chunk_counter, flags, platform)
     } else {
