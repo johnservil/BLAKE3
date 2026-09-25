@@ -24,9 +24,12 @@ to back while the host's load came and went (NOTES-servil.md):
   when the code does, a median moves with the host.
 * The runs go A B B A A B B A (A the old side): four pairs of neighbours
   in time, which share the machine's state, each side first in two of
-  them, so a steady drift across the eight runs cancels. A cell is slower
-  when, in every pair, the new side's 5th percentile exceeds the old
-  side's by more than MARGIN.
+  them, so a steady drift across the eight runs cancels. A cell (one
+  contender, scenario, use case, and point) is slower when, in every
+  pair, the new side's 5th percentile exceeds the old side's by more than
+  the scenario's margin: 3% solo, 10% shared (Zooko, September 25, 2026:
+  the recommended usage first, the shared scenario measured and held to
+  a looser line; AGENTS.md).
 * Any slower cell triggers another A B B A A B B A; a regression is a
   cell slower in both.
 * The control is the same code on both sides. If the rule calls any of
@@ -84,7 +87,8 @@ POINTS = ["64 B", "1 KiB", "2 KiB", "2304 B", "3 KiB", "3839 B", "4 KiB", "4470 
 ROUNDS = 48
 QUANTILE = 0.05
 PAIRS = 4  # the runs go A B B A A B B A
-MARGIN = 0.03
+# A cell is slower (faster) past this ratio, by scenario.
+MARGIN = {"solo": 0.03, "shared": 0.10}
 
 SHIM = r'''
 
@@ -303,18 +307,19 @@ def pairs(old, new, count, start):
 def judge(measured, use_cases, contenders):
     """(slower, faster, ratio per cell, 90th-percentile ratio per cell): a
     cell is slower (faster) when every pair's new/old ratio of 5th
-    percentiles exceeds 1 + MARGIN (falls below 1 - MARGIN)."""
+    percentiles exceeds 1 + its scenario's margin (falls below 1 - it)."""
     slower, faster, ratio, slow = [], [], {}, {}
     for key in measured[0][0]:
-        contender, _scenario, use_case, _ = key.split("|")
+        contender, scenario, use_case, _ = key.split("|")
         if contender not in contenders or use_case not in use_cases:
             continue
         ratios = [b[key][0] / a[key][0] for a, b in measured]
         ratio[key] = statistics.median(ratios)
         slow[key] = statistics.median(b[key][1] / a[key][1] for a, b in measured)
-        if min(ratios) > 1 + MARGIN:
+        margin = MARGIN[scenario]
+        if min(ratios) > 1 + margin:
             slower.append(key)
-        elif max(ratios) < 1 - MARGIN:
+        elif max(ratios) < 1 - margin:
             faster.append(key)
     return slower, faster, ratio, slow
 
