@@ -448,6 +448,31 @@ mod test {
         }
     }
 
+    /// The walk's stack fallback (no std, or a thread's teardown) returns
+    /// what the per-thread scratch does, at every size the walk takes.
+    #[test]
+    fn test_flat_walk_on_stack_matches_scratch() {
+        if !crate::platform::sme2_detected() {
+            return;
+        }
+        let mut input = vec![0u8; FLAT_MAX_CHUNKS * CHUNK_LEN];
+        crate::test::paint_test_input(&mut input);
+        let key = [3u32; 8];
+        let mut chunks = FLAT_MIN_CHUNKS;
+        while chunks <= FLAT_MAX_CHUNKS {
+            let data = &input[..chunks * CHUNK_LEN];
+            for keep in [2, DEGREE] {
+                let (mut a, mut b) = ([0u8; DEGREE * OUT_LEN], [0u8; DEGREE * OUT_LEN]);
+                unsafe {
+                    flat_walk(data, &key, 7 * chunks as u64, 0, keep, &mut a);
+                    walk_on_stack(data, &key, 7 * chunks as u64, 0, keep, &mut b, chunks);
+                }
+                assert_eq!(a, b, "{chunks} chunks, keeping {keep}");
+            }
+            chunks *= 2;
+        }
+    }
+
     #[test]
     fn test_hybrid_assembly_matches_generator() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
