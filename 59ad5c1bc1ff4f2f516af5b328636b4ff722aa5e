@@ -1,0 +1,1 @@
+gate: suites pass (75/71/61 lib, 21 doc, 2 vectors; bench 7 with the Stream use case); VM perf_regress against 191cf12: no regression (pre-commit); Mac perf_regress compare 191cf12 59ad5c1: no regression (runner job 194); Stream is new API beside the existing paths
