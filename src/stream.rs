@@ -260,7 +260,7 @@ impl Stream {
         if self.link.is_none() {
             let tail = self.current.take();
             let bytes = tail.as_ref().map_or(&[][..], |b| &b[..self.filled]);
-            let hash = if self.multithreaded { crate::hash_multithreaded(bytes) } else { crate::hash(bytes) };
+            let hash = short_hash(bytes, self.multithreaded);
             if let Some(buffer) = tail {
                 keep_buffer(buffer);
             }
@@ -290,6 +290,18 @@ impl Stream {
         }
         hash
     }
+}
+
+/// hash() or hash_multithreaded() of a stream that never handed over a
+/// buffer; one chunk or less goes straight to the one-chunk code, which
+/// is what both call there, without their platform check.
+#[inline]
+fn short_hash(bytes: &[u8], multithreaded: bool) -> Hash {
+    #[cfg(blake3_neon_hybrid)]
+    if bytes.len() <= crate::CHUNK_LEN {
+        return crate::hash_one_chunk_root(bytes, crate::IV, 0);
+    }
+    if multithreaded { crate::hash_multithreaded(bytes) } else { crate::hash(bytes) }
 }
 
 impl Default for Stream {
