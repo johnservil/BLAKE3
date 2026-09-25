@@ -43,16 +43,17 @@
 //!
 //! # Kernels
 //!
-//! Every piece runs on the NEON hybrids, including on a CPU with SME2.
-//! An SME unit serves a whole cluster of cores, so SME2 threads that share
-//! one each run at a fraction of their speed, while the NEON hybrids run
-//! at full speed on every core at once; and a thread's first NEON
-//! instruction after an SME2 kernel waits about 4 µs. Measured with the
-//! pool's pieces on NEON alone against pieces on SME2 while one of the
-//! SME units was free: NEON alone was faster at every input from 128 KiB
-//! on an M4 Max beside a second caller (1 MiB: 0.051 ns/B against 0.060),
-//! and in a 16-vCPU VM on it, solo and beside a second caller (1 MiB:
-//! 0.035 against 0.044 solo, 0.051 against 0.062).
+//! On a CPU with SME2, a call that gets the SME2 turn hashes a prefix of
+//! its input itself on SME2, in whole subtrees of up to 1 MiB back to back
+//! (the flat walk), sized to its speed: about 1.65 NEON threads' worth
+//! ([`sme2_prefix`]). Every other piece, the caller's after its prefix
+//! included, runs on the NEON hybrids, which run at full speed on every
+//! core at once. Measured on an M4 Max against the pool on NEON alone
+//! (probe/sme2-thread, job 187): 1-64 MiB 24-32% faster with two threads,
+//! 14-21% with four, 1-6% with sixteen; the VM on it alike. Pieces on
+//! SME2 handed out one at a time lost (8-128 KiB, with the caller's
+//! bookkeeping between them): the SME unit's slow state follows about
+//! 0.2 µs of other work between its kernels (NOTES-servil.md).
 //!
 //! # Waiting
 //!
@@ -169,7 +170,9 @@ fn hash_over_pool(input: &[u8], mode: Mode, max_threads: usize) -> Hash {
     if callers >= pool.cpus {
         return pool.hash_subtree(input, &mode.key_words(), 0, mode.flags_byte()).root_hash();
     }
-    let pieces = cut_subtrees(input.len(), pool.cpus.min(max_threads));
+    let threads = pool.cpus.min(max_threads);
+    let turn = crate::platform::Sme2Turn::take(Platform::detect(), true);
+    let (pieces, own) = cut_with_prefix(input.len(), threads, prefix_for(&turn, input.len(), threads));
     let mut cvs = vec![ChainingValue::default(); pieces.len()];
     let work = Work::Tree {
         input,
@@ -179,7 +182,8 @@ fn hash_over_pool(input: &[u8], mode: Mode, max_threads: usize) -> Hash {
         counter: 0,
         flags: mode.flags_byte(),
     };
-    pool.run_job(work, pieces.len(), max_threads);
+    pool.run_job(work, pieces.len(), own, turn.platform(), max_threads);
+    drop(turn);
     merge_root(&pieces, &mut cvs, mode)
 }
 
@@ -206,10 +210,12 @@ pub(crate) fn subtree_children(
     if callers >= pool.cpus || threads < 2 {
         return crate::compress_subtree_to_parent_node::<crate::join::SerialJoin>(input, key, counter, flags, pool_platform());
     }
-    let pieces = cut_subtrees(input.len(), threads);
+    let turn = crate::platform::Sme2Turn::take(Platform::detect(), true);
+    let (pieces, own) = cut_with_prefix(input.len(), threads, prefix_for(&turn, input.len(), threads));
     let mut cvs = vec![ChainingValue::default(); pieces.len()];
     let work = Work::Tree { input, pieces: &pieces, cvs: cvs.as_mut_ptr(), key: *key, counter, flags };
-    pool.run_job(work, pieces.len(), max_threads);
+    pool.run_job(work, pieces.len(), own, turn.platform(), max_threads);
+    drop(turn);
     let count = merge_to_children(&pieces, &mut cvs, key, flags);
     debug_assert_eq!(count, 2);
     let mut children = [0u8; 2 * crate::OUT_LEN];
@@ -264,7 +270,7 @@ fn hash_many_over_pool(inputs: &[&[u8]], outputs: &mut [Hash], total: usize, max
         return pool.hash_messages(inputs, outputs);
     }
     let work = Work::Messages { inputs, pieces: &pieces, outputs: outputs.as_mut_ptr() };
-    pool.run_job(work, pieces.len(), max_threads);
+    pool.run_job(work, pieces.len(), 0, pool_platform(), max_threads);
 }
 
 /// A counted call, including its serial fallback. Keeping the count until
@@ -352,12 +358,13 @@ fn reserve_thread(active: &AtomicUsize, max_threads: usize) -> bool {
 impl Job<'_> {
     /// Hash piece `index` into its slot. The caller has taken `index`
     /// through `cursor`.
-    unsafe fn hash_piece(&self, index: usize) {
+    unsafe fn hash_piece(&self, index: usize, platform: Platform) {
         match &self.work {
             Work::Tree { input, pieces, cvs, key, counter, flags } => {
                 let piece = pieces[index];
                 let bytes = &input[piece.offset..][..piece.len];
-                let cv = pool().hash_subtree(bytes, key, counter + (piece.offset / CHUNK_LEN) as u64, *flags).chaining_value();
+                let counter = counter + (piece.offset / CHUNK_LEN) as u64;
+                let cv = crate::hash_all_at_once::<crate::join::SerialJoin>(bytes, key, counter, *flags, platform).chaining_value();
                 unsafe { *cvs.add(index) = cv };
             }
             Work::Messages { inputs, pieces, outputs } => {
@@ -365,7 +372,7 @@ impl Job<'_> {
                 let messages = &inputs[piece.offset..][..piece.len];
                 // Sound: this range of outputs belongs to piece `index` alone.
                 let digests = unsafe { core::slice::from_raw_parts_mut(outputs.add(piece.offset), piece.len) };
-                pool().hash_messages(messages, digests);
+                crate::many::hash_many_on(messages, digests, platform);
             }
         }
     }
@@ -419,21 +426,70 @@ fn cut_messages(inputs: &[&[u8]], total: usize, threads: usize) -> Vec<Piece> {
 /// every piece starts at a multiple of its own length, so each is a whole
 /// subtree at its offset. `len` exceeds [`MIN_PIECE_LEN`] and at least
 /// two threads share it, so two or more pieces come back.
+#[cfg(test)]
 fn cut_subtrees(len: usize, threads: usize) -> Vec<Piece> {
+    cut_with_prefix(len, threads, 0).0
+}
+
+/// [`cut_subtrees`] after a prefix of about `prefix` bytes for the SME2
+/// thread: whole subtrees of up to [`MAX_PREFIX_PIECE_LEN`], the prefix
+/// rounded down to a multiple of the first piece after it, so the lengths
+/// still never increase. Returns the pieces and how many form the prefix
+/// (none when `prefix` rounds to nothing). `prefix` is below `len`.
+fn cut_with_prefix(len: usize, threads: usize, prefix: usize) -> (Vec<Piece>, usize) {
     assert!(threads >= 2, "a serial call hashes the input whole");
     assert!(len > MIN_PIECE_LEN, "one piece has no parent to merge; hash it whole instead");
+    assert!(prefix < len, "the SME2 thread's prefix leaves the pool some input");
     let mut pieces = Vec::with_capacity(64);
     let mut offset = 0;
+    let first_after = next_piece_len(len - prefix, threads);
+    let prefix = prefix / first_after * first_after;
+    while offset < prefix {
+        let piece = MAX_PREFIX_PIECE_LEN.min(1 << (usize::BITS - 1 - (prefix - offset).leading_zeros()));
+        pieces.push(Piece { offset, len: piece });
+        offset += piece;
+    }
+    let own = pieces.len();
+    let mut cap = if own > 0 { pieces[own - 1].len } else { MAX_PIECE_LEN };
     while len - offset > MIN_PIECE_LEN {
-        let piece = next_piece_len(len - offset, threads);
+        let piece = next_piece_len(len - offset, threads).min(cap);
         if len - offset <= piece {
             break;
         }
         pieces.push(Piece { offset, len: piece });
         offset += piece;
+        cap = piece;
     }
     pieces.push(Piece { offset, len: len - offset });
-    pieces
+    (pieces, own)
+}
+
+/// The SME2 thread's prefix for a call holding `turn`: [`sme2_prefix`]
+/// when the turn gave it SME2, else nothing.
+fn prefix_for(turn: &crate::platform::Sme2Turn, len: usize, threads: usize) -> usize {
+    #[cfg(blake3_sme2)]
+    if matches!(turn.platform(), Platform::SME2) {
+        return sme2_prefix(len, threads);
+    }
+    let _ = (turn, len, threads);
+    0
+}
+
+/// The longest piece of the SME2 thread's prefix: the flat walk's largest
+/// subtree, which it hashes on SME2 alone.
+const MAX_PREFIX_PIECE_LEN: usize = 1 << 20;
+
+/// The SME2 thread's share of an input that `threads` threads hash,
+/// itself included: its speed over theirs, about 1.65 NEON threads' worth
+/// (M4 Max and the VM on it: the best split of 1 to 64 MiB put 62% on SME2
+/// beside one NEON thread, 38% beside three, 12% beside fifteen;
+/// probe/sme2-thread, job 187).
+/// A share below MAX_PIECE_LEN is no prefix: too little SME2 work to pay
+/// for the turn and the streaming session (VM, servil mt 256 KiB over
+/// sixteen threads, a 24 KiB prefix: +18-20%).
+fn sme2_prefix(len: usize, threads: usize) -> usize {
+    let share = len / (100 + (threads - 1) * 10000 / 165) * 100;
+    if share >= MAX_PIECE_LEN { share } else { 0 }
 }
 
 /// The chaining value of the subtree covering `pieces` (in offset order,
@@ -608,16 +664,24 @@ impl Pool {
     /// Register `work` of `pieces` pieces, take pieces on this thread until
     /// none remain, and return once every piece is finished, on whichever
     /// thread took it. At most `max_threads` threads hold a piece at once.
-    fn run_job(&self, work: Work, pieces: usize, max_threads: usize) {
+    /// The caller first hashes pieces `0..own` on `own_platform`, back to
+    /// back (the SME2 thread's prefix; the workers' cursor starts after
+    /// it), then takes pieces as the workers do.
+    fn run_job(&self, work: Work, pieces: usize, own: usize, own_platform: Platform, max_threads: usize) {
         let job = Job {
             work,
             registered_ns: self.epoch.elapsed().as_nanos() as u64,
             pieces,
-            cursor: Line(AtomicUsize::new(0)),
+            cursor: Line(AtomicUsize::new(own)),
             active: Line(AtomicUsize::new(1)),
             max_threads,
         };
         let slot = self.register(&job);
+        for index in 0..own {
+            // Sound: the cursor starts past these, so this thread alone
+            // writes their slots.
+            unsafe { job.hash_piece(index, own_platform) };
+        }
         loop {
             let index = job.cursor.fetch_add(1, Ordering::SeqCst);
             if index >= pieces {
@@ -625,7 +689,7 @@ impl Pool {
             }
             // Sound: this thread took index through the cursor, so it alone
             // writes slot index.
-            unsafe { job.hash_piece(index) };
+            unsafe { job.hash_piece(index, pool_platform()) };
         }
         job.active.fetch_sub(1, Ordering::SeqCst);
         // Every piece is taken; the slot has nothing more to give from this
@@ -797,7 +861,7 @@ fn worker_main(rank: usize) {
         let (job_ptr, index) = pool.next_piece(&mut start, rank);
         // Sound by the pool's contract: our active reservation keeps the job alive.
         let job = unsafe { &*job_ptr };
-        unsafe { job.hash_piece(index) };
+        unsafe { job.hash_piece(index, pool_platform()) };
         pool.piece_done(&job.active);
     }
 }
@@ -817,6 +881,37 @@ mod test {
             for threads in [2, 3, 16, 64] {
                 let piece = next_piece_len(remaining, threads);
                 assert!(piece.is_power_of_two() && piece >= MIN_PIECE_LEN && piece <= MAX_PIECE_LEN);
+            }
+        }
+    }
+
+    /// Cuts with an SME2 prefix tile the input with non-increasing whole
+    /// subtrees, the prefix's pieces first, at every length and share, and
+    /// hash to the serial result.
+    #[test]
+    fn test_cut_with_prefix_shapes_and_hashes() {
+        let mut input = vec![0u8; 3 * (1 << 20) + 12345];
+        crate::test::paint_test_input(&mut input);
+        for len in [MIN_PIECE_LEN + 1, 64 * CHUNK_LEN, 100 * CHUNK_LEN + 7, 1 << 20, 3 << 20, input.len()] {
+            for threads in [2, 3, 4, 16] {
+                let prefix = sme2_prefix(len, threads);
+                let (pieces, own) = cut_with_prefix(len, threads, prefix);
+                assert!(pieces.len() >= 2 && own < pieces.len());
+                assert!(pieces[..own].iter().map(|p| p.len).sum::<usize>() <= prefix);
+                let mut offset = 0;
+                for (i, p) in pieces.iter().enumerate() {
+                    assert_eq!(p.offset, offset);
+                    if i + 1 < pieces.len() {
+                        assert!(p.len.is_power_of_two() && p.offset % p.len == 0 && p.len >= pieces[i + 1].len, "{len} {threads}: {pieces:?}");
+                    }
+                    offset += p.len;
+                }
+                assert_eq!(offset, len);
+                let mut cvs: Vec<ChainingValue> = pieces
+                    .iter()
+                    .map(|p| crate::hash_all_at_once::<crate::join::SerialJoin>(&input[p.offset..][..p.len], crate::IV, (p.offset / CHUNK_LEN) as u64, 0, Platform::detect()).chaining_value())
+                    .collect();
+                assert_eq!(merge_root(&pieces, &mut cvs, Mode::Hash), crate::hash(&input[..len]), "{len} {threads}");
             }
         }
     }
