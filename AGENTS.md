@@ -45,9 +45,13 @@ place through a concrete need and a demonstrated benefit. When approaches
 perform similarly, choose the simpler one. Apply this standard to code,
 interfaces, documentation, and performance optimizations.
 
+## Strategy: the recommended usage first (Zooko, September 25, 2026)
+
+Make the recommended usage as fast as possible, and tell users how to use it that way. The recommended usage: one thread makes all of a program's calls (the single-threaded ones, or the multithreaded ones, which spread the work under the hood), handing over whole inputs, batches, or large stream pieces. Within it, the minimax rule below still holds over input sizes, batch sizes, and machines (the VM included): no weak size, and effort first where we trail. Misuse and misfortune (several of a program's threads calling at once, other load on the machine, the shared scenario) stay measured and cared for: keep cheap protections such as the SME2 lock, report what they cost, and improve them where it costs the recommended usage nothing. They no longer veto a change that helps the recommended usage; such a change records the shared cells it slows, with their numbers, in its commit message. `perf_regress` still stops on shared-cell regressions too, until the user decides otherwise; commit past it with `--no-verify` and the numbers.
+
 ## Strategy: minimax
 
-Judge a design by its worst plausible case first. Performing well in every situation (or as many as possible) beats excelling in some while falling behind in others: a user meets whatever situation their own program creates. Plausible situations include several threads of one program hashing at once, other programs busy on the machine, a quiet machine, a VM, and every input size and batch size. For each candidate, find the situation where it does worst and compare those worst cases; a best case decides only between designs whose worst cases are level. Consequences here:
+Within the recommended usage (above), judge a design by its worst plausible case first. Performing well in every situation (or as many as possible) beats excelling in some while falling behind in others: a user meets whatever situation their own program creates. Plausible situations include several threads of one program hashing at once, other programs busy on the machine, a quiet machine, a VM, and every input size and batch size. For each candidate, find the situation where it does worst and compare those worst cases; a best case decides only between designs whose worst cases are level. Consequences here:
 
 - A resource that can be shared (an SME unit, a cluster, memory bandwidth) is judged at its shared speed, since some program will share it.
 - A multithreaded call that runs slower than the single-threaded call on the same task is a defect: it could have run single-threaded.
