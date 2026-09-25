@@ -1328,36 +1328,36 @@ pub fn kernel_report() -> KernelReport {
     {
         kernels.push(Kernel {
             from_len: 0,
-            name: "scalar kernel c1, one call",
-            why: "Inputs of one chunk (1 KiB) or less run every block, the root compression included, in one call to the integer-only kernel, with the state in registers throughout.",
+            name: "integer code, one call",
+            why: "Inputs of one chunk (1 KiB) or less are hashed in one call of integer-only code that keeps its whole state in registers.",
         });
         if neon_hybrid::sha3_detected() {
             // The NEON platform hands hash_many sixteen chunks at a time;
             // SME2 hands the hybrids the remainder below a group of sixteen.
             let why = if platform.simd_degree() == 16 {
-                "Above one chunk the tree is hashed several chunks at a time, up to sixteen per call on this platform; the hybrid kernels run scalar chunks on the integer units beside NEON chunks (k10: two scalar beside eight NEON), so both stay busy."
+                "Above one chunk the input is hashed several chunks at a time, up to sixteen per call: some chunks on the integer units and the rest on the NEON vector units, at once."
             } else {
-                "Above one chunk the tree is hashed several chunks at a time; below a full SME2 group of sixteen, the hybrid kernels run scalar chunks on the integer units beside NEON chunks, up to fifteen per call."
+                "Above one chunk the input is hashed several chunks at a time, up to fifteen per call: some chunks on the integer units and the rest on the NEON vector units, at once. Below sixteen chunks this is the method; above, it hashes what SME2 leaves over."
             };
-            kernels.push(Kernel { from_len: CHUNK_LEN + 1, name: "integer + NEON hybrid kernels", why });
+            kernels.push(Kernel { from_len: CHUNK_LEN + 1, name: "integer and NEON code side by side", why });
         } else {
             kernels.push(Kernel {
                 from_len: CHUNK_LEN + 1,
-                name: "NEON hash_many (4-way C kernel)",
-                why: "Above one chunk the tree is hashed four chunks at a time on the NEON C kernel; this core lacks the SHA-3 extension the hybrid kernels rotate with.",
+                name: "NEON vectors, four chunks at a time",
+                why: "Above one chunk the input is hashed four chunks at a time on the NEON vector units; this CPU lacks the instructions the faster mixed code needs.",
             });
         }
         #[cfg(blake3_sme2)]
         if matches!(platform, Platform::SME2) {
             kernels.push(Kernel {
                 from_len: sme2::GROUP * CHUNK_LEN,
-                name: "SME2 hash16_chunks kernel",
-                why: "Sixteen whole chunks fill one group on 512-bit streaming vectors, up to eight groups per call; a remainder below sixteen stays on the hybrid kernels. From 32 KiB each whole subtree is hashed bottom up on SME2 alone, its parents included.",
+                name: "SME2, sixteen chunks at a time",
+                why: "Sixteen whole chunks fill the 512-bit vectors of the SME2 matrix unit; fewer than sixteen left over go to the integer and NEON code. From 32 KiB each whole subtree of the input runs on SME2 alone, its parent nodes included.",
             });
             kernels.push(Kernel {
                 from_len: sme2::LANE_MIN_CHUNKS * CHUNK_LEN,
-                name: "SME2 groups with an integer lane, flat walk",
-                why: "Each whole subtree of 256 KiB to 1 MiB is hashed bottom up on SME2 alone: its chunks in groups of eighteen (sixteen on the streaming vectors, two on the integer units beside them) and sixteen, then every parent level on the SME2 parent kernel, so the SME unit never waits on other work.",
+                name: "SME2 with integer code beside it",
+                why: "From 256 KiB each whole subtree of up to 1 MiB runs on SME2 while the integer units hash two chunks of every eighteen beside it.",
             });
         }
     }
@@ -1391,28 +1391,28 @@ pub fn kernel_report_many() -> KernelReport {
     {
         kernels.push(Kernel {
             from_len: 0,
-            name: "scalar kernel c1, one message per call",
-            why: "A single message runs the same one-call kernel as hash().",
+            name: "integer code, one message per call",
+            why: "A single message runs the same one-call integer code as one input.",
         });
         if neon_hybrid::sha3_detected() {
             kernels.push(Kernel {
                 from_len: 2 * BLOCK_LEN,
-                name: "NEON hybrid parent kernels p2-p9",
-                why: "Two or more one-block messages are compressed together on the NEON hybrid kernels, up to eight lanes beside a scalar lane per call; on SME2 this remains the path for the messages left over below a group of sixteen.",
+                name: "integer and NEON code, up to nine messages at a time",
+                why: "Two or more one-block messages are hashed together, up to eight on the NEON vector units and one on the integer units at once; on SME2 this handles the messages left over below a group of sixteen.",
             });
         } else {
             kernels.push(Kernel {
                 from_len: 2 * BLOCK_LEN,
-                name: "NEON hash_many (4-way C kernel)",
-                why: "Two or more one-block messages are compressed four at a time on the NEON C kernel; this core lacks the SHA-3 extension the hybrid kernels rotate with.",
+                name: "NEON vectors, four messages at a time",
+                why: "Two or more one-block messages are hashed four at a time on the NEON vector units; this CPU lacks the instructions the faster mixed code needs.",
             });
         }
         #[cfg(blake3_sme2)]
         if matches!(platform, Platform::SME2) {
             kernels.push(Kernel {
                 from_len: sme2::GROUP * BLOCK_LEN,
-                name: "SME2 hash16_parents kernel",
-                why: "Sixteen one-block messages fill one group on 512-bit streaming vectors, one compression per lane, up to 64 groups per entry into streaming mode; a remainder below sixteen stays on the hybrid kernels.",
+                name: "SME2, sixteen messages at a time",
+                why: "Sixteen one-block messages fill the SME2 matrix unit's vectors, one message per lane; fewer than sixteen left over go to the integer and NEON code.",
             });
         }
     }
@@ -1442,8 +1442,8 @@ pub fn kernel_report_many_multithreaded() -> KernelReport {
     let mut report = kernel_report_many();
     report.kernels.push(Kernel {
         from_len: lanes::MIN_SPLIT_LEN,
-        name: "message ranges over threads",
-        why: "From here a batch is cut into ranges of messages of 8 KiB to 128 KiB, shrinking toward the end, that the calling thread and this crate's worker threads hash at once, each range on the NEON hybrid kernels, which run at full speed on every core at once. Concurrent callers' ranges are served in turn; when callers already fill the CPUs, a new call hashes its batch whole on its own thread.",
+        name: "split over threads",
+        why: "From here the batch is cut into ranges of messages that the calling thread and this crate's worker threads (one per CPU beyond the first) hash at once, each with integer and NEON code.",
     });
     report
 }
@@ -1457,8 +1457,8 @@ pub fn kernel_report_multithreaded() -> KernelReport {
     report.kernels.retain(|kernel| kernel.from_len < lanes::MIN_SPLIT_LEN);
     report.kernels.push(Kernel {
         from_len: lanes::MIN_SPLIT_LEN,
-        name: "subtrees over threads",
-        why: "From here calls may cut the input at subtree boundaries into pieces of 8 KiB to 128 KiB, shrinking toward the end, that the calling thread and this crate's worker threads (one per CPU beyond the first) hash at once, each on the NEON hybrid kernels, which run at full speed on every core at once; the caller merges the chaining values. Concurrent callers' pieces are served in turn; when callers already fill the CPUs, a new call hashes its input whole on its own thread.",
+        name: "split over threads",
+        why: "From here the input is cut into whole subtrees that the calling thread and this crate's worker threads (one per CPU beyond the first) hash at once: the calling thread on SME2 where it can, the others with integer and NEON code.",
     });
     report
 }
