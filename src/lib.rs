@@ -32,16 +32,19 @@
 //!
 //! # For best performance
 //!
-//! - **Hand over whole inputs.** One [`hash`] call on a whole input runs
-//!   fastest. When the input arrives in pieces, feed [`Hasher::update`]
-//!   pieces of 1 MiB or more: on an Apple M4 Max, 8 MiB in 1 MiB pieces
-//!   hashes at the speed of one call, in 256 KiB pieces about 12% slower,
-//!   in 64 KiB pieces about 40% slower.
-//! - **Use [`hash_multithreaded`] for inputs of 64 KiB and more** when the
-//!   program can spare the CPUs (8 MiB: about 6x [`hash`]'s speed on an M4
-//!   Max), and [`Hasher::update_multithreaded`] for large pieces of a
-//!   stream. Call [`initialize`] at start-up: the first multithreaded call
-//!   of a process otherwise starts the worker threads, about a millisecond.
+//! - **Input in memory: one call.** [`hash`] on the whole input runs
+//!   fastest on one thread, and [`hash_multithreaded`] on inputs of 64 KiB
+//!   and more when the program can spare the CPUs (8 MiB: about 6x
+//!   [`hash`]'s speed on an M4 Max). Call [`initialize`] at start-up: the
+//!   first multithreaded call of a process otherwise starts the worker
+//!   threads, about a millisecond.
+//! - **Input arriving (a file, a socket, a decompressor): a [`Stream`],
+//!   with each read landing in its buffer.** [`Stream::update_reader`]
+//!   reads any [`std::io::Read`] straight into the stream's buffers, and
+//!   [`Stream::buffer`] hands out the space for code that writes the input
+//!   itself; the stream hashes each full buffer on another thread while
+//!   the next one fills. [`Stream::new_multithreaded`] spreads each buffer
+//!   over every core.
 //! - **Batch small messages with [`hash_many`]**: 1024 messages of 64
 //!   bytes hash about 5x faster in one call than in a loop of [`hash`].
 //! - **Make the calls from one thread.** The multithreaded functions
@@ -1765,21 +1768,14 @@ impl Hasher {
     }
 
     /// [`update`](Hasher::update) over several threads, with the same
-    /// result. The whole subtrees of 64 KiB and more in `input` are cut into
+    /// result: the whole subtrees of 64 KiB and more in `input` are cut into
     /// pieces that the calling thread and this crate's worker threads hash
-    /// at once, under the rules of [`hash_multithreaded`]; the rest runs on
-    /// the calling thread as `update` does.
-    ///
-    /// ```
-    /// let input = vec![7u8; 1 << 20];
-    /// let mut hasher = blake3_servil::Hasher::new();
-    /// for piece in input.chunks(64 * 1024) {
-    ///     hasher.update_multithreaded(piece);
-    /// }
-    /// assert_eq!(hasher.finalize(), blake3_servil::hash(&input));
-    /// ```
+    /// at once, under the rules of [`hash_multithreaded`]. The hashing
+    /// thread of [`Stream::new_multithreaded`] runs each buffer through it;
+    /// callers use the stream (Zooko, September 25, 2026: the caller's thread
+    /// should produce while another hashes, not take turns with it).
     #[cfg(feature = "std")]
-    pub fn update_multithreaded(&mut self, input: &[u8]) -> &mut Self {
+    pub(crate) fn update_multithreaded(&mut self, input: &[u8]) -> &mut Self {
         self.update_with_join::<join::SerialJoin>(input, true)
     }
 

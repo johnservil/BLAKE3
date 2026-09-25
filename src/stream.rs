@@ -1,7 +1,8 @@
-//! [`Stream`]: hashing that runs behind the caller. The caller fills the
-//! stream's buffers (reading straight into them, or copying with
-//! [`Stream::update`]); each full buffer goes to a hashing thread while the
-//! caller fills the next. When every buffer is out, the caller's next
+//! [`Stream`]: hashing that runs behind the caller. The caller's reads land
+//! in the stream's buffers ([`Stream::update_reader`], or
+//! [`Stream::buffer`] and [`Stream::filled`] for code that writes the input
+//! itself); each full buffer goes to a hashing thread while the caller
+//! fills the next. When every buffer is out, the caller's next
 //! [`Stream::buffer`] waits for one to come back: that is the back-pressure.
 //!
 //! Each buffer is one whole subtree (BUFFER_LEN, a power of two
@@ -193,18 +194,27 @@ impl Stream {
         self.filled += n;
     }
 
-    /// Copy `input` into the stream: [`buffer`](Stream::buffer) and
-    /// [`filled`](Stream::filled) until all of it is in.
-    #[inline]
-    pub fn update(&mut self, mut input: &[u8]) -> &mut Self {
-        while !input.is_empty() {
-            let buffer = self.buffer();
-            let n = buffer.len().min(input.len());
-            buffer[..n].copy_from_slice(&input[..n]);
-            self.filled(n);
-            input = &input[n..];
+    /// Read `reader` to its end straight into the stream's buffers:
+    /// [`buffer`](Stream::buffer), a read into it, and
+    /// [`filled`](Stream::filled), until a read returns nothing. A read
+    /// interrupted by a signal is retried; any other error is returned, and
+    /// the bytes read before it stay in the stream.
+    ///
+    /// ```
+    /// let data = vec![7u8; 3 << 20];
+    /// let mut stream = blake3_servil::Stream::new();
+    /// stream.update_reader(&data[..]).unwrap();
+    /// assert_eq!(stream.finalize(), blake3_servil::hash(&data));
+    /// ```
+    pub fn update_reader(&mut self, mut reader: impl std::io::Read) -> std::io::Result<&mut Self> {
+        loop {
+            match reader.read(self.buffer()) {
+                Ok(0) => return Ok(self),
+                Ok(n) => self.filled(n),
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(e) => return Err(e),
+            }
         }
-        self
     }
 
     /// Send the full current buffer to the hashing thread and take a free
@@ -304,6 +314,16 @@ fn short_hash(bytes: &[u8], multithreaded: bool) -> Hash {
     if multithreaded { crate::hash_multithreaded(bytes) } else { crate::hash(bytes) }
 }
 
+impl std::fmt::Debug for Stream {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Stream")
+            .field("multithreaded", &self.multithreaded)
+            .field("filled", &self.filled)
+            .field("buffers_hashing", &self.out)
+            .finish_non_exhaustive()
+    }
+}
+
 impl Default for Stream {
     fn default() -> Self {
         Stream::new()
@@ -322,20 +342,21 @@ impl Drop for Stream {
     }
 }
 
-impl std::io::Write for Stream {
-    fn write(&mut self, input: &[u8]) -> std::io::Result<usize> {
-        self.update(input);
-        Ok(input.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
 
 #[cfg(test)]
 mod test {
     use super::*;
+
+    /// Copy `bytes` into the stream through its buffers, as a read would.
+    fn copy_in(stream: &mut Stream, mut bytes: &[u8]) {
+        while !bytes.is_empty() {
+            let buffer = stream.buffer();
+            let n = buffer.len().min(bytes.len());
+            buffer[..n].copy_from_slice(&bytes[..n]);
+            stream.filled(n);
+            bytes = &bytes[n..];
+        }
+    }
 
     fn input(len: usize) -> Vec<u8> {
         let mut v = vec![0u8; len];
@@ -353,7 +374,7 @@ mod test {
                 for piece in [1usize << 16, 1000, 3 << 20] {
                     let mut stream = if multithreaded { Stream::new_multithreaded() } else { Stream::new() };
                     for p in data[..len].chunks(piece) {
-                        stream.update(p);
+                        copy_in(&mut stream, p);
                     }
                     assert_eq!(stream.finalize(), expected, "len {len}, piece {piece}, mt {multithreaded}");
                 }
@@ -379,17 +400,57 @@ mod test {
         let data = input(3 * BUFFER_LEN + 99);
         let (mut a, mut b) = (Stream::new(), Stream::new_multithreaded());
         for p in data.chunks(1 << 16) {
-            a.update(p);
-            b.update(p);
+            copy_in(&mut a, p);
+            copy_in(&mut b, p);
         }
         let mut dropped = Stream::new();
-        dropped.update(&data);
+        copy_in(&mut dropped, &data);
         drop(dropped);
         assert_eq!(a.finalize(), crate::hash(&data));
         assert_eq!(b.finalize(), crate::hash(&data));
         let mut again = Stream::new();
-        again.update(&data[..2 * BUFFER_LEN]);
+        copy_in(&mut again, &data[..2 * BUFFER_LEN]);
         assert_eq!(again.finalize(), crate::hash(&data[..2 * BUFFER_LEN]));
+    }
+
+    /// update_reader: a reader that returns short pieces and a retryable
+    /// interruption hashes what it gave; a failing reader's error comes
+    /// back with the bytes before it kept.
+    #[test]
+    fn test_update_reader() {
+        struct Pieces<'a> { data: &'a [u8], step: usize, interrupted: bool }
+        impl std::io::Read for Pieces<'_> {
+            fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+                if !self.interrupted && self.data.len() > 1000 {
+                    self.interrupted = true;
+                    return Err(std::io::ErrorKind::Interrupted.into());
+                }
+                let n = out.len().min(self.data.len()).min(self.step);
+                out[..n].copy_from_slice(&self.data[..n]);
+                self.data = &self.data[n..];
+                self.step = self.step * 7 % 300_007 + 1;
+                Ok(n)
+            }
+        }
+        let data = input(2 * BUFFER_LEN + 777);
+        for multithreaded in [false, true] {
+            let mut stream = if multithreaded { Stream::new_multithreaded() } else { Stream::new() };
+            stream.update_reader(Pieces { data: &data, step: 1, interrupted: false }).unwrap();
+            assert_eq!(stream.finalize(), crate::hash(&data), "mt {multithreaded}");
+        }
+        struct Failing(usize);
+        impl std::io::Read for Failing {
+            fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+                if self.0 == 0 { return Err(std::io::ErrorKind::BrokenPipe.into()); }
+                let n = out.len().min(self.0);
+                out[..n].fill(9);
+                self.0 -= n;
+                Ok(n)
+            }
+        }
+        let mut stream = Stream::new();
+        assert_eq!(stream.update_reader(Failing(5000)).unwrap_err().kind(), std::io::ErrorKind::BrokenPipe);
+        assert_eq!(stream.finalize(), crate::hash(&[9u8; 5000]));
     }
 
     #[test]

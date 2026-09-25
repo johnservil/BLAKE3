@@ -387,8 +387,10 @@ on the VM (job 187); a second SME2 thread in the pool is the next idea.
 
 **Stream** (59ad5c1, c242b2e): hashing behind the caller. Four 1 MiB
 buffers (whole subtrees, the flat walk's largest) per stream; the caller
-fills one (`buffer()`/`filled(n)`, or `update`/`io::Write` by copy) while
-a hashing thread runs `Hasher::update` (or `update_multithreaded`) on full
+fills one (`buffer()`/`filled(n)`, or `update_reader`, which reads into
+them) while
+a hashing thread runs `Hasher::update` (or the crate-internal
+`update_multithreaded`) on full
 ones; `buffer()` blocks when all four are out. The hashing thread and the
 buffers are the calling thread's, kept asleep for its next stream (a
 thread-local); a stream shorter than a buffer is hashed in place at
@@ -396,6 +398,15 @@ finalize. Mac, streamed 64 KiB pieces with the producer's copy (record
 ec5de66): servil 1 MiB 0.161 ns/B, 8 MiB 0.157, 128 MiB 0.150; servil mt 1
 MiB 0.046, 8 MiB 0.041. Open: short streams' fill and drain, the per-stream
 wake, 64 B overhead (0.91 against hash()'s 0.70 ns/B).
+
+**Streaming scope** (Zooko, September 25, 2026): input in memory goes to
+one call (`hash`, `hash_multithreaded`); input that arrives goes to a
+`Stream`, each read landing in its buffers. `Hasher::update_multithreaded`
+(caller and hashing taking turns) left the public API, and `Stream`'s
+copying `update` and `io::Write` went with it; a caller whose pieces arrive
+in buffers it does not own copies them into `buffer()` itself. The
+benchmark's streamed use case measures that one pattern, each piece's
+read standing as a memory copy for every contender.
 
 **Batches over the pool**: messages gathered into ranges by
 `next_piece_len`; servil mt below the split threshold hashes on the
