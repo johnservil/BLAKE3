@@ -4,15 +4,15 @@ The README's speed chart comes from one run of [bench-hashes](https://github.com
 
 | bar | implementation | GB/s |
 |---|---|---:|
-| BLAKE3, every core | blake3-servil (this repository) at [f9d39b0](https://github.com/johnservil/BLAKE3/commit/f9d39b0169dc6d9ceef456debf1c40b0d26865b3), `hash_multithreaded` | 32 |
-| BLAKE3, one core | blake3-servil (this repository) at [f9d39b0](https://github.com/johnservil/BLAKE3/commit/f9d39b0169dc6d9ceef456debf1c40b0d26865b3), `hash` | 6.67 |
-| SHA-256 | Apple CommonCrypto, from the running macOS | 3.34 |
-| SHA3-256 | sha3 0.11.0 | 1.05 |
+| BLAKE3, every core | blake3-servil (this repository) at [2095dff](https://github.com/johnservil/BLAKE3/commit/2095dff3148b207ff3f1a86421e5aa3c4eb620c5), `hash_multithreaded` | 32 |
+| BLAKE3, one core | blake3-servil (this repository) at [2095dff](https://github.com/johnservil/BLAKE3/commit/2095dff3148b207ff3f1a86421e5aa3c4eb620c5), `hash` | 6.76 |
+| SHA-256 | Apple CommonCrypto, from the running macOS | 3.10 |
+| SHA3-256 | sha3 0.11.0 | 1.04 |
 | SHA-1 | sha1-checked 0.10.0 (SHA-1 with the collision detection git uses) | 0.77 |
 
-- bench-hashes: commit [aefc338](https://github.com/johnservil/bench-hashes/commit/aefc3388514b0f09a719973cbde9e59f6577d081)
+- bench-hashes: commit [20a87c6](https://github.com/johnservil/bench-hashes/commit/20a87c6faa49f808fe0b86f2c9d31066e8b97152)
 - compiler: rustc 1.98.0-nightly (f428d123a 2026-06-19), target aarch64-apple-darwin
-- load during the run: quiet: other programs kept 0.54 CPUs busy on average, 0.73 in the busiest 5 s
+- load during the run: quiet: other programs kept 0.54 CPUs busy on average, 0.87 in the busiest 5 s
 
 To draw the chart again from a newer record, with bench-hashes cloned inside this repository:
 
