@@ -1,0 +1,5 @@
+Gate for 9fd0ac9 (batch padded groups):
+suites: lib 76 / no_sme2 72 / pure 62, doc 21, vectors 2, bench-hashes 7: all pass (VM).
+VM: pre-commit perf_regress check (working tree against 37f1247): no regression; faster 256 B x 24 st/mt solo/shared -30 to -32%.
+Mac: runner job 255 (perf_regress compare 37f1247 9fd0ac9): no regression; faster 256 B x 24 -31%.
+Mac probes 256-259 (old/new/new/old, probe/commonware and probe/commonware-new): hash_many sweeps 1-40 messages at 128 B, 256 B, 1 KiB; no count slower.
