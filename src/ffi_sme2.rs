@@ -435,8 +435,14 @@ unsafe fn walk_on_stack(input: &[u8], key: &CVWords, chunk_counter: u64, flags: 
     unsafe { walk_in(input, key, chunk_counter, flags, keep, out, n, block.0.as_mut_ptr() as *mut u8) }
 }
 
-/// The flat walk's scratch, on 128-byte lines (Apple's).
-#[repr(C, align(128))]
+/// The flat walk's scratch, on a 4 KiB boundary, so the residues mod 4 KiB
+/// that [`scratch_layout`] gives its buffers are their addresses' residues.
+/// On 128-byte lines alone, malloc chose the residues: VM, hash(32 KiB)
+/// 0.18 ns/B with the block at a multiple of 1 KiB mod 4 KiB and 0.22 at
+/// 0x680, 0x700, 0xe80, 0xf00, so a process's first spawned thread (its
+/// block at 0xd00) ran slow, and its main thread by chance (September 26,
+/// 2026; fork NOTES, "The slow state, measured directly").
+#[repr(C, align(4096))]
 struct Scratch([core::mem::MaybeUninit<u8>; SCRATCH]);
 
 // Each thread's scratch for the flat walk, allocated on its first walk.
@@ -451,7 +457,7 @@ std::thread_local! {
         Box::new(core::cell::UnsafeCell::new(Scratch([core::mem::MaybeUninit::uninit(); SCRATCH])));
 }
 
-/// The flat walk in `block`, SCRATCH bytes on 128-byte lines, which
+/// The flat walk in `block`, SCRATCH bytes on a 4 KiB boundary, which
 /// holds the pointer table at its start and the chaining values where
 /// [`scratch_layout`] puts them: 1 KiB and 3 KiB mod 4 KiB, so the three
 /// buffers never share an address mod 4 KiB. The kernels' 32-byte stores

@@ -293,9 +293,23 @@ KiB 0.201 / 0.160, 256 KiB 0.172 / 0.1695, 1 MiB 0.152 / 0.151. Open:
   176-179), 64 KiB level. What else falls between its SME2 kernels is
   open; the next idea is folding the stack's merges into the walk's
   padded levels.
-- The VM stays two-speed per process at 32-64 KiB (0.172 or 0.210), with
-  the scratch on or off the stack: guest pages land at host addresses the
-  guest cannot see, so a placement effect above 4 KiB would show this way.
+- The VM's two speeds at 32-64 KiB (0.18 or 0.22 ns/B at 32 KiB) came
+  from the scratch block's own placement: a `Box` on 128-byte lines puts
+  its start wherever malloc chooses, so the layout's residues were off by
+  it. hash(32 KiB) by the block's start mod 4 KiB (a 4 KiB-aligned block
+  shifted by R, six processes): every multiple of 1 KiB fast (0.18; 64
+  KiB 0.166), 0x680, 0x700, 0xe80, 0xf00 always slow (0.22; 0.205), most
+  other residues either. glibc gives each thread's block the same residue
+  run after run: the first spawned thread 0xd00 (slow in almost every
+  process; the benchmark's shared copies and a program's first worker),
+  later threads 0xe00 (fast), the main thread 0x180 (by process). Not the
+  cause: the binary, ASLR (off: the same), the vCPU (pinned to each of
+  16), the input's offset mod 4 KiB (ten offsets, all fast with the
+  block aligned). The block now sits on a 4 KiB boundary: five of six
+  processes fast on every thread. Open: the sixth ran every spawned
+  thread slow at the same virtual residues, which fits host placement the
+  guest cannot see; one run in a benchmark switched from fast to slow
+  mid-run.
 
 **Idle threads cost the busy ones.** Beside eight hashing threads, eight
 idle ones: asleep, free; spinning on loads +18% (VM and Mac); `sched_yield`
