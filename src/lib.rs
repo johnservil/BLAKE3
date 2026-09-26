@@ -1416,6 +1416,14 @@ pub fn kernel_report_many(message_len: usize) -> KernelReport {
             name: kernel.name,
             why: "Messages of this length are hashed one call each, as one input of that length.",
         });
+        #[cfg(blake3_neon_hybrid)]
+        if (CHUNK_LEN + 1..=2 * CHUNK_LEN).contains(&message_len) && neon_hybrid::sha3_detected() {
+            kernels.push(Kernel {
+                from_len: 2 * message_len,
+                name: "integer and NEON code, messages side by side",
+                why: "From two messages of two chunks, every first chunk is hashed in one pass over the vector and integer units, every second chunk in another, then every root, up to sixteen messages at a time.",
+            });
+        }
         #[cfg(blake3_sme2)]
         if matches!(platform, Platform::SME2) && (CHUNK_LEN + 1..=15 * CHUNK_LEN).contains(&message_len) {
             kernels.push(Kernel {

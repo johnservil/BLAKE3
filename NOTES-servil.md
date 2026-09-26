@@ -24,7 +24,7 @@ tune to the hardware, never to its harness.
 | SME2 kernels | `c/blake3_sme2_aarch64.S`, `src/ffi_sme2.rs` | 16 chunks or 16 parent blocks per group on 512-bit streaming vectors; `DEGREE = 128` (eight groups per entry into streaming mode) |
 | NEON hybrid kernels | `c/blake3_neon_hybrid_aarch64.S`, **generated** by `tools/gen_neon_hybrid.py`; `src/ffi_neon_hybrid.rs` | k1-k10 (whole chunks), q1-q9 (whole chunks plus a partial one), p2-p9 (parents, one-block messages; p3/p5/p7/p9 with a scalar lane); scalar chunks run on the integer units beside NEON work |
 | One SME2 call at a time | `Sme2Turn` in `src/platform.rs` | Calls large enough for SME2 take a process-wide turn; a call finding it taken runs NEON |
-| Batches | `src/many.rs` | One digest per message; runs of 64-byte messages go to the parent kernels many lanes at a time |
+| Batches | `src/many.rs` | One digest per message: one-block messages on the parent kernels, 2-16 blocks on the NEON parent plans or padded SME2 groups, 2-15 chunks side by side on SME2 |
 | Multithreaded | `src/lanes.rs` | One pool over every CPU, NEON only; public contract speaks of threads alone |
 | Regression check | `tools/perf_regress.py`, `tools/perf_bisect.py`, `tools/git-hooks/` | Working tree against HEAD (or two commits), A B B A A B B A, through bench-hashes; mandatory for code commits |
 | Mac runner | `tools/runner/` (README) | Jobs from the VM run natively on the Mac as the `benchrunner` account, code from GitHub |
@@ -47,22 +47,39 @@ generator, check that existing kernels stay byte-identical unless meant.
   with two integer chunks beside each group of 16 from 256 KiB.
 - `hash_many(input, message_len, out)`: equal messages back to back in one
   buffer (the only batch API; the slice-of-slices one went, Zooko,
-  September 26). Messages of 1-16 whole blocks go to the platform's
-  `hash_many` TABLE (128) at a time: SME2 groups of 16 from 16 messages,
-  the NEON hybrids (one block) or the C NEON kernel (2-16 blocks) below
-  and for remainders; other lengths through `hash()`. Against the slice
-  API with a prebuilt pointer table (VM, bench-hashes 64 B batches): 1-64
-  messages level, 256-16384 5-30% faster single-threaded and 5-46%
-  multithreaded (no pointer table to build from the caller's slices).
+  September 26). `many::hash_many_on` picks by length:
+  - One block (64 B): the platform's `hash_many` TABLE (128) at a time,
+    SME2 parent-kernel groups of 16 from 16 messages, the NEON parent
+    plans (p2-p9) below and for remainders, the overlap group for 13-15
+    left over (`OVERLAP_MIN`).
+  - 2-16 whole blocks (`hash_blocks`, 9fd0ac9, 666e550): below ten
+    messages the integer + NEON parent plans (p2-p9 take any block count
+    at one counter); from ten (`SME2_TAIL_MIN`), and from five past whole
+    groups (`SME2_TAIL_MIN_AFTER_GROUPS`), whole SME2 groups with the last
+    one padded, its spare lanes pointing at the last message again and
+    the message kernel storing only the real lanes (bits 24-31 of its
+    packed flags); fewer left over past the groups on the plans, before
+    the groups. CPUs without SHA-3 keep the C four-lane kernel (a spare
+    fourth lane for three, c1 for one or two). 256 B, ns/msg, 37f1247 /
+    666e550, VM: 2 180/104, 3 181/76, 5 105/70, 9 99/60, 12 91/51, 15
+    106/41, 24 74/51; Mac P-core (jobs 256-266): 2 184/116, 3 183/79,
+    12 99/50, 15 115/40, 24 73/50. SHA-256 ring takes about 93 (VM).
+  - 2-15 chunks of whole blocks (`hash_chunked`, 0bed4e7): on SME2, from
+    `SME2_CHUNKED_MIN` messages (7-12 by chunk count), sixteen side by
+    side: chunk k of every lane on the message kernel at counter k (the
+    whole chunks in one call, the counter stepping per group through bits
+    32-63 of the flags word; the last chunk in a second), then each
+    parent level with the pairs gathered into contiguous blocks, then the
+    root; the last group padded; fewer on `hash()` one at a time. Mac
+    P-core, 16 messages, ns/msg before / after: 2 KiB 987/331, 4 KiB
+    1310/661, 8 KiB 2047/1305, 15 KiB 3958/2751 (jobs 268-271). Its
+    scratch (15 KiB) stays uninitialised: zeroed, it cost a third of the
+    time (VM 16 x 4 KiB 869 against 665 ns/msg).
+  - Other lengths: `hash()` one at a time.
   `many::hash_run` stays `#[inline(never)]`: inlined for all sixteen
-  lengths, two-message batches took 30% longer. For 2-16 blocks the C
-  NEON kernel takes four at a time and hashed the rest in portable code;
-  messages past the last group of four now run c1 (256 B, VM: 2-3
-  messages from 7% slower than a loop of `hash()` to level, 4-15 5-11%
-  faster). 256 B, VM, ns/msg: 1-3 185 (the loop's), 4-12 97, 16 and up
-  39, mt 8192 9.9; the official crate's hidden `Platform::hash_many` 16
-  per call 93-96. Open: 17-31 messages pay about 400 ns beyond their
-  kernels for the NEON remainder after the SME2 group (24: 75 ns/msg),
+  lengths, two-message batches took 30% longer. Open: tails of one to
+  four messages past the SME2 groups still run in the SME unit's slow
+  state (256 B x 18-20: 62 ns/msg against 38 at 16; 34-36 and 100 alike),
   the SME2 remainder problem again.
 - `hash_multithreaded()`: below 64 KiB, `hash()`'s path; from 64 KiB the
   pool on NEON only. Batches: under 64 KiB in all the serial path; else
@@ -290,6 +307,15 @@ is `inline(never)` (its arrays in `hash()`'s frame made every call probe
 and zero them); arrays sized for 16 chaining values at 2-16 KiB in place
 of 6 KiB made 2-4 KiB 4-5% faster. Watch frame sizes whenever
 `MAX_SIMD_DEGREE` or a stack buffer changes.
+
+**The SME unit writing lines the core has just written costs** (VM,
+September 26, 2026). A scratch output array for a padded SME2 group,
+zeroed by the core and then written by the kernel, cost 16 x 256 B 46
+ns/msg against 38 written straight to the caller's buffer (uninitialised
+scratch: 41; the core's copy out, a fraction of it). The side-by-side
+chunk path's zeroed 15 KiB scratch cost 16 x 4 KiB 869 ns/msg against 665
+uninitialised. Hence kernels that store only the lanes asked for, and
+scratch left uninitialised for the kernels to write first.
 
 **Energy per byte** (probe/energy, jobs 154-160, September 25, 2026, M4
 Max, the Mac quiet). The process's `proc_pid_rusage` RUSAGE_INFO_V6
@@ -554,9 +580,9 @@ all); marks two-speed cells.
 
 ## Testing
 
-    cargo test --release --lib                      # 75 tests
-    cargo test --release --features no_sme2 --lib   # 71
-    cargo test --release --features pure --lib      # 61
+    cargo test --release --lib                      # 84 tests, 1 ignored
+    cargo test --release --features no_sme2 --lib   # 80
+    cargo test --release --features pure --lib      # 69
     cargo test --release --doc                      # 21
     cargo test --release --manifest-path test_vectors/Cargo.toml   # 2
     cargo test --release --manifest-path bench-hashes/Cargo.toml   # 7
@@ -564,9 +590,46 @@ all); marks two-speed cells.
 Among them: every chunk count and every q kernel at every partial length
 against the portable compressor; every length from one chunk and a byte to
 seventeen chunks against the reference implementation; the pool's cuts,
-merges, caps, and 32 concurrent callers. In the VM add the usual
+merges, caps, and 32 concurrent callers; every platform's `hash_many` at
+every input shape against the portable one (`test::platform_hash_many`);
+every kernel against guard pages (`test::guard_pages`: inputs and outputs
+flush against an inaccessible page, so one byte read or written outside
+them faults, which the sanitizers cannot see in assembly); Miri-sized
+unsafe paths (`test::unsafe_paths`). In the VM add the usual
 `HOME=/workspace/vm/home CARGO_TARGET_DIR=/tmp/target CC=clang-19
 TMPDIR=/tmp` prefix.
+
+A long differential run against the reference implementation, off by
+default: `BLAKE3_DIFF_SECONDS=1200 BLAKE3_DIFF_SEED=2 cargo test --release
+--lib -- --ignored differential --nocapture` (every entry point, lengths
+skewed toward block and chunk boundaries up to 4 MiB, one to four threads
+at once, so the turn, the pool, and streams meet).
+
+**Checks beyond the suites** (September 26, 2026; nightly Rust with
+`rustup toolchain install nightly --component miri,rust-src,llvm-tools`,
+logs in `tmp/quality/`, outside git):
+
+- Coverage: `RUSTFLAGS="-C instrument-coverage"` and the toolchain's
+  `llvm-profdata` / `llvm-cov` (`rustup component add llvm-tools`) over
+  the library tests: 93% of lines. What it showed unexercised became the
+  platform, guard-page, and C-kernel tests (d395f9e); the rest is
+  platform-absent code (x86, no SHA-3) and fail-stop branches.
+- AddressSanitizer: `RUSTFLAGS="-Zsanitizer=address" cargo +nightly test
+  -Zbuild-std --target aarch64-unknown-linux-gnu --release --lib`: clean.
+  A deliberate heap overflow in a control program was caught.
+- ThreadSanitizer: the same with `-Zsanitizer=thread`, the pool, stream,
+  turn, and unsafe-path tests, 31 runs: clean. A deliberate data race in a
+  control program was caught.
+- Miri: `MIRIFLAGS=-Zmiri-num-cpus=4 cargo +nightly miri test --features
+  pure --lib -- unsafe_paths test_miri_smoketest` (41 minutes; three
+  workers): batches, the pool from two callers, a stream past one buffer:
+  no undefined behaviour.
+- Found and fixed: hash_blocks' padded-group choice (a latent assert on a
+  CPU combination that does not exist), Platform::hash_many silently
+  dropping the tail of an input that is not whole blocks (now a compile
+  error), a dead Stream branch that would have hashed the last buffer
+  alone, and the message kernel's one-block case (a block run twice and
+  flags_start missed; no caller used it until the side-by-side path).
 
 ## Future work
 
