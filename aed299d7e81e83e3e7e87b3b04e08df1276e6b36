@@ -1,0 +1,1 @@
+Gate for aed299d (candidate/mac-calibration-notes), September 26, 2026: NOTES only; code is f38786d's. VM compare: no regression (29 s). Mac job 331: no regression (30 s, with the persistent runner).
