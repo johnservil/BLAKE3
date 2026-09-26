@@ -6,8 +6,9 @@ a commit, measured side by side.
     python3 tools/perf_regress.py check --against v0.7.0 # against a release
     python3 tools/perf_regress.py compare OLD NEW        # two commits
 
-Exit 0: no regression. 1: a confirmed regression. 2: no verdict (the
-comparison itself was unreliable, see below).
+Exit 0: no solo regression (shared cells slower are listed). 1: a
+confirmed solo regression. 2: no verdict (the comparison itself was
+unreliable, see below).
 
 `check` builds bench-hashes twice, once against the fork at REV (a git
 worktree, cached per commit in tmp/perf-ab/) and once against this working
@@ -30,6 +31,10 @@ to back while the host's load came and went (NOTES-servil.md):
   the scenario's margin: 3% solo, 10% shared (Zooko, September 25, 2026:
   the recommended usage first, the shared scenario measured and held to
   a looser line; AGENTS.md).
+* A regression holds the change (exit 1) when a solo cell is slower; a
+  shared cell slower is reported beside an exit 0, and the commit names
+  it, its numbers, and the reason the change is worth it (Zooko,
+  September 26, 2026).
 * Any slower cell triggers another A B B A A B B A; a regression is a
   cell slower in both.
 * The control is the same code on both sides. If the rule calls any of
@@ -456,13 +461,31 @@ def compare(old_rev, new):
             return 2
         slower2, _, ratio2, _ = judge(more, use_cases, SUBJECTS)
         confirmed = sorted(set(slower) & set(slower2))
-        if confirmed:
-            print(f"perf_regress: REGRESSION: {new_name} is slower than {old_rev} in {len(confirmed)} cells "
-                  f"(5th percentile, median of pair ratios):")
-            for key in confirmed:
+        # Solo cells hold the change; shared cells are reported (Zooko,
+        # September 26, 2026: a change that slows them has a reason worth
+        # more, which its commit message names beside the cells).
+        held = [key for key in confirmed if key.split("|")[1] == "solo"]
+        reported = [key for key in confirmed if key not in held]
+
+        def show(keys):
+            for key in keys:
                 print(f"  {key}: {ratio[key] - 1:+.1%}, then {ratio2[key] - 1:+.1%} "
                       f"(90th percentile {slow[key] - 1:+.1%})")
+
+        if held:
+            print(f"perf_regress: REGRESSION: {new_name} is slower than {old_rev} in {len(held)} solo cells "
+                  f"(5th percentile, median of pair ratios):")
+            show(held)
+        if reported:
+            print(f"perf_regress: {new_name} is slower than {old_rev} in {len(reported)} shared cells; "
+                  "they do not hold the change: name them, their numbers, and the change's reason "
+                  "in its commit message:")
+            show(reported)
+        if held:
             return 1
+        if reported:
+            print(f"perf_regress: no solo regression against {old_rev}")
+            return 0
         print(f"perf_regress: the second {PAIRS} pairs did not confirm; no regression")
     for key in sorted(faster):
         print(f"  faster  {key}: {ratio[key] - 1:+.1%} (90th percentile {slow[key] - 1:+.1%})")

@@ -525,7 +525,9 @@ eight runs A B B A A B B A of sha256 (the control), servil, and servil mt
 at 29 points, 48 rounds; a cell is slower when all four pairs' 5th
 percentiles are more than 3% above (solo cells) or 10% above (shared
 cells, since September 25, 2026); a second eight must agree; the control
-moving means no verdict. Calibrated on 32 runs of one commit: no false flag
+moving means no verdict. Confirmed solo cells hold the change (exit 1);
+confirmed shared cells are listed beside exit 0, and the commit message
+names them and the reason (since September 26, 2026). Calibrated on 32 runs of one commit: no false flag
 in 2400 cell comparisons; 5% slower caught 70%, 10% 95%, 20% always. Each
 listed cell also shows its 90th-percentile ratio, which the verdict ignores
 (a two-speed cell's 5th percentile sees only the fast speed). It measures
