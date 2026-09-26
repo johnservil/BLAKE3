@@ -2,7 +2,7 @@
 name = "blake3-servil"
 # The fork's own version series, from 0.1.0, based on upstream BLAKE3 1.8.7:
 # tools/gen-ver.py sets X.Y.Z+<commit> here and tags vX.Y.Z+<commit>.
-version = "0.2.0"
+version = "0.2.0+30296341eef435521469f8eae3582047b02d67da"
 authors = ["Jack O'Connor <oconnor663@gmail.com>", "Samuel Neves", "John Servil"]
 description = "the BLAKE3 hash function, with SME2 and integer + NEON kernels for AArch64 and a shared thread pool"
 repository = "https://github.com/johnservil/BLAKE3"
