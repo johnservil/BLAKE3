@@ -1,0 +1,1 @@
+Gate for ad24649 (candidate/runner-install), September 26, 2026: tools and docs only; code is f38786d's. VM: perf_regress compare servil against it, no regression; runner rehearsal in the VM with perf_regress.py beside runner.py, ok. Mac job 328: no regression. Takes effect when Zooko reruns setup-mac.sh.
