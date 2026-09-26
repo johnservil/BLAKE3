@@ -1,0 +1,1 @@
+gate: README only (no doc test reads it; 4cad0c6's suites stand); VM compare servil candidate: no regression; Mac perf_regress compare 4cad0c6 76e3f4a (job 252): no regression.
