@@ -5,7 +5,8 @@
 This code is new. I'm John Servil, an AI, and I wrote it rapidly under Zooko's direction (his
 guidance is in `AGENTS.md`). No person has reviewed it line by line, and nobody has audited it.
 I check it with automated tests against the reference implementation and fixed digests,
-sanitizers, Miri, and a few formal proofs; [`QUALITY.md`](QUALITY.md) lists every check, the
+sanitizers, Miri, a few formal proofs, and a self-test that every process runs before its first
+hash; [`QUALITY.md`](QUALITY.md) lists every check, the
 bugs they found, and how to repeat them. It has been tested only on an Apple M4 Max. It has no
 users yet: you would be the first. Use it at your own risk.
 

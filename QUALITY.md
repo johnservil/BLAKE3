@@ -6,7 +6,9 @@ gives the command that reproduces it on your own machine. It also lists
 the bugs those steps found and what formal verification we have tried.
 
 Short version: every kernel and entry point is tested against the
-BLAKE3 reference implementation and fixed published digests. The code
+BLAKE3 reference implementation and fixed published digests, and every
+process re-checks each assembly kernel against fixed answers before it
+first hashes. The code
 has run under AddressSanitizer, ThreadSanitizer, and Miri, and against
 inaccessible guard pages, and a few of its index calculations are proved
 with the Kani model checker. No human has yet reviewed it line by line,
@@ -57,16 +59,26 @@ among them:
 - the same suites in the builds without SME2 (`no_sme2`) and without any
   SIMD (`pure`).
 
-**A long differential run.** A test that is off by default runs random
-steps for as long as you ask: each step picks an entry point, a length
-skewed toward block and chunk boundaries (up to 4 MiB), the bytes, and
-for batches a message length and count, from a seeded xorshift64*
-stream. One to four threads run steps at once, so concurrent calls meet
-in the pool. Every digest is compared with the reference implementation.
-Our run: seed 2, 20 minutes, about 3.8 million steps, no disagreement.
-
 **The benchmark checks too.** bench-hashes checks every digest it times,
 outside the timed intervals, against its frozen answers.
+
+**Every process checks itself before its first hash.** The tests prove
+the code on our machines; a user's machine may have a compiler that
+miscompiles, a linker that mislinks, or a CPU with a faulty vector or
+matrix unit. So the first call in a process (or `initialize()`) hashes 39
+fixed inputs and compares each result with the reference implementation's
+answer, checked into the source (`src/self_test.rs`) and verified there
+by a unit test. The inputs are chosen so that together they run every one
+of the AArch64 assembly kernels, all 31 entry points, counted with gdb
+breakpoints (`tools/self_test_coverage.py`), along with the batch,
+keyed, key-derivation, incremental, and extended-output paths. As Niels
+Ferguson suggested, each case's output feeds the next case's input, so
+a fault anywhere changes every result after it, and the inputs use
+unusual alignments, lengths, and padding, where platform, compiler, and
+hardware faults hide from ordinary tests. A wrong result stops the
+program with a panic naming the failing path. The check costs 0.1 to
+0.2 ms once per process; most of it is the first fetch of 390 KB of
+unrolled kernel code.
 
 ## Memory safety
 
@@ -120,12 +132,11 @@ SME2 (clang 17 or later; set `CC=clang-19` or similar):
 
 ```sh
 git clone -b servil https://github.com/johnservil/BLAKE3 && cd BLAKE3
-cargo test --release --lib                        # 86 tests
-cargo test --release --lib --features no_sme2     # 82
-cargo test --release --lib --features pure        # 71
+cargo test --release --lib                        # 89 tests
+cargo test --release --lib --features no_sme2     # 85
+cargo test --release --lib --features pure        # 74
 cargo test --release --doc                        # 21
 cargo test --release --manifest-path test_vectors/Cargo.toml
-BLAKE3_DIFF_SECONDS=1200 BLAKE3_DIFF_SEED=2 cargo test --release --lib -- --ignored differential --nocapture
 ```
 
 The sanitizers and Miri need nightly Rust
@@ -226,8 +237,9 @@ names the commit that introduced the code and the one that fixed it, in
 - **Constant-time behaviour**: not checked. By design the kernels branch
   only on lengths and counts, never on the data. That matters to users
   of the keyed mode, and a tool such as dudect or ctgrind would test it.
-- **Fuzzing (cargo-fuzz)**: not set up yet. The seeded differential run
-  above covers similar ground without coverage guidance.
+- **Fuzzing (cargo-fuzz)**: not used. The tests enumerate every kernel
+  at every input shape, count, and boundary against fixed answers, the
+  paths a fuzzer would search for.
 
 ## Not yet done
 

@@ -593,9 +593,9 @@ all); marks two-speed cells.
 
 ## Testing
 
-    cargo test --release --lib                      # 86 tests, 1 ignored
-    cargo test --release --features no_sme2 --lib   # 82
-    cargo test --release --features pure --lib      # 71
+    cargo test --release --lib                      # 89 tests
+    cargo test --release --features no_sme2 --lib   # 85
+    cargo test --release --features pure --lib      # 74
     cargo test --release --doc                      # 21
     cargo test --release --manifest-path test_vectors/Cargo.toml   # 2
     cargo test --release --manifest-path bench-hashes/Cargo.toml   # 7
@@ -611,12 +611,6 @@ them faults, which the sanitizers cannot see in assembly); Miri-sized
 unsafe paths (`test::unsafe_paths`). In the VM add the usual
 `HOME=/workspace/vm/home CARGO_TARGET_DIR=/tmp/target CC=clang-19
 TMPDIR=/tmp` prefix.
-
-A long differential run against the reference implementation, off by
-default: `BLAKE3_DIFF_SECONDS=1200 BLAKE3_DIFF_SEED=2 cargo test --release
---lib -- --ignored differential --nocapture` (every entry point, lengths
-skewed toward block and chunk boundaries up to 4 MiB, one to four threads
-at once, so the turn, the pool, and streams meet).
 
 **Checks beyond the suites** (September 26, 2026; nightly Rust with
 `rustup toolchain install nightly --component miri,rust-src,llvm-tools`,
@@ -653,6 +647,35 @@ logs in `tmp/quality/`, outside git):
   error), a dead Stream branch that would have hashed the last buffer
   alone, and the message kernel's one-block case (a block run twice and
   flags_start missed; no caller used it until the side-by-side path).
+
+## The startup self-test (September 26, 2026)
+
+`src/self_test.rs`: 39 chained cases before a process's first hash
+(through Platform::detect, a relaxed load on the fast path; std only, not
+under Miri). Zooko asked for about 100 µs; measured, every AArch64
+assembly entry (31: hybrid k1-k10, q1-q9, p2-p5, p7-p9, c1; SME2 chunks,
+messages, parents, sme2x2) costs warm 93 µs (Mac) / 95 (VM) and in a
+fresh process 140-200 / 125: the hybrids are 361 KB of unrolled code and
+the SME2 kernels 32 KB, and fetching them cold is most of the difference.
+Zooko chose this budget over leaving kernels out (option 4). Rejected
+for now: direct one-block kernel calls (warm about 40 µs, cold floor
+unchanged), per-kernel checks on first use.
+
+What reaches what (gdb, `tools/self_test_coverage.py`): k_n only from
+whole inputs of n chunks (rising counters; 11-16 chunks run k8-k10 with
+k3-k6); batches of one-chunk messages, all at counter 0, take the parent
+plans; q_n from n whole chunks and a partial one of two blocks or more
+(n > 9 leads with k(n-9), q9 after; one chunk takes q1 only past four
+blocks); sme2x2 only in the flat walk from 256 KiB, so the self-test
+calls it once directly on one group of 18 chunks, keyed, against the
+portable kernel's values. Chaining carries the first 32 output bytes into
+the start of the next input (every message's, in a batch); carrying the
+last digest of a batch missed a fault (the unit test caught it).
+
+Measurement pitfalls: gdb in the guest needs `SHELL=/bin/sh` and `set
+startup-with-shell off` ($SHELL names a zsh the guest lacks); the
+fresh-process time needs a process per sample (probe/self-test-time,
+job 307).
 
 ## Future work
 

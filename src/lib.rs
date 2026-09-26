@@ -36,7 +36,8 @@
 //!   fastest on one thread, and [`hash_multithreaded`] on inputs of 64 KiB
 //!   and more when the program can spare the CPUs (8 MiB: about 6x
 //!   [`hash`]'s speed on an M4 Max). Call [`initialize`] at start-up: the
-//!   first multithreaded call of a process otherwise starts the worker
+//!   first call of a process otherwise runs the startup self-test (below,
+//!   0.1 to 0.2 ms), and the first multithreaded call starts the worker
 //!   threads, about a millisecond.
 //! - **Input arriving (a file, a socket, a decompressor): a [`Stream`],
 //!   with each read landing in its buffer.** [`Stream::update_reader`]
@@ -61,6 +62,19 @@
 //!
 //! [`kernel_report`] says which code paths run at each input length on
 //! this machine.
+//!
+//! # Startup self-test
+//!
+//! Before a process first hashes, the crate checks itself. It hashes 39
+//! fixed inputs, chosen so that together they run every one of its
+//! assembly kernels on this machine, at unusual alignments, lengths, and
+//! padding, each input carrying the previous output, and compares each
+//! result with the reference implementation's. A difference means this
+//! build or this CPU computes wrong digests, and stops the program with a
+//! panic naming the code path. The check takes 0.1 to 0.2 ms once per
+//! process (Apple M4 Max, and a Linux VM on it); [`initialize`] runs it
+//! at start-up, and otherwise the first call does. Builds without the
+//! `std` feature skip it.
 //!
 //! # Cargo Features
 //!
@@ -183,6 +197,15 @@ mod join;
 #[cfg(feature = "std")]
 mod lanes;
 mod many;
+mod self_test;
+
+/// The startup self-test's own time, for probes: it runs again (it has
+/// already passed once in this process). Hidden, unstable.
+#[cfg(all(feature = "std", not(miri)))]
+#[doc(hidden)]
+pub fn __self_test_run_again() {
+    self_test::run_again();
+}
 
 use arrayvec::{ArrayString, ArrayVec};
 use core::cmp;
@@ -1189,12 +1212,13 @@ pub fn hash_multithreaded_with_budget(input: &[u8], max_threads: usize) -> Hash 
     lanes::hash(input, max_threads)
 }
 
-/// Start the worker threads that [`hash_multithreaded`] and
+/// Run the startup self-test (see the crate documentation) and start the
+/// worker threads that [`hash_multithreaded`] and
 /// [`hash_multithreaded_with_budget`] use, once per process: one per CPU
 /// beyond the first (about half a millisecond for fifteen). The first
-/// multithreaded call that leaves the calling thread does the same when
-/// the program has yet to call this; call it at start-up to choose when
-/// that cost falls. Later calls return at once.
+/// call, and the first multithreaded call that leaves the calling thread,
+/// do the same when the program has yet to call this; call it at start-up
+/// to choose when those costs fall. Later calls return at once.
 ///
 /// ```
 /// blake3_servil::initialize();
@@ -1203,6 +1227,7 @@ pub fn hash_multithreaded_with_budget(input: &[u8], max_threads: usize) -> Hash 
 /// ```
 #[cfg(feature = "std")]
 pub fn initialize() {
+    self_test::ensure();
     lanes::initialize();
 }
 

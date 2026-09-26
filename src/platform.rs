@@ -139,8 +139,14 @@ impl Drop for Sme2Turn {
 }
 
 impl Platform {
-    #[allow(unreachable_code)]
     pub fn detect() -> Self {
+        crate::self_test::ensure();
+        Self::detect_unchecked()
+    }
+
+    /// [`Platform::detect`] without the startup self-test.
+    #[allow(unreachable_code)]
+    pub(crate) fn detect_unchecked() -> Self {
         #[cfg(miri)]
         {
             return Platform::Portable;
