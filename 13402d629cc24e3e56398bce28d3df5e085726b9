@@ -1,0 +1,1 @@
+Gate for 13402d6 (candidate/runner-cache), September 26, 2026: tools only (runner, perf_regress build options); code is f38786d's. VM: perf_regress compare servil against it, no regression; a runner rehearsal in the VM (benchmark job twice, perf_regress job) ok. Mac job 326: no regression. The new runner takes effect when Zooko restarts it.
