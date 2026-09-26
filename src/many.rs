@@ -625,3 +625,42 @@ mod test {
         crate::hash_many(&input, 100, &mut [[0u8; OUT_LEN]; 2]);
     }
 }
+
+/// Proofs (Kani, `cargo kani`; QUALITY.md says how to run them).
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+
+    /// A message's slot is whole blocks, at least one, and holds the
+    /// message with less than a block to spare: for every length a slice
+    /// can have.
+    #[kani::proof]
+    fn slot_len_is_whole_blocks() {
+        let len: usize = kani::any();
+        kani::assume(len <= isize::MAX as usize);
+        let slot = slot_len(len);
+        assert!(slot % BLOCK_LEN == 0 && slot >= BLOCK_LEN && slot >= len);
+        assert!(len == 0 || slot - len < BLOCK_LEN);
+    }
+
+    /// fill_table's unsafe slice covers only written slots: the first
+    /// `count` point at the messages in order, the rest repeat the last,
+    /// for every count and lane count it accepts (one-block messages).
+    #[kani::proof]
+    #[kani::unwind(22)]
+    #[kani::solver(cadical)]
+    fn fill_table_writes_every_lane() {
+        const MAX: usize = TABLE + 16;
+        let messages = [0u8; MAX * BLOCK_LEN];
+        let count: usize = kani::any();
+        let lanes: usize = kani::any();
+        kani::assume(0 < count && count <= lanes && lanes <= 20);
+        let mut slots: Slots<BLOCK_LEN> = [core::mem::MaybeUninit::uninit(); MAX];
+        let table = fill_table(&mut slots, &messages, count, lanes);
+        assert!(table.len() == lanes);
+        let i: usize = kani::any();
+        kani::assume(i < lanes);
+        let expected = i.min(count - 1) * BLOCK_LEN;
+        assert!(core::ptr::eq(table[i].as_ptr(), messages[expected..].as_ptr()));
+    }
+}

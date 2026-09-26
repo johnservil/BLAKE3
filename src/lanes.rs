@@ -1184,3 +1184,47 @@ mod test {
         });
     }
 }
+
+/// Proofs (Kani, `cargo kani`; QUALITY.md says how to install it):
+/// properties the pool's cuts rest on, for every input, where the tests
+/// check chosen points.
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+
+    /// A piece is a power of two between the bounds, and at most a
+    /// thread's share of what remains unless that share is below the
+    /// shortest piece: for every remaining length and 1 to 256 threads.
+    #[kani::proof]
+    #[kani::solver(cadical)]
+    fn next_piece_len_bounds() {
+        let remaining: usize = kani::any();
+        let threads: usize = kani::any();
+        kani::assume(threads > 0 && threads <= 256);
+        let piece = next_piece_len(remaining, threads);
+        assert!(piece.is_power_of_two() && MIN_PIECE_LEN <= piece && piece <= MAX_PIECE_LEN);
+        assert!(piece <= (remaining / threads).max(MIN_PIECE_LEN));
+        assert!(piece * 2 > (remaining / threads).clamp(MIN_PIECE_LEN, MAX_PIECE_LEN));
+    }
+
+    /// One step of cut_with_prefix's pool loop keeps its invariant: the
+    /// offset is a multiple of `cap`, a power of two (the last piece's
+    /// length, or MAX_PIECE_LEN at the start). The next piece is a power
+    /// of two no longer than `cap`, so the offset is a multiple of it and
+    /// it is a whole subtree there, and it becomes the next `cap`. By
+    /// induction every piece of the loop is a whole subtree at its offset,
+    /// no longer than the one before, for every length.
+    #[kani::proof]
+    #[kani::solver(cadical)]
+    fn cut_step_keeps_whole_subtrees() {
+        let len: usize = kani::any();
+        let offset: usize = kani::any();
+        let cap: usize = kani::any();
+        let threads: usize = kani::any();
+        kani::assume(threads >= 2 && threads <= 256);
+        kani::assume(cap.is_power_of_two() && cap <= MAX_PREFIX_PIECE_LEN.max(MAX_PIECE_LEN));
+        kani::assume(offset & (cap - 1) == 0 && offset < len);
+        let piece = next_piece_len(len - offset, threads).min(cap);
+        assert!(piece.is_power_of_two() && piece <= cap && offset & (piece - 1) == 0);
+    }
+}

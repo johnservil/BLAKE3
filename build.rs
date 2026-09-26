@@ -386,6 +386,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "blake3_neon_hybrid",
         "blake3_sme2",
         "blake3_wasm32_simd",
+        // Set by `cargo kani` for the proofs (QUALITY.md).
+        "kani",
     ];
     for cfg_name in all_cfgs {
         // https://doc.rust-lang.org/cargo/reference/build-scripts.html#outputs-of-the-build-script
