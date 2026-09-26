@@ -1,0 +1,6 @@
+Gate for 9eb2613 (one-block padded group from 5 left over past whole groups):
+suites (1fdd727, same tree): lib 86 (+1 ignored) / no_sme2 82 / pure 71, doc 21, vectors 2, bench-hashes 7 (VM).
+VM: perf_regress check against dddb5d3 held 64 B x 24 solo (st +19.0%/+19.2%, mt +15.6%/+19.3%; 90th percentile -48%); one earlier check passed.
+Mac: runner job 286 (605f300; 1fdd727 differs only in a doc comment), perf_regress compare dddb5d3: held 64 B x 24 solo +27%, shared +16-18%.
+Mac A/B jobs 291-294 (benchmark, old new new old): x 24 10.6 / 13.3 / 13.4 / 10.5 ns/msg, all fast state; 16, 32, 48 level; official 21.0-21.7.
+Accepted by Zooko (September 26, 2026): worst case (the SME unit's slow state, 25.5-31.5) to 11.4-15.7; ahead of every competitor in the fast state.
