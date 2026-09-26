@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="288" viewBox="0 0 720 288" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+<rect width="720" height="288" fill="#ffffff"/>
+<text x="230" y="28" font-size="17" font-weight="600" fill="#111827">Hashing one 1 MiB input</text>
+<text x="230" y="50" font-size="13" fill="#4b5563">Apple M4 Max, GB/s</text>
+<text x="700" y="50" font-size="12" fill="#4b5563" text-anchor="end">faster →</text>
+<text x="230" y="72" font-size="13" fill="#4b5563">BLAKE3's tree spreads one input over every core; the others use one.</text>
+<text x="220" y="117.7" font-size="13" fill="#111827" text-anchor="end" font-weight="600">BLAKE3 servil, every core</text>
+<rect x="230" y="100" width="430.0" height="26" rx="3" fill="#4c1d95"/>
+<text x="666.0" y="117.7" font-size="13" fill="#111827" font-weight="600">32</text>
+<text x="220" y="153.7" font-size="13" fill="#111827" text-anchor="end">SHA-256 (ring)</text>
+<rect x="230" y="136" width="41.7" height="26" rx="3" fill="#c2410c"/>
+<text x="277.7" y="153.7" font-size="13" fill="#111827">3.13</text>
+<text x="220" y="189.7" font-size="13" fill="#111827" text-anchor="end">SHA3-256 (sha3)</text>
+<rect x="230" y="172" width="13.7" height="26" rx="3" fill="#db2777"/>
+<text x="249.7" y="189.7" font-size="13" fill="#111827">1.03</text>
+<text x="220" y="225.7" font-size="13" fill="#111827" text-anchor="end">SHA-1 with collision detection</text>
+<rect x="230" y="208" width="10.3" height="26" rx="3" fill="#8a7a1e"/>
+<text x="246.3" y="225.7" font-size="13" fill="#111827">0.77</text>
+<text x="230" y="272" font-size="11" fill="#9ca3af">bench-hashes 7cf12f3 · blake3-servil 01bc76e · 2026-09-26</text>
+</svg>

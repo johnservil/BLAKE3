@@ -1,31 +1,19 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="720" height="410" viewBox="0 0 720 410" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
-<rect width="720" height="410" fill="#ffffff"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="266" viewBox="0 0 720 266" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+<rect width="720" height="266" fill="#ffffff"/>
 <text x="230" y="28" font-size="17" font-weight="600" fill="#111827">Hashing one 16 KiB input on one thread</text>
 <text x="230" y="50" font-size="13" fill="#4b5563">Apple M4 Max, GB/s</text>
 <text x="700" y="50" font-size="12" fill="#4b5563" text-anchor="end">faster →</text>
-<text x="220" y="95.7" font-size="13" fill="#111827" text-anchor="end" font-weight="600">BLAKE3 servil (this fork)</text>
-<rect x="230" y="78" width="400.0" height="26" rx="3" fill="#7c3aed"/>
-<text x="636.0" y="95.7" font-size="13" fill="#111827" font-weight="600">4.46</text>
+<text x="220" y="95.7" font-size="13" fill="#111827" text-anchor="end" font-weight="600">BLAKE3 servil</text>
+<rect x="230" y="78" width="430.0" height="26" rx="3" fill="#7c3aed"/>
+<text x="666.0" y="95.7" font-size="13" fill="#111827" font-weight="600">4.46</text>
 <text x="220" y="131.7" font-size="13" fill="#111827" text-anchor="end">SHA-256 (Apple CommonCrypto)</text>
-<rect x="230" y="114" width="288.8" height="26" rx="3" fill="#0e9aa7"/>
-<text x="524.8" y="131.7" font-size="13" fill="#111827">3.22</text>
-<text x="220" y="167.7" font-size="13" fill="#111827" text-anchor="end">SHA-256 (ring)</text>
-<rect x="230" y="150" width="287.9" height="26" rx="3" fill="#c2410c"/>
-<text x="523.9" y="167.7" font-size="13" fill="#111827">3.21</text>
-<text x="220" y="203.7" font-size="13" fill="#111827" text-anchor="end">SHA-256 (sha2)</text>
-<rect x="230" y="186" width="250.2" height="26" rx="3" fill="#e07a45"/>
-<text x="486.2" y="203.7" font-size="13" fill="#111827">2.79</text>
-<text x="220" y="239.7" font-size="13" fill="#111827" text-anchor="end">BLAKE3 official crate</text>
-<rect x="230" y="222" width="211.7" height="26" rx="3" fill="#3b82f6"/>
-<text x="447.7" y="239.7" font-size="13" fill="#111827">2.36</text>
-<text x="220" y="275.7" font-size="13" fill="#111827" text-anchor="end">ab-blake3</text>
-<rect x="230" y="258" width="111.2" height="26" rx="3" fill="#c026d3"/>
-<text x="347.2" y="275.7" font-size="13" fill="#111827">1.24</text>
-<text x="220" y="311.7" font-size="13" fill="#111827" text-anchor="end">SHA3-256 (sha3)</text>
-<rect x="230" y="294" width="93.3" height="26" rx="3" fill="#db2777"/>
-<text x="329.3" y="311.7" font-size="13" fill="#111827">1.04</text>
-<text x="220" y="347.7" font-size="13" fill="#111827" text-anchor="end">SHA-1 with collision detection</text>
-<rect x="230" y="330" width="73.5" height="26" rx="3" fill="#8a7a1e"/>
-<text x="309.5" y="347.7" font-size="13" fill="#111827">0.82</text>
-<text x="230" y="394" font-size="11" fill="#9ca3af">bench-hashes 7cf12f3 · blake3-servil 01bc76e · 2026-09-26</text>
+<rect x="230" y="114" width="310.4" height="26" rx="3" fill="#0e9aa7"/>
+<text x="546.4" y="131.7" font-size="13" fill="#111827">3.22</text>
+<text x="220" y="167.7" font-size="13" fill="#111827" text-anchor="end">SHA3-256 (sha3)</text>
+<rect x="230" y="150" width="100.3" height="26" rx="3" fill="#db2777"/>
+<text x="336.3" y="167.7" font-size="13" fill="#111827">1.04</text>
+<text x="220" y="203.7" font-size="13" fill="#111827" text-anchor="end">SHA-1 with collision detection</text>
+<rect x="230" y="186" width="79.1" height="26" rx="3" fill="#8a7a1e"/>
+<text x="315.1" y="203.7" font-size="13" fill="#111827">0.82</text>
+<text x="230" y="250" font-size="11" fill="#9ca3af">bench-hashes 7cf12f3 · blake3-servil 01bc76e · 2026-09-26</text>
 </svg>

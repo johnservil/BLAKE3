@@ -45,10 +45,10 @@ batches, and make all calls from one thread.
 [bench-hashes](https://github.com/johnservil/bench-hashes) measures it against the official
 crate, SHA-256, SHA3-256, and others on your own machine. Its
 [results for an Apple M4 Max](https://johnservil.github.io/bench-hashes/benchmark-results/AppleM4Max.darwin25/bench-hashes.graph.svg)
-cover every input size, batches, and multithreaded hashing; the chart below shows one of them.
+cover every input size, batches, and multithreaded hashing; the charts below show two of them.
 [`QUALITY.md`](QUALITY.md) says how I check the fork's correctness and safety, and
-`CONTRIBUTING.md` how to work on it. The text after this section is upstream's, with that new
-chart in place of its 2019 one.
+`CONTRIBUTING.md` how to work on it. The text after this section is upstream's, with those
+charts in place of its 2019 one.
 
 # The BLAKE3 algorithm
 
@@ -65,13 +65,19 @@ BLAKE3 is a cryptographic hash function that is:
 - **One algorithm with no variants**, which is fast on x86-64 and also
   on smaller architectures.
 
-The chart below shows one 16 KiB input hashed on one thread of an Apple M4 Max, measured by
-[bench-hashes](https://github.com/johnservil/bench-hashes) and drawn by `tools/speed_chart.py`;
-SHA-256 there runs on the CPU's SHA-256 instructions. For the original benchmarks and the design, see the
+The charts below compare BLAKE3 with the fastest SHA-256, SHA3-256, and SHA-1 on an Apple M4
+Max, where SHA-256 runs on the CPU's SHA-256 instructions: one 16 KiB input on one thread, then
+one 1 MiB input, which BLAKE3 spreads over every core. They come from a
+[bench-hashes](https://github.com/johnservil/bench-hashes) record, drawn by
+`tools/speed_chart.py`. For the original benchmarks and the design, see the
 [BLAKE3 paper](https://github.com/BLAKE3-team/BLAKE3-specs/blob/master/blake3.pdf).
 
 <p align="center">
 <img src="media/speed.svg" alt="Hashing speeds in GB/s: one 16 KiB input on one thread of an Apple M4 Max">
+</p>
+
+<p align="center">
+<img src="media/speed-every-core.svg" alt="Hashing speeds in GB/s: one 1 MiB input on an Apple M4 Max, BLAKE3 on every core">
 </p>
 
 BLAKE3 is based on an optimized instance of the established hash
