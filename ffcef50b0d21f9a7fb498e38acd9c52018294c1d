@@ -1,0 +1,5 @@
+Gate for ffcef50 (one-block batches: padded SME2 groups from 11, and 13 past groups):
+suites: lib 84 (+1 ignored) / no_sme2 / pure pass, doc 21, vectors 2, bench-hashes 7 (VM).
+VM: pre-commit perf_regress check against e95e53f: no regression (a first version with 5 past groups was held: 64 B x 24 +16-17% at the 5th percentile, -47% at the 90th).
+Mac: runner job 274 (perf_regress compare e95e53f ffcef50): no regression.
+Mac probes 275-278 (old/new/new/old, 64 B sweeps 1-40): 11 19.1 -> 15.0, 13 19.1 -> 12.5, 15 18.2 -> 10.9, 29-31 15 -> 11; 17-21 and 34-38 +3-5% (code unchanged there).
