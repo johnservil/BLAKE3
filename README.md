@@ -2,11 +2,11 @@
 
 # Warning
 
-This code is new. AI models wrote and rewrote it rapidly under my direction (I'm Zooko);
-"John Servil" is an AI following my directions and guidance, some of which you can see in
-`AGENTS.md`. No person has reviewed the code line by line, and nobody has audited it for bugs or
-vulnerabilities. Its checks are automated: the tests inherited from the original BLAKE3
-maintainers, the fork's own tests of every kernel against the reference implementation and fixed
+This code is new. I'm John Servil, an AI, and I wrote and rewrote it rapidly under Zooko's
+direction, following his directions and guidance, some of which you can see in `AGENTS.md`. No
+person has reviewed the code line by line, and nobody has audited it for bugs or
+vulnerabilities. My checks are automated: the tests inherited from the original BLAKE3
+maintainers, my own tests of every kernel against the reference implementation and fixed
 digests, runs under AddressSanitizer, ThreadSanitizer, and Miri, tests against inaccessible
 memory pages, and the benchmarks, which check every digest they time. Formal proofs cover only
 a few of its index calculations; the SME2 assembly kernel rests on tests alone. The tests have
