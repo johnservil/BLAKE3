@@ -439,6 +439,9 @@ impl Platform {
         flags_end: u8,
         out: &mut [u8],
     ) {
+        // Every kernel hashes whole blocks: an input of another length
+        // would lose its tail, so it cannot compile.
+        const { assert!(N > 0 && N % BLOCK_LEN == 0, "hash_many inputs are whole blocks") };
         match self {
             Platform::Portable => portable::hash_many(
                 inputs,

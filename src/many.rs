@@ -39,24 +39,25 @@ pub(crate) fn hash_many_on(input: &[u8], len: usize, outputs: &mut [[u8; OUT_LEN
         }
         return;
     }
+    let plans = neon_plans();
     for (messages, digests) in input.chunks(len * TABLE).zip(outputs.chunks_mut(TABLE)) {
         match len / BLOCK_LEN {
             1 => hash_run::<{ BLOCK_LEN }>(messages, digests, platform),
-            2 => hash_blocks::<{ 2 * BLOCK_LEN }>(messages, digests, platform),
-            3 => hash_blocks::<{ 3 * BLOCK_LEN }>(messages, digests, platform),
-            4 => hash_blocks::<{ 4 * BLOCK_LEN }>(messages, digests, platform),
-            5 => hash_blocks::<{ 5 * BLOCK_LEN }>(messages, digests, platform),
-            6 => hash_blocks::<{ 6 * BLOCK_LEN }>(messages, digests, platform),
-            7 => hash_blocks::<{ 7 * BLOCK_LEN }>(messages, digests, platform),
-            8 => hash_blocks::<{ 8 * BLOCK_LEN }>(messages, digests, platform),
-            9 => hash_blocks::<{ 9 * BLOCK_LEN }>(messages, digests, platform),
-            10 => hash_blocks::<{ 10 * BLOCK_LEN }>(messages, digests, platform),
-            11 => hash_blocks::<{ 11 * BLOCK_LEN }>(messages, digests, platform),
-            12 => hash_blocks::<{ 12 * BLOCK_LEN }>(messages, digests, platform),
-            13 => hash_blocks::<{ 13 * BLOCK_LEN }>(messages, digests, platform),
-            14 => hash_blocks::<{ 14 * BLOCK_LEN }>(messages, digests, platform),
-            15 => hash_blocks::<{ 15 * BLOCK_LEN }>(messages, digests, platform),
-            16 => hash_blocks::<{ 16 * BLOCK_LEN }>(messages, digests, platform),
+            2 => hash_blocks::<{ 2 * BLOCK_LEN }>(messages, digests, platform, plans),
+            3 => hash_blocks::<{ 3 * BLOCK_LEN }>(messages, digests, platform, plans),
+            4 => hash_blocks::<{ 4 * BLOCK_LEN }>(messages, digests, platform, plans),
+            5 => hash_blocks::<{ 5 * BLOCK_LEN }>(messages, digests, platform, plans),
+            6 => hash_blocks::<{ 6 * BLOCK_LEN }>(messages, digests, platform, plans),
+            7 => hash_blocks::<{ 7 * BLOCK_LEN }>(messages, digests, platform, plans),
+            8 => hash_blocks::<{ 8 * BLOCK_LEN }>(messages, digests, platform, plans),
+            9 => hash_blocks::<{ 9 * BLOCK_LEN }>(messages, digests, platform, plans),
+            10 => hash_blocks::<{ 10 * BLOCK_LEN }>(messages, digests, platform, plans),
+            11 => hash_blocks::<{ 11 * BLOCK_LEN }>(messages, digests, platform, plans),
+            12 => hash_blocks::<{ 12 * BLOCK_LEN }>(messages, digests, platform, plans),
+            13 => hash_blocks::<{ 13 * BLOCK_LEN }>(messages, digests, platform, plans),
+            14 => hash_blocks::<{ 14 * BLOCK_LEN }>(messages, digests, platform, plans),
+            15 => hash_blocks::<{ 15 * BLOCK_LEN }>(messages, digests, platform, plans),
+            16 => hash_blocks::<{ 16 * BLOCK_LEN }>(messages, digests, platform, plans),
             _ => unreachable!("messages of 1 to 16 whole blocks"),
         }
     }
@@ -167,10 +168,11 @@ fn hash_run<const N: usize>(messages: &[u8], outputs: &mut [[u8; OUT_LEN]], plat
 ///   kernels runs in the SME unit's slow state on the VM: 17 x 256 B, 68
 ///   ns per message after, 44 before).
 /// - The integer + NEON plans (no SME2, or fewer messages): all at once.
-/// - The C NEON kernel (no SHA-3 extension): four at a time, a fourth,
-///   spare lane for three left over, the integer kernel for one or two.
+/// - The C NEON kernel (`plans` false: no SHA-3 extension): four at a
+///   time, a fourth, spare lane for three left over, the integer kernel
+///   for one or two.
 #[inline(never)]
-fn hash_blocks<const N: usize>(messages: &[u8], outputs: &mut [[u8; OUT_LEN]], platform: Platform) {
+fn hash_blocks<const N: usize>(messages: &[u8], outputs: &mut [[u8; OUT_LEN]], platform: Platform, plans: bool) {
     const GROUP: usize = 16;
     let count = outputs.len();
     let sme2 = platform_is_sme2(platform);
@@ -178,11 +180,12 @@ fn hash_blocks<const N: usize>(messages: &[u8], outputs: &mut [[u8; OUT_LEN]], p
     // `lanes`: the table's length (the messages, and spare lanes after
     // them); `first`: messages at the end hashed on NEON before the rest;
     // `scalar`: messages at the end hashed one at a time.
-    let (lanes, first, scalar) = if sme2 && left >= if count > GROUP { SME2_TAIL_MIN_AFTER_GROUPS } else { SME2_TAIL_MIN } {
+    let padded_group = sme2 && left >= if count > GROUP { SME2_TAIL_MIN_AFTER_GROUPS } else { SME2_TAIL_MIN };
+    let (lanes, first, scalar) = if padded_group {
         (count.next_multiple_of(GROUP), 0, 0)
     } else if sme2 && count > GROUP {
         (count, left, 0)
-    } else if neon_plans() || !cfg!(blake3_neon_hybrid) {
+    } else if plans || !cfg!(blake3_neon_hybrid) {
         (count, 0, 0)
     } else {
         // The C kernel for 2 to 16 blocks takes four messages at a time and
@@ -216,7 +219,7 @@ fn hash_blocks<const N: usize>(messages: &[u8], outputs: &mut [[u8; OUT_LEN]], p
     let filled: &[&[u8; N]] = unsafe { core::slice::from_raw_parts(table.as_ptr() as *const &[u8; N], lanes) };
     let (flags, start, end) = (0, CHUNK_START, CHUNK_END | ROOT);
     #[cfg(blake3_sme2)]
-    if sme2 && lanes > vector {
+    if padded_group {
         // Sound: platform_is_sme2 means detect() found SME2 with 512-bit
         // streaming vectors.
         unsafe { crate::sme2::hash_messages::<N>(filled, IV, flags, start, end, vector_outputs.as_flattened_mut()) };
@@ -356,6 +359,29 @@ mod test {
         for len in [0, 1, 63, 65, 191, 1000, 1025, 3000, 3 * CHUNK_LEN + 7] {
             for count in [0, 1, 2, 15, 16, 17, 129] {
                 check(len, count);
+            }
+        }
+    }
+
+    /// The C NEON kernel's arrangement (the one CPUs without the SHA-3
+    /// extension run: groups of four, a spare fourth lane for three left
+    /// over, the integer kernel for one or two), on NEON and SME2.
+    #[cfg(blake3_neon_hybrid)]
+    #[test]
+    fn test_hash_blocks_without_plans() {
+        #[allow(unused_mut)]
+        let mut platforms = vec![Platform::neon().expect("NEON on AArch64")];
+        #[cfg(blake3_sme2)]
+        platforms.extend(Platform::sme2());
+        for count in 0..=40 {
+            let input = messages(4 * BLOCK_LEN, count);
+            for &platform in &platforms {
+                let mut out = vec![[0xAAu8; OUT_LEN]; count + 16];
+                hash_blocks::<{ 4 * BLOCK_LEN }>(&input, &mut out[..count], platform, false);
+                assert!(out[count..].iter().all(|d| *d == [0xAA; OUT_LEN]), "{platform:?}, {count}: a store past the last output");
+                for (i, digest) in out[..count].iter().enumerate() {
+                    assert_eq!(*digest, *crate::hash(&input[i * 256..][..256]).as_bytes(), "{platform:?}, message {i} of {count}");
+                }
             }
         }
     }

@@ -283,18 +283,13 @@ impl Stream {
     fn finalize_handed_over(mut self) -> Hash {
         let tail = self.current.take();
         let tail_bytes = tail.as_ref().map_or(&[][..], |b| &b[..self.filled]);
-        let hash = match self.finish() {
-            None if self.multithreaded => crate::hash_multithreaded(tail_bytes),
-            None => crate::hash(tail_bytes),
-            Some(mut hasher) => {
-                if self.multithreaded {
-                    hasher.update_multithreaded(tail_bytes);
-                } else {
-                    hasher.update(tail_bytes);
-                }
-                hasher.finalize()
-            }
-        };
+        let mut hasher = self.finish().expect("a stream handed a buffer over has a hashing thread");
+        if self.multithreaded {
+            hasher.update_multithreaded(tail_bytes);
+        } else {
+            hasher.update(tail_bytes);
+        }
+        let hash = hasher.finalize();
         if let Some(buffer) = tail {
             keep_buffer(buffer);
         }

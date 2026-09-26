@@ -504,7 +504,7 @@ fn test_xof_partial_blocks() {
     assert_eq!(reference_out, partial_out);
 }
 
-fn reference_hash(input: &[u8]) -> crate::Hash {
+pub(crate) fn reference_hash(input: &[u8]) -> crate::Hash {
     let mut hasher = reference_impl::Hasher::new();
     hasher.update(input);
     let mut bytes = [0; 32];
@@ -1141,5 +1141,222 @@ fn test_every_length_1_to_17_chunks_against_reference() {
         let mut want = [0u8; OUT_LEN];
         reference.finalize(&mut want);
         assert_eq!(crate::hash(&input[..len]).as_bytes(), &want, "len = {len}");
+    }
+}
+
+// The fork's unsafe paths at sizes Miri can run in minutes (under the
+// `pure` feature, where no assembly takes part): the batch tables and
+// padded lanes of many.rs, the pool's jobs from concurrent callers (Miri
+// with -Zmiri-num-cpus=4 spawns three workers), and a stream past one
+// buffer. Each against hash() or the reference implementation. Also run
+// natively, where they are quick.
+#[cfg(feature = "std")]
+mod unsafe_paths {
+    use crate::*;
+
+    fn input(len: usize, seed: u8) -> Vec<u8> {
+        (0..len).map(|i| (i as u32).wrapping_mul(0x9E37_79B1).to_le_bytes()[3] ^ seed).collect()
+    }
+
+    #[test]
+    fn test_batches_small() {
+        for len in [0, 1, 64, 128, 192, 1024, 1088, 2048, 3000] {
+            for count in [0, 1, 2, 3, 4, 5, 9, 17] {
+                let data = input(len * count, len as u8);
+                let mut out = vec![[0u8; OUT_LEN]; count];
+                hash_many(&data, len, &mut out);
+                for (i, digest) in out.iter().enumerate() {
+                    assert_eq!(*digest, *hash(&data[i * len..][..len]).as_bytes(), "{count} x {len} B, message {i}");
+                }
+            }
+        }
+    }
+
+    /// A batch and an input large enough for the pool (64 KiB), from two
+    /// threads at once, with small budgets.
+    #[test]
+    fn test_pool_from_two_callers() {
+        let batch = input(1024 * 64, 1);
+        let tree = input(65 * 1024 + 3, 2);
+        let mut expected = vec![[0u8; OUT_LEN]; 1024];
+        hash_many(&batch, 64, &mut expected);
+        let expected_tree = hash(&tree);
+        std::thread::scope(|scope| {
+            for budget in [2, 4] {
+                let (batch, tree, expected) = (&batch, &tree, &expected);
+                scope.spawn(move || {
+                    let mut out = vec![[0u8; OUT_LEN]; 1024];
+                    hash_many_multithreaded_with_budget(batch, 64, &mut out, budget);
+                    assert_eq!(&out, expected, "batch, budget {budget}");
+                    assert_eq!(hash_multithreaded_with_budget(tree, budget), expected_tree, "tree, budget {budget}");
+                });
+            }
+        });
+    }
+
+    /// A stream of one buffer and a little more, written in odd pieces.
+    #[test]
+    fn test_stream_past_one_buffer() {
+        let data = input(crate::stream::BUFFER_LEN + 1000, 3);
+        let mut stream = Stream::new();
+        let mut at = 0;
+        while at < data.len() {
+            let buffer = stream.buffer();
+            let n = buffer.len().min(data.len() - at).min(300_001);
+            buffer[..n].copy_from_slice(&data[at..][..n]);
+            stream.filled(n);
+            at += n;
+        }
+        assert_eq!(stream.finalize(), hash(&data));
+    }
+}
+
+// Every platform's hash_many against the portable one, for every input
+// shape the public Platform API accepts on this CPU: blocks of 64 B to a
+// whole chunk, with and without counter increments, keyed flags, counters
+// whose low word overflows inside a batch, and pointer tables in memory
+// order, reversed, and strided (the SME2 parent kernel's gather path).
+#[cfg(feature = "std")]
+mod platform_hash_many {
+    use crate::platform::Platform;
+    use crate::{IncrementCounter, OUT_LEN};
+
+    fn platforms() -> Vec<Platform> {
+        #[allow(unused_mut)]
+        let mut all = vec![Platform::detect()];
+        #[cfg(blake3_neon)]
+        all.push(Platform::neon().unwrap());
+        #[cfg(blake3_sme2)]
+        all.extend(Platform::sme2());
+        all
+    }
+
+    fn check<const N: usize>() {
+        let mut buf = vec![0u8; N * 2 * 140];
+        crate::test::paint_test_input(&mut buf);
+        let (flags, start, end) = (crate::KEYED_HASH, crate::CHUNK_START, crate::CHUNK_END);
+        for count in (0..=40).chain([127, 128, 129, 130]) {
+            let forward: Vec<&[u8; N]> = (0..count).map(|i| buf[i * N..][..N].try_into().unwrap()).collect();
+            let reversed: Vec<&[u8; N]> = forward.iter().rev().copied().collect();
+            let strided: Vec<&[u8; N]> = (0..count).map(|i| buf[2 * i * N..][..N].try_into().unwrap()).collect();
+            for table in [&forward, &reversed, &strided] {
+                for increment in [IncrementCounter::Yes, IncrementCounter::No] {
+                    for counter in [0, u32::MAX as u64 - 5] {
+                        let mut want = vec![0u8; count * OUT_LEN];
+                        crate::portable::hash_many(table, &crate::test::TEST_KEY_WORDS, counter, increment, flags, start, end, &mut want);
+                        for platform in platforms() {
+                            let mut got = vec![0xAAu8; count * OUT_LEN + OUT_LEN];
+                            platform.hash_many(table, &crate::test::TEST_KEY_WORDS, counter, increment, flags, start, end, &mut got[..count * OUT_LEN]);
+                            assert_eq!(&got[..count * OUT_LEN], &want[..], "{platform:?}, N = {N}, {count} inputs, increment {}, counter {counter}", increment.yes());
+                            assert_eq!(got[count * OUT_LEN..], [0xAA; OUT_LEN], "{platform:?} wrote past its outputs");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_every_platform_every_shape() {
+        check::<64>();
+        check::<128>();
+        check::<192>();
+        check::<256>();
+        check::<1024>();
+    }
+}
+
+// Every kernel's reads and writes against guard pages: inputs placed to end
+// exactly where an inaccessible page begins (and, again, to start right
+// after one), outputs likewise, so a kernel that reads or writes one byte
+// outside its buffers stops the test with a fault. The assembly kernels'
+// accesses are invisible to the sanitizers; these are not.
+#[cfg(all(feature = "std", target_arch = "aarch64", any(target_vendor = "apple", target_os = "linux")))]
+mod guard_pages {
+    use crate::*;
+
+    /// `len` bytes with an inaccessible page before and after them, the
+    /// bytes flush against the page after (`at_end`) or before.
+    struct Guarded {
+        base: *mut u8,
+        total: usize,
+        start: usize,
+        len: usize,
+    }
+
+    impl Guarded {
+        fn new(len: usize, at_end: bool) -> Self {
+            let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as usize;
+            let body = len.div_ceil(page).max(1) * page;
+            let total = body + 2 * page;
+            let base = unsafe { libc::mmap(core::ptr::null_mut(), total, libc::PROT_READ | libc::PROT_WRITE, libc::MAP_PRIVATE | libc::MAP_ANONYMOUS, -1, 0) };
+            assert_ne!(base, libc::MAP_FAILED, "mmap");
+            let base = base as *mut u8;
+            unsafe {
+                assert_eq!(libc::mprotect(base as *mut _, page, libc::PROT_NONE), 0);
+                assert_eq!(libc::mprotect(base.add(page + body) as *mut _, page, libc::PROT_NONE), 0);
+            }
+            let start = if at_end { page + body - len } else { page };
+            Guarded { base, total, start, len }
+        }
+
+        fn bytes(&mut self) -> &mut [u8] {
+            unsafe { core::slice::from_raw_parts_mut(self.base.add(self.start), self.len) }
+        }
+    }
+
+    impl Drop for Guarded {
+        fn drop(&mut self) {
+            unsafe { libc::munmap(self.base as *mut _, self.total) };
+        }
+    }
+
+    fn filled(len: usize, at_end: bool) -> Guarded {
+        let mut g = Guarded::new(len, at_end);
+        crate::test::paint_test_input(g.bytes());
+        g
+    }
+
+    #[test]
+    fn test_hash_inside_guard_pages() {
+        let mut lens: Vec<usize> = (0..=2 * CHUNK_LEN + 70).collect();
+        for chunks in [3, 4, 5, 7, 8, 9, 15, 16, 17, 31, 32, 33, 64, 100, 128, 256, 1024, 1025] {
+            for delta in [-65i64, -64, -1, 0, 1, 63, 64, 65] {
+                lens.push((chunks * CHUNK_LEN) as i64 as usize + delta as usize);
+            }
+        }
+        for len in lens {
+            for at_end in [true, false] {
+                let mut g = filled(len, at_end);
+                let data = g.bytes().to_vec();
+                assert_eq!(hash(g.bytes()), crate::test::reference_hash(&data), "{len} bytes, at end {at_end}");
+                if len >= 64 * CHUNK_LEN && len % 7 == 0 {
+                    assert_eq!(hash_multithreaded(g.bytes()), hash(&data), "mt, {len} bytes");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_hash_many_inside_guard_pages() {
+        for len in [1, 64, 100, 128, 192, 256, 640, 1024, 1088, 2048, 3072, 4096, 8192, 15360, 16384] {
+            for count in [1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 15, 16, 17, 21, 24, 31, 33, 127, 128, 129] {
+                for at_end in [true, false] {
+                    let mut input = filled(len * count, at_end);
+                    let mut out = Guarded::new(count * OUT_LEN, !at_end);
+                    let outputs: &mut [[u8; OUT_LEN]] = unsafe { core::slice::from_raw_parts_mut(out.bytes().as_mut_ptr() as *mut [u8; OUT_LEN], count) };
+                    hash_many(input.bytes(), len, outputs);
+                    let data = input.bytes().to_vec();
+                    for (i, digest) in outputs.iter().enumerate() {
+                        assert_eq!(*digest, *hash(&data[i * len..][..len]).as_bytes(), "{count} x {len} B, message {i}, at end {at_end}");
+                    }
+                    if len * count >= 64 * CHUNK_LEN {
+                        let mut mt = vec![[0u8; OUT_LEN]; count];
+                        hash_many_multithreaded(input.bytes(), len, &mut mt);
+                        assert_eq!(&mt[..], &outputs[..], "mt, {count} x {len} B");
+                    }
+                }
+            }
+        }
     }
 }
