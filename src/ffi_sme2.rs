@@ -72,6 +72,25 @@ pub unsafe fn hash_many<const N: usize>(
     };
 
     let mut done = 0;
+    // Separate messages of 2 to 16 whole blocks, every one at counter zero:
+    // the message kernel, sixteen per group (the chunk kernel with a block
+    // count and one counter for every lane).
+    let blocks = N / BLOCK_LEN;
+    if kernel.is_none() && N % BLOCK_LEN == 0 && (2..=16).contains(&blocks) && !increment_counter.yes() && full_groups > 0 {
+        let lanes = unsafe {
+            ffi::blake3_sme2_hash16_messages_512(
+                inputs.as_ptr() as *const *const u8,
+                key.as_ptr(),
+                counter,
+                flags as u32 | (flags_start as u32) << 8 | (flags_end as u32) << 16,
+                out.as_mut_ptr(),
+                full_groups as u64,
+                blocks as u64,
+            )
+        };
+        assert_eq!(lanes, 16, "SME2 streaming vector length changed under us");
+        done = full_groups * GROUP;
+    }
     if let (Some(kernel), true) = (kernel, full_groups > 0) {
         let count = full_groups * GROUP;
         let lanes = if N == BLOCK_LEN {
@@ -161,9 +180,11 @@ pub unsafe fn hash_many<const N: usize>(
         };
         // The remainder is fewer than sixteen inputs: the NEON kernels
         // (integer + vector hybrids, see neon_hybrid.rs) are the fastest
-        // path there. They need the SHA-3 extension; the C kernel is the
-        // fallback without it.
-        if crate::neon_hybrid::sha3_detected() {
+        // path there, for the shapes they cover (whole chunks, one-block
+        // parents). They need the SHA-3 extension; the C kernel, which takes
+        // every shape, is the fallback.
+        let hybrid_shape = (N == CHUNK_LEN && increment_counter.yes()) || (N == BLOCK_LEN && !increment_counter.yes());
+        if hybrid_shape && crate::neon_hybrid::sha3_detected() {
             unsafe {
                 crate::neon_hybrid::hash_many(
                     &inputs[done..],
@@ -391,6 +412,22 @@ pub mod ffi {
             flags: u32,
             out: *mut u8,
             groups: u64,
+        ) -> u64;
+
+        /// Sixteen separate messages of `blocks` whole blocks (2 to 16) per
+        /// group, every one at `counter`. `inputs` is a table of
+        /// `16 * groups` message pointers; `flags` packs as for
+        /// `blake3_sme2_hash16_chunks_512`, flags_end on each message's last
+        /// block. Writes `16 * groups` 32-byte chaining values to `out`.
+        /// Returns the streaming vector length in 32-bit lanes.
+        pub fn blake3_sme2_hash16_messages_512(
+            inputs: *const *const u8,
+            key: *const u32,
+            counter: u64,
+            flags: u32,
+            out: *mut u8,
+            groups: u64,
+            blocks: u64,
         ) -> u64;
 
         /// Sixteen whole 1024-byte chunks per group. `inputs` is a table of

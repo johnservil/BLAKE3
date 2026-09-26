@@ -12,7 +12,7 @@
 //! chunk, the tree above.
 
 use crate::platform::Platform;
-use crate::{BLOCK_LEN, CHUNK_END, CHUNK_START, Hash, IV, IncrementCounter, OUT_LEN, ROOT};
+use crate::{BLOCK_LEN, CHUNK_END, CHUNK_LEN, CHUNK_START, Hash, IV, IncrementCounter, OUT_LEN, ROOT};
 
 /// Most one-block messages per platform call: eight SME2 groups per entry
 /// into streaming mode, the same as the tree walk's `sme2::DEGREE`.
@@ -55,6 +55,16 @@ pub(crate) fn hash_many_until_longer(
     let mut table: [core::mem::MaybeUninit<&[u8; BLOCK_LEN]>; TABLE] = [core::mem::MaybeUninit::uninit(); TABLE];
     let mut i = 0;
     while i < inputs.len() {
+        /* A run of equal messages of 2 to 16 whole blocks: one platform call. */
+        let len = inputs[i].len();
+        if len > BLOCK_LEN && len <= CHUNK_LEN && len % BLOCK_LEN == 0 && len <= longest {
+            let run = inputs[i..].iter().take(TABLE).take_while(|message| message.len() == len).count();
+            if run > 1 {
+                hash_blocks_run(&inputs[i..i + run], &mut outputs[i..i + run], platform);
+                i += run;
+                continue;
+            }
+        }
         let run = inputs[i..]
             .iter()
             .take(TABLE)
@@ -89,6 +99,41 @@ pub(crate) fn hash_many_until_longer(
     inputs.len()
 }
 
+/// Equal messages of 2 to 16 whole blocks, at most TABLE: each one's hash,
+/// in one platform call for their length.
+fn hash_blocks_run(inputs: &[&[u8]], outputs: &mut [Hash], platform: Platform) {
+    let len = inputs[0].len();
+    debug_assert!(inputs.iter().all(|m| m.len() == len) && inputs.len() <= TABLE);
+    match len / BLOCK_LEN {
+        2 => hash_run::<{ 2 * BLOCK_LEN }>(inputs, outputs, platform),
+        3 => hash_run::<{ 3 * BLOCK_LEN }>(inputs, outputs, platform),
+        4 => hash_run::<{ 4 * BLOCK_LEN }>(inputs, outputs, platform),
+        5 => hash_run::<{ 5 * BLOCK_LEN }>(inputs, outputs, platform),
+        6 => hash_run::<{ 6 * BLOCK_LEN }>(inputs, outputs, platform),
+        7 => hash_run::<{ 7 * BLOCK_LEN }>(inputs, outputs, platform),
+        8 => hash_run::<{ 8 * BLOCK_LEN }>(inputs, outputs, platform),
+        9 => hash_run::<{ 9 * BLOCK_LEN }>(inputs, outputs, platform),
+        10 => hash_run::<{ 10 * BLOCK_LEN }>(inputs, outputs, platform),
+        11 => hash_run::<{ 11 * BLOCK_LEN }>(inputs, outputs, platform),
+        12 => hash_run::<{ 12 * BLOCK_LEN }>(inputs, outputs, platform),
+        13 => hash_run::<{ 13 * BLOCK_LEN }>(inputs, outputs, platform),
+        14 => hash_run::<{ 14 * BLOCK_LEN }>(inputs, outputs, platform),
+        15 => hash_run::<{ 15 * BLOCK_LEN }>(inputs, outputs, platform),
+        16 => hash_run::<{ 16 * BLOCK_LEN }>(inputs, outputs, platform),
+        _ => unreachable!("messages of 2 to 16 whole blocks"),
+    }
+}
+
+fn hash_run<const N: usize>(inputs: &[&[u8]], outputs: &mut [Hash], platform: Platform) {
+    let mut table: [core::mem::MaybeUninit<&[u8; N]>; TABLE] = [core::mem::MaybeUninit::uninit(); TABLE];
+    for (slot, message) in table[..inputs.len()].iter_mut().zip(inputs) {
+        slot.write(message[..].try_into().expect("messages of N bytes"));
+    }
+    // Sound: the first inputs.len() slots were written just above.
+    let filled: &[&[u8; N]] = unsafe { core::slice::from_raw_parts(table.as_ptr() as *const &[u8; N], inputs.len()) };
+    platform.hash_many::<N>(filled, IV, 0, IncrementCounter::No, 0, CHUNK_START, CHUNK_END | ROOT, hashes_as_bytes_mut(outputs));
+}
+
 /// The digests as one byte slice, for the kernels to write into. Sound:
 /// `Hash` is `repr(transparent)` over `[u8; OUT_LEN]`.
 pub(crate) fn hashes_as_bytes_mut(hashes: &mut [Hash]) -> &mut [u8] {
@@ -98,7 +143,6 @@ pub(crate) fn hashes_as_bytes_mut(hashes: &mut [Hash]) -> &mut [u8] {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::CHUNK_LEN;
 
     /// A deterministic message of `len` bytes, distinct per `seed`:
     /// little-endian 64-bit words `seed << 48 | index`, so every block
@@ -126,6 +170,18 @@ mod test {
         for count in (0..=17).chain([24, 29, 30, 31, 32, 33, 45, 61, 127, 128, 129, 1021, 1022, 1023, 1024, 1025, 2049]) {
             check(&vec![BLOCK_LEN; count]);
         }
+    }
+
+    /// Runs of equal messages of 2 to 16 whole blocks, at counts that fill
+    /// SME2 groups and leave remainders, against hash() one at a time.
+    #[test]
+    fn test_hash_many_runs_of_whole_blocks() {
+        for blocks in 2..=16 {
+            for count in [2, 3, 15, 16, 17, 31, 32, 33, 127, 128, 129, 300] {
+                check(&vec![blocks * BLOCK_LEN; count]);
+            }
+        }
+        check(&[256, 256, 256, 64, 64, 256, 1024, 1024, 128, 128, 128, 192, 1024, 65, 256, 256]);
     }
 
     #[test]

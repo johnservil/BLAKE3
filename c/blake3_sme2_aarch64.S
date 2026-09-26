@@ -78,6 +78,8 @@
 
 .global _blake3_sme2_hash16_chunks_512
 .global blake3_sme2_hash16_chunks_512
+.global _blake3_sme2_hash16_messages_512
+.global blake3_sme2_hash16_messages_512
 .global _blake3_sme2_hash16_parents_512
 .global blake3_sme2_hash16_parents_512
 
@@ -422,9 +424,28 @@
     st1w    { za1h.s[\selector, \slice] }, p2, [x8]
 .endm
 
+/*
+ * Two entry points share one body. The chunk kernel: sixteen blocks per
+ * input, counters counter+lane per group, advanced by sixteen. The message
+ * kernel (blake3_sme2_hash16_messages_512, a seventh argument `blocks`, 2
+ * to 16): `blocks` blocks per input, every lane's counter `counter`, for
+ * many separate messages of whole blocks. x6 holds the last block's index
+ * and x17 the counter step per lane.
+ */
 .p2align 4
 _blake3_sme2_hash16_chunks_512:
 blake3_sme2_hash16_chunks_512:
+    mov     x6, #15
+    mov     x17, #1
+    b       .Lchunks_body
+
+.p2align 4
+_blake3_sme2_hash16_messages_512:
+blake3_sme2_hash16_messages_512:
+    sub     x6, x6, #1
+    mov     x17, #0
+
+.Lchunks_body:
     /*
      * AAPCS64 preserves the low 64 bits of v8-v15.
      */
@@ -519,9 +540,10 @@ blake3_sme2_hash16_chunks_512:
     dup     z7.s, w8
 
     /*
-     * Generate counters counter+0 through counter+15.
+     * Generate counters counter+0 through counter+15 (the message
+     * kernel: counter in every lane).
      */
-    index   z12.s, w2, #1
+    index   z12.s, w2, w17
 
     lsr     x8, x2, #32
     dup     z13.s, w8
@@ -547,8 +569,8 @@ blake3_sme2_hash16_chunks_512:
     LOAD_BLOCK
 
     /*
-     * Blocks 0 through 14. Each iteration preloads the next block
-     * while computing the current one.
+     * Blocks 0 through the next to last (x6 - 1). Each iteration preloads
+     * the next block while computing the current one.
      */
     mov     x7, #0
     mov     x9, #64
@@ -571,11 +593,11 @@ blake3_sme2_hash16_chunks_512:
 
     add     x7, x7, #1
     add     x9, x9, #64
-    cmp     x7, #15
+    cmp     x7, x6
     b.lo    .Lpipelined_block_loop
 
     /*
-     * Block 15 was loaded into ZA0 during block 14.
+     * The last block (x6) was loaded into ZA0 during the one before.
      * It takes flags_end and has no following block to preload.
      */
     INITIALIZE_UPPER_STATE w16
@@ -618,7 +640,7 @@ blake3_sme2_hash16_chunks_512:
      */
     add     x0, x0, #128
     add     x4, x4, #512
-    add     x2, x2, #16
+    add     x2, x2, x17, lsl #4
 
     subs    x5, x5, #1
     b.ne    .Lgroup_loop
