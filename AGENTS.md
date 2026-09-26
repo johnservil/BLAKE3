@@ -4,6 +4,7 @@ These style guides read the same in the fork's `AGENTS.md` and in bench-hashes' 
 
 ## Communication
 
+- Name Zooko as "Zooko" alone, in every document, commit, issue, pull request, and message; never add a surname (his wish, September 26, 2026).
 - Phrase positively or neutrally; avoid negations and "not this, but that" contrasts.
 - Frame positively: show the promising, successful aspects of the recommended path. Mention an alternative only when its trade-offs deserve our attention.
 - The reader has limited working memory and limited ability to search back through recent text. Include only what the current focus needs.
