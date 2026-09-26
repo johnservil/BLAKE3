@@ -593,9 +593,9 @@ all); marks two-speed cells.
 
 ## Testing
 
-    cargo test --release --lib                      # 84 tests, 1 ignored
-    cargo test --release --features no_sme2 --lib   # 80
-    cargo test --release --features pure --lib      # 69
+    cargo test --release --lib                      # 86 tests, 1 ignored
+    cargo test --release --features no_sme2 --lib   # 82
+    cargo test --release --features pure --lib      # 71
     cargo test --release --doc                      # 21
     cargo test --release --manifest-path test_vectors/Cargo.toml   # 2
     cargo test --release --manifest-path bench-hashes/Cargo.toml   # 7
@@ -637,6 +637,15 @@ logs in `tmp/quality/`, outside git):
   pure --lib -- unsafe_paths test_miri_smoketest` (41 minutes; three
   workers): batches, the pool from two callers, a stream past one buffer:
   no undefined behaviour.
+- Kani (`cargo kani`, `#[cfg(kani)] mod proofs` in lanes.rs and many.rs;
+  QUALITY.md has the install): next_piece_len's bounds, the pool cut's
+  loop step (whole subtrees, by induction), slot_len, fill_table to 20
+  lanes; 2 s in all but fill_table (45 s). The guest's glibc 2.36 takes
+  Kani 0.64.0 at most (0.65 on need 2.39). Lessons: a symbolic divisor
+  over all of usize ran 3.5 h without an answer (bound it); the whole cut
+  loop ran CBMC out of memory at every bound down to 96 KiB, so prove a
+  loop step and argue by induction; always run it under `timeout`.
+  fill_table at all 144 lanes did not finish in 20 minutes.
 - Found and fixed: hash_blocks' padded-group choice (a latent assert on a
   CPU combination that does not exist), Platform::hash_many silently
   dropping the tail of an input that is not whole blocks (now a compile
