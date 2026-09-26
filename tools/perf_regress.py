@@ -94,6 +94,8 @@ import tempfile
 import time
 from pathlib import Path
 
+# The fork checkout the tool works in (its own, or --root's), and the
+# sides' directories in it.
 ROOT = Path(__file__).resolve().parents[1]
 CACHE = ROOT / "tmp/perf-ab"
 CONTROL = "sha256"
@@ -239,8 +241,8 @@ impl Stream {
 ENV = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
 
 
-def git(*args, cwd=ROOT, env=ENV, check=True):
-    return subprocess.run(["git", *args], cwd=cwd, env=env, check=check, stdout=subprocess.PIPE,
+def git(*args, cwd=None, env=ENV, check=True):
+    return subprocess.run(["git", *args], cwd=cwd or ROOT, env=env, check=check, stdout=subprocess.PIPE,
                           text=True).stdout.strip()
 
 
@@ -316,7 +318,7 @@ def target_root():
     return Path(os.environ.get("CARGO_TARGET_DIR", ROOT / "bench-hashes/target"))
 
 
-def side_bench(side, commit):
+def side_bench(side, commit, shim=True):
     """(bench-hashes executable built against the fork at `commit`, whether
     its batch cells cannot be judged), built in the side `side` ("old" or
     "new"): a fork worktree under CACHE/side with a copy of bench-hashes
@@ -324,7 +326,8 @@ def side_bench(side, commit):
     differs (the worktree moves only when its commit does, and then git
     rewrites only the files that differ; the copy is written file by file
     where it differs), so Cargo's own freshness decides what to rebuild,
-    and a side whose code is unchanged builds nothing."""
+    and a side whose code is unchanged builds nothing. Without `shim`,
+    the fork is built as it is (for runs of a benchmark that matches it)."""
     commit = git("rev-parse", f"{commit}^{{commit}}")
     checkout = CACHE / side / "src"
     if not checkout.exists():
@@ -334,7 +337,7 @@ def side_bench(side, commit):
         git("worktree", "add", "--detach", str(checkout), commit)
     elif git("rev-parse", "HEAD", cwd=checkout) != commit:
         git("checkout", "--quiet", "--force", "--detach", commit, cwd=checkout)
-    sources, shimmed = shimmed_sources(commit)
+    sources, shimmed = shimmed_sources(commit) if shim else ({}, False)
     # The shims, written where they differ (a moved checkout has none: the
     # forced checkout reset the files they change).
     for path, text in sources.items():
@@ -576,15 +579,23 @@ def compare(old_rev, new):
 
 
 def main():
+    global ROOT, CACHE
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser.add_argument("--root", type=Path, help="the fork checkout to work in (default: this tool's)")
     sub = parser.add_subparsers(dest="command", required=True)
     p = sub.add_parser("check", help="the working tree against a commit")
     p.add_argument("--against", default="HEAD")
     p = sub.add_parser("compare", help="two commits")
     p.add_argument("old")
     p.add_argument("new")
-    sub.add_parser("build", help="build bench-hashes against the working tree; print the executable's path")
+    p = sub.add_parser("build", help="build bench-hashes against the working tree, or a commit, as it is; "
+                                     "print the executable's path")
+    p.add_argument("--commit", help="a fork commit (default: the working tree)")
+    p.add_argument("--side", default="new", help="the side directory to build in (default: new)")
     args = parser.parse_args()
+    if args.root:
+        ROOT = args.root.resolve()
+        CACHE = ROOT / "tmp/perf-ab"
     # The sides are one checkout's: one invocation at a time uses them.
     CACHE.mkdir(parents=True, exist_ok=True)
     with open(CACHE / "lock", "w") as lock:
@@ -593,7 +604,7 @@ def main():
         except BlockingIOError:
             sys.exit(f"perf_regress: another perf_regress holds {CACHE / 'lock'}; run one at a time")
         if args.command == "build":
-            print(side_bench("new", working_tree_commit())[0])
+            print(side_bench(args.side, args.commit or working_tree_commit(), shim=False)[0])
             return 0
         if args.command == "check":
             return compare(args.against, None)

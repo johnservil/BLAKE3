@@ -1,11 +1,16 @@
 # Mac benchmark runner
 
 `runner.py` runs benchmark jobs on the Mac as the hidden standard account
-`benchrunner`, with code cloned from GitHub at the commits each job names.
+`benchrunner`, with code from GitHub at the commits each job names.
 Jobs go in the checkout's `runner/jobs/`; results come back in
-`runner/results/<job>.<time>/`. Benchmark jobs build bench-hashes inside
-the fork's clone, patched to use that clone at the job's `fork_commit`. Both folders stay out of git
-(`.git/info/exclude`). The job format is the docstring at the top of
+`runner/results/<job>.<time>/`. Both folders stay out of git
+(`.git/info/exclude`). The runner keeps its clones of the fork and of
+bench-hashes (inside the fork's) in `~benchrunner/checkouts/` and moves
+them to each job's commits, so Cargo rebuilds only what changed: a
+benchmark job builds bench-hashes against the fork as it is, through
+this checkout's `tools/perf_regress.py build`, in a directory with its
+own `Cargo.lock` (the committed lock is never written), and perf_regress
+jobs find their sides from the job before. The job format is the docstring at the top of
 `runner.py`.
 
 ## The account (once)

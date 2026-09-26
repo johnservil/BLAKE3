@@ -13,7 +13,7 @@ at most 7200):
 
     {"type": "benchmark", "fork_commit": "...", "bench_commit": "...",
      "flags": ["--all", "--quick"], "contenders": [...], "points": [...],
-     "rounds": N, "trace_clocks": true}
+     "rounds": N, "trace_clocks": true, "repeat": N}
 
 (bench-hashes before its git dependency on the fork took `--thorough` for
 a full run; later ones run in full by default and take `--quick`.)
@@ -27,9 +27,19 @@ a full run; later ones run in full by default and take `--quick`.)
 default, no_sme2, and pure builds, the doc tests, and the official
 vectors.)
 
+(A benchmark job with "repeat": N runs the benchmark N times back to
+back, run i's files in run-i/, for calibrations.)
+
 Each result folder holds runner.log (every command and its output),
 verdict.json, and the job's own files: the benchmark's report, graph,
 samples, and trace; host_lab's report.
+
+The checkouts persist between jobs (CHECKOUTS: the fork, bench-hashes
+inside it), moved to each job's commits with a forced checkout that
+rewrites only the files that differ, so Cargo rebuilds only what changed:
+the fork's target directory serves test and example jobs, perf_regress's
+sides (tmp/perf-ab/ in the fork) its jobs, and a side of its own (built by
+this runner's perf_regress.py, the fork as it is) benchmark jobs.
 """
 import json
 import os
@@ -44,6 +54,9 @@ from pathlib import Path
 FORK_URL = "https://github.com/johnservil/BLAKE3.git"
 BENCH_URL = "https://github.com/johnservil/bench-hashes.git"
 HOME = Path.home()
+CHECKOUTS = HOME / "checkouts"
+# This runner's own perf_regress.py, which builds benchmark jobs' sides.
+PERF_REGRESS = Path(__file__).resolve().parents[1] / "perf_regress.py"
 DONE_FILE = HOME / ".benchrunner_done"
 CARGO_BIN = HOME / ".cargo" / "bin"
 
@@ -101,19 +114,28 @@ class Job:
             raise subprocess.CalledProcessError(proc.returncode, cmd)
         return proc.stdout
 
-    def clone(self, url, dest, commit):
-        self.run(["git", "clone", "--quiet", url, str(dest)], cwd=dest.parent)
-        self.run(["git", "checkout", "--quiet", "--detach", commit], cwd=dest)
+    def sync(self, url, dest, commit):
+        """`dest`, a clone of `url` kept between jobs, at `commit`."""
+        if not (dest / ".git").exists():
+            self.run(["git", "clone", "--quiet", url, str(dest)], cwd=dest.parent)
+        else:
+            self.run(["git", "fetch", "--quiet", "--prune", "origin"], cwd=dest)
+        self.run(["git", "checkout", "--quiet", "--force", "--detach", commit], cwd=dest)
         full = self.run(["git", "rev-parse", "HEAD"], cwd=dest, capture=True).strip()
         assert full.startswith(commit), f"{url}: asked for {commit}, got {full}"
 
-    def checkouts(self, work, fork_commit, bench_commit):
+    def checkouts(self, fork_commit, bench_commit):
         """The fork with bench-hashes nested inside it, where bench-hashes'
-        path dependency (`..`) expects the fork."""
-        fork = work / "fork"
-        self.clone(FORK_URL, fork, fork_commit)
+        path dependency (`..`) expects the fork; both kept between jobs.
+        The fork's status leaves out bench-hashes and perf_regress's tmp/,
+        as the maintainers' checkout does."""
+        CHECKOUTS.mkdir(exist_ok=True)
+        fork = CHECKOUTS / "fork"
+        self.sync(FORK_URL, fork, fork_commit)
+        (fork / ".git/info").mkdir(exist_ok=True)
+        (fork / ".git/info/exclude").write_text("/bench-hashes/\n/tmp/\n")
         if bench_commit is not None:
-            self.clone(BENCH_URL, fork / "bench-hashes", bench_commit)
+            self.sync(BENCH_URL, fork / "bench-hashes", bench_commit)
         return fork
 
 
@@ -133,34 +155,26 @@ def benchmark(job, run, work, out):
     if "rounds" in job:
         assert isinstance(job["rounds"], int) and job["rounds"] > 0, "rounds must be a positive integer"
         args += ["--rounds", str(job["rounds"])]
-    if job.get("trace_clocks"):
-        args += ["--trace-clocks", str(out / "trace.csv")]
-    fork = run.checkouts(work, hex_commit(job, "fork_commit"), hex_commit(job, "bench_commit"))
-    bench = fork / "bench-hashes"
-    # Cargo applies the patch only when its version matches the locked one
-    # (otherwise it warns and builds the locked commit): lock the clone's
-    # version first, and check the build's source below.
-    run.run(["cargo", "--config", PATCH, "update", "--quiet", "-p", "blake3-servil"], cwd=bench)
-    messages = [json.loads(line) for line in run.run(
-        ["cargo", "--config", PATCH, "build", "--release", "--message-format=json-render-diagnostics"],
-        cwd=bench, capture=True).splitlines()]
-    sources = {m["package_id"] for m in messages
-               if m.get("reason") == "compiler-artifact" and m["target"]["name"] == "blake3_servil"}
-    assert sources and all(s.startswith(f"path+file://{fork.resolve()}#") for s in sources), \
-        f"bench-hashes built blake3-servil from {sources}, not the clone at {job['fork_commit']}"
-    exes = [m["executable"] for m in messages
-            if m.get("reason") == "compiler-artifact" and m.get("executable")
-            and m["target"]["name"] == "bench-hashes"]
-    assert len(exes) == 1, f"expected the bench-hashes executable, found {exes}"
-    # Run from the result folder: the benchmark writes benchmark-results/
-    # relative to its working directory.
-    run.run([exes[0], *args], cwd=out)
+    repeat = job.get("repeat", 1)
+    assert isinstance(repeat, int) and 1 <= repeat <= 100, "repeat must be 1-100"
+    fork_commit = hex_commit(job, "fork_commit")
+    fork = run.checkouts(fork_commit, hex_commit(job, "bench_commit"))
+    # Built in a side directory that owns its lock and target directory (the
+    # fork as it is, no shims); Cargo rebuilds only what changed.
+    exe = run.run([sys.executable, str(PERF_REGRESS), "--root", str(fork), "build", "--side", "bench",
+                   "--commit", fork_commit], cwd=fork, capture=True).strip().splitlines()[-1]
+    # Each run from its result folder: the benchmark writes
+    # benchmark-results/ relative to its working directory.
+    for folder in [out] if repeat == 1 else [out / f"run-{i}" for i in range(1, repeat + 1)]:
+        folder.mkdir(exist_ok=True)
+        trace = ["--trace-clocks", str(folder / "trace.csv")] if job.get("trace_clocks") else []
+        run.run([exe, *args, *trace], cwd=folder)
     return "ok"
 
 
 def perf_regress(job, run, work, out):
     old, new = hex_commit(job, "old_commit"), hex_commit(job, "new_commit")
-    fork = run.checkouts(work, new, hex_commit(job, "bench_commit"))
+    fork = run.checkouts(new, hex_commit(job, "bench_commit"))
     try:
         run.run([sys.executable, "tools/perf_regress.py", "compare", old, new], cwd=fork)
         return "no regression"
@@ -174,7 +188,7 @@ def example(job, run, work, out):
     assert job["example"] in EXAMPLES, f"example must be one of {sorted(EXAMPLES)}"
     features = job.get("features", [])
     assert set(features) <= FEATURES, f"features must come from {sorted(FEATURES)}"
-    fork = run.checkouts(work, hex_commit(job, "fork_commit"), None)
+    fork = run.checkouts(hex_commit(job, "fork_commit"), None)
     cmd = ["cargo", "build", "--release", "--example", job["example"]]
     if features:
         cmd += ["--features", ",".join(features)]
@@ -185,7 +199,7 @@ def example(job, run, work, out):
 
 
 def test(job, run, work, out):
-    fork = run.checkouts(work, hex_commit(job, "fork_commit"), None)
+    fork = run.checkouts(hex_commit(job, "fork_commit"), None)
     for features in [[], ["--features", "no_sme2"], ["--features", "pure"]]:
         run.run(["cargo", "test", "--release", "--lib", *features], cwd=fork)
     run.run(["cargo", "test", "--release", "--doc"], cwd=fork)
