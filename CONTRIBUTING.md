@@ -56,8 +56,8 @@ inside this checkout:
 
 ```sh
 git clone https://github.com/johnservil/bench-hashes
-python3 tools/perf_regress.py check       # the working tree against HEAD
-python3 tools/perf_regress.py compare OLD NEW
+pypy3 tools/perf_regress.py check       # the working tree against HEAD (python3 where PyPy is absent)
+pypy3 tools/perf_regress.py compare OLD NEW
 ```
 
 It builds the benchmark against both versions of the fork and runs them

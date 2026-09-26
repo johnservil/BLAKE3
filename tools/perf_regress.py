@@ -2,10 +2,10 @@
 """Performance-regression check for blake3-servil: the working tree against
 a commit, measured side by side.
 
-    python3 tools/perf_regress.py check                  # against HEAD
-    python3 tools/perf_regress.py check --against v0.7.0 # against a release
-    python3 tools/perf_regress.py compare OLD NEW        # two commits
-    python3 tools/perf_regress.py build                  # bench-hashes against the working tree
+    pypy3 tools/perf_regress.py check                  # against HEAD
+    pypy3 tools/perf_regress.py check --against v0.7.0 # against a release
+    pypy3 tools/perf_regress.py compare OLD NEW        # two commits
+    pypy3 tools/perf_regress.py build                  # bench-hashes against the working tree
 
 Exit 0: no solo regression (shared cells slower are listed). 1: a
 confirmed solo regression. 2: no verdict (the comparison itself was
