@@ -126,14 +126,15 @@ fn sweep(len: usize) {
 fn main() {
     blake3_servil::initialize();
     clocks::set_qos(clocks::USER_INTERACTIVE);
-    for len in [128, 256, 1024] {
+    for len in [64, 256] {
         sweep(len);
     }
-    for (qos, name) in [(clocks::USER_INTERACTIVE, "user-interactive QoS"), (clocks::BACKGROUND, "background QoS")] {
+    if std::env::var_os("SWEEP_ONLY").is_some() { return; }
+    for (qos, name) in [(clocks::USER_INTERACTIVE, "user-interactive QoS")] {
         clocks::set_qos(qos);
         println!("== {name} ==");
         pair();
-        for len in [64, 256, 4096] {
+        for len in [64] {
             for n in [1, 2, 3, 4, 5, 8, 12, 16, 24, 32, 64, 256, 1024, 16384] {
                 cell(len, n);
             }
