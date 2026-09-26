@@ -60,13 +60,15 @@ pub(crate) fn hash_many_on(input: &[u8], len: usize, outputs: &mut [[u8; OUT_LEN
 
 /// Fewest messages of 2 to 16 blocks that go to SME2 as one more group of
 /// sixteen, its spare lanes reading the last message again: 10 in a batch
-/// of fewer than sixteen, 6 left over after the SME2 groups (where NEON
-/// work after SME2 pays the SME unit's slow state as well). Fewer run on
-/// the integer + NEON parent plans. VM, ns per message, the plans against
-/// the extra group: 256 B, 9 messages 60 / 69, 10 68 / 62, 12 65 / 52, 21
-/// 58 / 59, 22 62 / 55; 128 B and 1 KiB cross at the same counts.
+/// of fewer than sixteen, 5 left over after the SME2 groups (where NEON
+/// work beside the SME2 kernels pays the SME unit's slow state as well).
+/// Fewer run on the integer + NEON parent plans. ns per message, the plans
+/// against the extra group: VM 256 B, 9 messages 60 / 69, 10 68 / 62, 12
+/// 65 / 52; 128 B and 1 KiB cross at the same counts. Mac P-core (jobs
+/// 261-264), 21 x 256 B 67.5 / 58.3, 53 x 256 B 51.1 / 45.5, 37 x 1 KiB
+/// 201 / 193; the VM level at 21.
 pub(crate) const SME2_TAIL_MIN: usize = 10;
-pub(crate) const SME2_TAIL_MIN_AFTER_GROUPS: usize = 6;
+pub(crate) const SME2_TAIL_MIN_AFTER_GROUPS: usize = 5;
 
 /// Whether a batch of `count` messages of `len` bytes runs SME2 kernels
 /// (so takes the SME2 turn): sixteen messages or more, or, for messages
