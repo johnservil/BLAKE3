@@ -460,6 +460,7 @@ const MAX_PREFIX_PIECE_LEN: usize = 1 << 20;
 /// A share below MAX_PIECE_LEN is no prefix: too little SME2 work to pay
 /// for the turn and the streaming session (VM, servil mt 256 KiB over
 /// sixteen threads, a 24 KiB prefix: +18-20%).
+#[cfg_attr(not(blake3_sme2), allow(dead_code))]
 fn sme2_prefix(len: usize, threads: usize) -> usize {
     let share = len / (100 + (threads - 1) * 10000 / 165) * 100;
     if share >= MAX_PIECE_LEN { share } else { 0 }

@@ -684,7 +684,26 @@ pub unsafe fn hash_many<const N: usize>(
     flags_end: u8,
     out: &mut [u8],
 ) {
+    unsafe { hash_many_last_len(inputs, key, counter, increment_counter, flags, flags_start, flags_end, BLOCK_LEN, out) }
+}
+
+/// [`hash_many`] with each input's last block `last_len` bytes long (1 to
+/// 64; its bytes past that zero): separate messages in slots of whole
+/// blocks. Unsafe because the CPU must have NEON and the SHA-3 extension.
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn hash_many_last_len<const N: usize>(
+    inputs: &[&[u8; N]],
+    key: &CVWords,
+    counter: u64,
+    increment_counter: IncrementCounter,
+    flags: u8,
+    flags_start: u8,
+    flags_end: u8,
+    last_len: usize,
+    out: &mut [u8],
+) {
     assert!(out.len() >= inputs.len() * OUT_LEN);
+    assert!((1..=BLOCK_LEN).contains(&last_len), "a last block of 1 to 64 bytes");
     let (plans, kernels, counter_step): (&[&[usize]; 17], &[Option<Kernel>], u64) =
         match (N, increment_counter.yes()) {
             (CHUNK_LEN, true) => (&CHUNK_PLANS, &CHUNK_KERNELS, 1),
@@ -697,7 +716,7 @@ pub unsafe fn hash_many<const N: usize>(
     let packed = flags as u64
         | (flags_start as u64) << 8
         | (flags_end as u64) << 16
-        | (BLOCK_LEN as u64) << 24;
+        | (last_len as u64) << 24;
     let blocks = N / BLOCK_LEN;
     // `&[&[u8; N]]` is a table of pointers, which is what the kernels take.
     let table = inputs.as_ptr() as *const *const u8;

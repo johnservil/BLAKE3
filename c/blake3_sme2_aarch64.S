@@ -33,9 +33,11 @@
  *     bits  0..7   flags        applied to every block
  *     bits  8..15  flags_start  also applied to block 0 of each chunk
  *     bits 16..23  flags_end    also applied to block 15 of each chunk
- *     bits 32..63  (the message kernel) the counter's step from one
- *                  group to the next; the chunk kernel ignores them and
- *                  steps sixteen
+ *     bits 32..39  (the message kernel) the counter's step from one
+ *                  group to the next; the chunk kernel zeroes bits 32..63
+ *                  and steps sixteen
+ *     bits 40..47  (the message kernel) the last block's length, 1 to 63;
+ *                  0 means 64
  *     bits 24..31  lanes of the last group whose chaining values are
  *                  stored, 1 to 15; 0 stores all sixteen (the message
  *                  kernel's padded last group: its spare lanes' values
@@ -618,6 +620,15 @@ blake3_sme2_hash16_messages_512:
      */
 .Llast_block:
     INITIALIZE_UPPER_STATE w16
+    /*
+     * The message kernel's last block may be short: bits 40..47 of x3
+     * hold its length, 1 to 63 (0 keeps 64; its bytes past the length
+     * are zero, the caller's promise).
+     */
+    ubfx    x8, x3, #40, #8
+    cbz     x8, .Lfull_last_block
+    dup     z14.s, w8
+.Lfull_last_block:
     READ_MESSAGES
     SEVEN_ROUNDS
     FEED_FORWARD
@@ -675,7 +686,7 @@ blake3_sme2_hash16_messages_512:
     add     x0, x0, #128
     add     x4, x4, #512
     add     x2, x2, x17, lsl #4
-    lsr     x8, x3, #32
+    ubfx    x8, x3, #32, #8
     add     x2, x2, x8
 
     subs    x5, x5, #1
