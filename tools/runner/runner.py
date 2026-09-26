@@ -21,6 +21,12 @@ a full run; later ones run in full by default and take `--quick`.)
      "bench_commit": "..."}
     {"type": "example", "example": "scaling" | "host_lab", "fork_commit": "...",
      "features": ["no_sme2"]}
+    {"type": "test", "fork_commit": "...", "differential_seconds": N}
+
+(A test job runs the fork's suites natively: the library tests in the
+default, no_sme2, and pure builds, the doc tests, and the official
+vectors; with differential_seconds, 1 to 3600, then the long differential
+run against the reference implementation for that long.)
 
 Each result folder holds runner.log (every command and its output),
 verdict.json, and the job's own files: the benchmark's report, graph,
@@ -170,7 +176,21 @@ def example(job, run, work, out):
     return "ok"
 
 
-HANDLERS = {"benchmark": benchmark, "perf_regress": perf_regress, "example": example}
+def test(job, run, work, out):
+    seconds = job.get("differential_seconds", 0)
+    assert isinstance(seconds, int) and 0 <= seconds <= 3600, "differential_seconds must be 0-3600"
+    fork = run.checkouts(work, hex_commit(job, "fork_commit"), None)
+    for features in [[], ["--features", "no_sme2"], ["--features", "pure"]]:
+        run.run(["cargo", "test", "--release", "--lib", *features], cwd=fork)
+    run.run(["cargo", "test", "--release", "--doc"], cwd=fork)
+    run.run(["cargo", "test", "--release", "--manifest-path", "test_vectors/Cargo.toml"], cwd=fork)
+    if seconds:
+        run.run(["env", f"BLAKE3_DIFF_SECONDS={seconds}", "cargo", "test", "--release", "--lib", "--",
+                 "--ignored", "differential", "--nocapture"], cwd=fork)
+    return "passed"
+
+
+HANDLERS = {"benchmark": benchmark, "perf_regress": perf_regress, "example": example, "test": test}
 
 
 def process(path, results):

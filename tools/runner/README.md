@@ -36,6 +36,10 @@ While a job runs, nothing else should run on the Mac, the VM included.
 
 ## Tested
 
+The `test` job type (the fork's suites, natively) was added September 26,
+2026 and checked in the VM with the handler run directly; it reaches the
+Mac when the runner restarts.
+
 September 24, 2026: all three job types (benchmark, example, perf_regress)
 and rejected jobs in the VM under PyPy; on the Mac, a thorough `--all` run
 under the runner matched the same run from the user's Terminal (704
