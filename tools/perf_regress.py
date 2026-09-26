@@ -67,6 +67,7 @@ thread (the check measures no streamed cells).
 """
 import argparse
 import hashlib
+from fractions import Fraction
 import json
 import os
 import re
@@ -104,7 +105,7 @@ ROUNDS = 48
 QUANTILE = 0.05
 PAIRS = 4  # the runs go A B B A A B B A
 # A cell is slower (faster) past this ratio, by scenario.
-MARGIN = {"solo": 0.03, "shared": 0.10}
+MARGIN = {"solo": Fraction(3, 100), "shared": Fraction(10, 100)}
 
 # A commit's lib.rs contains one of these, newest first; each names the
 # shim that makes the benchmark build against it, and whether its batch
@@ -371,10 +372,11 @@ def parse(text):
             continue
         if header is None:
             header = line.split("\t")
-            assert header == ["contender", "scenario", "use_case", "point", "unit", "ps_per_unit"], header
+            assert header == ["contender", "scenario", "use_case", "point", "unit", "ns/units"], header
         elif line:
             contender, scenario, use_case, point, _unit, values = line.split("\t")
-            ordered = sorted(int(v) for v in values.split(","))
+            # Each sample as measured, ns/units: exact until a ratio is printed.
+            ordered = sorted(Fraction(*map(int, v.split("/"))) for v in values.split(","))
             # The statistic, and the 90th percentile, which a two-speed
             # cell's slow speed reaches (reported beside verdicts, never
             # judged: the rule's calibration is for the 5th percentile).
@@ -446,7 +448,7 @@ def compare(old_rev, new):
                   "moves on the new side run after run points at the change itself (it alters what its "
                   "cells leave behind for the next).")
             for key in sorted(control[0] + control[1]):
-                print(f"  control {key}: {control[2][key] - 1:+.1%}")
+                print(f"  control {key}: {float(control[2][key] - 1):+.1%}")
             return True
         return False
 
@@ -469,8 +471,8 @@ def compare(old_rev, new):
 
         def show(keys):
             for key in keys:
-                print(f"  {key}: {ratio[key] - 1:+.1%}, then {ratio2[key] - 1:+.1%} "
-                      f"(90th percentile {slow[key] - 1:+.1%})")
+                print(f"  {key}: {float(ratio[key] - 1):+.1%}, then {float(ratio2[key] - 1):+.1%} "
+                      f"(90th percentile {float(slow[key] - 1):+.1%})")
 
         if held:
             print(f"perf_regress: REGRESSION: {new_name} is slower than {old_rev} in {len(held)} solo cells "
@@ -488,7 +490,7 @@ def compare(old_rev, new):
             return 0
         print(f"perf_regress: the second {PAIRS} pairs did not confirm; no regression")
     for key in sorted(faster):
-        print(f"  faster  {key}: {ratio[key] - 1:+.1%} (90th percentile {slow[key] - 1:+.1%})")
+        print(f"  faster  {key}: {float(ratio[key] - 1):+.1%} (90th percentile {float(slow[key] - 1):+.1%})")
     print(f"perf_regress: no regression against {old_rev}")
     return 0
 

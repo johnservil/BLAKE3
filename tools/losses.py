@@ -3,7 +3,8 @@
 
     pypy3 tools/losses.py SAMPLES.tsv [--margin 0.03]
 
-Reads a bench-hashes samples file (v2) and lists, for servil and servil mt
+Reads a bench-hashes samples file (v2, in ps per unit, or v3, each sample
+as measured, ns/units; both become exact nanoseconds per unit) and lists, for servil and servil mt
 in each scenario (solo, shared) and use case, every point where some other
 contender's median time is lower than servil's, with how much lower. A
 cell counts as lost when the best competitor is faster by more than
@@ -25,6 +26,7 @@ ran on E-cores.
 import argparse
 import statistics
 from collections import defaultdict
+from fractions import Fraction
 
 SUBJECTS = ["blake3-servil-st", "blake3-servil-mt"]
 MULTITHREADED = {"blake3-official-mt", "blake3-servil-mt"}
@@ -40,11 +42,11 @@ def speeds(values):
     best = None
     for split in range(side, n - side + 1):
         gap = v[split] - v[split - 1]
-        if gap >= median * 0.04 and (best is None or gap > best[1]):
+        if gap >= median * Fraction(4, 100) and (best is None or gap > best[1]):
             best = (split, gap)
     if best:
         fast, slow = statistics.median(v[:best[0]]), statistics.median(v[best[0]:])
-        if slow >= fast * 1.25:
+        if slow >= fast * Fraction(5, 4):
             return median, slow, (n - best[0]) / n
     return median, None, 0.0
 
@@ -57,12 +59,20 @@ def load(path):
         fields = line.rstrip("\n").split("\t")
         if header is None:
             header = fields
-            assert header == ["contender", "scenario", "use_case", "point", "unit", "ps_per_unit"], header
+            assert header[:5] == ["contender", "scenario", "use_case", "point", "unit"] and header[5] in ("ps_per_unit", "ns/units"), header
             continue
         contender, scenario, use_case, point, unit, values = fields
         contender = RENAMED.get(contender, contender)
-        cells[(contender, scenario, use_case, point)] = speeds([int(v) for v in values.split(",")])
+        cells[(contender, scenario, use_case, point)] = speeds([ns_per_unit(v, header[5]) for v in values.split(",")])
     return cells
+
+
+def ns_per_unit(value, column):
+    """One sample as exact nanoseconds per unit: `ns/units` (v3) or ps (v2)."""
+    if column == "ns/units":
+        ns, units = value.split("/")
+        return Fraction(int(ns), int(units))
+    return Fraction(int(value), 1000)
 
 
 def order(point):
@@ -97,8 +107,8 @@ def main():
                         worst = beaten[0][0]
                         kind = "LOST " if worst > args.margin else "close"
                         lost += worst > args.margin
-                        two = f"   [two speeds: {mine[2]:.0%} of samples at {mine[1] / mine[0]:.2f}x]" if mine[1] else ""
-                        rows.append(f"    {kind} {point:>9}  " + ", ".join(f"{r} {g:+.0%}" for g, r in beaten) + two)
+                        two = f"   [two speeds: {mine[2]:.0%} of samples at {float(mine[1] / mine[0]):.2f}x]" if mine[1] else ""
+                        rows.append(f"    {kind} {point:>9}  " + ", ".join(f"{r} {float(g):+.0%}" for g, r in beaten) + two)
                 if rows:
                     print(f"{subject} · {scenario} · {use_case} (servil slower by):")
                     print("\n".join(rows))

@@ -12,13 +12,15 @@ writes into the given directory:
 The chart has bars for BLAKE3 servil and one for the fastest implementation
 of each other family (SHA-256, SHA3-256, SHA-1DC) in the record's solo table
 "One input at a time (ns/B)", in GB/s (10^9 bytes per second), fastest
-first. Values stay in integer picoseconds per byte until the drawing; the
-report gives three decimals of ns/B, so speeds of 10 GB/s and more are
-drawn as whole numbers and slower ones with two decimals. A two-speed cell
-(a|b) stops the script, because a bar has one length.
+first. The report's figures (ns/B, three significant digits or more) are
+read as exact fractions and rounded once, to hundredths of GB/s; speeds of
+10 GB/s and more are drawn as whole numbers, slower ones with two
+decimals. A two-speed cell (a|b) stops the script, because a bar has one
+length.
 """
 import re
 import sys
+from fractions import Fraction
 from pathlib import Path
 
 # Each chart: its file, input size, title, note, and its BLAKE3 bars with their names.
@@ -61,14 +63,12 @@ def solo_row(text, size):
 
 
 def speed(label, cell):
-    """A report cell in ns/B (three decimals) as hundredths of GB/s."""
+    """A report cell in ns/B as hundredths of GB/s, rounded once (half up)."""
     value = cell.rstrip("~")
     assert "|" not in value, f"{label} ran at two speeds ({value}): a bar has one length"
-    whole, frac = value.split(".")
-    assert len(frac) == 3, f"{label}: {value} is not ns/B to three decimals"
-    ps = int(whole) * 1000 + int(frac)
-    # 10^5 / (ps per byte), rounded once.
-    return (100_000 + ps // 2) // ps
+    assert re.fullmatch(r"\d+\.\d{3,}", value), f"{label}: {value} is not ns/B with three decimals or more"
+    # GB/s = 1 / (ns/B); hundredths of it, rounded half up.
+    return int(Fraction(100) / Fraction(value) + Fraction(1, 2))
 
 
 def shown(centi):
