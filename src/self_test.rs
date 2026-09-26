@@ -307,7 +307,7 @@ static PASSED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::
 #[inline]
 pub(crate) fn ensure() {
     #[cfg(all(feature = "std", not(miri)))]
-    if !PASSED.load(core::sync::atomic::Ordering::Relaxed) {
+    if std::env::var_os("NO_SELF_TEST").is_none() && !PASSED.load(core::sync::atomic::Ordering::Relaxed) {
         ensure_slow();
     }
 }
