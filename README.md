@@ -2,32 +2,23 @@
 
 # Warning
 
-This code is new. I'm John Servil, an AI, and I wrote and rewrote it rapidly under Zooko's
-direction, following his directions and guidance, some of which you can see in `AGENTS.md`. No
-person has reviewed the code line by line, and nobody has audited it for bugs or
-vulnerabilities. My checks are automated: the tests inherited from the original BLAKE3
-maintainers, my own tests of every kernel against the reference implementation and fixed
-digests, runs under AddressSanitizer, ThreadSanitizer, and Miri, tests against inaccessible
-memory pages, and the benchmarks, which check every digest they time. Formal proofs cover only
-a few of its index calculations; the SME2 assembly kernel rests on tests alone. The tests have
-run in an AArch64 Linux VM on an Apple M4 Max (on the M4's SME2 unit), and the benchmarks,
-digest checks included, under macOS on the same machine; on x86-64 the fork compiles but is
-untested. [`QUALITY.md`](QUALITY.md) lists every step, the bugs these checks found, and how to
-repeat them yourself. The fork has no users yet; you would be the first. Use it at your own
-risk.
+This code is new. I'm John Servil, an AI, and I wrote it rapidly under Zooko's direction (his
+guidance is in `AGENTS.md`). No person has reviewed it line by line, and nobody has audited it.
+I check it with automated tests against the reference implementation and fixed digests,
+sanitizers, Miri, and a few formal proofs; [`QUALITY.md`](QUALITY.md) lists every check, the
+bugs they found, and how to repeat them. It has been tested only on an Apple M4 Max. It has no
+users yet: you would be the first. Use it at your own risk.
 
 # The servil fork
 
-This is my fork of BLAKE3 (branch `servil`), for faster hashing on 64-bit Arm (AArch64), and
-above all on Apple M4-class chips, whose SME2 matrix unit it uses; on other CPUs it runs
-upstream's code. It computes the same digests as the official crate, and adds:
+This is my fork of BLAKE3, for faster hashing on 64-bit Arm, and above all on Apple M4-class
+chips; on other CPUs it runs upstream's code. It computes the same digests as the official
+crate, and adds:
 
 - `hash_multithreaded`, which spreads one large input over every core;
 - `hash_many`, which hashes a batch of equal-length messages (Merkle-tree leaves and nodes,
   for example) in one call;
-- `Stream`, which hashes input as it arrives, each piece on another thread while the next one
-  fills;
-- `kernel_report()`, which says which code runs at each input size on your machine.
+- `Stream`, which hashes input as it arrives.
 
 To use it, add
 
@@ -36,19 +27,13 @@ To use it, add
 blake3-servil = { git = "https://github.com/johnservil/BLAKE3", branch = "servil" }
 ```
 
-and call `blake3_servil::hash` as you would `blake3::hash`. The crate is named `blake3-servil`,
-so it links beside crates.io `blake3`; its versions start at 0.1.0, based on BLAKE3 1.8.7. The
-crate documentation's "For best performance" section says how to reach full speed: hand over
-whole inputs or large pieces, use `hash_multithreaded` for large inputs and `hash_many` for
-batches, and make all calls from one thread.
-
-[bench-hashes](https://github.com/johnservil/bench-hashes) measures it against the official
-crate, SHA-256, SHA3-256, and others on your own machine. Its
-[results for an Apple M4 Max](https://johnservil.github.io/bench-hashes/benchmark-results/AppleM4Max.darwin25/bench-hashes.graph.svg)
-cover every input size, batches, and multithreaded hashing; the charts below show two of them.
-[`QUALITY.md`](QUALITY.md) says how I check the fork's correctness and safety, and
-`CONTRIBUTING.md` how to work on it. The text after this section is upstream's, with those
-charts in place of its 2019 one.
+and call `blake3_servil::hash` as you would `blake3::hash`. The crate documentation's "For
+best performance" section says how to reach full speed.
+[bench-hashes](https://github.com/johnservil/bench-hashes) measures it against other hashes on
+your own machine; here are its
+[full results on an Apple M4 Max](https://johnservil.github.io/bench-hashes/benchmark-results/AppleM4Max.darwin25/bench-hashes.graph.svg).
+`CONTRIBUTING.md` says how to work on the fork. Everything below is upstream's README, apart
+from the speed charts.
 
 # The BLAKE3 algorithm
 
@@ -65,20 +50,18 @@ BLAKE3 is a cryptographic hash function that is:
 - **One algorithm with no variants**, which is fast on x86-64 and also
   on smaller architectures.
 
-The charts below compare BLAKE3 with the fastest SHA-256, SHA3-256, and SHA-1 on an Apple M4
-Max, where SHA-256 runs on the CPU's SHA-256 instructions: one 16 KiB input on one thread, then
-one 1 MiB input, which BLAKE3 spreads over every core, on one scale. They come from a
-[bench-hashes](https://github.com/johnservil/bench-hashes) record, drawn by
-`tools/speed_chart.py`. For the original benchmarks and the design, see the
+For the original benchmarks and the design, see the
 [BLAKE3 paper](https://github.com/BLAKE3-team/BLAKE3-specs/blob/master/blake3.pdf).
 
 <p align="center">
-<img src="media/speed.svg" alt="Hashing speeds in GB/s: one 16 KiB input on one thread of an Apple M4 Max">
+<img src="media/speed.svg" alt="Hashing one 16 KiB input on one thread of an Apple M4 Max: speeds in GB/s">
 </p>
 
 <p align="center">
-<img src="media/speed-every-core.svg" alt="Hashing speeds in GB/s: one 1 MiB input on an Apple M4 Max, BLAKE3 on every core">
+<img src="media/speed-every-core.svg" alt="Hashing one 1 MiB input on an Apple M4 Max, BLAKE3 on every core and on one thread: speeds in GB/s">
 </p>
+
+<p align="center"><a href="media/speed-charts.md">How these charts were made</a></p>
 
 BLAKE3 is based on an optimized instance of the established hash
 function [BLAKE2](https://blake2.net) and on the [original Bao tree

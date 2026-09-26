@@ -1,55 +1,54 @@
 #!/usr/bin/env python3
-"""The README's speed charts, drawn from a bench-hashes record.
+"""The README's speed charts and the page that says how they were made.
 
-    python3 tools/speed_chart.py RECORD media
+    python3 tools/speed_chart.py bench-hashes/benchmark-results/AppleM4Max.darwin25 media
 
-writes media/speed.svg (one 16 KiB input on one thread) and
-media/speed-every-core.svg (one 1 MiB input, BLAKE3 on every core).
+reads a bench-hashes record's text report (bench-hashes.result.txt) and
+writes into the given directory:
 
-RECORD is a record directory, such as
-bench-hashes/benchmark-results/AppleM4Max.darwin25. The script reads its
-text report (bench-hashes.result.txt), from the solo table "One input at a
-time (ns/B)" and the row for the chart's input size, and draws one bar for
-BLAKE3 servil and one for the fastest implementation of each other family
-(SHA-256, SHA3-256, SHA-1DC) at that size, in GB/s (10^9 bytes per second),
-fastest first. Both charts share one scale, so bar lengths compare across
-them, and each family keeps its colour in both. The subtitle names the
-machine and its cores, from the record.
+- speed.svg: one 16 KiB input on one thread;
+- speed-every-core.svg: one 1 MiB input, BLAKE3 on every core and on one;
+- speed-charts.md: how the charts were made, from the same record.
 
-Values stay in integer picoseconds per byte until the drawing. The report
-gives three decimals of ns/B, so speeds of 10 GB/s and more are drawn as
-whole numbers, and slower ones with two decimals. A two-speed cell (a|b)
-stops the script, because a bar has one length. The footer, in pale type,
-names the commits the record measured and its date.
+Each chart has a bar for BLAKE3 servil and one for the fastest
+implementation of each other family (SHA-256, SHA3-256, SHA-1DC) in the
+record's solo table "One input at a time (ns/B)", in GB/s (10^9 bytes per
+second), fastest first. Both charts share one scale, and each family keeps
+its colour in both. Values stay in integer picoseconds per byte until the
+drawing; the report gives three decimals of ns/B, so speeds of 10 GB/s and
+more are drawn as whole numbers and slower ones with two decimals. A
+two-speed cell (a|b) stops the script, because a bar has one length.
 """
 import re
 import sys
 from pathlib import Path
 
-CHARTS = {
-    "speed.svg": dict(size="16 KiB", servil="B3 servil st", servil_name="BLAKE3 servil",
-                       title="Hashing one 16 KiB input on one thread", note=None),
-    "speed-every-core.svg": dict(size="1 MiB", servil="B3 servil mt", servil_name="BLAKE3 servil, every core",
-                       title="Hashing one 1 MiB input",
-                       note="BLAKE3's tree spreads one input over every core; the others use one."),
-}
-# Each other family's implementations, as the report labels them.
-FAMILIES = [["SHA-256", "SHA-256 ring", "SHA-256 CC"], ["SHA3-256"], ["SHA-1DC"]]
-# Report label -> name on the chart (BLAKE3 servil's comes from CHARTS).
-NAMES = {
-    "SHA-256": "SHA-256 (sha2)",
-    "SHA-256 ring": "SHA-256 (ring)",
-    "SHA-256 CC": "SHA-256 (Apple CommonCrypto)",
-    "SHA3-256": "SHA3-256 (sha3)",
-    "SHA-1DC": "SHA-1 with collision detection",
-}
-# One colour per family, in both charts (bench-hashes' colours for BLAKE3
-# servil, SHA-256 ring, SHA3-256, and SHA-1DC).
-COLORS = {"BLAKE3": "#7c3aed", "SHA-256": "#c2410c", "SHA3-256": "#db2777", "SHA-1DC": "#8a7a1e"}
+# Each chart: its file, input size, title, note, and its BLAKE3 bars with their names.
+CHARTS = [
+    dict(file="speed.svg", size="16 KiB", title="Hashing one 16 KiB input on one thread", note=None,
+         blake3={"B3 servil st": "BLAKE3"}),
+    dict(file="speed-every-core.svg", size="1 MiB", title="Hashing one 1 MiB input",
+         note="BLAKE3's tree spreads one input over every core; the others use one.",
+         blake3={"B3 servil mt": "BLAKE3, every core", "B3 servil st": "BLAKE3, one thread"}),
+]
+# Each other family: its name on the charts, and its implementations as the report's table
+# labels them, with the names its provenance lines use.
+FAMILIES = [
+    ("SHA-256", {"SHA-256": "SHA-256", "SHA-256 ring": "SHA-256 ring", "SHA-256 CC": "SHA-256 CommonCrypto"}),
+    ("SHA3-256", {"SHA3-256": "SHA3-256"}),
+    ("SHA-1", {"SHA-1DC": "SHA-1DC"}),
+]
+# One colour per family (bench-hashes' colours for BLAKE3 servil, SHA-256
+# ring, SHA3-256, and SHA-1DC).
+COLORS = {"BLAKE3": "#7c3aed", "SHA-256": "#c2410c", "SHA3-256": "#db2777", "SHA-1": "#8a7a1e"}
+
+WIDTH, LEFT, BAR, GAP = 720, 170, 26, 10
+PLOT = WIDTH - LEFT - 60
+FONT = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif"
 
 
-def family(label):
-    return "BLAKE3" if label.startswith("B3 ") else next(f[0] for f in FAMILIES if label in f)
+def family_of(label):
+    return "BLAKE3" if label.startswith("B3 ") else next(name for name, members in FAMILIES if label in members)
 
 
 def solo_row(text, size):
@@ -65,13 +64,15 @@ def solo_row(text, size):
     return dict(zip(labels, values))
 
 
-def picoseconds(label, cell):
-    """A report cell in ns/B, three decimals, as integer ps/B."""
+def speed(label, cell):
+    """A report cell in ns/B (three decimals) as hundredths of GB/s."""
     value = cell.rstrip("~")
     assert "|" not in value, f"{label} ran at two speeds ({value}): a bar has one length"
     whole, frac = value.split(".")
     assert len(frac) == 3, f"{label}: {value} is not ns/B to three decimals"
-    return int(whole) * 1000 + int(frac)
+    ps = int(whole) * 1000 + int(frac)
+    # 10^5 / (ps per byte), rounded once.
+    return (100_000 + ps // 2) // ps
 
 
 def shown(centi):
@@ -79,68 +80,113 @@ def shown(centi):
     return f"{(centi + 50) // 100}" if centi >= 1000 else f"{centi // 100}.{centi % 100:02d}"
 
 
-def bars_for(text, chart):
-    """{report label: ps per byte}: BLAKE3 servil and each family's fastest."""
+def bars_of(text, chart):
+    """[(report label, name on the chart, hundredths of GB/s)], fastest first."""
     cells = solo_row(text, chart["size"])
-    ps = {chart["servil"]: picoseconds(chart["servil"], cells[chart["servil"]])}
-    for members in FAMILIES:
+    bars = [(label, name, speed(label, cells[label])) for label, name in chart["blake3"].items()]
+    for name, members in FAMILIES:
         present = [label for label in members if label in cells]
-        assert present, f"the record lacks {members}"
-        best = min(present, key=lambda label: picoseconds(label, cells[label]))
-        ps[best] = picoseconds(best, cells[best])
-    return ps
+        assert present, f"the record lacks {sorted(members)}"
+        best = max(present, key=lambda label: speed(label, cells[label]))
+        bars.append((best, name, speed(best, cells[best])))
+    return sorted(bars, key=lambda bar: -bar[2])
 
 
-def main():
-    record, out_dir = Path(sys.argv[1]), Path(sys.argv[2])
-    text = (record / "bench-hashes.result.txt").read_text()
+def draw(chart, bars, top, subtitle):
+    """One chart as SVG text; `top` (hundredths of GB/s) spans the full bar width."""
+    head = 78 + (22 if chart["note"] else 0)
+    height = head + len(bars) * (BAR + GAP) + 14
+    out = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{WIDTH}" height="{height}" viewBox="0 0 {WIDTH} {height}" font-family="{FONT}">',
+           f'<rect width="{WIDTH}" height="{height}" fill="#ffffff"/>',
+           f'<text x="{LEFT}" y="28" font-size="17" font-weight="600" fill="#111827">{chart["title"]}</text>',
+           f'<text x="{WIDTH - 20}" y="28" font-size="12" fill="#4b5563" text-anchor="end">faster \u2192</text>',
+           f'<text x="{LEFT}" y="50" font-size="13" fill="#4b5563">{subtitle}</text>']
+    if chart["note"]:
+        out.append(f'<text x="{LEFT}" y="72" font-size="13" fill="#4b5563">{chart["note"]}</text>')
+    for i, (label, name, centi) in enumerate(bars):
+        y = head + i * (BAR + GAP)
+        w = PLOT * centi / top
+        bold = ' font-weight="600"' if family_of(label) == "BLAKE3" else ""
+        text_y = f"{y + BAR * 0.68:.1f}"
+        out += [f'<text x="{LEFT - 10}" y="{text_y}" font-size="13" fill="#111827" text-anchor="end"{bold}>{name}</text>',
+                f'<rect x="{LEFT}" y="{y}" width="{w:.1f}" height="{BAR}" rx="3" fill="{COLORS[family_of(label)]}"/>',
+                f'<text x="{LEFT + w + 6:.1f}" y="{text_y}" font-size="13" fill="#111827"{bold}>{shown(centi)}</text>']
+    return "\n".join(out + ["</svg>", ""])
+
+
+def provenance(text, name):
+    """The record's provenance line for a contender, after its name."""
+    return re.search(rf"^  {re.escape(name)}: (.*)$", text, re.M).group(1)
+
+
+def page(text, record, charts):
+    """speed-charts.md: how the charts were made, from the record."""
+    first = text.splitlines()[0]
+    date = re.search(r"(\d{4}-\d{2}-\d{2}) \d", first).group(1)
+    bench = re.search(r"https://github.com/johnservil/bench-hashes, commit ([0-9a-f]{40})", text).group(1)
+    fork = re.search(r"^  BLAKE3 servil st: .*?; commit ([0-9a-f]{40})", text, re.M).group(1)
+    rustc = re.search(r"^  (rustc [^;]*); target ([^;]*);", text, re.M)
+    load = re.search(r"^  load during the run: (.*)$", text, re.M).group(1)
+    lines = [
+        "# How the speed charts were made",
+        "",
+        f"The README's two speed charts come from one run of [bench-hashes](https://github.com/johnservil/bench-hashes) "
+        f"on {date}, on an {machine_of(text, split=True)}. `tools/speed_chart.py` draws them, and this page, from the run's report, "
+        f"[`{record}/bench-hashes.result.txt`](https://github.com/johnservil/bench-hashes/blob/main/{record}/bench-hashes.result.txt), "
+        "whose methodology is in bench-hashes' [METHODOLOGY.md](https://github.com/johnservil/bench-hashes/blob/main/METHODOLOGY.md). "
+        "Each bar is the median time for one input of that size, taken over the run's rounds, as a speed. "
+        "For SHA-256 each chart shows the fastest of three implementations in the run (sha2, ring, and Apple's CommonCrypto).",
+        "",
+        "| chart | bar | implementation | GB/s |",
+        "|---|---|---|---:|",
+    ]
+    for chart, bars in charts:
+        for label, name, centi in bars:
+            if family_of(label) == "BLAKE3":
+                call = "`hash_multithreaded`" if label == "B3 servil mt" else "`hash`"
+                impl = f"blake3-servil (this repository) at [{fork[:7]}](https://github.com/johnservil/BLAKE3/commit/{fork}), {call}"
+            else:
+                impl = provenance(text, next(m for n, m in FAMILIES if label in m)[label]).split(";")[0]
+                impl = {"CommonCrypto": "Apple CommonCrypto, from the running macOS"}.get(impl.split()[0], impl)
+                if label == "SHA-1DC":
+                    impl += " (SHA-1 with the collision detection git uses)"
+            lines.append(f"| {chart['size']} | {name} | {impl} | {shown(centi)} |")
+    lines += [
+        "",
+        f"- bench-hashes: commit [{bench[:7]}](https://github.com/johnservil/bench-hashes/commit/{bench})",
+        f"- compiler: {rustc.group(1)}, target {rustc.group(2)}",
+        f"- load during the run: {load}",
+        "",
+        "To draw the charts again from a newer record, with bench-hashes cloned inside this repository:",
+        "",
+        "```sh",
+        f"python3 tools/speed_chart.py bench-hashes/{record} media",
+        "```",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def machine_of(text, split=False):
+    """The machine and its core count (with `split`, by kind), from the record."""
     first = text.splitlines()[0]
     machine = first.split(" on ", 1)[1].split(" (", 1)[0]
     cores = re.search(r"hw\.perflevel0\.physicalcpu: (\d+) · hw\.perflevel1\.physicalcpu: (\d+)", text)
-    if cores:
-        p, e = int(cores.group(1)), int(cores.group(2))
-        machine += f", {p + e} cores ({p} performance, {e} efficiency)"
-    else:
-        machine += ", " + re.search(r"(\d+) CPUs", first).group(1) + " cores"
-    date = re.search(r"(\d{4}-\d{2}-\d{2}) \d", first).group(1)
-    fork = re.search(r"BLAKE3 servil st: blake3-servil [^\n]*?; commit ([0-9a-f]{7})", text).group(1)
-    bench = re.search(r"https://github.com/johnservil/bench-hashes, commit ([0-9a-f]{7})", text).group(1)
-
-    # Hundredths of GB/s: 10^5 / (ps per byte), rounded once.
-    charts = {name: {label: (100_000 + p // 2) // p for label, p in bars_for(text, chart).items()}
-              for name, chart in CHARTS.items()}
-    top = max(max(speed.values()) for speed in charts.values())
-    for name, chart in CHARTS.items():
-        (out_dir / name).write_text(draw(chart, charts[name], top, machine, f"bench-hashes {bench} \u00b7 blake3-servil {fork} \u00b7 {date}"))
+    count = int(cores.group(1)) + int(cores.group(2)) if cores else int(re.search(r"(\d+) CPUs", first).group(1))
+    if split and cores:
+        return f"{machine} with {count} cores ({cores.group(1)} performance, {cores.group(2)} efficiency)"
+    return f"{machine}, {count} cores"
 
 
-def draw(chart, speed, top, machine, footer):
-    """One chart as SVG text; `top` (hundredths of GB/s) spans the full bar width."""
-    bars = sorted(speed, key=speed.get, reverse=True)
-    width, left, bar_h, gap = 720, 230, 26, 10
-    head = 78 + (22 if chart["note"] else 0)
-    plot_w = width - left - 60
-    height = head + len(bars) * (bar_h + gap) + 36
-    out = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" '
-           'font-family="-apple-system, BlinkMacSystemFont, \'Segoe UI\', Helvetica, Arial, sans-serif">',
-           f'<rect width="{width}" height="{height}" fill="#ffffff"/>',
-           f'<text x="{left}" y="28" font-size="17" font-weight="600" fill="#111827">{chart["title"]}</text>',
-           f'<text x="{left}" y="50" font-size="13" fill="#4b5563">{machine}; GB/s</text>',
-           f'<text x="{width - 20}" y="28" font-size="12" fill="#4b5563" text-anchor="end">faster \u2192</text>']
-    if chart["note"]:
-        out.append(f'<text x="{left}" y="72" font-size="13" fill="#4b5563">{chart["note"]}</text>')
-    for i, label in enumerate(bars):
-        servil = label == chart["servil"]
-        name = chart["servil_name"] if servil else NAMES[label]
-        y = head + i * (bar_h + gap)
-        w = plot_w * speed[label] / top
-        weight = ' font-weight="600"' if servil else ""
-        out.append(f'<text x="{left - 10}" y="{y + bar_h * 0.68:.1f}" font-size="13" fill="#111827" text-anchor="end"{weight}>{name}</text>')
-        out.append(f'<rect x="{left}" y="{y}" width="{w:.1f}" height="{bar_h}" rx="3" fill="{COLORS[family(label)]}"/>')
-        out.append(f'<text x="{left + w + 6:.1f}" y="{y + bar_h * 0.68:.1f}" font-size="13" fill="#111827"{weight}>{shown(speed[label])}</text>')
-    out.append(f'<text x="{left}" y="{height - 14}" font-size="11" fill="#9ca3af">{footer}</text>')
-    out.append("</svg>")
-    return "\n".join(out) + "\n"
+def main():
+    record_dir, out_dir = Path(sys.argv[1]), Path(sys.argv[2])
+    text = (record_dir / "bench-hashes.result.txt").read_text()
+    record = "benchmark-results/" + record_dir.name
+    charts = [(chart, bars_of(text, chart)) for chart in CHARTS]
+    top = max(bars[0][2] for _, bars in charts)
+    for chart, bars in charts:
+        (out_dir / chart["file"]).write_text(draw(chart, bars, top, f"{machine_of(text)}; GB/s"))
+    (out_dir / "speed-charts.md").write_text(page(text, record, charts))
 
 
 if __name__ == "__main__":
