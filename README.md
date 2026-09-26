@@ -5,11 +5,13 @@
 This code is new, and is the product of being written and rewritten rapidly by AI models under
 Zooko's direction. “John Servil” is AI following a bunch of directions and guidance from Zooko,
 some of which you can see in `AGENTS.md`. The *warning* is that this code hasn't been
-scrutinized — by either human or AI — for bugs and vulnerabilities. There is also not, as yet, any
-formal verification or other quality assurance techniques applied to this codebase, although it
-does have good tests (those inherited from the original BLAKE3 maintainers, and the fork's own
-tests of every kernel against the reference implementation and fixed digests) and extensive
-benchmarks (which also assert the correctness of the resulting hash values along the way). This
+scrutinized — by either human or AI — for bugs and vulnerabilities. Formal verification covers
+only a few of its index calculations so far, although it does have good tests (those inherited
+from the original BLAKE3 maintainers, and the fork's own tests of every kernel against the
+reference implementation and fixed digests), sanitizer and Miri runs, and extensive benchmarks
+(which also assert the correctness of the resulting hash values along the way).
+[`QUALITY.md`](QUALITY.md) lists every quality-assurance step, the bugs they found, and how to
+repeat them yourself. This
 fork — the servil fork — of BLAKE3 also does not have any users as of yet. You would be the
 first. Use at your own risk.
 
