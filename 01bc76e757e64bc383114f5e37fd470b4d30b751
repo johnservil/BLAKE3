@@ -1,0 +1,5 @@
+Gate for 01bc76e (candidate/quality: NOTES checkpoint, perf_regress reports shared cells, docs/whir-merkle-trees.md, Kani proofs under cfg(kani), QUALITY.md, runner test jobs, AGENTS):
+suites (VM, 44249f0; src unchanged since): lib 86 (+1 ignored) / no_sme2 82 / pure 71, doc 21, vectors 2, bench-hashes 7; runner test handler run in the VM (all suites, 5 s differential).
+VM: perf_regress compare servil(9eb2613) candidate/quality (44249f0; src identical to 01bc76e): no regression.
+Mac: runner job 297, perf_regress compare 9eb2613 01bc76e: no regression.
+Kani (0.64.0, VM): 4 harnesses verified.
