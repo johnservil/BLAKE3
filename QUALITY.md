@@ -164,14 +164,18 @@ names the commit that introduced the code and the one that fixed it, in
    side-by-side chunk path) caught it before that path landed. Fixed in
    03ffc95: a one-block message now starts and ends on its last block.
 2. **`Platform::hash_many` dropped the tail of an input that was not
-   whole blocks** (`src/platform.rs`). This hidden, unstable
-   function takes a message length as a type parameter. A length that
-   was not a multiple of 64 bytes lost its last partial block, with no
-   error. The official crate's hidden function behaves the same way in
-   release builds (a debug-only assertion in its portable kernel). The
-   fork's own callers always pass whole blocks. Coverage-driven tests
-   found it; fixed in d395f9e: such a length is now a compile-time
-   error.
+   whole blocks** (`src/platform.rs`). This hidden, unstable function
+   takes a message length as a type parameter. A length that was not a
+   multiple of 64 bytes lost its last partial block with no error, so two
+   messages that differed only in those bytes got the same digest. The
+   fork inherited this from the official crate, where it persists in
+   release builds; the fork's own callers always pass whole blocks.
+   Coverage-driven tests found it; fixed in d395f9e: such a length is now
+   a compile-time error. We reported it upstream
+   ([BLAKE3-team/BLAKE3#590](https://github.com/BLAKE3-team/BLAKE3/issues/590),
+   with a fix in [#591](https://github.com/BLAKE3-team/BLAKE3/pull/591)),
+   together with a catalog of the public projects that call the function:
+   each of them passes whole blocks.
 3. **A batch path asserted on a CPU combination that does not exist**
    (`src/many.rs`, `hash_blocks`). It decided whether to use the padded
    SME2 group from the length of its pointer table. On SME2 without the
