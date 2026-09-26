@@ -1,0 +1,1 @@
+gate: documents only (AGENTS.md, NOTES-servil.md; no test reads them); VM compare servil candidate: no regression; Mac perf_regress compare 76e3f4a 37f1247 (job 253): no regression.
