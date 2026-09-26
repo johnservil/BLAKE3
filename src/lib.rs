@@ -1236,15 +1236,20 @@ fn hash_serial_on(input: &[u8], key: &CVWords, flags: u8, platform: Platform) ->
     hash_all_at_once::<join::SerialJoin>(input, key, 0, flags, platform).root_hash()
 }
 
-/// Many messages of one length, stored back to back: `out[i]` becomes the
-/// [`hash`] of `input[i * message_len..][..message_len]`. `input` holds
-/// exactly `out.len()` messages. The shape a Merkle tree's layers take:
-/// leaves of one size, and nodes of two 32-byte children (`message_len`
-/// 64). Messages of 1 to 16 whole blocks (64 B to 1 KiB) are hashed several
-/// at a time, sixteen per group on SME2, so a batch of them hashes at a
-/// multiple of one [`hash`] call's rate; on Apple M4 and later so are
-/// messages of whole blocks up to 15 KiB, in batches of about ten or more.
-/// Messages of other lengths cost what [`hash`] costs. On Apple M4 and
+/// Many messages of one length, each starting at a multiple of 64 bytes:
+/// `out[i]` becomes the [`hash`] of `input[i * stride..][..message_len]`,
+/// where `stride` is `message_len` rounded up to a multiple of 64 (64 for
+/// an empty message). `input` holds exactly `out.len()` strides, and the
+/// bytes between one message's end and the next one's start (and after the
+/// last) are zero: a message whose length is a multiple of 64, the usual
+/// case, needs no padding, and messages sit back to back. A nonzero byte
+/// there changes that message's digest (debug builds check). The shape a
+/// Merkle tree's layers take: leaves of one size, and nodes of two 32-byte
+/// children (`message_len` 64). Messages of up to a chunk (1 KiB) are
+/// hashed several at a time, sixteen per group on SME2, so a batch of them
+/// hashes at a multiple of one [`hash`] call's rate; on Apple M4 and later
+/// so are messages of up to 15 KiB, in batches of about ten or more.
+/// Longer messages cost what [`hash`] costs. On Apple M4 and
 /// later, batches that run on SME2 follow [`hash`]'s rule for large
 /// inputs: when several threads hash them at once, one runs at the full
 /// rate and the others at about half of it. Always single-threaded; see [`hash_many_multithreaded`] for
@@ -1255,6 +1260,15 @@ fn hash_serial_on(input: &[u8], key: &CVWords, flags: u8, platform: Platform) ->
 /// let mut hashes = vec![[0u8; 32]; 1000];
 /// blake3_servil::hash_many(&leaves, 256, &mut hashes);
 /// assert_eq!(hashes[3], *blake3_servil::hash(&leaves[3 * 256..4 * 256]).as_bytes());
+///
+/// // 100-byte messages sit 128 bytes apart, zero between them.
+/// let mut records = vec![0u8; 10 * 128];
+/// for (i, record) in records.chunks_mut(128).enumerate() {
+///     record[..100].fill(i as u8 + 1);
+/// }
+/// let mut digests = vec![[0u8; 32]; 10];
+/// blake3_servil::hash_many(&records, 100, &mut digests);
+/// assert_eq!(digests[9], *blake3_servil::hash(&[10u8; 100]).as_bytes());
 /// ```
 pub fn hash_many(input: &[u8], message_len: usize, out: &mut [[u8; OUT_LEN]]) {
     let turn = platform::Sme2Turn::take(Platform::detect(), many::sme2_sized(message_len, out.len()));
@@ -1392,7 +1406,7 @@ pub fn kernel_report() -> KernelReport {
 #[cfg(feature = "std")]
 pub fn kernel_report_many(message_len: usize) -> KernelReport {
     let platform = Platform::detect();
-    let blocks = if message_len % BLOCK_LEN == 0 && (1..=16).contains(&(message_len / BLOCK_LEN)) { message_len / BLOCK_LEN } else { 0 };
+    let blocks = if (1..=CHUNK_LEN).contains(&message_len) { many::slot_len(message_len) / BLOCK_LEN } else { 0 };
     let mut kernels = Vec::with_capacity(3);
     if blocks == 0 {
         let one = kernel_report();
@@ -1403,7 +1417,7 @@ pub fn kernel_report_many(message_len: usize) -> KernelReport {
             why: "Messages of this length are hashed one call each, as one input of that length.",
         });
         #[cfg(blake3_sme2)]
-        if matches!(platform, Platform::SME2) && message_len % BLOCK_LEN == 0 && (CHUNK_LEN + 1..=15 * CHUNK_LEN).contains(&message_len) {
+        if matches!(platform, Platform::SME2) && (CHUNK_LEN + 1..=15 * CHUNK_LEN).contains(&message_len) {
             kernels.push(Kernel {
                 from_len: many::sme2_chunked_min(message_len) * message_len,
                 name: "SME2, sixteen messages side by side",

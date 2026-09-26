@@ -240,19 +240,20 @@ pub(crate) fn hash_many(input: &[u8], message_len: usize, outputs: &mut [[u8; cr
 
 #[inline(never)]
 fn hash_many_over_pool(input: &[u8], message_len: usize, outputs: &mut [[u8; crate::OUT_LEN]], max_threads: usize) {
-    assert_eq!(Some(input.len()), message_len.checked_mul(outputs.len()), "input holds exactly one message of the length per output");
+    let slot = crate::many::slot_len(message_len);
+    assert_eq!(Some(input.len()), slot.checked_mul(outputs.len()), "input holds one slot of whole blocks per output");
     let pool = pool();
     let callers = pool.callers.fetch_add(1, Ordering::SeqCst) + 1;
     let _caller = Caller(&pool.callers);
     if callers >= pool.cpus {
         return crate::hash_many(input, message_len, outputs);
     }
-    let pieces = cut_messages(outputs.len(), message_len, pool.cpus.min(max_threads));
+    let pieces = cut_messages(outputs.len(), slot, pool.cpus.min(max_threads));
     let work = Work::Messages { input, message_len, pieces: &pieces, outputs: outputs.as_mut_ptr() };
     pool.run_job(work, pieces.len(), 0, pool_platform(), max_threads);
 }
 
-/// Cut `count` messages of `message_len` bytes into ranges for `threads`
+/// Cut `count` messages in slots of `message_len` bytes into ranges for `threads`
 /// threads, in order: each range holds about [`next_piece_len`] of the
 /// bytes that remain, at least one message, so ranges shrink toward the
 /// end as subtree pieces do.
@@ -314,8 +315,9 @@ enum Work<'a> {
         counter: u64,
         flags: u8,
     },
-    /// Ranges of a batch of messages of one length, back to back in
-    /// `input` (`offset` and `len` count messages); one digest each.
+    /// Ranges of a batch of messages of one length, each in its slot of
+    /// whole blocks in `input` (`offset` and `len` count messages); one
+    /// digest each.
     Messages {
         input: &'a [u8],
         message_len: usize,
@@ -365,7 +367,8 @@ impl Job<'_> {
             }
             Work::Messages { input, message_len, pieces, outputs } => {
                 let piece = pieces[index];
-                let messages = &input[piece.offset * message_len..][..piece.len * message_len];
+                let slot = crate::many::slot_len(*message_len);
+                let messages = &input[piece.offset * slot..][..piece.len * slot];
                 // Sound: this range of outputs belongs to piece `index` alone.
                 let digests = unsafe { core::slice::from_raw_parts_mut(outputs.add(piece.offset), piece.len) };
                 crate::many::hash_many_on(messages, *message_len, digests, platform);
@@ -1129,13 +1132,18 @@ mod test {
     fn test_hash_many_budgets_agree() {
         let mut buffer = vec![0u8; 4 * MIN_SPLIT_LEN];
         crate::test::paint_test_input(&mut buffer);
-        for message_len in [crate::BLOCK_LEN, 256, 3 * CHUNK_LEN + 5] {
-            let count = buffer.len() / message_len;
-            let input = &buffer[..count * message_len];
+        for message_len in [crate::BLOCK_LEN, 256, 100, 3 * CHUNK_LEN + 5] {
+            let slot = crate::many::slot_len(message_len);
+            let count = buffer.len() / slot;
+            let mut owned = buffer[..count * slot].to_vec();
+            for message in owned.chunks_exact_mut(slot) {
+                message[message_len..].fill(0);
+            }
+            let input = &owned[..];
             let mut want = vec![[0u8; crate::OUT_LEN]; count];
             crate::hash_many(input, message_len, &mut want);
             for (i, digest) in want.iter().enumerate().take(200) {
-                assert_eq!(*digest, *crate::hash(&input[i * message_len..][..message_len]).as_bytes(), "message {i}");
+                assert_eq!(*digest, *crate::hash(&input[i * slot..][..message_len]).as_bytes(), "message {i}");
             }
             for cap in [1, 2, 3, 4, 64, usize::MAX] {
                 let mut got = vec![[0u8; crate::OUT_LEN]; count];

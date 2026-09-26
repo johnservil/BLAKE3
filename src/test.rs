@@ -1160,13 +1160,17 @@ mod unsafe_paths {
 
     #[test]
     fn test_batches_small() {
-        for len in [0, 1, 64, 128, 192, 1024, 1088, 2048, 3000] {
+        for len in [0, 1, 64, 100, 128, 192, 1024, 1088, 2048, 3000] {
             for count in [0, 1, 2, 3, 4, 5, 9, 17] {
-                let data = input(len * count, len as u8);
+                let slot = crate::many::slot_len(len);
+                let mut data = input(slot * count, len as u8);
+                for message in data.chunks_exact_mut(slot) {
+                    message[len..].fill(0);
+                }
                 let mut out = vec![[0u8; OUT_LEN]; count];
                 hash_many(&data, len, &mut out);
                 for (i, digest) in out.iter().enumerate() {
-                    assert_eq!(*digest, *hash(&data[i * len..][..len]).as_bytes(), "{count} x {len} B, message {i}");
+                    assert_eq!(*digest, *hash(&data[i * slot..][..len]).as_bytes(), "{count} x {len} B, message {i}");
                 }
             }
         }
@@ -1339,18 +1343,22 @@ mod guard_pages {
 
     #[test]
     fn test_hash_many_inside_guard_pages() {
-        for len in [1, 64, 100, 128, 192, 256, 640, 1024, 1088, 2048, 3072, 4096, 8192, 15360, 16384] {
+        for len in [1, 63, 64, 100, 128, 192, 200, 256, 640, 1000, 1024, 1088, 2000, 2048, 3072, 4096, 4100, 8192, 15360, 15359, 16384] {
             for count in [1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 15, 16, 17, 21, 24, 31, 33, 127, 128, 129] {
                 for at_end in [true, false] {
-                    let mut input = filled(len * count, at_end);
+                    let slot = crate::many::slot_len(len);
+                    let mut input = filled(slot * count, at_end);
+                    for message in input.bytes().chunks_exact_mut(slot) {
+                        message[len..].fill(0);
+                    }
                     let mut out = Guarded::new(count * OUT_LEN, !at_end);
                     let outputs: &mut [[u8; OUT_LEN]] = unsafe { core::slice::from_raw_parts_mut(out.bytes().as_mut_ptr() as *mut [u8; OUT_LEN], count) };
                     hash_many(input.bytes(), len, outputs);
                     let data = input.bytes().to_vec();
                     for (i, digest) in outputs.iter().enumerate() {
-                        assert_eq!(*digest, *hash(&data[i * len..][..len]).as_bytes(), "{count} x {len} B, message {i}, at end {at_end}");
+                        assert_eq!(*digest, *hash(&data[i * slot..][..len]).as_bytes(), "{count} x {len} B, message {i}, at end {at_end}");
                     }
-                    if len * count >= 64 * CHUNK_LEN {
+                    if slot * count >= 64 * CHUNK_LEN {
                         let mut mt = vec![[0u8; OUT_LEN]; count];
                         hash_many_multithreaded(input.bytes(), len, &mut mt);
                         assert_eq!(&mt[..], &outputs[..], "mt, {count} x {len} B");
@@ -1471,8 +1479,13 @@ mod differential {
                     2 => rng.below(300) as usize,
                     _ => rng.len(1 << 16),
                 };
-                let count = if message_len == 0 { rng.below(40) as usize } else { (rng.below(300) as usize).min(data.len() / message_len) };
-                let input = &data[..message_len * count];
+                let slot = crate::many::slot_len(message_len);
+                let count = (rng.below(300) as usize).min(data.len() / slot);
+                let mut owned = data[..slot * count].to_vec();
+                for message in owned.chunks_exact_mut(slot) {
+                    message[message_len..].fill(0);
+                }
+                let input = &owned[..];
                 let mut out = vec![[0u8; OUT_LEN]; count];
                 let budget = 1 + rng.below(17) as usize;
                 if pick == 7 {
@@ -1481,7 +1494,7 @@ mod differential {
                     hash_many_multithreaded_with_budget(input, message_len, &mut out, budget);
                 }
                 for (i, digest) in out.iter().enumerate() {
-                    reference(None, None, &input[i * message_len..][..message_len], &mut want);
+                    reference(None, None, &input[i * slot..][..message_len], &mut want);
                     assert_eq!(digest, &want, "hash_many ({pick}), {count} x {message_len} B, message {i}, budget {budget}");
                 }
             }
