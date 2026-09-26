@@ -135,6 +135,9 @@ cpufeatures = "0.3.0"
 libc = { version = "0.2", default-features = false }
 
 [dev-dependencies]
+# probe/commonware only: the commonwarexyz BLAKE3 batch kernels (PR 4982) and the official crate.
+commonware-cryptography = { git = "https://github.com/commonwarexyz/monorepo", rev = "25851f1eda0127b239e323663d282641acb53f8a", default-features = false }
+blake3 = "1"
 hmac = "0.13.0"
 hex = "0.4.2"
 page_size = "0.6.0"
