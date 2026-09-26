@@ -1455,13 +1455,13 @@ pub fn kernel_report_many(message_len: usize) -> KernelReport {
             });
         }
         #[cfg(blake3_sme2)]
-        const _: () = assert!(many::ONE_BLOCK_PAD_MIN == 11 && many::ONE_BLOCK_PAD_AFTER_GROUPS == 13, "the words below name these counts");
+        const _: () = assert!(many::ONE_BLOCK_PAD_MIN == 11 && many::ONE_BLOCK_PAD_AFTER_GROUPS == 5, "the words below name these counts");
         #[cfg(blake3_sme2)]
         if matches!(platform, Platform::SME2) && blocks == 1 {
             kernels.push(Kernel {
                 from_len: many::ONE_BLOCK_PAD_MIN * message_len,
                 name: "SME2, sixteen messages at a time",
-                why: "From eleven messages, groups of sixteen fill the SME2 matrix unit's vectors, one message per lane, the last group's spare lanes repeating a message; up to twelve left over past whole groups go to the NEON code.",
+                why: "From eleven messages, groups of sixteen fill the SME2 matrix unit's vectors, one message per lane, the last group's spare lanes repeating a message; up to four left over past whole groups go to the NEON code.",
             });
         }
         #[cfg(blake3_sme2)]

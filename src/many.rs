@@ -221,7 +221,7 @@ pub(crate) fn sme2_sized(len: usize, count: usize) -> bool {
 /// Up to TABLE one-block messages (N = BLOCK_LEN, whole blocks) in
 /// `messages`: whole SME2 groups on the message kernel, the last padded,
 /// where the count calls for it; otherwise the platform's `hash_many` (the
-/// parent kernels, the NEON plans, the overlap group). Kept out of line:
+/// parent kernels and the NEON plans). Kept out of line:
 /// with all sixteen lengths inlined into hash_many_on, batches of two
 /// 64-byte messages took 30% longer (VM, bench-hashes); out of line they
 /// cost what they did before.
@@ -274,21 +274,23 @@ fn hash_run_short<const N: usize>(messages: &[u8], outputs: &mut [[u8; OUT_LEN]]
 
 /// Fewest one-block messages that SME2 hashes as whole groups on the
 /// message kernel, the last one padded: 11 in a batch of fewer than
-/// sixteen (fewer run on the NEON parent plans), 13 left over past whole
-/// groups, in place of the overlap group (fewer left over run on the
-/// parent kernel's groups and the NEON plans). VM, ns per message, before
-/// / padded: 10 18.3 / 20.9, 11 19.1 / 15.0, 15 18.2 / 10.8; past one
-/// group, 29 16.3 / 11.1, 31 15.2 / 10.4; past three, 61-63 12.5-14.1 /
-/// 10.2-10.7. Past whole groups the padded group trades for the smaller
-/// left-overs: in the plans' fast state it is 5-16% slower at 6, 8, 10, and
-/// 12 left over (24: 12.1 / 13.6) and 6-9% at 53-60, but 40-50% faster at
-/// 5, 7, 9, and 11, where the plans after the groups ran slow in every run
-/// (21: 28.0 / 15.7), and the plans' other counts run slow in some runs (24:
-/// 29.8); a choice for Zooko (NEXT-STEPS), so the left-overs below 13 keep
-/// the plans.
+/// sixteen (fewer run on the NEON parent plans), 5 left over past whole
+/// groups (fewer left over run on the NEON plans). VM, ns per message,
+/// before / padded: 10 18.3 / 20.9, 11 19.1 / 15.0, 15 18.2 / 10.8.
+/// Past whole groups the padded group replaces the plans and the overlap
+/// group. The plans after a group run fast while the SME unit stays in
+/// its fast state and 2.5x slower when it sits in its slow one; the
+/// padded group runs at one speed. Mac M4 Max P-cores, ns per message,
+/// left-overs from 13 / from 5: in a sweep where the unit sat slow at
+/// 20 and 22-28 messages (probe onepad-after5, jobs 279-281), 22-28
+/// 25.5-31.5 / 11.4-15.7 and 53 18.4 / 12.2; slower at 21 (13.6 / 15.6)
+/// and 37-40 (10.1-11.8 / 11.9-13.0). In the benchmark, every sample
+/// fast (jobs 291-294), 24 10.6 / 13.3 (official 21.0-21.7). The VM, in
+/// the plans' fast state, 22, 24, 26 12-16% slower (their slow state is
+/// twice as slow). The worst case halves; the fast case pays up to 25%.
 pub(crate) const ONE_BLOCK_PAD_MIN: usize = 11;
 #[cfg_attr(not(blake3_sme2), allow(dead_code))]
-pub(crate) const ONE_BLOCK_PAD_AFTER_GROUPS: usize = 13;
+pub(crate) const ONE_BLOCK_PAD_AFTER_GROUPS: usize = 5;
 
 /// Room for a pointer table: TABLE messages and a padded group's spare
 /// lanes, uninitialised on the caller's stack.
@@ -470,11 +472,11 @@ mod test {
     }
 
     /// One-block messages: every NEON parent plan (1 to 16), then SME2
-    /// groups and their remainders (13 to 15 left over take an overlapping
+    /// groups and their remainders (5 to 15 left over take a padded
     /// group), TABLE's edges, and the pool's split.
     #[test]
     fn test_hash_many_blocks() {
-        for count in (0..=17).chain([24, 29, 30, 31, 32, 33, 45, 61, 127, 128, 129, 205, 1021, 1022, 1023, 1024, 1025, 2049]) {
+        for count in (0..=17).chain([20, 21, 24, 29, 30, 31, 32, 33, 45, 61, 127, 128, 129, 205, 1021, 1022, 1023, 1024, 1025, 2049]) {
             check(BLOCK_LEN, count);
         }
     }
