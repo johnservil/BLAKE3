@@ -1,0 +1,1 @@
+gate: suites pass (75/71/61 lib, 21 doc, 2 vectors); VM compare servil candidate: no regression (a first 4 pairs flagged 2 cells, the second 4 did not confirm); Mac perf_regress compare 3d83912 4cad0c6 (job 249, every cell judged): no regression; before the rebase, Mac job 240 against f70c758: no regression. Strings only: kernel_report_multithreaded's split names the SME2 thread.
