@@ -1,0 +1,4 @@
+Gate for e95e53f (d395f9e + e95e53f, tests from coverage and sanitizers; three small fixes):
+suites: lib 85 (84 + 1 ignored) / no_sme2 80 / pure 69, doc 21, vectors 2, bench-hashes 7: all pass (VM). ASan (nightly, -Zbuild-std) full lib suite clean; TSan pool/stream/unsafe_paths/turn tests 31 runs clean; Miri (pure) unsafe_paths batches and pool clean.
+VM: perf_regress compare servil(0bed4e7) e95e53f: no regression.
+Mac: runner job 273 (perf_regress compare 0bed4e7 e95e53f): no regression.
