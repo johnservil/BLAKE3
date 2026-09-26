@@ -59,14 +59,14 @@ pub(crate) fn hash_many_on(input: &[u8], len: usize, outputs: &mut [[u8; OUT_LEN
 }
 
 /// Fewest messages of 2 to 16 blocks that go to SME2 as one more group of
-/// sixteen, its spare lanes reading the last message again: 6 in a batch
-/// of fewer than sixteen, 5 left over after the SME2 groups (where NEON
+/// sixteen, its spare lanes reading the last message again: 10 in a batch
+/// of fewer than sixteen, 6 left over after the SME2 groups (where NEON
 /// work after SME2 pays the SME unit's slow state as well). Fewer run on
-/// NEON and the integer kernel. VM, 256 B, ns per message, NEON and
-/// integer kernel against the extra group: 5 messages 105 / 122, 6 115 /
-/// 102, 21 70 / 58; 128 B and 1 KiB alike.
-pub(crate) const SME2_TAIL_MIN: usize = 6;
-const SME2_TAIL_MIN_AFTER_GROUPS: usize = 5;
+/// the integer + NEON parent plans. VM, ns per message, the plans against
+/// the extra group: 256 B, 9 messages 60 / 69, 10 68 / 62, 12 65 / 52, 21
+/// 58 / 59, 22 62 / 55; 128 B and 1 KiB cross at the same counts.
+pub(crate) const SME2_TAIL_MIN: usize = 10;
+pub(crate) const SME2_TAIL_MIN_AFTER_GROUPS: usize = 6;
 
 /// Whether a batch of `count` messages of `len` bytes runs SME2 kernels
 /// (so takes the SME2 turn): sixteen messages or more, or, for messages
@@ -92,33 +92,48 @@ fn hash_run<const N: usize>(messages: &[u8], outputs: &mut [[u8; OUT_LEN]], plat
     platform.hash_many::<N>(filled, IV, 0, IncrementCounter::No, flags, start, end, outputs.as_flattened_mut());
 }
 
-/// [`hash_run`] for messages of 2 to 16 whole blocks (N). They fill
-/// whole vector groups where that pays: on SME2, SME2_TAIL_MIN or more
-/// (5 after the groups of sixteen) make one more group; on NEON, three
-/// left over after the groups of four make one more. The spare lanes point at the last message again
-/// (no bytes move; the kernel computes every lane anyway) and their
-/// digests are dropped. One or two left over run the integer kernel.
+/// [`hash_run`] for messages of 2 to 16 whole blocks (N), on one of four
+/// plans:
+///
+/// - SME2, SME2_TAIL_MIN or more messages in all (below sixteen) or
+///   SME2_TAIL_MIN_AFTER_GROUPS or more past the groups of sixteen: whole
+///   groups, the last one padded, its spare lanes pointing at the last
+///   message again (no bytes move; the kernel computes every lane anyway
+///   and stores the real ones alone).
+/// - SME2 with fewer left over past the groups: those on the integer +
+///   NEON plans first, then the groups (NEON work right after the SME2
+///   kernels runs in the SME unit's slow state on the VM: 17 x 256 B, 68
+///   ns per message after, 44 before).
+/// - The integer + NEON plans (no SME2, or fewer messages): all at once.
+/// - The C NEON kernel (no SHA-3 extension): four at a time, a fourth,
+///   spare lane for three left over, the integer kernel for one or two.
 #[inline(never)]
 fn hash_blocks<const N: usize>(messages: &[u8], outputs: &mut [[u8; OUT_LEN]], platform: Platform) {
     const GROUP: usize = 16;
     let count = outputs.len();
-    // The messages the platform call takes (`vector`), and the lanes it
-    // runs them in (`lanes`, at least `vector`).
-    let (vector, lanes) = if cfg!(blake3_sme2) && platform_is_sme2(platform) && count % GROUP >= if count > GROUP { SME2_TAIL_MIN_AFTER_GROUPS } else { SME2_TAIL_MIN } {
-        (count, count.next_multiple_of(GROUP))
-    } else if cfg!(blake3_neon_hybrid) {
-        // The kernel for 2 to 16 blocks takes four messages at a time and
-        // hashes any left over one by one in portable code; the
-        // one-message integer kernel is faster for one or two of them
-        // (256 B, VM: 2 messages took 7% longer than a loop of hash()),
-        // and a fourth, spare lane for three.
-        match count % 4 {
-            3 => (count, count + 1),
-            r => (count - r, count - r),
-        }
+    let sme2 = platform_is_sme2(platform);
+    let left = count % GROUP;
+    // `lanes`: the table's length (the messages, and spare lanes after
+    // them); `first`: messages at the end hashed on NEON before the rest;
+    // `scalar`: messages at the end hashed one at a time.
+    let (lanes, first, scalar) = if sme2 && left >= if count > GROUP { SME2_TAIL_MIN_AFTER_GROUPS } else { SME2_TAIL_MIN } {
+        (count.next_multiple_of(GROUP), 0, 0)
+    } else if sme2 && count > GROUP {
+        (count, left, 0)
+    } else if neon_plans() || !cfg!(blake3_neon_hybrid) {
+        (count, 0, 0)
     } else {
-        (count, count)
+        // The C kernel for 2 to 16 blocks takes four messages at a time and
+        // hashes any left over one by one in portable code; the one-message
+        // integer kernel is faster for one or two of them (256 B, VM: 2
+        // messages took 7% longer than a loop of hash()), and a fourth,
+        // spare lane for three.
+        match count % 4 {
+            3 => (count + 1, 0, 0),
+            r => (count - r, 0, r),
+        }
     };
+    let vector = count - scalar;
     let (vector_outputs, rest) = outputs.split_at_mut(vector);
     for (output, message) in rest.iter_mut().zip(messages[vector * N..].chunks_exact(N)) {
         *output = *crate::hash_serial_on(message, IV, 0, platform).as_bytes();
@@ -139,17 +154,22 @@ fn hash_blocks<const N: usize>(messages: &[u8], outputs: &mut [[u8; OUT_LEN]], p
     let filled: &[&[u8; N]] = unsafe { core::slice::from_raw_parts(table.as_ptr() as *const &[u8; N], lanes) };
     let (flags, start, end) = (0, CHUNK_START, CHUNK_END | ROOT);
     #[cfg(blake3_sme2)]
-    if lanes != vector && platform_is_sme2(platform) && lanes % GROUP == 0 {
+    if sme2 && lanes > vector {
         // Sound: platform_is_sme2 means detect() found SME2 with 512-bit
         // streaming vectors.
         unsafe { crate::sme2::hash_messages::<N>(filled, IV, flags, start, end, vector_outputs.as_flattened_mut()) };
         return;
     }
-    if lanes == vector {
-        platform.hash_many::<N>(filled, IV, 0, IncrementCounter::No, flags, start, end, vector_outputs.as_flattened_mut());
-    } else {
+    if lanes > vector {
         hash_padded(filled, flags, start, end, vector_outputs, platform);
+        return;
     }
+    let (groups, tail) = vector_outputs.split_at_mut(vector - first);
+    if first > 0 {
+        #[cfg(blake3_neon)]
+        Platform::neon().expect("NEON beside SME2").hash_many::<N>(&filled[vector - first..], IV, 0, IncrementCounter::No, flags, start, end, tail.as_flattened_mut());
+    }
+    platform.hash_many::<N>(&filled[..vector - first], IV, 0, IncrementCounter::No, flags, start, end, groups.as_flattened_mut());
 }
 
 /// `platform.hash_many` of `lanes` (the spare ones last) into a scratch
@@ -164,6 +184,16 @@ fn hash_padded<const N: usize>(lanes: &[&[u8; N]], flags: u8, start: u8, end: u8
     platform.hash_many::<N>(&lanes[rest..], IV, 0, IncrementCounter::No, flags, start, end, spare.as_flattened_mut());
     let left = outputs.len() - rest;
     outputs[rest..].copy_from_slice(&spare[..left]);
+}
+
+/// Whether this CPU runs the integer + NEON kernels (hash_many's plans for
+/// messages of whole blocks at one counter).
+#[inline(always)]
+fn neon_plans() -> bool {
+    #[cfg(blake3_neon_hybrid)]
+    return crate::neon_hybrid::sha3_detected();
+    #[cfg(not(blake3_neon_hybrid))]
+    false
 }
 
 #[inline(always)]

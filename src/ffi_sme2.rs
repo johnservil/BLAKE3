@@ -183,7 +183,7 @@ pub unsafe fn hash_many<const N: usize>(
         // path there, for the shapes they cover (whole chunks, one-block
         // parents). They need the SHA-3 extension; the C kernel, which takes
         // every shape, is the fallback.
-        let hybrid_shape = (N == CHUNK_LEN && increment_counter.yes()) || (N == BLOCK_LEN && !increment_counter.yes());
+        let hybrid_shape = crate::neon_hybrid::covers(N, increment_counter);
         if hybrid_shape && crate::neon_hybrid::sha3_detected() {
             unsafe {
                 crate::neon_hybrid::hash_many(

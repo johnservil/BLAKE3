@@ -660,9 +660,18 @@ unsafe fn run_plan(
     }
 }
 
+/// Whether [`hash_many`] takes inputs of N bytes: whole chunks at
+/// incrementing counters, or 1 to 16 whole blocks at one counter (parents,
+/// and separate messages of whole blocks; the parent kernels run any
+/// block count).
+pub fn covers(n: usize, increment_counter: IncrementCounter) -> bool {
+    (n == CHUNK_LEN && increment_counter.yes()) || (!increment_counter.yes() && n % BLOCK_LEN == 0 && (BLOCK_LEN..=CHUNK_LEN).contains(&n))
+}
+
 /// `hash_many` for whole chunks (`N == CHUNK_LEN`, counter incrementing)
-/// and for parent blocks (`N == BLOCK_LEN`, counter fixed). Other shapes
-/// are not produced by this crate and stop the program.
+/// on the chunk plans, and for inputs of 1 to 16 whole blocks at one
+/// counter (parents, separate messages) on the parent plans. Other shapes
+/// ([`covers`] false) are not produced by this crate and stop the program.
 ///
 /// Unsafe because the CPU must have NEON and the SHA-3 extension.
 pub unsafe fn hash_many<const N: usize>(
@@ -679,7 +688,7 @@ pub unsafe fn hash_many<const N: usize>(
     let (plans, kernels, counter_step): (&[&[usize]; 17], &[Option<Kernel>], u64) =
         match (N, increment_counter.yes()) {
             (CHUNK_LEN, true) => (&CHUNK_PLANS, &CHUNK_KERNELS, 1),
-            (BLOCK_LEN, false) => (&PARENT_PLANS, &PARENT_KERNELS, 0),
+            _ if covers(N, increment_counter) => (&PARENT_PLANS, &PARENT_KERNELS, 0),
             _ => panic!(
                 "hash_many shape the NEON kernels do not cover: N = {N}, increment = {}",
                 increment_counter.yes()

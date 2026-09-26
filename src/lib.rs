@@ -1409,11 +1409,11 @@ pub fn kernel_report_many(message_len: usize) -> KernelReport {
             name: "integer code, one message per call",
             why: "A single message runs the same one-call integer code as one input.",
         });
-        if blocks == 1 && neon_hybrid::sha3_detected() {
+        if neon_hybrid::sha3_detected() {
             kernels.push(Kernel {
-                from_len: 2 * BLOCK_LEN,
+                from_len: 2 * message_len,
                 name: "integer and NEON code, up to nine messages at a time",
-                why: "Two or more one-block messages are hashed together, up to eight on the NEON vector units and one on the integer units at once; on SME2 this handles the messages left over below a group of sixteen.",
+                why: "Two or more messages are hashed together, up to eight on the NEON vector units and one on the integer units at once; on SME2 this handles the messages left over below a group of sixteen.",
             });
         } else {
             kernels.push(Kernel {
@@ -1423,11 +1423,21 @@ pub fn kernel_report_many(message_len: usize) -> KernelReport {
             });
         }
         #[cfg(blake3_sme2)]
-        if matches!(platform, Platform::SME2) {
+        if matches!(platform, Platform::SME2) && blocks == 1 {
             kernels.push(Kernel {
                 from_len: sme2::GROUP * message_len,
                 name: "SME2, sixteen messages at a time",
                 why: "Sixteen messages fill the SME2 matrix unit's vectors, one message per lane; fewer than sixteen left over go to the NEON code.",
+            });
+        }
+        #[cfg(blake3_sme2)]
+        const _: () = assert!(many::SME2_TAIL_MIN == 10 && many::SME2_TAIL_MIN_AFTER_GROUPS == 6, "the words below name these counts");
+        #[cfg(blake3_sme2)]
+        if matches!(platform, Platform::SME2) && blocks > 1 {
+            kernels.push(Kernel {
+                from_len: many::SME2_TAIL_MIN * message_len,
+                name: "SME2, sixteen messages at a time",
+                why: "From ten messages, groups of sixteen fill the SME2 matrix unit's vectors, one message per lane, the last group's spare lanes repeating a message; up to five left over past whole groups go to the NEON code.",
             });
         }
     }

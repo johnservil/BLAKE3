@@ -21,8 +21,7 @@ pub unsafe fn hash_many<const N: usize>(
     // 32-bit ARM and for cores without `xar`.
     #[cfg(blake3_neon_hybrid)]
     {
-        let shape_covered = (N == crate::CHUNK_LEN && increment_counter.yes())
-            || (N == BLOCK_LEN && !increment_counter.yes());
+        let shape_covered = crate::neon_hybrid::covers(N, increment_counter);
         if shape_covered && crate::neon_hybrid::sha3_detected() {
             unsafe {
                 crate::neon_hybrid::hash_many(
