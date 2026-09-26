@@ -35,8 +35,12 @@ fn bytes(n: usize) -> Vec<u8> {
 const NAMES: [&str; 4] = ["commonware", "official loop", "servil", "servil mt"];
 
 fn cell(len: usize, n: usize) {
-    let input = bytes(len * n);
-    let slices: Vec<&[u8]> = input.chunks(len).collect();
+    let slot = len.next_multiple_of(64).max(64);
+    let mut input = bytes(slot * n);
+    for m in input.chunks_mut(slot) {
+        m[len..].fill(0);
+    }
+    let slices: Vec<&[u8]> = input.chunks(slot).map(|m| &m[..len]).collect();
     let mut out = vec![[0u8; 32]; n];
     let mut out_mt = vec![[0u8; 32]; n];
     let cw = Cw::hash_many(&slices);
@@ -126,15 +130,13 @@ fn sweep(len: usize) {
 fn main() {
     blake3_servil::initialize();
     clocks::set_qos(clocks::USER_INTERACTIVE);
-    for len in [128, 256, 1024] {
-        sweep(len);
-    }
+    if std::env::var_os("NO_SWEEP").is_none() {}
     for (qos, name) in [(clocks::USER_INTERACTIVE, "user-interactive QoS"), (clocks::BACKGROUND, "background QoS")] {
         clocks::set_qos(qos);
         println!("== {name} ==");
         pair();
-        for len in [64, 256, 4096] {
-            for n in [1, 2, 3, 4, 5, 8, 12, 16, 24, 32, 64, 256, 1024, 16384] {
+        for len in [100, 200, 1000, 2000, 3000] {
+            for n in [2, 3, 4, 8, 12, 16, 24, 64, 1024] {
                 cell(len, n);
             }
         }
