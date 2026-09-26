@@ -1,0 +1,1 @@
+Gate for 4382955 (candidate/pypy-docs), September 26, 2026: documentation only; code is f38786d's. VM perf_regress compare servil (5a783bc) against it: no regression. Mac job 325: no regression.
