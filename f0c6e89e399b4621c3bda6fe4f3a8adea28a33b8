@@ -1,0 +1,1 @@
+Gate for f0c6e89 (candidate/one-chart: one speed chart, in cores): docs and tools only, src identical to 01bc76e. VM: perf_regress compare servil candidate: no regression. Mac: runner job 303, perf_regress compare: no regression.
