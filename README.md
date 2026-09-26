@@ -67,7 +67,7 @@ BLAKE3 is a cryptographic hash function that is:
 
 The charts below compare BLAKE3 with the fastest SHA-256, SHA3-256, and SHA-1 on an Apple M4
 Max, where SHA-256 runs on the CPU's SHA-256 instructions: one 16 KiB input on one thread, then
-one 1 MiB input, which BLAKE3 spreads over every core. They come from a
+one 1 MiB input, which BLAKE3 spreads over every core, on one scale. They come from a
 [bench-hashes](https://github.com/johnservil/bench-hashes) record, drawn by
 `tools/speed_chart.py`. For the original benchmarks and the design, see the
 [BLAKE3 paper](https://github.com/BLAKE3-team/BLAKE3-specs/blob/master/blake3.pdf).
