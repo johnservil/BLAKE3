@@ -176,7 +176,7 @@ fn hash_run<const N: usize>(messages: &[u8], outputs: &mut [[u8; OUT_LEN]], plat
 /// the plans.
 pub(crate) const ONE_BLOCK_PAD_MIN: usize = 11;
 #[cfg_attr(not(blake3_sme2), allow(dead_code))]
-pub(crate) const ONE_BLOCK_PAD_AFTER_GROUPS: usize = 13;
+pub(crate) const ONE_BLOCK_PAD_AFTER_GROUPS: usize = 5;
 
 /// One-block messages on SME2 in whole groups of sixteen on the message
 /// kernel, the last group padded (its spare lanes pointing at the last
