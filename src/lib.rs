@@ -1256,7 +1256,7 @@ fn hash_serial_on(input: &[u8], key: &CVWords, flags: u8, platform: Platform) ->
 /// assert_eq!(hashes[3], *blake3_servil::hash(&leaves[3 * 256..4 * 256]).as_bytes());
 /// ```
 pub fn hash_many(input: &[u8], message_len: usize, out: &mut [[u8; OUT_LEN]]) {
-    let turn = platform::Sme2Turn::take(Platform::detect(), out.len() >= SME2_SIZED_BATCH);
+    let turn = platform::Sme2Turn::take(Platform::detect(), many::sme2_sized(message_len, out.len()));
     many::hash_many_on(input, message_len, out, turn.platform());
 }
 

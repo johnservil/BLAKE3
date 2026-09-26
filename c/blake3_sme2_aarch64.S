@@ -33,6 +33,10 @@
  *     bits  0..7   flags        applied to every block
  *     bits  8..15  flags_start  also applied to block 0 of each chunk
  *     bits 16..23  flags_end    also applied to block 15 of each chunk
+ *     bits 24..31  lanes of the last group whose chaining values are
+ *                  stored, 1 to 15; 0 stores all sixteen (the message
+ *                  kernel's padded last group: its spare lanes' values
+ *                  are never written)
  *
  * Return value:
  *     streaming vector length in 32-bit lanes;
@@ -613,8 +617,24 @@ blake3_sme2_hash16_messages_512:
     mov     za1v.s[w13, 0:3], { z4.s - z7.s }
 
     /*
-     * Each horizontal ZA1 row is now one contiguous eight-word CV.
+     * Each horizontal ZA1 row is now one contiguous eight-word CV. The
+     * last group stores only its first w3 >> 24 rows when that is not 0.
      */
+    cmp     x5, #1
+    b.ne    .Lstore_all
+    lsr     w8, w3, #24
+    cbz     w8, .Lstore_all
+    mov     x9, x4
+.Lstore_some:
+    st1w    { za1h.s[w12, 0] }, p2, [x9]
+    add     x9, x9, #32
+    add     w12, w12, #1
+    cmp     w12, w8
+    b.lo    .Lstore_some
+    mov     w12, #0
+    b       .Lstored
+
+.Lstore_all:
     STORE_OUTPUT   0, w12, 0
     STORE_OUTPUT  32, w12, 1
     STORE_OUTPUT  64, w12, 2
@@ -635,6 +655,7 @@ blake3_sme2_hash16_messages_512:
     STORE_OUTPUT 448, w15, 2
     STORE_OUTPUT 480, w15, 3
 
+.Lstored:
     /*
      * Advance to the next group of sixteen chunks.
      */
