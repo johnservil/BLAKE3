@@ -103,8 +103,32 @@ fn pair() {
     println!("pair of 64 B messages, ns per pair: commonware hash_pair ({}), servil hash_many of 2 ({})", cw.show(), sv.show());
 }
 
+/// servil's hash_many alone at every count to 40 and a few beyond: the
+/// median of 21 batches of about 1 ms, ns per message (cycles per ns).
+fn sweep(len: usize) {
+    let mut line = format!("sweep {len:>4} B:");
+    for n in (1..=40).chain([53, 100, 127, 128]) {
+        let input = bytes(len * n);
+        let mut out = vec![[0u8; 32]; n];
+        let m = clocks::measure(21, 1000, || {
+            blake3_servil::hash_many(black_box(&input), len, &mut out);
+            black_box(&out);
+        })
+        .median();
+        line += &format!(" {n}:{:.1}", m.ns / n as f64);
+        if m.has_cycles() {
+            line += &format!("({:.2})", m.per_ns());
+        }
+    }
+    println!("{line}");
+}
+
 fn main() {
     blake3_servil::initialize();
+    clocks::set_qos(clocks::USER_INTERACTIVE);
+    for len in [128, 256, 1024] {
+        sweep(len);
+    }
     for (qos, name) in [(clocks::USER_INTERACTIVE, "user-interactive QoS"), (clocks::BACKGROUND, "background QoS")] {
         clocks::set_qos(qos);
         println!("== {name} ==");
