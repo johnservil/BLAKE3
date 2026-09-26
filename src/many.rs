@@ -134,6 +134,54 @@ fn hash_run<const N: usize>(inputs: &[&[u8]], outputs: &mut [Hash], platform: Pl
     platform.hash_many::<N>(filled, IV, 0, IncrementCounter::No, 0, CHUNK_START, CHUNK_END | ROOT, hashes_as_bytes_mut(outputs));
 }
 
+/// `outputs[i] = hash(input[i * len..][..len])` for every message, on
+/// `platform`: messages of 1 to 16 whole blocks go to the platform's
+/// hash_many TABLE at a time, others through the one-message path.
+/// Requires `input.len() == len * outputs.len()`.
+pub(crate) fn hash_many_equal_on(input: &[u8], len: usize, outputs: &mut [Hash], platform: Platform) {
+    assert_eq!(Some(input.len()), len.checked_mul(outputs.len()), "input holds exactly one message of the length per output");
+    if outputs.len() < 2 || len == 0 || len > CHUNK_LEN || len % BLOCK_LEN != 0 {
+        for (i, output) in outputs.iter_mut().enumerate() {
+            *output = crate::hash_serial_on(&input[i * len..][..len], IV, 0, platform);
+        }
+        return;
+    }
+    for (messages, digests) in input.chunks(len * TABLE).zip(outputs.chunks_mut(TABLE)) {
+        match len / BLOCK_LEN {
+            1 => hash_equal_run::<{ BLOCK_LEN }>(messages, digests, platform),
+            2 => hash_equal_run::<{ 2 * BLOCK_LEN }>(messages, digests, platform),
+            3 => hash_equal_run::<{ 3 * BLOCK_LEN }>(messages, digests, platform),
+            4 => hash_equal_run::<{ 4 * BLOCK_LEN }>(messages, digests, platform),
+            5 => hash_equal_run::<{ 5 * BLOCK_LEN }>(messages, digests, platform),
+            6 => hash_equal_run::<{ 6 * BLOCK_LEN }>(messages, digests, platform),
+            7 => hash_equal_run::<{ 7 * BLOCK_LEN }>(messages, digests, platform),
+            8 => hash_equal_run::<{ 8 * BLOCK_LEN }>(messages, digests, platform),
+            9 => hash_equal_run::<{ 9 * BLOCK_LEN }>(messages, digests, platform),
+            10 => hash_equal_run::<{ 10 * BLOCK_LEN }>(messages, digests, platform),
+            11 => hash_equal_run::<{ 11 * BLOCK_LEN }>(messages, digests, platform),
+            12 => hash_equal_run::<{ 12 * BLOCK_LEN }>(messages, digests, platform),
+            13 => hash_equal_run::<{ 13 * BLOCK_LEN }>(messages, digests, platform),
+            14 => hash_equal_run::<{ 14 * BLOCK_LEN }>(messages, digests, platform),
+            15 => hash_equal_run::<{ 15 * BLOCK_LEN }>(messages, digests, platform),
+            16 => hash_equal_run::<{ 16 * BLOCK_LEN }>(messages, digests, platform),
+            _ => unreachable!("messages of 1 to 16 whole blocks"),
+        }
+    }
+}
+
+/// Up to TABLE messages of N bytes, back to back in `messages`: each one's
+/// hash, in one platform call.
+fn hash_equal_run<const N: usize>(messages: &[u8], outputs: &mut [Hash], platform: Platform) {
+    let mut table: [core::mem::MaybeUninit<&[u8; N]>; TABLE] = [core::mem::MaybeUninit::uninit(); TABLE];
+    for (slot, message) in table[..outputs.len()].iter_mut().zip(messages.chunks_exact(N)) {
+        slot.write(message.try_into().expect("messages of N bytes"));
+    }
+    // Sound: the first outputs.len() slots were written just above.
+    let filled: &[&[u8; N]] = unsafe { core::slice::from_raw_parts(table.as_ptr() as *const &[u8; N], outputs.len()) };
+    let (flags, start, end) = if N == BLOCK_LEN { (CHUNK_START | CHUNK_END | ROOT, 0, 0) } else { (0, CHUNK_START, CHUNK_END | ROOT) };
+    platform.hash_many::<N>(filled, IV, 0, IncrementCounter::No, flags, start, end, hashes_as_bytes_mut(outputs));
+}
+
 /// The digests as one byte slice, for the kernels to write into. Sound:
 /// `Hash` is `repr(transparent)` over `[u8; OUT_LEN]`.
 pub(crate) fn hashes_as_bytes_mut(hashes: &mut [Hash]) -> &mut [u8] {
@@ -182,6 +230,34 @@ mod test {
             }
         }
         check(&[256, 256, 256, 64, 64, 256, 1024, 1024, 128, 128, 128, 192, 1024, 65, 256, 256]);
+    }
+
+    /// hash_many_equal at every length a batch can take, whole blocks or
+    /// not, and counts around the SME2 groups and TABLE, against hash().
+    #[test]
+    fn test_hash_many_equal() {
+        for len in [0, 1, 63, 64, 65, 128, 191, 192, 256, 1000, 1024, 1025, 3000] {
+            for count in [0, 1, 2, 15, 16, 17, 127, 128, 129, 300] {
+                let input = message(len * count, len as u64);
+                let mut out = vec![[0u8; OUT_LEN]; count];
+                crate::hash_many_equal(&input, len, &mut out);
+                for (i, digest) in out.iter().enumerate() {
+                    assert_eq!(*digest, *crate::hash(&input[i * len..][..len]).as_bytes(), "message {i} of {count}, {len} bytes");
+                }
+                #[cfg(feature = "std")]
+                {
+                    let mut mt = vec![[0u8; OUT_LEN]; count];
+                    crate::hash_many_equal_multithreaded(&input, len, &mut mt);
+                    assert_eq!(mt, out, "multithreaded, {count} messages of {len} bytes");
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "exactly one message of the length per output")]
+    fn test_hash_many_equal_needs_the_input_it_names() {
+        crate::hash_many_equal(&[0u8; 100], 64, &mut [[0u8; OUT_LEN]; 2]);
     }
 
     #[test]

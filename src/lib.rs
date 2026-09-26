@@ -1234,6 +1234,41 @@ fn hash_serial_on(input: &[u8], key: &CVWords, flags: u8, platform: Platform) ->
     hash_all_at_once::<join::SerialJoin>(input, key, 0, flags, platform).root_hash()
 }
 
+/// Many messages of one length, stored back to back: `out[i]` becomes the
+/// [`hash`] of `input[i * message_len..][..message_len]`. `input` holds
+/// exactly `out.len()` messages. The shape a Merkle tree's layers take:
+/// leaves of one size, and nodes of two 32-byte children (`message_len`
+/// 64). Messages of 1 to 16 whole blocks (64 B to 1 KiB) are hashed several
+/// at a time, sixteen per group on SME2; other lengths one at a time.
+/// Always single-threaded; see [`hash_many_equal_multithreaded`].
+///
+/// ```
+/// let leaves = vec![7u8; 1000 * 256];
+/// let mut hashes = vec![[0u8; 32]; 1000];
+/// blake3_servil::hash_many_equal(&leaves, 256, &mut hashes);
+/// assert_eq!(hashes[3], *blake3_servil::hash(&leaves[3 * 256..4 * 256]).as_bytes());
+/// ```
+pub fn hash_many_equal(input: &[u8], message_len: usize, out: &mut [[u8; OUT_LEN]]) {
+    let outputs = hashes_of_arrays(out);
+    let turn = platform::Sme2Turn::take(Platform::detect(), outputs.len() >= SME2_SIZED_BATCH);
+    many::hash_many_equal_on(input, message_len, outputs, turn.platform());
+}
+
+/// [`hash_many_equal`] over this crate's worker threads, with the same
+/// results: batches of 64 KiB and more are cut into ranges of messages
+/// that the calling thread and the workers hash at once, under the rules
+/// of [`hash_many_multithreaded`].
+#[cfg(feature = "std")]
+pub fn hash_many_equal_multithreaded(input: &[u8], message_len: usize, out: &mut [[u8; OUT_LEN]]) {
+    lanes::hash_many_equal(input, message_len, hashes_of_arrays(out), usize::MAX);
+}
+
+/// The outputs as the Hash values the batch code writes. Sound: `Hash` is
+/// `repr(transparent)` over `[u8; OUT_LEN]`.
+fn hashes_of_arrays(out: &mut [[u8; OUT_LEN]]) -> &mut [Hash] {
+    unsafe { core::slice::from_raw_parts_mut(out.as_mut_ptr() as *mut Hash, out.len()) }
+}
+
 /// Many messages at once: `outputs[i]` becomes [`hash`]`(inputs[i])` for
 /// every `i`. `inputs` and `outputs` have the same length.
 ///

@@ -257,6 +257,45 @@ pub(crate) fn hash_many(inputs: &[&[u8]], outputs: &mut [Hash], max_threads: usi
     hash_many_over_pool(inputs, outputs, total, max_threads)
 }
 
+/// [`crate::hash_many_equal`] over the machine's threads, at most
+/// `max_threads` holding a range at once (the caller's included; at least
+/// 1): below MIN_SPLIT_LEN of input, or with one message, on this thread.
+pub(crate) fn hash_many_equal(input: &[u8], message_len: usize, outputs: &mut [Hash], max_threads: usize) {
+    assert!(max_threads >= 1, "a hash needs at least the calling thread");
+    assert_eq!(Some(input.len()), message_len.checked_mul(outputs.len()), "input holds exactly one message of the length per output");
+    let serial = |input: &[u8], outputs: &mut [Hash]| {
+        let turn = crate::platform::Sme2Turn::take(Platform::detect(), outputs.len() >= crate::SME2_SIZED_BATCH);
+        crate::many::hash_many_equal_on(input, message_len, outputs, turn.platform());
+    };
+    if max_threads == 1 || outputs.len() < 2 || input.len() < MIN_SPLIT_LEN {
+        return serial(input, outputs);
+    }
+    let pool = pool();
+    let callers = pool.callers.fetch_add(1, Ordering::SeqCst) + 1;
+    let _caller = Caller(&pool.callers);
+    if callers >= pool.cpus {
+        return serial(input, outputs);
+    }
+    let pieces = cut_equal(outputs.len(), message_len, pool.cpus.min(max_threads));
+    let work = Work::Equal { input, message_len, pieces: &pieces, outputs: outputs.as_mut_ptr() };
+    pool.run_job(work, pieces.len(), 0, pool_platform(), max_threads);
+}
+
+/// Cut `count` messages of `message_len` bytes into ranges for `threads`
+/// threads, as cut_messages does: each range holds about next_piece_len
+/// of the bytes that remain, at least one message.
+fn cut_equal(count: usize, message_len: usize, threads: usize) -> Vec<Piece> {
+    let mut pieces = Vec::with_capacity(64);
+    let mut start = 0;
+    while start < count {
+        let remaining = (count - start) * message_len.max(1);
+        let take = (next_piece_len(remaining, threads) / message_len.max(1)).clamp(1, count - start);
+        pieces.push(Piece { offset: start, len: take });
+        start += take;
+    }
+    pieces
+}
+
 #[inline(never)]
 fn hash_many_over_pool(inputs: &[&[u8]], outputs: &mut [Hash], total: usize, max_threads: usize) {
     let pool = pool();
@@ -326,6 +365,14 @@ enum Work<'a> {
         pieces: &'a [Piece],
         outputs: *mut Hash,
     },
+    /// Ranges of a batch of messages of one length, back to back in
+    /// `input` (`offset` and `len` count messages); one digest each.
+    Equal {
+        input: &'a [u8],
+        message_len: usize,
+        pieces: &'a [Piece],
+        outputs: *mut Hash,
+    },
 }
 
 /// An atomic counter on its own cache line: `cursor` and `active` are
@@ -373,6 +420,13 @@ impl Job<'_> {
                 // Sound: this range of outputs belongs to piece `index` alone.
                 let digests = unsafe { core::slice::from_raw_parts_mut(outputs.add(piece.offset), piece.len) };
                 crate::many::hash_many_on(messages, digests, platform);
+            }
+            Work::Equal { input, message_len, pieces, outputs } => {
+                let piece = pieces[index];
+                let messages = &input[piece.offset * message_len..][..piece.len * message_len];
+                // Sound: this range of outputs belongs to piece `index` alone.
+                let digests = unsafe { core::slice::from_raw_parts_mut(outputs.add(piece.offset), piece.len) };
+                crate::many::hash_many_equal_on(messages, *message_len, digests, platform);
             }
         }
     }
