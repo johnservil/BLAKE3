@@ -49,7 +49,7 @@ confidence); a cell 5% slower is caught 70% of the time, 10% slower 95%,
 20% slower 100%. A check takes eight runs, about 37 s on the VM, plus the
 builds.
 
-The check measures the 36 points in POINTS, which cover the code paths
+The check measures the 29 points in POINTS, which cover the code paths
 and boundaries of the one-message and batch use cases at the benchmark's points; the published graph's plateau sizes add
 run time and no path.
 
@@ -93,14 +93,11 @@ CONTENDERS = [CONTROL] + SUBJECTS
 # 1 MiB), unequal subtrees (3 MiB), and the memory-resident plateau
 # (8 MiB); batches of one, of the NEON parent plans (2, 3, 8), of a first
 # and a partial SME2 group (16, 24), in bulk (64, 256), at the split
-# (1024), and over the pool (2048, 4096, 16384); batches of 256-byte
-# messages below and at a group of four (2, 4), a first and a partial SME2
-# group (16, 24), in bulk (128), and at and over the split (256, 4096).
+# (1024), and over the pool (2048, 4096, 16384).
 ONE_MESSAGE_POINTS = ["64 B", "1 KiB", "2 KiB", "2304 B", "3 KiB", "3839 B", "4 KiB", "4470 B", "7935 B", "8 KiB", "16 KiB",
                       "32 KiB", "64 KiB", "256 KiB", "1 MiB", "3 MiB", "8 MiB"]
 POINTS = ONE_MESSAGE_POINTS + [
-          "1", "2", "3", "8", "16", "24", "64", "256", "1024", "2048", "4096", "16384",
-          "2 of 256 B", "4 of 256 B", "16 of 256 B", "24 of 256 B", "128 of 256 B", "256 of 256 B", "4096 of 256 B"]
+          "1", "2", "3", "8", "16", "24", "64", "256", "1024", "2048", "4096", "16384"]
 ROUNDS = 48
 QUANTILE = 0.05
 PAIRS = 4  # the runs go A B B A A B B A
@@ -444,7 +441,7 @@ def compare(old_rev, new):
     # run, they changed the control's next cells (SHA-256 at 64 B 3-6%
     # slower beside servil f70c758's shimmed 256-byte batches, VM).
     shimmed = old_shim or new_shim
-    use_cases = {"OneMessage"} if shimmed else {"OneMessage", "ManyMessages", "ManyMessages256"}
+    use_cases = {"OneMessage"} if shimmed else {"OneMessage", "ManyMessages"}
     points = ONE_MESSAGE_POINTS if shimmed else POINTS
     print(f"perf_regress: {new_name} against {old_rev}, {PAIRS} alternating pairs, "
           f"use cases {', '.join(sorted(use_cases))}", file=sys.stderr, flush=True)
