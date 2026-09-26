@@ -54,8 +54,8 @@ builds: one with that API under the name hash_many_equal forwards to it,
 and its batch cells are judged; one whose hash_many takes a slice of
 slices has it renamed hash_many_slices and a copying shim over it, and
 one that predates batches gets a shim hashing one message at a time. A
-comparison involving either of those last two judges the one-message
-cells alone. Batch kernel reports that take no message length are
+comparison involving either of those last two measures and judges the
+one-message cells alone. Batch kernel reports that take no message length are
 renamed and called through a shim that takes it.
 Commits that predate Stream get a shim over a Hasher on the calling
 thread (the check measures no streamed cells).
@@ -90,8 +90,9 @@ CONTENDERS = [CONTROL] + SUBJECTS
 # (1024), and over the pool (2048, 4096, 16384); batches of 256-byte
 # messages below and at a group of four (2, 4), a first and a partial SME2
 # group (16, 24), in bulk (128), and at and over the split (256, 4096).
-POINTS = ["64 B", "1 KiB", "2 KiB", "2304 B", "3 KiB", "3839 B", "4 KiB", "4470 B", "7935 B", "8 KiB", "16 KiB", "32 KiB", "64 KiB",
-          "256 KiB", "1 MiB", "3 MiB", "8 MiB",
+ONE_MESSAGE_POINTS = ["64 B", "1 KiB", "2 KiB", "2304 B", "3 KiB", "3839 B", "4 KiB", "4470 B", "7935 B", "8 KiB", "16 KiB",
+                      "32 KiB", "64 KiB", "256 KiB", "1 MiB", "3 MiB", "8 MiB"]
+POINTS = ONE_MESSAGE_POINTS + [
           "1", "2", "3", "8", "16", "24", "64", "256", "1024", "2048", "4096", "16384",
           "2 of 256 B", "4 of 256 B", "16 of 256 B", "24 of 256 B", "128 of 256 B", "256 of 256 B", "4096 of 256 B"]
 ROUNDS = 48
@@ -347,10 +348,10 @@ def commit_bench(rev):
     return str(exe), shimmed
 
 
-def run(exe):
-    """One run in a scratch directory; {"contender|scenario|use_case|point": 5th percentile}."""
+def run(exe, points):
+    """One run of `points` in a scratch directory; {"contender|scenario|use_case|point": 5th percentile}."""
     with tempfile.TemporaryDirectory() as tmp:
-        subprocess.run([exe, "--contenders", ",".join(CONTENDERS), "--points", ",".join(POINTS),
+        subprocess.run([exe, "--contenders", ",".join(CONTENDERS), "--points", ",".join(points),
                         "--rounds", str(ROUNDS)], cwd=tmp, env=ENV, check=True,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         found = list(Path(tmp).glob("benchmark-results/*/bench-hashes.samples.tsv"))
@@ -377,17 +378,17 @@ def parse(text):
     return cells
 
 
-def pairs(old, new, count, start):
+def pairs(old, new, count, start, points):
     """`count` pairs of (old run, new run); the side that runs first
     alternates, beginning with old when `start` is even."""
     out = []
     for i in range(count):
         if (start + i) % 2 == 0:
-            a = run(old)
-            b = run(new)
+            a = run(old, points)
+            b = run(new, points)
         else:
-            b = run(new)
-            a = run(old)
+            b = run(new, points)
+            a = run(old, points)
         out.append((a, b))
         print(f"perf_regress: pair {start + i + 1} done", file=sys.stderr, flush=True)
     return out
@@ -421,10 +422,15 @@ def compare(old_rev, new):
         new_exe, new_shim, new_name = build_bench(ROOT / "bench-hashes"), False, "the working tree"
     else:
         (new_exe, new_shim), new_name = commit_bench(new), new
-    use_cases = {"OneMessage"} if (old_shim or new_shim) else {"OneMessage", "ManyMessages", "ManyMessages256"}
+    # A shimmed side's batch cells are not judged, so they are not run:
+    # run, they changed the control's next cells (SHA-256 at 64 B 3-6%
+    # slower beside servil f70c758's shimmed 256-byte batches, VM).
+    shimmed = old_shim or new_shim
+    use_cases = {"OneMessage"} if shimmed else {"OneMessage", "ManyMessages", "ManyMessages256"}
+    points = ONE_MESSAGE_POINTS if shimmed else POINTS
     print(f"perf_regress: {new_name} against {old_rev}, {PAIRS} alternating pairs, "
           f"use cases {', '.join(sorted(use_cases))}", file=sys.stderr, flush=True)
-    measured = pairs(old, new_exe, PAIRS, 0)
+    measured = pairs(old, new_exe, PAIRS, 0, points)
 
     def unreliable(measured):
         control = judge(measured, use_cases, [CONTROL])
@@ -445,7 +451,7 @@ def compare(old_rev, new):
     if slower:
         print(f"perf_regress: {len(slower)} cells slower in {PAIRS} pairs; {PAIRS} more pairs must agree",
               file=sys.stderr, flush=True)
-        more = pairs(old, new_exe, PAIRS, PAIRS)
+        more = pairs(old, new_exe, PAIRS, PAIRS, points)
         if unreliable(more):
             return 2
         slower2, _, ratio2, _ = judge(more, use_cases, SUBJECTS)
