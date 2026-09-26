@@ -1,0 +1,1 @@
+Gate for 5a783bc (candidate/fast-perf-regress), September 26, 2026: tools and docs only, the code is f38786d's (its suites passed, VM and Mac job 319). VM: the new perf_regress, check against f38786d, no regression (17 s with no builds). Mac: perf_regress compare f38786d 5a783bc, job 324, no regression (38 s with clones and builds; job 318 took 104 s).
