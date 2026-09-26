@@ -239,10 +239,14 @@ PATCH = 'patch."https://github.com/johnservil/BLAKE3".blake3-servil.path=".."'
 
 def patched_cargo(bench, *args):
     """cargo ARGS in `bench`, with the fork patched to `bench/..`; its stdout.
-    Cargo.lock is left as it was."""
+    Cargo applies a patch only when its version matches the one locked, and
+    otherwise warns and builds the locked commit, so the lock first takes
+    the patched checkout's version (`cargo update -p blake3-servil` under
+    the patch). Cargo.lock is left as it was."""
     lock = bench / "Cargo.lock"
     saved = lock.read_bytes()
     try:
+        subprocess.run(["cargo", "--config", PATCH, "update", "--quiet", "-p", "blake3-servil"], cwd=bench, env=ENV, check=True)
         return subprocess.run(["cargo", "--config", PATCH, *args], cwd=bench, env=ENV, check=True,
                               stdout=subprocess.PIPE, text=True).stdout
     finally:
@@ -254,7 +258,14 @@ def build_bench(bench):
     (target-cpu=native) applies, against the fork checkout enclosing it, and
     return the executable's path."""
     out = patched_cargo(bench, "build", "--release", "--message-format=json-render-diagnostics")
-    exes = [m["executable"] for m in map(json.loads, out.splitlines())
+    messages = [json.loads(line) for line in out.splitlines()]
+    # The fork must come from the patched checkout, never the locked commit.
+    sources = {m["package_id"] for m in messages
+               if m.get("reason") == "compiler-artifact" and m["target"]["name"] == "blake3_servil"}
+    fork = f"path+file://{bench.resolve().parent}"
+    assert sources and all(s.startswith(fork + "#") for s in sources), \
+        f"bench-hashes built blake3-servil from {sources}, not the checkout {fork}"
+    exes = [m["executable"] for m in messages
             if m.get("reason") == "compiler-artifact" and m.get("executable")
             and m["target"]["name"] == "bench-hashes"]
     assert len(exes) == 1, f"expected the bench-hashes executable, found {exes}"

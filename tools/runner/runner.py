@@ -137,9 +137,18 @@ def benchmark(job, run, work, out):
         args += ["--trace-clocks", str(out / "trace.csv")]
     fork = run.checkouts(work, hex_commit(job, "fork_commit"), hex_commit(job, "bench_commit"))
     bench = fork / "bench-hashes"
-    messages = run.run(["cargo", "--config", PATCH, "build", "--release", "--message-format=json-render-diagnostics"],
-                       cwd=bench, capture=True)
-    exes = [m["executable"] for m in map(json.loads, messages.splitlines())
+    # Cargo applies the patch only when its version matches the locked one
+    # (otherwise it warns and builds the locked commit): lock the clone's
+    # version first, and check the build's source below.
+    run.run(["cargo", "--config", PATCH, "update", "--quiet", "-p", "blake3-servil"], cwd=bench)
+    messages = [json.loads(line) for line in run.run(
+        ["cargo", "--config", PATCH, "build", "--release", "--message-format=json-render-diagnostics"],
+        cwd=bench, capture=True).splitlines()]
+    sources = {m["package_id"] for m in messages
+               if m.get("reason") == "compiler-artifact" and m["target"]["name"] == "blake3_servil"}
+    assert sources and all(s.startswith(f"path+file://{fork.resolve()}#") for s in sources), \
+        f"bench-hashes built blake3-servil from {sources}, not the clone at {job['fork_commit']}"
+    exes = [m["executable"] for m in messages
             if m.get("reason") == "compiler-artifact" and m.get("executable")
             and m["target"]["name"] == "bench-hashes"]
     assert len(exes) == 1, f"expected the bench-hashes executable, found {exes}"
