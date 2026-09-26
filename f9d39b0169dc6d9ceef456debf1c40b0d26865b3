@@ -1,0 +1,1 @@
+Gate for f9d39b0 (candidate/bench-trim: perf_regress and the runner follow bench-hashes 06c40b4, without 256-byte batches, ab-blake3, commonware): tools only. VM: perf_regress compare servil candidate: no regression. Mac: runner job 313: no regression.
