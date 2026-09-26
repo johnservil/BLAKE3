@@ -1114,6 +1114,18 @@ fn test_kernel_reports() {
     for kernel in &multi.kernels {
         assert!(!kernel.name.is_empty() && !kernel.why.is_empty());
     }
+    // The batch reports, for every message length a batch can take: the
+    // same shape, the split last, where a batch may leave the calling thread.
+    for message_len in [0, 1, 63, 64, 65, 128, 256, 1000, 1024, 1025, 40_000] {
+        let many = crate::kernel_report_many(message_len);
+        let many_multi = crate::kernel_report_many_multithreaded(message_len);
+        assert_eq!(many.kernels[0].from_len, 0, "{message_len}-byte messages");
+        assert!(many.kernels.windows(2).all(|pair| pair[0].from_len < pair[1].from_len), "{message_len}-byte messages");
+        assert_eq!(&many_multi.kernels[..many.kernels.len()], &many.kernels[..]);
+        assert_eq!(many_multi.kernels.len(), many.kernels.len() + 1);
+        assert!(many_multi.kernels.last().unwrap().from_len > many.kernels.last().unwrap().from_len);
+        assert!(many_multi.kernels.last().unwrap().from_len >= crate::lanes::MIN_SPLIT_LEN);
+    }
 }
 
 /// Every length from one whole chunk and a byte to seventeen chunks,

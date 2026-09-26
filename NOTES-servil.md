@@ -55,7 +55,15 @@ generator, check that existing kernels stay byte-identical unless meant.
   messages level, 256-16384 5-30% faster single-threaded and 5-46%
   multithreaded (no pointer table to build from the caller's slices).
   `many::hash_run` stays `#[inline(never)]`: inlined for all sixteen
-  lengths, two-message batches took 30% longer.
+  lengths, two-message batches took 30% longer. For 2-16 blocks the C
+  NEON kernel takes four at a time and hashed the rest in portable code;
+  messages past the last group of four now run c1 (256 B, VM: 2-3
+  messages from 7% slower than a loop of `hash()` to level, 4-15 5-11%
+  faster). 256 B, VM, ns/msg: 1-3 185 (the loop's), 4-12 97, 16 and up
+  39, mt 8192 9.9; the official crate's hidden `Platform::hash_many` 16
+  per call 93-96. Open: 17-31 messages pay about 400 ns beyond their
+  kernels for the NEON remainder after the SME2 group (24: 75 ns/msg),
+  the SME2 remainder problem again.
 - `hash_multithreaded()`: below 64 KiB, `hash()`'s path; from 64 KiB the
   pool on NEON only. Batches: under 64 KiB in all the serial path; else
   the pool in ranges of messages, NEON only.

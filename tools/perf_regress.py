@@ -44,8 +44,8 @@ confidence); a cell 5% slower is caught 70% of the time, 10% slower 95%,
 20% slower 100%. A check takes eight runs, about 37 s on the VM, plus the
 builds.
 
-The check measures the 29 points in POINTS, which cover the code paths
-and boundaries of both use cases at the benchmark's points; the published graph's plateau sizes add
+The check measures the 36 points in POINTS, which cover the code paths
+and boundaries of the one-message and batch use cases at the benchmark's points; the published graph's plateau sizes add
 run time and no path.
 
 The benchmark calls the batch API that takes one buffer of equal messages
@@ -55,7 +55,8 @@ and its batch cells are judged; one whose hash_many takes a slice of
 slices has it renamed hash_many_slices and a copying shim over it, and
 one that predates batches gets a shim hashing one message at a time. A
 comparison involving either of those last two judges the one-message
-cells alone.
+cells alone. Batch kernel reports that take no message length are
+renamed and called through a shim that takes it.
 Commits that predate Stream get a shim over a Hasher on the calling
 thread (the check measures no streamed cells).
 """
@@ -86,10 +87,13 @@ CONTENDERS = [CONTROL] + SUBJECTS
 # 1 MiB), unequal subtrees (3 MiB), and the memory-resident plateau
 # (8 MiB); batches of one, of the NEON parent plans (2, 3, 8), of a first
 # and a partial SME2 group (16, 24), in bulk (64, 256), at the split
-# (1024), and over the pool (2048, 4096, 16384).
+# (1024), and over the pool (2048, 4096, 16384); batches of 256-byte
+# messages below and at a group of four (2, 4), a first and a partial SME2
+# group (16, 24), in bulk (128), and at and over the split (256, 4096).
 POINTS = ["64 B", "1 KiB", "2 KiB", "2304 B", "3 KiB", "3839 B", "4 KiB", "4470 B", "7935 B", "8 KiB", "16 KiB", "32 KiB", "64 KiB",
           "256 KiB", "1 MiB", "3 MiB", "8 MiB",
-          "1", "2", "3", "8", "16", "24", "64", "256", "1024", "2048", "4096", "16384"]
+          "1", "2", "3", "8", "16", "24", "64", "256", "1024", "2048", "4096", "16384",
+          "2 of 256 B", "4 of 256 B", "16 of 256 B", "24 of 256 B", "128 of 256 B", "256 of 256 B", "4096 of 256 B"]
 ROUNDS = 48
 QUANTILE = 0.05
 PAIRS = 4  # the runs go A B B A A B B A
@@ -106,6 +110,26 @@ BATCH_SLICES = "pub fn hash_many(inputs: &[&[u8]]"
 # The slice API's public names, renamed out of the way (hash_many_slices,
 # ...) in every src/*.rs, definitions and in-crate calls alike.
 SLICES_RENAME = (r"(pub fn |crate::)(hash_many(?:_multithreaded(?:_with_budget)?)?)\(", r"\1\2_slices(")
+
+# The batch kernel reports before they took the message length, renamed
+# out of the way (kernel_report_many_one_block, ...) and called through a
+# shim that takes it (the check reads no kernels).
+KERNELS_ONE_BLOCK = "pub fn kernel_report_many() ->"
+KERNELS_RENAME = (r"\bkernel_report_many(_multithreaded)?\(\)", r"kernel_report_many\1_one_block()")
+
+SHIM_KERNELS = r'''
+
+// perf_regress.py shim: the batch kernel reports of later commits, which
+// take the message length; this commit's describe one-block messages.
+#[cfg(feature = "std")]
+pub fn kernel_report_many(_message_len: usize) -> KernelReport {
+    kernel_report_many_one_block()
+}
+#[cfg(feature = "std")]
+pub fn kernel_report_many_multithreaded(_message_len: usize) -> KernelReport {
+    kernel_report_many_multithreaded_one_block()
+}
+'''
 
 SHIM_FORWARD = r'''
 
@@ -155,11 +179,11 @@ pub fn hash_many_multithreaded(input: &[u8], message_len: usize, out: &mut [[u8;
     hash_many(input, message_len, out)
 }
 #[cfg(feature = "std")]
-pub fn kernel_report_many() -> KernelReport {
+pub fn kernel_report_many(_message_len: usize) -> KernelReport {
     kernel_report()
 }
 #[cfg(feature = "std")]
-pub fn kernel_report_many_multithreaded() -> KernelReport {
+pub fn kernel_report_many_multithreaded(_message_len: usize) -> KernelReport {
     kernel_report_multithreaded()
 }
 '''
@@ -266,7 +290,7 @@ def bench_fingerprint():
     outlives a change to the benchmark."""
     digest = hashlib.sha256()
     # The shims are part of what gets built.
-    digest.update((SHIM_FORWARD + SHIM_SLICES + SHIM + SHIM_STREAM + str(SLICES_RENAME)).encode())
+    digest.update((SHIM_FORWARD + SHIM_SLICES + SHIM + SHIM_STREAM + SHIM_KERNELS + str(SLICES_RENAME) + str(KERNELS_RENAME)).encode())
     bench = ROOT / "bench-hashes"
     for path in sorted([bench / "Cargo.toml", bench / "Cargo.lock", bench / "build.rs", *(bench / "src").rglob("*.rs"),
                         *(bench / ".cargo").rglob("*")]):
@@ -310,6 +334,8 @@ def commit_bench(rev):
                 source.write_text(re.sub(*SLICES_RENAME, source.read_text()))
         if batch_shim:
             lib.write_text(lib.read_text() + batch_shim)
+        if KERNELS_ONE_BLOCK in lib_source:
+            lib.write_text(re.sub(*KERNELS_RENAME, lib.read_text()) + SHIM_KERNELS)
         if stream_shimmed:
             lib.write_text(lib.read_text() + SHIM_STREAM)
         # The benchmark as it is now, so only the fork differs between sides.
@@ -395,7 +421,7 @@ def compare(old_rev, new):
         new_exe, new_shim, new_name = build_bench(ROOT / "bench-hashes"), False, "the working tree"
     else:
         (new_exe, new_shim), new_name = commit_bench(new), new
-    use_cases = {"OneMessage"} if (old_shim or new_shim) else {"OneMessage", "ManyMessages"}
+    use_cases = {"OneMessage"} if (old_shim or new_shim) else {"OneMessage", "ManyMessages", "ManyMessages256"}
     print(f"perf_regress: {new_name} against {old_rev}, {PAIRS} alternating pairs, "
           f"use cases {', '.join(sorted(use_cases))}", file=sys.stderr, flush=True)
     measured = pairs(old, new_exe, PAIRS, 0)

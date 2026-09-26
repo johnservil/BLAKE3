@@ -64,6 +64,21 @@ pub(crate) fn hash_many_on(input: &[u8], len: usize, outputs: &mut [[u8; OUT_LEN
 /// longer (VM, bench-hashes); out of line they cost what they did before.
 #[inline(never)]
 fn hash_run<const N: usize>(messages: &[u8], outputs: &mut [[u8; OUT_LEN]], platform: Platform) {
+    // On AArch64 the kernel for 2 to 16 blocks takes four messages at a
+    // time and hashes any left over one by one in portable code; the
+    // one-message integer kernel is faster for those (256 B, VM: 2 and 3
+    // messages took 7% longer than a loop of hash()).
+    #[cfg(blake3_neon_hybrid)]
+    let outputs = if N > BLOCK_LEN {
+        let grouped = outputs.len() / 4 * 4;
+        let (grouped_outputs, rest) = outputs.split_at_mut(grouped);
+        for (output, message) in rest.iter_mut().zip(messages[grouped * N..].chunks_exact(N)) {
+            *output = *crate::hash_serial_on(message, IV, 0, platform).as_bytes();
+        }
+        grouped_outputs
+    } else {
+        outputs
+    };
     let mut table: [core::mem::MaybeUninit<&[u8; N]>; TABLE] = [core::mem::MaybeUninit::uninit(); TABLE];
     for (slot, message) in table[..outputs.len()].iter_mut().zip(messages.chunks_exact(N)) {
         slot.write(message.try_into().expect("messages of N bytes"));
@@ -120,7 +135,7 @@ mod test {
     #[test]
     fn test_hash_many_whole_blocks() {
         for blocks in 2..=16 {
-            for count in [0, 1, 2, 3, 15, 16, 17, 31, 32, 33, 127, 128, 129, 300] {
+            for count in [0, 1, 2, 3, 4, 5, 6, 7, 15, 16, 17, 18, 31, 32, 33, 127, 128, 129, 130, 300] {
                 check(blocks * BLOCK_LEN, count);
             }
         }

@@ -1382,15 +1382,26 @@ pub fn kernel_report() -> KernelReport {
     KernelReport { platform: platform.name(), kernels }
 }
 
-/// What [`hash_many`] runs on a batch of one-block (64-byte) messages,
+/// What [`hash_many`] runs on a batch of messages of `message_len` bytes,
 /// by the batch's length in bytes: `from_len` is the batch's length at
-/// which each kernel starts. Batches of 2 to 16 whole blocks per message
-/// also hash several messages at a time, sixteen per group on SME2;
-/// messages of other lengths run [`kernel_report`]'s kernels one per call.
+/// which each kernel starts. Messages of 1 to 16 whole blocks (64 B to
+/// 1 KiB) are hashed several at a time; messages of other lengths run
+/// [`kernel_report`]'s kernel for their length, one message per call.
 #[cfg(feature = "std")]
-pub fn kernel_report_many() -> KernelReport {
+pub fn kernel_report_many(message_len: usize) -> KernelReport {
     let platform = Platform::detect();
+    let blocks = if message_len % BLOCK_LEN == 0 && (1..=16).contains(&(message_len / BLOCK_LEN)) { message_len / BLOCK_LEN } else { 0 };
     let mut kernels = Vec::with_capacity(3);
+    if blocks == 0 {
+        let one = kernel_report();
+        let kernel = one.kernels.iter().rev().find(|kernel| kernel.from_len <= message_len).expect("a kernel from 0");
+        kernels.push(Kernel {
+            from_len: 0,
+            name: kernel.name,
+            why: "Messages of this length are hashed one call each, as one input of that length.",
+        });
+        return KernelReport { platform: one.platform, kernels };
+    }
     #[cfg(blake3_neon_hybrid)]
     {
         kernels.push(Kernel {
@@ -1398,7 +1409,7 @@ pub fn kernel_report_many() -> KernelReport {
             name: "integer code, one message per call",
             why: "A single message runs the same one-call integer code as one input.",
         });
-        if neon_hybrid::sha3_detected() {
+        if blocks == 1 && neon_hybrid::sha3_detected() {
             kernels.push(Kernel {
                 from_len: 2 * BLOCK_LEN,
                 name: "integer and NEON code, up to nine messages at a time",
@@ -1406,17 +1417,17 @@ pub fn kernel_report_many() -> KernelReport {
             });
         } else {
             kernels.push(Kernel {
-                from_len: 2 * BLOCK_LEN,
+                from_len: 4 * message_len,
                 name: "NEON vectors, four messages at a time",
-                why: "Two or more one-block messages are hashed four at a time on the NEON vector units; this CPU lacks the instructions the faster mixed code needs.",
+                why: "From four messages, groups of four are hashed on the NEON vector units and any left over one call each; on SME2 this handles the messages left over below a group of sixteen.",
             });
         }
         #[cfg(blake3_sme2)]
         if matches!(platform, Platform::SME2) {
             kernels.push(Kernel {
-                from_len: sme2::GROUP * BLOCK_LEN,
+                from_len: sme2::GROUP * message_len,
                 name: "SME2, sixteen messages at a time",
-                why: "Sixteen one-block messages fill the SME2 matrix unit's vectors, one message per lane; fewer than sixteen left over go to the integer and NEON code.",
+                why: "Sixteen messages fill the SME2 matrix unit's vectors, one message per lane; fewer than sixteen left over go to the NEON code.",
             });
         }
     }
@@ -1425,27 +1436,27 @@ pub fn kernel_report_many() -> KernelReport {
         kernels.push(Kernel {
             from_len: 0,
             name: platform.compress_name(),
-            why: "A single message is one compression on the calling platform's compress kernel.",
+            why: "A single message runs one compression per block on the calling platform's compress kernel.",
         });
         if platform.simd_degree() > 1 {
             kernels.push(Kernel {
-                from_len: 2 * BLOCK_LEN,
+                from_len: 2 * message_len,
                 name: platform.hash_many_name(),
-                why: "Two or more one-block messages are compressed together, up to the platform's SIMD degree per call.",
+                why: "Two or more messages are hashed together, up to the platform's SIMD degree per call.",
             });
         }
     }
     KernelReport { platform: platform.name(), kernels }
 }
 
-/// What [`hash_many_multithreaded`] runs by batch length: [`kernel_report_many`]
-/// plus, from the length at which a call may leave the calling thread,
-/// the split across threads.
+/// What [`hash_many_multithreaded`] runs by batch length:
+/// [`kernel_report_many`] plus, from the length at which a call may leave
+/// the calling thread, the split across threads.
 #[cfg(feature = "std")]
-pub fn kernel_report_many_multithreaded() -> KernelReport {
-    let mut report = kernel_report_many();
+pub fn kernel_report_many_multithreaded(message_len: usize) -> KernelReport {
+    let mut report = kernel_report_many(message_len);
     report.kernels.push(Kernel {
-        from_len: lanes::MIN_SPLIT_LEN,
+        from_len: lanes::MIN_SPLIT_LEN.max(2 * message_len),
         name: "split over threads",
         why: "From here the batch is cut into ranges of messages that the calling thread and this crate's worker threads (one per CPU beyond the first) hash at once, each with integer and NEON code.",
     });
