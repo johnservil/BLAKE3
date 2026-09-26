@@ -244,8 +244,7 @@ names the commit that introduced the code and the one that fixed it, in
 ## Not yet done
 
 No person has reviewed the code line by line, and nobody has audited it.
-The test suites, sanitizers, Miri, and Kani have run in a Debian 12
-AArch64 VM on an Apple M4 Max, whose SME2 unit the VM exposes, so the
-SME2 kernels ran on real hardware. Under macOS itself, only the
-benchmark's digest checks have run. The fork compiles for x86-64 but has
-not been tested on x86-64 hardware.
+The test suites have run on an Apple M4 Max, under macOS and in a
+Debian 12 AArch64 VM on it (whose SME2 unit the VM exposes); the
+sanitizers, Miri, and Kani in the VM. The fork compiles for x86-64 but
+has not been tested on x86-64 hardware yet.
