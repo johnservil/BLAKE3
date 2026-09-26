@@ -75,13 +75,16 @@ pub(crate) const SME2_TAIL_MIN: usize = 10;
 pub(crate) const SME2_TAIL_MIN_AFTER_GROUPS: usize = 5;
 
 /// Fewest messages of `len` bytes (whole blocks, 2 to 15 chunks) that SME2
-/// hashes side by side as one group of sixteen, padded: 6 plus half the
-/// chunk count, rounded up. Fewer, alone or left over past whole groups,
-/// run through hash() one at a time. VM, the count at which a padded
-/// group's time equals that many hash() calls: 2 chunks 5.9, 3 8.4, 4 8.1,
-/// 6 9.5, 8 10.4, 12 11.4, 15 11.6.
+/// hashes side by side as one group of sixteen, padded, by chunk count.
+/// Fewer, alone or left over past whole groups, run through hash() one at
+/// a time. The count at which a padded group's time equals that many
+/// hash() calls, VM: 2 chunks 5.9, 3 8.4, 4 8.1, 6 9.5, 8 10.4, 12 11.4, 15
+/// 11.6; Mac P-core (jobs 268-271) about the same or lower. Each entry is
+/// the next count up.
+const SME2_CHUNKED_MIN: [usize; 16] = [0, 0, 7, 9, 9, 10, 10, 11, 11, 12, 12, 12, 12, 12, 12, 12];
+
 pub(crate) fn sme2_chunked_min(len: usize) -> usize {
-    6 + len.div_ceil(CHUNK_LEN).div_ceil(2)
+    SME2_CHUNKED_MIN[len.div_ceil(CHUNK_LEN)]
 }
 
 /// Whether hash_many_on takes messages of `len` bytes side by side on
