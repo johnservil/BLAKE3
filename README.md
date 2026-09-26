@@ -18,31 +18,37 @@ risk.
 
 # The servil fork
 
-This is the `servil` branch of John Servil's fork, published as the
-crate `blake3-servil` so it links beside crates.io `blake3`. It has its
-own version series from 0.1.0 (tags `vX.Y.Z+<commit>`), based on BLAKE3
-1.8.7. It adds SME2
-and integer + NEON kernels for AArch64, `hash_multithreaded` over a pool
-shared by every caller, `hash_many` for batches of equal-length
-messages in one buffer (Merkle-tree leaves and nodes), and
-`kernel_report()`. To use it:
+This is my fork of BLAKE3 (branch `servil`), for faster hashing on 64-bit Arm (AArch64), and
+above all on Apple M4-class chips, whose SME2 matrix unit it uses; on other CPUs it runs
+upstream's code. It computes the same digests as the official crate, and adds:
+
+- `hash_multithreaded`, which spreads one large input over every core;
+- `hash_many`, which hashes a batch of equal-length messages (Merkle-tree leaves and nodes,
+  for example) in one call;
+- `Stream`, which hashes input as it arrives, each piece on another thread while the next one
+  fills;
+- `kernel_report()`, which says which code runs at each input size on your machine.
+
+To use it, add
 
 ```toml
 [dependencies]
 blake3-servil = { git = "https://github.com/johnservil/BLAKE3", branch = "servil" }
 ```
 
-and call `blake3_servil::hash` as you would `blake3::hash`. The crate
-documentation's "For best performance" section says how to call it for
-full speed: whole inputs or large pieces, `hash_multithreaded` for large
-inputs, `hash_many` for whole batches in one call, and all calls from
-one thread.
-[bench-hashes](https://github.com/johnservil/bench-hashes) compares it
-with the official crate and with SHA-256 on your own machine; its
-[results](https://johnservil.github.io/bench-hashes/benchmark-results/AppleM4Max.darwin25/bench-hashes.graph.svg)
-include an Apple M4 Max. [`QUALITY.md`](QUALITY.md) says how we check its correctness and
-safety, and `CONTRIBUTING.md` how to work on the fork.
-The text below is upstream's.
+and call `blake3_servil::hash` as you would `blake3::hash`. The crate is named `blake3-servil`,
+so it links beside crates.io `blake3`; its versions start at 0.1.0, based on BLAKE3 1.8.7. The
+crate documentation's "For best performance" section says how to reach full speed: hand over
+whole inputs or large pieces, use `hash_multithreaded` for large inputs and `hash_many` for
+batches, and make all calls from one thread.
+
+[bench-hashes](https://github.com/johnservil/bench-hashes) measures it against the official
+crate, SHA-256, SHA3-256, and others on your own machine. Its
+[results for an Apple M4 Max](https://johnservil.github.io/bench-hashes/benchmark-results/AppleM4Max.darwin25/bench-hashes.graph.svg)
+cover every input size, batches, and multithreaded hashing; the chart below shows one of them.
+[`QUALITY.md`](QUALITY.md) says how I check the fork's correctness and safety, and
+`CONTRIBUTING.md` how to work on it. The text after this section is upstream's, with that new
+chart in place of its 2019 one.
 
 # The BLAKE3 algorithm
 
@@ -59,13 +65,13 @@ BLAKE3 is a cryptographic hash function that is:
 - **One algorithm with no variants**, which is fast on x86-64 and also
   on smaller architectures.
 
-The [chart below](https://github.com/BLAKE3-team/BLAKE3-specs/blob/master/benchmarks/bar_chart.py)
-is an example benchmark of 16 KiB inputs on a Cascade Lake-SP 8275CL server CPU
-from 2019. For more detailed benchmarks, see the
+The chart below shows one 16 KiB input hashed on one thread of an Apple M4 Max, measured by
+[bench-hashes](https://github.com/johnservil/bench-hashes) and drawn by `tools/speed_chart.py`;
+SHA-256 there runs on the CPU's SHA-256 instructions. For the original benchmarks and the design, see the
 [BLAKE3 paper](https://github.com/BLAKE3-team/BLAKE3-specs/blob/master/blake3.pdf).
 
 <p align="center">
-<img src="media/speed.svg" alt="performance graph">
+<img src="media/speed.svg" alt="Hashing speeds in GB/s: one 16 KiB input on one thread of an Apple M4 Max">
 </p>
 
 BLAKE3 is based on an optimized instance of the established hash
