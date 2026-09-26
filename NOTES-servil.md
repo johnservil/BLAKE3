@@ -593,7 +593,7 @@ all); marks two-speed cells.
 
 ## Testing
 
-    cargo test --release --lib                      # 86 tests, 1 ignored
+    cargo test --release --lib                      # 86 tests
     cargo test --release --features no_sme2 --lib   # 82
     cargo test --release --features pure --lib      # 71
     cargo test --release --doc                      # 21
@@ -611,12 +611,6 @@ them faults, which the sanitizers cannot see in assembly); Miri-sized
 unsafe paths (`test::unsafe_paths`). In the VM add the usual
 `HOME=/workspace/vm/home CARGO_TARGET_DIR=/tmp/target CC=clang-19
 TMPDIR=/tmp` prefix.
-
-A long differential run against the reference implementation, off by
-default: `BLAKE3_DIFF_SECONDS=1200 BLAKE3_DIFF_SEED=2 cargo test --release
---lib -- --ignored differential --nocapture` (every entry point, lengths
-skewed toward block and chunk boundaries up to 4 MiB, one to four threads
-at once, so the turn, the pool, and streams meet).
 
 **Checks beyond the suites** (September 26, 2026; nightly Rust with
 `rustup toolchain install nightly --component miri,rust-src,llvm-tools`,
