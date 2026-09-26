@@ -2,18 +2,19 @@
 
 # Warning
 
-This code is new. AI models wrote and rewrote it rapidly under Zooko's direction; "John Servil"
-is an AI following Zooko's directions and guidance, some of which you can see in `AGENTS.md`.
-No person has reviewed it line by line, and nobody has audited it for bugs or vulnerabilities.
-Its checks are automated: the tests inherited from the original BLAKE3 maintainers, the fork's
-own tests of every kernel against the reference implementation and fixed digests, runs under
-AddressSanitizer, ThreadSanitizer, and Miri, tests against inaccessible memory pages, and the
-benchmarks, which check every digest they time. Formal proofs cover only a few of its index
-calculations; the SME2 assembly kernel rests on tests alone. The tests have run in an AArch64
-Linux VM on an Apple M4 Max (on the M4's SME2 unit), and the benchmarks, digest checks
-included, under macOS on the same machine; on x86-64 the fork compiles but is untested.
-[`QUALITY.md`](QUALITY.md) lists every step, the bugs these checks found, and how to repeat
-them yourself. The fork has no users yet; you would be the first. Use it at your own risk.
+This code is new. AI models wrote and rewrote it rapidly under my direction (I'm Zooko);
+"John Servil" is an AI following my directions and guidance, some of which you can see in
+`AGENTS.md`. No person has reviewed the code line by line, and nobody has audited it for bugs or
+vulnerabilities. Its checks are automated: the tests inherited from the original BLAKE3
+maintainers, the fork's own tests of every kernel against the reference implementation and fixed
+digests, runs under AddressSanitizer, ThreadSanitizer, and Miri, tests against inaccessible
+memory pages, and the benchmarks, which check every digest they time. Formal proofs cover only
+a few of its index calculations; the SME2 assembly kernel rests on tests alone. The tests have
+run in an AArch64 Linux VM on an Apple M4 Max (on the M4's SME2 unit), and the benchmarks,
+digest checks included, under macOS on the same machine; on x86-64 the fork compiles but is
+untested. [`QUALITY.md`](QUALITY.md) lists every step, the bugs these checks found, and how to
+repeat them yourself. The fork has no users yet; you would be the first. Use it at your own
+risk.
 
 # The servil fork
 
