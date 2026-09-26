@@ -33,7 +33,7 @@ best performance" section says how to reach full speed.
 your own machine; here are its
 [full results on an Apple M4 Max](https://johnservil.github.io/bench-hashes/benchmark-results/AppleM4Max.darwin25/bench-hashes.graph.svg).
 `CONTRIBUTING.md` says how to work on the fork. Everything below is upstream's README, apart
-from the speed charts.
+from the speed chart.
 
 # The BLAKE3 algorithm
 
@@ -54,14 +54,10 @@ For the original benchmarks and the design, see the
 [BLAKE3 paper](https://github.com/BLAKE3-team/BLAKE3-specs/blob/master/blake3.pdf).
 
 <p align="center">
-<img src="media/speed.svg" alt="Hashing one 16 KiB input on one thread of an Apple M4 Max: speeds in GB/s">
+<img src="media/speed.svg" alt="Hashing one 1 MiB input on an Apple M4 Max, BLAKE3 on every core and on one core: speeds in GB/s">
 </p>
 
-<p align="center">
-<img src="media/speed-every-core.svg" alt="Hashing one 1 MiB input on an Apple M4 Max, BLAKE3 on every core and on one thread: speeds in GB/s">
-</p>
-
-<p align="center"><a href="media/speed-charts.md">How these charts were made</a></p>
+<p align="center"><a href="media/speed-charts.md">How this chart was made</a></p>
 
 BLAKE3 is based on an optimized instance of the established hash
 function [BLAKE2](https://blake2.net) and on the [original Bao tree

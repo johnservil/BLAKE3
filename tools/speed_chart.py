@@ -1,23 +1,21 @@
 #!/usr/bin/env python3
-"""The README's speed charts and the page that says how they were made.
+"""The README's speed chart and the page that says how it was made.
 
     python3 tools/speed_chart.py bench-hashes/benchmark-results/AppleM4Max.darwin25 media
 
 reads a bench-hashes record's text report (bench-hashes.result.txt) and
 writes into the given directory:
 
-- speed.svg: one 16 KiB input on one thread;
-- speed-every-core.svg: one 1 MiB input, BLAKE3 on every core and on one;
-- speed-charts.md: how the charts were made, from the same record.
+- speed.svg: one 1 MiB input, BLAKE3 on every core and on one core;
+- speed-charts.md: how the chart was made, from the same record.
 
-Each chart has a bar for BLAKE3 servil and one for the fastest
-implementation of each other family (SHA-256, SHA3-256, SHA-1DC) in the
-record's solo table "One input at a time (ns/B)", in GB/s (10^9 bytes per
-second), fastest first. Both charts share one scale, and each family keeps
-its colour in both. Values stay in integer picoseconds per byte until the
-drawing; the report gives three decimals of ns/B, so speeds of 10 GB/s and
-more are drawn as whole numbers and slower ones with two decimals. A
-two-speed cell (a|b) stops the script, because a bar has one length.
+The chart has bars for BLAKE3 servil and one for the fastest implementation
+of each other family (SHA-256, SHA3-256, SHA-1DC) in the record's solo table
+"One input at a time (ns/B)", in GB/s (10^9 bytes per second), fastest
+first. Values stay in integer picoseconds per byte until the drawing; the
+report gives three decimals of ns/B, so speeds of 10 GB/s and more are
+drawn as whole numbers and slower ones with two decimals. A two-speed cell
+(a|b) stops the script, because a bar has one length.
 """
 import re
 import sys
@@ -25,13 +23,11 @@ from pathlib import Path
 
 # Each chart: its file, input size, title, note, and its BLAKE3 bars with their names.
 CHARTS = [
-    dict(file="speed.svg", size="16 KiB", title="Hashing one 16 KiB input on one thread", note=None,
-         blake3={"B3 servil st": "BLAKE3"}),
-    dict(file="speed-every-core.svg", size="1 MiB", title="Hashing one 1 MiB input",
+    dict(file="speed.svg", size="1 MiB", title="Hashing one 1 MiB input",
          note="BLAKE3's tree spreads one input over every core; the others use one.",
-         blake3={"B3 servil mt": "BLAKE3, every core", "B3 servil st": "BLAKE3, one thread"}),
+         blake3={"B3 servil mt": "BLAKE3, every core", "B3 servil st": "BLAKE3, one core"}),
 ]
-# Each other family: its name on the charts, and its implementations as the report's table
+# Each other family: its name on the chart, and its implementations as the report's table
 # labels them, with the names its provenance lines use.
 FAMILIES = [
     ("SHA-256", {"SHA-256": "SHA-256", "SHA-256 ring": "SHA-256 ring", "SHA-256 CC": "SHA-256 CommonCrypto"}),
@@ -120,7 +116,7 @@ def provenance(text, name):
 
 
 def page(text, record, charts):
-    """speed-charts.md: how the charts were made, from the record."""
+    """speed-charts.md: how the chart was made, from the record."""
     first = text.splitlines()[0]
     date = re.search(r"(\d{4}-\d{2}-\d{2}) \d", first).group(1)
     bench = re.search(r"https://github.com/johnservil/bench-hashes, commit ([0-9a-f]{40})", text).group(1)
@@ -128,17 +124,17 @@ def page(text, record, charts):
     rustc = re.search(r"^  (rustc [^;]*); target ([^;]*);", text, re.M)
     load = re.search(r"^  load during the run: (.*)$", text, re.M).group(1)
     lines = [
-        "# How the speed charts were made",
+        "# How the speed chart was made",
         "",
-        f"The README's two speed charts come from one run of [bench-hashes](https://github.com/johnservil/bench-hashes) "
-        f"on {date}, on an {machine_of(text, split=True)}. `tools/speed_chart.py` draws them, and this page, from the run's report, "
+        f"The README's speed chart comes from one run of [bench-hashes](https://github.com/johnservil/bench-hashes) "
+        f"on {date}, on an {machine_of(text, split=True)}. `tools/speed_chart.py` draws it, and this page, from the run's report, "
         f"[`{record}/bench-hashes.result.txt`](https://github.com/johnservil/bench-hashes/blob/main/{record}/bench-hashes.result.txt), "
         "whose methodology is in bench-hashes' [METHODOLOGY.md](https://github.com/johnservil/bench-hashes/blob/main/METHODOLOGY.md). "
         "Each bar is the median time for one input of that size, taken over the run's rounds, as a speed. "
-        "For SHA-256 each chart shows the fastest of three implementations in the run (sha2, ring, and Apple's CommonCrypto).",
+        "For SHA-256 the chart shows the fastest of three implementations in the run (sha2, ring, and Apple's CommonCrypto).",
         "",
-        "| chart | bar | implementation | GB/s |",
-        "|---|---|---|---:|",
+        "| bar | implementation | GB/s |",
+        "|---|---|---:|",
     ]
     for chart, bars in charts:
         for label, name, centi in bars:
@@ -150,14 +146,14 @@ def page(text, record, charts):
                 impl = {"CommonCrypto": "Apple CommonCrypto, from the running macOS"}.get(impl.split()[0], impl)
                 if label == "SHA-1DC":
                     impl += " (SHA-1 with the collision detection git uses)"
-            lines.append(f"| {chart['size']} | {name} | {impl} | {shown(centi)} |")
+            lines.append(f"| {name} | {impl} | {shown(centi)} |")
     lines += [
         "",
         f"- bench-hashes: commit [{bench[:7]}](https://github.com/johnservil/bench-hashes/commit/{bench})",
         f"- compiler: {rustc.group(1)}, target {rustc.group(2)}",
         f"- load during the run: {load}",
         "",
-        "To draw the charts again from a newer record, with bench-hashes cloned inside this repository:",
+        "To draw the chart again from a newer record, with bench-hashes cloned inside this repository:",
         "",
         "```sh",
         f"python3 tools/speed_chart.py bench-hashes/{record} media",
