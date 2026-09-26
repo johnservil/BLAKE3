@@ -1,0 +1,5 @@
+Gate for 0bed4e7 (03ffc95 + 0bed4e7, batches of 2-15 chunks side by side on SME2):
+suites: lib 77 / no_sme2 73 / pure 63, doc 21, vectors 2, bench-hashes 7: all pass (VM).
+VM: perf_regress compare servil(666e550) 0bed4e7: no regression (no point measures multi-chunk batches).
+Mac: runner jobs 267 (03ffc95) and 272 (0bed4e7), perf_regress compare 666e550: no regression.
+Mac probes 268-271 (old/new/new/old): sweeps 1-40 messages at 1-15 KiB; 16 x 2 KiB 987 -> 331 ns/msg, 16 x 4 KiB 1310 -> 661, 16 x 8 KiB 2047 -> 1305, 16 x 15 KiB 3958 -> 2751; 8 KiB x 10 +2.6% at 03ffc95, fixed by 0bed4e7's table (VM 2042 against 2049).
