@@ -34,12 +34,10 @@ the caller's buffers.
 
 **Fixed answers.** The tests compare digests with answers that come
 from outside the fork's optimized code: upstream's published test
-vectors (`test_vectors/`), the reference implementation
-(`reference_impl/`, a separate, simple Rust implementation), and digests
-checked into the benchmark. The benchmark's frozen digests come from the
-reference implementation and Python's `hashlib`
-(bench-hashes' `tools/gen-test-vectors.py`), and tests never regenerate
-their own expected answers.
+vectors (`test_vectors/`) and the reference implementation
+(`reference_impl/`, a separate, simple Rust implementation), and tests
+never regenerate their own expected answers. (The benchmark checks no
+digests; correctness is these tests' business.)
 
 **The test suites** (the fork's `src/test.rs` and each module's tests),
 among them:

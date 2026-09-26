@@ -55,8 +55,9 @@ FORK_URL = "https://github.com/johnservil/BLAKE3.git"
 BENCH_URL = "https://github.com/johnservil/bench-hashes.git"
 HOME = Path.home()
 CHECKOUTS = HOME / "checkouts"
-# This runner's own perf_regress.py, which builds benchmark jobs' sides.
-PERF_REGRESS = Path(__file__).resolve().parents[1] / "perf_regress.py"
+# The perf_regress.py installed beside this runner (setup-mac.sh copies
+# both), which builds benchmark jobs' sides.
+PERF_REGRESS = Path(__file__).resolve().parent / "perf_regress.py"
 DONE_FILE = HOME / ".benchrunner_done"
 CARGO_BIN = HOME / ".cargo" / "bin"
 

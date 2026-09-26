@@ -107,8 +107,9 @@ Tests never silently regenerate their own expected answers.
 The same fixed vectors can exercise different kernels, thread budgets,
 concurrent calls, and scheduling interleavings. Input generation and
 execution scheduling are separate concerns. Differential tests supplement
-these anchors. Keep benchmark correctness checks outside timed intervals,
-and share the implementation dispatch between checking and timing.
+these anchors. Correctness is each project's tests' business: a benchmark
+checks no outputs (Zooko, September 26, 2026), and only keeps every
+result from being optimized away.
 
 ## Coding: integers first
 

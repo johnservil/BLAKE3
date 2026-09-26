@@ -8,7 +8,7 @@ Jobs go in the checkout's `runner/jobs/`; results come back in
 bench-hashes (inside the fork's) in `~benchrunner/checkouts/` and moves
 them to each job's commits, so Cargo rebuilds only what changed: a
 benchmark job builds bench-hashes against the fork as it is, through
-this checkout's `tools/perf_regress.py build`, in a directory with its
+this checkout's `tools/perf_regress.py build` (installed beside `runner.py`), in a directory with its
 own `Cargo.lock` (the committed lock is never written), and perf_regress
 jobs find their sides from the job before. The job format is the docstring at the top of
 `runner.py`.
