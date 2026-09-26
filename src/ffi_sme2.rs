@@ -82,7 +82,7 @@ pub unsafe fn hash_many<const N: usize>(
                 inputs.as_ptr() as *const *const u8,
                 key.as_ptr(),
                 counter,
-                flags as u32 | (flags_start as u32) << 8 | (flags_end as u32) << 16,
+                flags as u64 | (flags_start as u64) << 8 | (flags_end as u64) << 16,
                 out.as_mut_ptr(),
                 full_groups as u64,
                 blocks as u64,
@@ -237,13 +237,101 @@ pub unsafe fn hash_messages<const N: usize>(lanes: &[&[u8; N]], key: &CVWords, f
             lanes.as_ptr() as *const *const u8,
             key.as_ptr(),
             0,
-            flags as u32 | (flags_start as u32) << 8 | (flags_end as u32) << 16 | stored << 24,
+            flags as u64 | (flags_start as u64) << 8 | (flags_end as u64) << 16 | (stored as u64) << 24,
             out.as_mut_ptr(),
             (lanes.len() / GROUP) as u64,
             blocks as u64,
         )
     };
     assert_eq!(lanes_returned, 16, "SME2 streaming vector length changed under us");
+}
+
+/// Chunks per message that [`hash_chunked_messages`] takes: 2 to 15. From
+/// sixteen, one message fills an SME2 group by itself.
+pub const MESSAGE_CHUNKS: core::ops::RangeInclusive<usize> = 2..=15;
+
+/// Sixteen messages of `len` bytes each (whole blocks, 2 to 15 chunks),
+/// hashed side by side: `lanes[i]` points at message i (spare lanes repeat
+/// one), and the first `out.len() / OUT_LEN` lanes' digests go to `out`.
+/// Chunk k of every lane goes to the message kernel at counter k (the
+/// whole chunks in one call, the last chunk in a second); then each parent
+/// level across the lanes, pairs gathered into sixteen contiguous blocks
+/// per group, until the root, which takes ROOT. Unsafe because the CPU
+/// must have SME2 with 512-bit streaming vectors and every pointer must
+/// reach `len` bytes.
+pub unsafe fn hash_chunked_messages(lanes: &[*const u8; GROUP], len: usize, key: &CVWords, out: &mut [u8]) {
+    use crate::{CHUNK_END, CHUNK_START, PARENT, ROOT};
+    let chunks = len.div_ceil(CHUNK_LEN);
+    assert!(len % BLOCK_LEN == 0 && MESSAGE_CHUNKS.contains(&chunks), "messages of whole blocks, 2 to 15 chunks");
+    let count = out.len() / OUT_LEN;
+    assert!(out.len() % OUT_LEN == 0 && (1..=GROUP).contains(&count), "1 to 16 digests");
+    let last_blocks = (len - (chunks - 1) * CHUNK_LEN) / BLOCK_LEN;
+    // Uninitialised scratch, written by the kernels before any read:
+    // zeroing it cost more than the kernels' own stores (the SME unit
+    // writing lines the core has just written).
+    let mut scratch = core::mem::MaybeUninit::<ChunkedScratch>::uninit();
+    let base = scratch.as_mut_ptr();
+    // Sound: raw pointers into the scratch, no references to its bytes.
+    let (cvs, pairs, table) = unsafe {
+        (
+            core::ptr::addr_of_mut!((*base).cvs) as *mut u8,
+            core::ptr::addr_of_mut!((*base).pairs) as *mut u8,
+            core::ptr::addr_of_mut!((*base).table) as *mut *const u8,
+        )
+    };
+    // cvs holds node k of every lane at cvs + (16 k + lane) * 32, as the
+    // kernels write sixteen lanes contiguous per call and group.
+    let cv = |k: usize, lane: usize| unsafe { cvs.add((GROUP * k + lane) * OUT_LEN) };
+    let chunk_flags = (CHUNK_START as u64) << 8 | (CHUNK_END as u64) << 16;
+    unsafe {
+        for k in 0..chunks {
+            for (i, lane) in lanes.iter().enumerate() {
+                table.add(k * GROUP + i).write(lane.add(k * CHUNK_LEN));
+            }
+        }
+        // The whole chunks, one group per chunk index, the counter stepping
+        // by one from group to group; then the last chunk.
+        let n = ffi::blake3_sme2_hash16_messages_512(table, key.as_ptr(), 0, chunk_flags | 1 << 32, cvs, (chunks - 1) as u64, 16);
+        assert_eq!(n, 16, "SME2 streaming vector length changed under us");
+        let n = ffi::blake3_sme2_hash16_messages_512(table.add((chunks - 1) * GROUP), key.as_ptr(), (chunks - 1) as u64, chunk_flags, cv(chunks - 1, 0), 1, last_blocks as u64);
+        assert_eq!(n, 16, "SME2 streaming vector length changed under us");
+        // Parent levels: node j of the next level joins nodes 2j and 2j + 1
+        // (gathered into one 64-byte block per lane, sixteen per group); an
+        // odd last node carries up. Down to two nodes, then the root.
+        let mut nodes = chunks;
+        loop {
+            let parents = nodes / 2;
+            for j in 0..parents {
+                for i in 0..GROUP {
+                    let pair = pairs.add((GROUP * j + i) * BLOCK_LEN);
+                    core::ptr::copy_nonoverlapping(cv(2 * j, i), pair, OUT_LEN);
+                    core::ptr::copy_nonoverlapping(cv(2 * j + 1, i), pair.add(OUT_LEN), OUT_LEN);
+                }
+            }
+            if nodes == 2 {
+                break;
+            }
+            if nodes % 2 == 1 {
+                core::ptr::copy_nonoverlapping(cv(nodes - 1, 0), cv(parents, 0), GROUP * OUT_LEN);
+            }
+            let n = ffi::blake3_sme2_hash16_parents_512(pairs, key.as_ptr(), 0, PARENT as u32, cvs, parents as u64);
+            assert_eq!(n, 16, "SME2 streaming vector length changed under us");
+            nodes = parents + nodes % 2;
+        }
+        let n = ffi::blake3_sme2_hash16_parents_512(pairs, key.as_ptr(), 0, (PARENT | ROOT) as u32, cvs, 1);
+        assert_eq!(n, 16, "SME2 streaming vector length changed under us");
+        core::ptr::copy_nonoverlapping(cvs, out.as_mut_ptr(), count * OUT_LEN);
+    }
+}
+
+/// [`hash_chunked_messages`]'s scratch: the chaining values of up to 15
+/// nodes per lane, the gathered pairs of up to 7 parents, and the chunk
+/// pointer table, on 128-byte lines (Apple's).
+#[repr(C, align(128))]
+struct ChunkedScratch {
+    cvs: [[[u8; OUT_LEN]; GROUP]; 15],
+    pairs: [[[u8; BLOCK_LEN]; GROUP]; 7],
+    table: [*const u8; GROUP * 15],
 }
 
 /// Whole subtrees from this many chunks to FLAT_MAX_CHUNKS, powers of two,
@@ -446,19 +534,20 @@ pub mod ffi {
             groups: u64,
         ) -> u64;
 
-        /// Sixteen separate messages of `blocks` whole blocks (2 to 16) per
+        /// Sixteen separate messages of `blocks` whole blocks (1 to 16) per
         /// group, every one at `counter`. `inputs` is a table of
         /// `16 * groups` message pointers; `flags` packs as for
         /// `blake3_sme2_hash16_chunks_512`, flags_end on each message's last
         /// block. Writes `16 * groups` 32-byte chaining values to `out`,
         /// or, when bits 24 to 31 of `flags` hold k (1 to 15), the last
-        /// group's first k alone.
+        /// group's first k alone. Bits 32 to 63 of `flags` step the counter
+        /// from one group to the next (0: every group at `counter`).
         /// Returns the streaming vector length in 32-bit lanes.
         pub fn blake3_sme2_hash16_messages_512(
             inputs: *const *const u8,
             key: *const u32,
             counter: u64,
-            flags: u32,
+            flags: u64,
             out: *mut u8,
             groups: u64,
             blocks: u64,

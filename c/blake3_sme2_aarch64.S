@@ -33,6 +33,9 @@
  *     bits  0..7   flags        applied to every block
  *     bits  8..15  flags_start  also applied to block 0 of each chunk
  *     bits 16..23  flags_end    also applied to block 15 of each chunk
+ *     bits 32..63  (the message kernel) the counter's step from one
+ *                  group to the next; the chunk kernel ignores them and
+ *                  steps sixteen
  *     bits 24..31  lanes of the last group whose chaining values are
  *                  stored, 1 to 15; 0 stores all sixteen (the message
  *                  kernel's padded last group: its spare lanes' values
@@ -441,6 +444,7 @@ _blake3_sme2_hash16_chunks_512:
 blake3_sme2_hash16_chunks_512:
     mov     x6, #15
     mov     x17, #1
+    mov     w3, w3
     b       .Lchunks_body
 
 .p2align 4
@@ -520,6 +524,13 @@ blake3_sme2_hash16_messages_512:
     ubfx    w16, w3, #16, #8
     orr     w16, w16, w10
 
+    /*
+     * A one-block message (x6 = 0) starts and ends on its last block.
+     */
+    cbnz    x6, .Lflags_ready
+    orr     w16, w16, w11
+.Lflags_ready:
+
     cbz     x5, .Lsuccess
 
 .Lgroup_loop:
@@ -578,6 +589,7 @@ blake3_sme2_hash16_messages_512:
      */
     mov     x7, #0
     mov     x9, #64
+    cbz     x6, .Llast_block
 
 .Lpipelined_block_loop:
     PREFETCH_NEXT_GROUP
@@ -604,6 +616,7 @@ blake3_sme2_hash16_messages_512:
      * The last block (x6) was loaded into ZA0 during the one before.
      * It takes flags_end and has no following block to preload.
      */
+.Llast_block:
     INITIALIZE_UPPER_STATE w16
     READ_MESSAGES
     SEVEN_ROUNDS
@@ -662,6 +675,8 @@ blake3_sme2_hash16_messages_512:
     add     x0, x0, #128
     add     x4, x4, #512
     add     x2, x2, x17, lsl #4
+    lsr     x8, x3, #32
+    add     x2, x2, x8
 
     subs    x5, x5, #1
     b.ne    .Lgroup_loop

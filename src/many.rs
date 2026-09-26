@@ -29,6 +29,10 @@ pub(crate) const TABLE: usize = 128;
 /// Requires `input.len() == len * outputs.len()`.
 pub(crate) fn hash_many_on(input: &[u8], len: usize, outputs: &mut [[u8; OUT_LEN]], platform: Platform) {
     assert_eq!(Some(input.len()), len.checked_mul(outputs.len()), "input holds exactly one message of the length per output");
+    #[cfg(blake3_sme2)]
+    if chunked(len) && platform_is_sme2(platform) && (outputs.len() >= 16 || outputs.len() >= sme2_chunked_min(len)) {
+        return hash_chunked(input, len, outputs, platform);
+    }
     if outputs.len() < 2 || len == 0 || len > CHUNK_LEN || len % BLOCK_LEN != 0 {
         for (i, output) in outputs.iter_mut().enumerate() {
             *output = *crate::hash_serial_on(&input[i * len..][..len], IV, 0, platform).as_bytes();
@@ -70,11 +74,64 @@ pub(crate) fn hash_many_on(input: &[u8], len: usize, outputs: &mut [[u8; OUT_LEN
 pub(crate) const SME2_TAIL_MIN: usize = 10;
 pub(crate) const SME2_TAIL_MIN_AFTER_GROUPS: usize = 5;
 
+/// Fewest messages of `len` bytes (whole blocks, 2 to 15 chunks) that SME2
+/// hashes side by side as one group of sixteen, padded: 6 plus half the
+/// chunk count, rounded up. Fewer, alone or left over past whole groups,
+/// run through hash() one at a time. VM, the count at which a padded
+/// group's time equals that many hash() calls: 2 chunks 5.9, 3 8.4, 4 8.1,
+/// 6 9.5, 8 10.4, 12 11.4, 15 11.6.
+pub(crate) fn sme2_chunked_min(len: usize) -> usize {
+    6 + len.div_ceil(CHUNK_LEN).div_ceil(2)
+}
+
+/// Whether hash_many_on takes messages of `len` bytes side by side on
+/// SME2: whole blocks, 2 to 15 chunks.
+#[inline(always)]
+fn chunked(len: usize) -> bool {
+    cfg!(blake3_sme2) && len % BLOCK_LEN == 0 && (CHUNK_LEN + 1..=15 * CHUNK_LEN).contains(&len)
+}
+
+/// Messages of 2 to 15 chunks on SME2, sixteen side by side per group;
+/// messages left over past whole groups make one more group, its spare
+/// lanes repeating the last message, when there are sme2_chunked_min of
+/// them, and otherwise run through hash() one at a time, first.
+#[cfg(blake3_sme2)]
+#[inline(never)]
+fn hash_chunked(input: &[u8], len: usize, outputs: &mut [[u8; OUT_LEN]], platform: Platform) {
+    const GROUP: usize = 16;
+    let left = outputs.len() % GROUP;
+    // Past whole groups a group pays from two messages sooner: hash() calls
+    // beside the SME2 kernels run in their slow state (VM, 22 x 2 KiB: 630
+    // ns per message with six alone, 486 with a padded group).
+    let min = if outputs.len() > GROUP { sme2_chunked_min(len) - 2 } else { sme2_chunked_min(len) };
+    let alone = if left >= min { 0 } else { left };
+    let grouped = outputs.len() - alone;
+    let (groups, rest) = outputs.split_at_mut(grouped);
+    for (i, output) in rest.iter_mut().enumerate() {
+        *output = *crate::hash_serial_on(&input[(grouped + i) * len..][..len], IV, 0, platform).as_bytes();
+    }
+    for (g, digests) in groups.chunks_mut(GROUP).enumerate() {
+        let mut lanes = [core::ptr::null::<u8>(); GROUP];
+        for (i, lane) in lanes.iter_mut().enumerate() {
+            let message = g * GROUP + i.min(digests.len() - 1);
+            *lane = input[message * len..][..len].as_ptr();
+        }
+        // Sound: the caller found SME2 (platform_is_sme2), and every lane
+        // points at a whole message of `len` bytes inside `input`.
+        unsafe { crate::sme2::hash_chunked_messages(&lanes, len, IV, digests.as_flattened_mut()) };
+    }
+}
+
 /// Whether a batch of `count` messages of `len` bytes runs SME2 kernels
-/// (so takes the SME2 turn): sixteen messages or more, or, for messages
-/// of 2 to 16 whole blocks, SME2_TAIL_MIN or more.
+/// (so takes the SME2 turn): sixteen messages or more; for messages of 2
+/// to 16 whole blocks, SME2_TAIL_MIN or more; for messages of 2 to 15
+/// chunks, sme2_chunked_min or more; and any message long enough for
+/// hash() to take the turn itself.
 pub(crate) fn sme2_sized(len: usize, count: usize) -> bool {
-    count >= crate::SME2_SIZED_BATCH || (len > BLOCK_LEN && len <= CHUNK_LEN && len % BLOCK_LEN == 0 && count >= SME2_TAIL_MIN)
+    count >= crate::SME2_SIZED_BATCH
+        || (len > BLOCK_LEN && len <= CHUNK_LEN && len % BLOCK_LEN == 0 && count >= SME2_TAIL_MIN)
+        || (chunked(len) && count >= sme2_chunked_min(len))
+        || (len >= crate::SME2_SIZED_LEN && count >= 1)
 }
 
 /// Up to TABLE messages of N bytes, back to back in `messages`: each one's
@@ -171,6 +228,8 @@ fn hash_blocks<const N: usize>(messages: &[u8], outputs: &mut [[u8; OUT_LEN]], p
         #[cfg(blake3_neon)]
         Platform::neon().expect("NEON beside SME2").hash_many::<N>(&filled[vector - first..], IV, 0, IncrementCounter::No, flags, start, end, tail.as_flattened_mut());
     }
+    #[cfg(not(blake3_neon))]
+    let _ = tail;
     platform.hash_many::<N>(&filled[..vector - first], IV, 0, IncrementCounter::No, flags, start, end, groups.as_flattened_mut());
 }
 
@@ -267,6 +326,7 @@ mod test {
     /// hash() one message at a time.
     #[test]
     fn test_hash_many_padded_groups_every_platform() {
+        #[allow(unused_mut)]
         let mut platforms = vec![Platform::detect(), Platform::Portable];
         #[cfg(blake3_neon)]
         platforms.push(Platform::neon().expect("NEON on AArch64"));
@@ -293,6 +353,32 @@ mod test {
         for len in [0, 1, 63, 65, 191, 1000, 1025, 3000, 3 * CHUNK_LEN + 7] {
             for count in [0, 1, 2, 15, 16, 17, 129] {
                 check(len, count);
+            }
+        }
+    }
+
+    /// Messages of 2 to 15 chunks (whole blocks) on every platform this
+    /// CPU has: on SME2 sixteen side by side, every tree shape from two
+    /// chunks to fifteen, the last chunk whole or short, at counts that
+    /// leave padded groups.
+    #[test]
+    fn test_hash_many_chunked_every_platform() {
+        #[allow(unused_mut)]
+        let mut platforms = vec![Platform::detect(), Platform::Portable];
+        #[cfg(blake3_neon)]
+        platforms.push(Platform::neon().expect("NEON on AArch64"));
+        let lens = (2..=15).flat_map(|c| [c * CHUNK_LEN, (c - 1) * CHUNK_LEN + BLOCK_LEN]).chain([CHUNK_LEN + 192, 7 * CHUNK_LEN + 960, 16 * CHUNK_LEN]);
+        for len in lens {
+            for count in [0, 1, 2, 7, 8, 9, 15, 16, 17, 23, 24, 33] {
+                let input = messages(len, count);
+                for &platform in &platforms {
+                    let mut out = vec![[0xAAu8; OUT_LEN]; count + 16];
+                    hash_many_on(&input, len, &mut out[..count], platform);
+                    assert!(out[count..].iter().all(|d| *d == [0xAA; OUT_LEN]), "{platform:?}, {count} x {len} B: a store past the last output");
+                    for (i, digest) in out[..count].iter().enumerate() {
+                        assert_eq!(*digest, *crate::hash(&input[i * len..][..len]).as_bytes(), "{platform:?}, message {i} of {count}, {len} bytes");
+                    }
+                }
             }
         }
     }

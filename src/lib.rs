@@ -1218,7 +1218,7 @@ fn hash_serial(input: &[u8], key: &CVWords, flags: u8) -> Hash {
 
 /// The smallest input the SME2 kernels take part in: one group of sixteen
 /// chunks. Below it the SME2 platform runs the NEON hybrids.
-const SME2_SIZED_LEN: usize = 16 * CHUNK_LEN;
+pub(crate) const SME2_SIZED_LEN: usize = 16 * CHUNK_LEN;
 
 /// The fewest messages a batch has when the SME2 kernels take part: one
 /// group of sixteen messages.
@@ -1242,11 +1242,12 @@ fn hash_serial_on(input: &[u8], key: &CVWords, flags: u8, platform: Platform) ->
 /// leaves of one size, and nodes of two 32-byte children (`message_len`
 /// 64). Messages of 1 to 16 whole blocks (64 B to 1 KiB) are hashed several
 /// at a time, sixteen per group on SME2, so a batch of them hashes at a
-/// multiple of one [`hash`] call's rate; messages of other lengths cost
-/// what [`hash`] costs. On Apple M4 and later, batches of sixteen messages
-/// or more follow [`hash`]'s rule for large inputs: when several threads
-/// hash them at once, one runs at the full rate and the others at about
-/// half of it. Always single-threaded; see [`hash_many_multithreaded`] for
+/// multiple of one [`hash`] call's rate; on Apple M4 and later so are
+/// messages of whole blocks up to 15 KiB, in batches of about ten or more.
+/// Messages of other lengths cost what [`hash`] costs. On Apple M4 and
+/// later, batches that run on SME2 follow [`hash`]'s rule for large
+/// inputs: when several threads hash them at once, one runs at the full
+/// rate and the others at about half of it. Always single-threaded; see [`hash_many_multithreaded`] for
 /// the same digests over several threads.
 ///
 /// ```
@@ -1385,7 +1386,8 @@ pub fn kernel_report() -> KernelReport {
 /// What [`hash_many`] runs on a batch of messages of `message_len` bytes,
 /// by the batch's length in bytes: `from_len` is the batch's length at
 /// which each kernel starts. Messages of 1 to 16 whole blocks (64 B to
-/// 1 KiB) are hashed several at a time; messages of other lengths run
+/// 1 KiB) are hashed several at a time, and on SME2 so are messages of
+/// whole blocks up to 15 KiB; messages of other lengths run
 /// [`kernel_report`]'s kernel for their length, one message per call.
 #[cfg(feature = "std")]
 pub fn kernel_report_many(message_len: usize) -> KernelReport {
@@ -1400,6 +1402,14 @@ pub fn kernel_report_many(message_len: usize) -> KernelReport {
             name: kernel.name,
             why: "Messages of this length are hashed one call each, as one input of that length.",
         });
+        #[cfg(blake3_sme2)]
+        if matches!(platform, Platform::SME2) && message_len % BLOCK_LEN == 0 && (CHUNK_LEN + 1..=15 * CHUNK_LEN).contains(&message_len) {
+            kernels.push(Kernel {
+                from_len: many::sme2_chunked_min(message_len) * message_len,
+                name: "SME2, sixteen messages side by side",
+                why: "From this many messages, groups of sixteen are hashed side by side on the SME2 matrix unit, one message per lane: each chunk across the messages, then each level of the messages' trees; the last group's spare lanes repeat a message.",
+            });
+        }
         return KernelReport { platform: one.platform, kernels };
     }
     #[cfg(blake3_neon_hybrid)]
