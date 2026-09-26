@@ -45,12 +45,20 @@ generator, check that existing kernels stay byte-identical unless meant.
   Parents: SME2 for groups of 16, NEON below. Root: scalar. Whole
   power-of-two subtrees of 32 KiB to 1 MiB: the flat walk, SME2 alone,
   with two integer chunks beside each group of 16 from 256 KiB.
-- `hash_many()`: runs of 16+ one-block messages on SME2, fewer on NEON,
-  other lengths through `hash()`.
+- `hash_many(input, message_len, out)`: equal messages back to back in one
+  buffer (the only batch API; the slice-of-slices one went, Zooko,
+  September 26). Messages of 1-16 whole blocks go to the platform's
+  `hash_many` TABLE (128) at a time: SME2 groups of 16 from 16 messages,
+  the NEON hybrids (one block) or the C NEON kernel (2-16 blocks) below
+  and for remainders; other lengths through `hash()`. Against the slice
+  API with a prebuilt pointer table (VM, bench-hashes 64 B batches): 1-64
+  messages level, 256-16384 5-30% faster single-threaded and 5-46%
+  multithreaded (no pointer table to build from the caller's slices).
+  `many::hash_run` stays `#[inline(never)]`: inlined for all sixteen
+  lengths, two-message batches took 30% longer.
 - `hash_multithreaded()`: below 64 KiB, `hash()`'s path; from 64 KiB the
-  pool on NEON only. Batches: under 64 KiB of messages (and, without a
-  length pass, fewer than 1024 messages of a block or less) the serial
-  path; else the pool, NEON only.
+  pool on NEON only. Batches: under 64 KiB in all the serial path; else
+  the pool in ranges of messages, NEON only.
 - Every SME2-sized call takes the turn first (inputs of 16 chunks, batches
   of 16 messages).
 

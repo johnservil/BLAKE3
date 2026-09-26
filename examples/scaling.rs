@@ -14,11 +14,10 @@ fn per_thread(n: usize, len: usize, batch: bool) -> (f64, f64) {
             let barrier = barrier.clone();
             std::thread::spawn(move || {
                 let input: Vec<u8> = (0..len).map(|i| (i * 31 + k) as u8).collect();
-                let messages: Vec<&[u8]> = input.chunks_exact(64).collect();
-                let mut digests = vec![blake3_servil::Hash::from_bytes([0; 32]); messages.len()];
+                let mut digests = vec![[0u8; 32]; len / 64];
                 let mut hash = || {
                     if batch {
-                        blake3_servil::hash_many(std::hint::black_box(&messages), &mut digests);
+                        blake3_servil::hash_many(std::hint::black_box(&input), 64, &mut digests);
                     } else {
                         std::hint::black_box(blake3_servil::hash(std::hint::black_box(&input)));
                     }

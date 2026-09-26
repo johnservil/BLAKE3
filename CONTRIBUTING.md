@@ -17,8 +17,8 @@ official crate, belong upstream at
   `tools/gen_neon_hybrid.py`). Other CPUs run upstream's kernels.
 - `hash_multithreaded` and `hash_many_multithreaded`, over one pool of
   worker threads shared by every caller in the process
-  (`src/lanes.rs`), and `hash_many` for batches of messages
-  (`src/many.rs`).
+  (`src/lanes.rs`), and `hash_many` for batches of equal-length messages
+  back to back in one buffer (`src/many.rs`).
 - `kernel_report()` and its `_many` and `_multithreaded` forms, which
   describe the code path at each input length.
 

@@ -258,15 +258,13 @@ fn tree_mt(input: &[u8]) {
     std::hint::black_box(blake3_servil::hash_multithreaded(input));
 }
 fn batch_serial(input: &[u8]) {
-    let messages: Vec<&[u8]> = input.chunks_exact(64).collect();
-    let mut out = vec![blake3_servil::Hash::from_bytes([0; 32]); messages.len()];
-    blake3_servil::hash_many(&messages, &mut out);
+    let mut out = vec![[0u8; 32]; input.len() / 64];
+    blake3_servil::hash_many(input, 64, &mut out);
     std::hint::black_box(&out);
 }
 fn batch_mt(input: &[u8]) {
-    let messages: Vec<&[u8]> = input.chunks_exact(64).collect();
-    let mut out = vec![blake3_servil::Hash::from_bytes([0; 32]); messages.len()];
-    blake3_servil::hash_many_multithreaded(&messages, &mut out);
+    let mut out = vec![[0u8; 32]; input.len() / 64];
+    blake3_servil::hash_many_multithreaded(input, 64, &mut out);
     std::hint::black_box(&out);
 }
 

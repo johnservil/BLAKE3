@@ -84,7 +84,7 @@ use crate::hazmat::{self, ChainingValue, Mode};
 #[cfg(test)]
 use crate::hazmat::HasherExt;
 use crate::platform::Platform;
-use crate::{BLOCK_LEN, CHUNK_LEN, Hash};
+use crate::{CHUNK_LEN, Hash};
 #[cfg(test)]
 use crate::{Hasher, KEY_LEN};
 use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
@@ -224,67 +224,39 @@ pub(crate) fn subtree_children(
     children
 }
 
-/// Hash every message of `inputs` into `outputs` over the machine's
-/// threads, at most `max_threads` holding a range at once (the caller's
-/// included; at least 1). Same digests as [`crate::hash_many`].
+/// [`crate::hash_many`] over the machine's threads, at most `max_threads`
+/// holding a range at once (the caller's included; at least 1): below
+/// MIN_SPLIT_LEN of input, or with one message, on this thread.
 #[inline]
-pub(crate) fn hash_many(inputs: &[&[u8]], outputs: &mut [Hash], max_threads: usize) {
+pub(crate) fn hash_many(input: &[u8], message_len: usize, outputs: &mut [[u8; crate::OUT_LEN]], max_threads: usize) {
     assert!(max_threads >= 1, "a hash needs at least the calling thread");
-    assert_eq!(inputs.len(), outputs.len(), "one output per message");
-    if max_threads == 1 || inputs.len() < 2 {
-        return crate::hash_many(inputs, outputs);
+    // The short path first and inline, so a small batch costs what
+    // crate::hash_many costs; everything the pool needs is behind the call.
+    if max_threads == 1 || outputs.len() < 2 || input.len() < MIN_SPLIT_LEN {
+        return crate::hash_many(input, message_len, outputs);
     }
-    // Fewer than MIN_SPLIT_LEN / BLOCK_LEN messages of a block or less hold
-    // less than MIN_SPLIT_LEN: they are hashed here, with no pass over the
-    // lengths first, up to the first longer message, and the split is
-    // decided for the rest. A pass before the SME2 kernels, even one that
-    // reads the lengths alone, made 512 one-block messages 25% slower on an
-    // M4 Max and on the VM (NOTES-servil.md).
-    let mut done = 0;
-    if inputs.len() < MIN_SPLIT_LEN / BLOCK_LEN {
-        let turn = crate::platform::Sme2Turn::take(Platform::detect(), inputs.len() >= crate::SME2_SIZED_BATCH);
-        done = crate::many::hash_many_until_longer(inputs, outputs, turn.platform(), BLOCK_LEN);
-        if done == inputs.len() {
-            return;
-        }
-    }
-    let (inputs, outputs) = (&inputs[done..], &mut outputs[done..]);
-    let total: usize = inputs.iter().map(|m| m.len()).sum();
-    // The messages already hashed held at most a block each.
-    if done * BLOCK_LEN + total < MIN_SPLIT_LEN || inputs.len() < 2 {
-        return crate::hash_many(inputs, outputs);
-    }
-    hash_many_over_pool(inputs, outputs, total, max_threads)
+    hash_many_over_pool(input, message_len, outputs, max_threads)
 }
 
-/// [`crate::hash_many_equal`] over the machine's threads, at most
-/// `max_threads` holding a range at once (the caller's included; at least
-/// 1): below MIN_SPLIT_LEN of input, or with one message, on this thread.
-pub(crate) fn hash_many_equal(input: &[u8], message_len: usize, outputs: &mut [Hash], max_threads: usize) {
-    assert!(max_threads >= 1, "a hash needs at least the calling thread");
+#[inline(never)]
+fn hash_many_over_pool(input: &[u8], message_len: usize, outputs: &mut [[u8; crate::OUT_LEN]], max_threads: usize) {
     assert_eq!(Some(input.len()), message_len.checked_mul(outputs.len()), "input holds exactly one message of the length per output");
-    let serial = |input: &[u8], outputs: &mut [Hash]| {
-        let turn = crate::platform::Sme2Turn::take(Platform::detect(), outputs.len() >= crate::SME2_SIZED_BATCH);
-        crate::many::hash_many_equal_on(input, message_len, outputs, turn.platform());
-    };
-    if max_threads == 1 || outputs.len() < 2 || input.len() < MIN_SPLIT_LEN {
-        return serial(input, outputs);
-    }
     let pool = pool();
     let callers = pool.callers.fetch_add(1, Ordering::SeqCst) + 1;
     let _caller = Caller(&pool.callers);
     if callers >= pool.cpus {
-        return serial(input, outputs);
+        return crate::hash_many(input, message_len, outputs);
     }
-    let pieces = cut_equal(outputs.len(), message_len, pool.cpus.min(max_threads));
-    let work = Work::Equal { input, message_len, pieces: &pieces, outputs: outputs.as_mut_ptr() };
+    let pieces = cut_messages(outputs.len(), message_len, pool.cpus.min(max_threads));
+    let work = Work::Messages { input, message_len, pieces: &pieces, outputs: outputs.as_mut_ptr() };
     pool.run_job(work, pieces.len(), 0, pool_platform(), max_threads);
 }
 
 /// Cut `count` messages of `message_len` bytes into ranges for `threads`
-/// threads, as cut_messages does: each range holds about next_piece_len
-/// of the bytes that remain, at least one message.
-fn cut_equal(count: usize, message_len: usize, threads: usize) -> Vec<Piece> {
+/// threads, in order: each range holds about [`next_piece_len`] of the
+/// bytes that remain, at least one message, so ranges shrink toward the
+/// end as subtree pieces do.
+fn cut_messages(count: usize, message_len: usize, threads: usize) -> Vec<Piece> {
     let mut pieces = Vec::with_capacity(64);
     let mut start = 0;
     while start < count {
@@ -294,22 +266,6 @@ fn cut_equal(count: usize, message_len: usize, threads: usize) -> Vec<Piece> {
         start += take;
     }
     pieces
-}
-
-#[inline(never)]
-fn hash_many_over_pool(inputs: &[&[u8]], outputs: &mut [Hash], total: usize, max_threads: usize) {
-    let pool = pool();
-    let callers = pool.callers.fetch_add(1, Ordering::SeqCst) + 1;
-    let _caller = Caller(&pool.callers);
-    if callers >= pool.cpus {
-        return pool.hash_messages(inputs, outputs);
-    }
-    let pieces = cut_messages(inputs, total, pool.cpus.min(max_threads));
-    if pieces.len() < 2 {
-        return pool.hash_messages(inputs, outputs);
-    }
-    let work = Work::Messages { inputs, pieces: &pieces, outputs: outputs.as_mut_ptr() };
-    pool.run_job(work, pieces.len(), 0, pool_platform(), max_threads);
 }
 
 /// A counted call, including its serial fallback. Keeping the count until
@@ -358,20 +314,13 @@ enum Work<'a> {
         counter: u64,
         flags: u8,
     },
-    /// Ranges of a batch of messages (`offset` and `len` count messages);
-    /// one digest per message.
-    Messages {
-        inputs: &'a [&'a [u8]],
-        pieces: &'a [Piece],
-        outputs: *mut Hash,
-    },
     /// Ranges of a batch of messages of one length, back to back in
     /// `input` (`offset` and `len` count messages); one digest each.
-    Equal {
+    Messages {
         input: &'a [u8],
         message_len: usize,
         pieces: &'a [Piece],
-        outputs: *mut Hash,
+        outputs: *mut [u8; crate::OUT_LEN],
     },
 }
 
@@ -414,19 +363,12 @@ impl Job<'_> {
                 let cv = crate::hash_all_at_once::<crate::join::SerialJoin>(bytes, key, counter, *flags, platform).chaining_value();
                 unsafe { *cvs.add(index) = cv };
             }
-            Work::Messages { inputs, pieces, outputs } => {
-                let piece = pieces[index];
-                let messages = &inputs[piece.offset..][..piece.len];
-                // Sound: this range of outputs belongs to piece `index` alone.
-                let digests = unsafe { core::slice::from_raw_parts_mut(outputs.add(piece.offset), piece.len) };
-                crate::many::hash_many_on(messages, digests, platform);
-            }
-            Work::Equal { input, message_len, pieces, outputs } => {
+            Work::Messages { input, message_len, pieces, outputs } => {
                 let piece = pieces[index];
                 let messages = &input[piece.offset * message_len..][..piece.len * message_len];
                 // Sound: this range of outputs belongs to piece `index` alone.
                 let digests = unsafe { core::slice::from_raw_parts_mut(outputs.add(piece.offset), piece.len) };
-                crate::many::hash_many_equal_on(messages, *message_len, digests, platform);
+                crate::many::hash_many_on(messages, *message_len, digests, platform);
             }
         }
     }
@@ -449,29 +391,6 @@ fn pool_platform() -> Platform {
 struct Piece {
     offset: usize,
     len: usize,
-}
-
-/// Cut a batch of messages (`total` bytes in all) into ranges for
-/// `threads` threads, in order: each range gathers messages until it
-/// holds [`next_piece_len`] of the bytes that remain, so ranges shrink
-/// toward the end as subtree pieces do. Every message lands in one range.
-fn cut_messages(inputs: &[&[u8]], total: usize, threads: usize) -> Vec<Piece> {
-    let mut pieces = Vec::with_capacity(64);
-    let mut remaining = total;
-    let mut start = 0;
-    while start < inputs.len() {
-        let target = next_piece_len(remaining, threads);
-        let mut end = start;
-        let mut bytes = 0;
-        while end < inputs.len() && (end == start || bytes + inputs[end].len() <= target) {
-            bytes += inputs[end].len();
-            end += 1;
-        }
-        pieces.push(Piece { offset: start, len: end - start });
-        remaining -= bytes;
-        start = end;
-    }
-    pieces
 }
 
 /// Cut `len` bytes into subtrees for `threads` threads, in offset order:
@@ -708,11 +627,6 @@ impl Pool {
     /// `input` tiles a valid subtree at `counter`, as hash_all_at_once requires.
     fn hash_subtree(&self, input: &[u8], key: &crate::CVWords, counter: u64, flags: u8) -> crate::Output {
         crate::hash_all_at_once::<crate::join::SerialJoin>(input, key, counter, flags, pool_platform())
-    }
-
-    /// Hash a batch of messages on the pool's platform.
-    fn hash_messages(&self, inputs: &[&[u8]], outputs: &mut [Hash]) {
-        crate::many::hash_many_on(inputs, outputs, pool_platform());
     }
 
     /// Register `work` of `pieces` pieces, take pieces on this thread until
@@ -1195,68 +1109,38 @@ mod test {
     /// toward the end, and a batch that fits one range stays whole.
     #[test]
     fn test_cut_messages_shapes() {
-        let block = [0u8; crate::BLOCK_LEN];
-        let big = [0u8; 3 * CHUNK_LEN + 5];
-        let small = [0u8; 3];
-        let mut inputs: Vec<&[u8]> = vec![&block[..]; 40_000];
-        inputs[7] = &big[..];
-        inputs[39_999] = &small[..];
-        let total: usize = inputs.iter().map(|m| m.len()).sum();
-        let pieces = cut_messages(&inputs, total, 16);
-        assert!(pieces.len() >= 16, "{} ranges", pieces.len());
-        assert_eq!(pieces[0].offset, 0);
-        assert!(pieces.windows(2).all(|w| w[0].offset + w[0].len == w[1].offset));
-        assert_eq!(pieces.last().unwrap().offset + pieces.last().unwrap().len, inputs.len());
-        let bytes = |p: &Piece| inputs[p.offset..][..p.len].iter().map(|m| m.len()).sum::<usize>();
-        assert!(pieces[..pieces.len() - 1].iter().all(|p| bytes(p) <= MAX_PIECE_LEN && bytes(p) >= MIN_PIECE_LEN / 2));
-        assert!(bytes(&pieces[0]) >= bytes(&pieces[pieces.len() - 2]));
-        assert_eq!(cut_messages(&inputs[200..300], 100 * 64, 16).len(), 1);
-    }
-
-    /// Batches of fewer than MIN_SPLIT_LEN / BLOCK_LEN messages: one-block
-    /// and shorter messages up to a long one, then a rest that reaches the
-    /// split threshold (the pool) or not (this thread), with the long
-    /// message first, in the middle, and last; every budget.
-    #[test]
-    fn test_short_batches_split_at_the_first_long_message() {
-        let mut buffer = vec![0u8; 2 * MIN_SPLIT_LEN];
-        crate::test::paint_test_input(&mut buffer);
-        let block = |i: usize| &buffer[i * crate::BLOCK_LEN..][..crate::BLOCK_LEN];
-        for count in [2, 3, 200, MIN_SPLIT_LEN / crate::BLOCK_LEN - 1] {
-            for long_at in [0, count / 2, count - 1] {
-                for long_len in [crate::BLOCK_LEN + 1, 3 * CHUNK_LEN, MIN_SPLIT_LEN + 5] {
-                    let mut inputs: Vec<&[u8]> = (0..count).map(|i| if i % 7 == 3 { &block(i)[..9] } else { block(i) }).collect();
-                    inputs[long_at] = &buffer[..long_len];
-                    let want: Vec<Hash> = inputs.iter().map(|m| crate::hash(m)).collect();
-                    for cap in [1, 2, usize::MAX] {
-                        let mut got = vec![Hash::from_bytes([0; 32]); count];
-                        hash_many(&inputs, &mut got, cap);
-                        assert_eq!(want, got, "count {count}, long message of {long_len} at {long_at}, cap {cap}");
-                    }
-                }
-            }
+        for message_len in [crate::BLOCK_LEN, 256, 3 * CHUNK_LEN + 5] {
+            let count = 40 * MIN_SPLIT_LEN / message_len;
+            let pieces = cut_messages(count, message_len, 16);
+            assert!(pieces.len() >= 16, "{} ranges of {message_len}-byte messages", pieces.len());
+            assert_eq!(pieces[0].offset, 0);
+            assert!(pieces.windows(2).all(|w| w[0].offset + w[0].len == w[1].offset && w[0].len >= w[1].len));
+            assert_eq!(pieces.last().unwrap().offset + pieces.last().unwrap().len, count);
+            let bytes = |p: &Piece| p.len * message_len;
+            assert!(pieces[..pieces.len() - 1].iter().all(|p| bytes(p) <= MAX_PIECE_LEN && bytes(p) >= MIN_PIECE_LEN / 2));
         }
+        assert_eq!(cut_messages(100, crate::BLOCK_LEN, 16).len(), 1);
     }
 
-    /// Every budget gives hash_many()'s digests, on contiguous and on
-    /// scattered messages, with lengths other than one block mixed in.
+    /// Every budget gives the single-threaded digests, for one-block
+    /// messages, whole-block messages, and messages longer than a chunk.
     #[test]
     fn test_hash_many_budgets_agree() {
-        let mut buffer = vec![0u8; 4 * MIN_SPLIT_LEN + 3 * CHUNK_LEN];
+        let mut buffer = vec![0u8; 4 * MIN_SPLIT_LEN];
         crate::test::paint_test_input(&mut buffer);
-        let mut inputs: Vec<&[u8]> = buffer[..4 * MIN_SPLIT_LEN].chunks_exact(crate::BLOCK_LEN).collect();
-        inputs[100] = &buffer[4 * MIN_SPLIT_LEN..][..3 * CHUNK_LEN];
-        inputs[101] = &buffer[..0];
-        inputs[102] = &buffer[..65];
-        let mut want = vec![Hash::from_bytes([0; 32]); inputs.len()];
-        crate::hash_many(&inputs, &mut want);
-        for (i, message) in inputs.iter().enumerate().take(200) {
-            assert_eq!(want[i], crate::hash(message), "message {i}");
-        }
-        for cap in [1, 2, 3, 4, 64, usize::MAX] {
-            let mut got = vec![Hash::from_bytes([0; 32]); inputs.len()];
-            hash_many(&inputs, &mut got, cap);
-            assert_eq!(want, got, "cap = {cap}");
+        for message_len in [crate::BLOCK_LEN, 256, 3 * CHUNK_LEN + 5] {
+            let count = buffer.len() / message_len;
+            let input = &buffer[..count * message_len];
+            let mut want = vec![[0u8; crate::OUT_LEN]; count];
+            crate::hash_many(input, message_len, &mut want);
+            for (i, digest) in want.iter().enumerate().take(200) {
+                assert_eq!(*digest, *crate::hash(&input[i * message_len..][..message_len]).as_bytes(), "message {i}");
+            }
+            for cap in [1, 2, 3, 4, 64, usize::MAX] {
+                let mut got = vec![[0u8; crate::OUT_LEN]; count];
+                hash_many(input, message_len, &mut got, cap);
+                assert_eq!(want, got, "{message_len}-byte messages, cap {cap}");
+            }
         }
     }
 
@@ -1265,11 +1149,11 @@ mod test {
     fn test_concurrent_batch_callers_agree() {
         let mut buffer = vec![0u8; 8 * MIN_SPLIT_LEN];
         crate::test::paint_test_input(&mut buffer);
-        let inputs: Vec<&[u8]> = buffer.chunks_exact(crate::BLOCK_LEN).collect();
-        let mut want = vec![Hash::from_bytes([0; 32]); inputs.len()];
-        crate::hash_many(&inputs, &mut want);
+        let count = buffer.len() / crate::BLOCK_LEN;
+        let mut want = vec![[0u8; crate::OUT_LEN]; count];
+        crate::hash_many(&buffer, crate::BLOCK_LEN, &mut want);
         let tree_want = crate::hash(&buffer);
-        let (inputs, want, buffer) = (&inputs[..], &want[..], &buffer[..]);
+        let (want, buffer) = (&want[..], &buffer[..]);
         let barrier = std::sync::Barrier::new(16);
         std::thread::scope(|scope| {
             for i in 0..16 {
@@ -1277,10 +1161,10 @@ mod test {
                 let barrier = &barrier;
                 scope.spawn(move || {
                     barrier.wait();
-                    let mut got = vec![Hash::from_bytes([0; 32]); inputs.len()];
+                    let mut got = vec![[0u8; crate::OUT_LEN]; count];
                     for _ in 0..10 {
                         if i % 2 == 0 {
-                            hash_many(inputs, &mut got, cap);
+                            hash_many(buffer, crate::BLOCK_LEN, &mut got, cap);
                             assert_eq!(want, &got[..]);
                         } else {
                             assert_eq!(tree_want, hash(buffer, cap));

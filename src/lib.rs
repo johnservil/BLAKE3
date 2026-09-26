@@ -45,8 +45,10 @@
 //!   itself; the stream hashes each full buffer on another thread while
 //!   the next one fills. [`Stream::new_multithreaded`] spreads each buffer
 //!   over every core.
-//! - **Batch small messages with [`hash_many`]**: 1024 messages of 64
-//!   bytes hash about 5x faster in one call than in a loop of [`hash`].
+//! - **Batch small messages of one length with [`hash_many`]**, back to
+//!   back in one buffer, the whole batch in one call: 1024 messages of 64
+//!   bytes hash about 5x faster than in a loop of [`hash`], and messages
+//!   of 128 B to 1 KiB (Merkle-tree leaves) gain alike.
 //! - **Make the calls from one thread.** The multithreaded functions
 //!   spread the work themselves. On Apple M4 and later, several threads
 //!   hashing at once share one SME unit: one runs at full speed and the
@@ -1219,7 +1221,7 @@ fn hash_serial(input: &[u8], key: &CVWords, flags: u8) -> Hash {
 const SME2_SIZED_LEN: usize = 16 * CHUNK_LEN;
 
 /// The fewest messages a batch has when the SME2 kernels take part: one
-/// group of sixteen one-block messages.
+/// group of sixteen messages.
 pub(crate) const SME2_SIZED_BATCH: usize = 16;
 
 /// [`hash_serial`] with the tree's kernels chosen by the caller (a pool
@@ -1239,79 +1241,43 @@ fn hash_serial_on(input: &[u8], key: &CVWords, flags: u8, platform: Platform) ->
 /// exactly `out.len()` messages. The shape a Merkle tree's layers take:
 /// leaves of one size, and nodes of two 32-byte children (`message_len`
 /// 64). Messages of 1 to 16 whole blocks (64 B to 1 KiB) are hashed several
-/// at a time, sixteen per group on SME2; other lengths one at a time.
-/// Always single-threaded; see [`hash_many_equal_multithreaded`].
+/// at a time, sixteen per group on SME2, so a batch of them hashes at a
+/// multiple of one [`hash`] call's rate; messages of other lengths cost
+/// what [`hash`] costs. On Apple M4 and later, batches of sixteen messages
+/// or more follow [`hash`]'s rule for large inputs: when several threads
+/// hash them at once, one runs at the full rate and the others at about
+/// half of it. Always single-threaded; see [`hash_many_multithreaded`] for
+/// the same digests over several threads.
 ///
 /// ```
 /// let leaves = vec![7u8; 1000 * 256];
 /// let mut hashes = vec![[0u8; 32]; 1000];
-/// blake3_servil::hash_many_equal(&leaves, 256, &mut hashes);
+/// blake3_servil::hash_many(&leaves, 256, &mut hashes);
 /// assert_eq!(hashes[3], *blake3_servil::hash(&leaves[3 * 256..4 * 256]).as_bytes());
 /// ```
-pub fn hash_many_equal(input: &[u8], message_len: usize, out: &mut [[u8; OUT_LEN]]) {
-    let outputs = hashes_of_arrays(out);
-    let turn = platform::Sme2Turn::take(Platform::detect(), outputs.len() >= SME2_SIZED_BATCH);
-    many::hash_many_equal_on(input, message_len, outputs, turn.platform());
-}
-
-/// [`hash_many_equal`] over this crate's worker threads, with the same
-/// results: batches of 64 KiB and more are cut into ranges of messages
-/// that the calling thread and the workers hash at once, under the rules
-/// of [`hash_many_multithreaded`].
-#[cfg(feature = "std")]
-pub fn hash_many_equal_multithreaded(input: &[u8], message_len: usize, out: &mut [[u8; OUT_LEN]]) {
-    lanes::hash_many_equal(input, message_len, hashes_of_arrays(out), usize::MAX);
-}
-
-/// The outputs as the Hash values the batch code writes. Sound: `Hash` is
-/// `repr(transparent)` over `[u8; OUT_LEN]`.
-fn hashes_of_arrays(out: &mut [[u8; OUT_LEN]]) -> &mut [Hash] {
-    unsafe { core::slice::from_raw_parts_mut(out.as_mut_ptr() as *mut Hash, out.len()) }
-}
-
-/// Many messages at once: `outputs[i]` becomes [`hash`]`(inputs[i])` for
-/// every `i`. `inputs` and `outputs` have the same length.
-///
-/// Messages of exactly one block (64 bytes) are compressed several at a
-/// time on the platform's SIMD kernels, sixteen per group on SME2, so a
-/// batch of them hashes at a multiple of one [`hash`] call's rate; every
-/// other message costs what [`hash`] costs. On Apple M4 and later, batches
-/// of sixteen messages or more follow [`hash`]'s rule for large inputs:
-/// when several threads hash them at once, one runs at the full rate and
-/// the others at about half of it. Always single-threaded; see
-/// [`hash_many_multithreaded`] for the same digests over several threads.
-///
-/// ```
-/// let messages = [&b"foo"[..], &[7u8; 64][..], &[0u8; 4096][..]];
-/// let mut digests = [blake3_servil::Hash::from_bytes([0; 32]); 3];
-/// blake3_servil::hash_many(&messages, &mut digests);
-/// assert_eq!(digests[1], blake3_servil::hash(&[7u8; 64]));
-/// ```
-pub fn hash_many(inputs: &[&[u8]], outputs: &mut [Hash]) {
-    let turn = platform::Sme2Turn::take(Platform::detect(), inputs.len() >= SME2_SIZED_BATCH);
-    many::hash_many_on(inputs, outputs, turn.platform());
+pub fn hash_many(input: &[u8], message_len: usize, out: &mut [[u8; OUT_LEN]]) {
+    let turn = platform::Sme2Turn::take(Platform::detect(), out.len() >= SME2_SIZED_BATCH);
+    many::hash_many_on(input, message_len, out, turn.platform());
 }
 
 /// [`hash_many`] over several threads. Writes the same digests for every
-/// batch. Batches under 64 KiB of messages in all are hashed on the
-/// calling thread alone, at [`hash_many`]'s speed. Larger batches are cut
-/// into ranges of messages that the calling thread and this crate's
-/// worker threads hash at once, under the same rules as
-/// [`hash_multithreaded`]: the workers are started once per process, one
-/// per CPU beyond the first ([`initialize`]), concurrent calls share them
-/// in turn, and a call arriving when calls already fill the CPUs hashes
-/// on its own thread.
+/// batch. Batches under 64 KiB in all are hashed on the calling thread
+/// alone, at [`hash_many`]'s speed. Larger batches are cut into ranges of
+/// messages that the calling thread and this crate's worker threads hash
+/// at once, under the same rules as [`hash_multithreaded`]: the workers
+/// are started once per process, one per CPU beyond the first
+/// ([`initialize`]), concurrent calls share them in turn, and a call
+/// arriving when calls already fill the CPUs hashes on its own thread.
 ///
 /// ```
-/// let block = [7u8; 64];
-/// let messages = vec![&block[..]; 4096];
-/// let mut digests = vec![blake3_servil::Hash::from_bytes([0; 32]); 4096];
-/// blake3_servil::hash_many_multithreaded(&messages, &mut digests);
-/// assert!(digests.iter().all(|d| *d == blake3_servil::hash(&block)));
+/// let leaves = vec![7u8; 4096 * 256];
+/// let mut hashes = vec![[0u8; 32]; 4096];
+/// blake3_servil::hash_many_multithreaded(&leaves, 256, &mut hashes);
+/// assert!(hashes.iter().all(|h| h == blake3_servil::hash(&[7u8; 256]).as_bytes()));
 /// ```
 #[cfg(feature = "std")]
-pub fn hash_many_multithreaded(inputs: &[&[u8]], outputs: &mut [Hash]) {
-    lanes::hash_many(inputs, outputs, usize::MAX)
+pub fn hash_many_multithreaded(input: &[u8], message_len: usize, out: &mut [[u8; OUT_LEN]]) {
+    lanes::hash_many(input, message_len, out, usize::MAX);
 }
 
 /// [`hash_many_multithreaded`] with at most `max_threads` threads, the
@@ -1319,17 +1285,16 @@ pub fn hash_many_multithreaded(inputs: &[&[u8]], outputs: &mut [Hash]) {
 /// calling thread alone, as [`hash_many`] does.
 ///
 /// ```
-/// let messages = [&[1u8; 64][..]; 2000];
-/// let mut a = [blake3_servil::Hash::from_bytes([0; 32]); 2000];
-/// let mut b = a;
-/// blake3_servil::hash_many_multithreaded_with_budget(&messages, &mut a, 2);
-/// blake3_servil::hash_many(&messages, &mut b);
+/// let nodes = vec![1u8; 2000 * 64];
+/// let mut a = vec![[0u8; 32]; 2000];
+/// let mut b = a.clone();
+/// blake3_servil::hash_many_multithreaded_with_budget(&nodes, 64, &mut a, 2);
+/// blake3_servil::hash_many(&nodes, 64, &mut b);
 /// assert_eq!(a, b);
 /// ```
 #[cfg(feature = "std")]
-pub fn hash_many_multithreaded_with_budget(inputs: &[&[u8]], outputs: &mut [Hash], max_threads: usize) {
-    assert!(max_threads >= 1, "a hash needs at least the calling thread");
-    lanes::hash_many(inputs, outputs, max_threads)
+pub fn hash_many_multithreaded_with_budget(input: &[u8], message_len: usize, out: &mut [[u8; OUT_LEN]], max_threads: usize) {
+    lanes::hash_many(input, message_len, out, max_threads);
 }
 
 /// One kernel [`hash`] runs, from `from_len` input bytes up to the next
@@ -1418,9 +1383,10 @@ pub fn kernel_report() -> KernelReport {
 }
 
 /// What [`hash_many`] runs on a batch of one-block (64-byte) messages,
-/// by the batch's length in bytes: `from_len` is the total of the
-/// messages' lengths at which each kernel starts. Messages of other
-/// lengths run [`kernel_report`]'s kernels one message per call.
+/// by the batch's length in bytes: `from_len` is the batch's length at
+/// which each kernel starts. Batches of 2 to 16 whole blocks per message
+/// also hash several messages at a time, sixteen per group on SME2;
+/// messages of other lengths run [`kernel_report`]'s kernels one per call.
 #[cfg(feature = "std")]
 pub fn kernel_report_many() -> KernelReport {
     let platform = Platform::detect();

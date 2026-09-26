@@ -48,9 +48,14 @@ The check measures the 29 points in POINTS, which cover the code paths
 and boundaries of both use cases at the benchmark's points; the published graph's plateau sizes add
 run time and no path.
 
-Commits that predate the batch API (hash_many and friends) get a shim that
-hashes a batch one message at a time, so the current benchmark builds; a
-comparison involving such a commit judges the one-message cells alone.
+The benchmark calls the batch API that takes one buffer of equal messages
+(hash_many(input, message_len, out)). Older commits get a shim so it
+builds: one with that API under the name hash_many_equal forwards to it,
+and its batch cells are judged; one whose hash_many takes a slice of
+slices has it renamed hash_many_slices and a copying shim over it, and
+one that predates batches gets a shim hashing one message at a time. A
+comparison involving either of those last two judges the one-message
+cells alone.
 Commits that predate Stream get a shim over a Hasher on the calling
 thread (the check measures no streamed cells).
 """
@@ -58,6 +63,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import statistics
 import subprocess
@@ -90,23 +96,63 @@ PAIRS = 4  # the runs go A B B A A B B A
 # A cell is slower (faster) past this ratio, by scenario.
 MARGIN = {"solo": 0.03, "shared": 0.10}
 
+# A commit's lib.rs contains one of these, newest first; each names the
+# shim that makes the benchmark build against it, and whether its batch
+# cells are judged.
+BATCH_ONE_BUFFER = "pub fn hash_many(input: &[u8]"
+BATCH_EQUAL = "pub fn hash_many_equal("
+BATCH_SLICES = "pub fn hash_many(inputs: &[&[u8]]"
+
+# The slice API's public names, renamed out of the way (hash_many_slices,
+# ...) in every src/*.rs, definitions and in-crate calls alike.
+SLICES_RENAME = (r"(pub fn |crate::)(hash_many(?:_multithreaded(?:_with_budget)?)?)\(", r"\1\2_slices(")
+
+SHIM_FORWARD = r'''
+
+// perf_regress.py shim: the one-buffer batch API under its later names.
+pub fn hash_many(input: &[u8], message_len: usize, out: &mut [[u8; OUT_LEN]]) {
+    hash_many_equal(input, message_len, out)
+}
+#[cfg(feature = "std")]
+pub fn hash_many_multithreaded(input: &[u8], message_len: usize, out: &mut [[u8; OUT_LEN]]) {
+    hash_many_equal_multithreaded(input, message_len, out)
+}
+'''
+
+SHIM_SLICES = r'''
+
+// perf_regress.py shim: the one-buffer batch API over the slice API,
+// copying (its batch cells are not judged).
+fn one_buffer_over_slices(input: &[u8], message_len: usize, out: &mut [[u8; OUT_LEN]], f: fn(&[&[u8]], &mut [Hash])) {
+    let inputs: Vec<&[u8]> = (0..out.len()).map(|i| &input[i * message_len..][..message_len]).collect();
+    let mut hashes = vec![Hash::from_bytes([0; OUT_LEN]); out.len()];
+    f(&inputs, &mut hashes);
+    for (o, h) in out.iter_mut().zip(&hashes) {
+        *o = *h.as_bytes();
+    }
+}
+pub fn hash_many(input: &[u8], message_len: usize, out: &mut [[u8; OUT_LEN]]) {
+    one_buffer_over_slices(input, message_len, out, hash_many_slices)
+}
+#[cfg(feature = "std")]
+pub fn hash_many_multithreaded(input: &[u8], message_len: usize, out: &mut [[u8; OUT_LEN]]) {
+    one_buffer_over_slices(input, message_len, out, hash_many_multithreaded_slices)
+}
+'''
+
 SHIM = r'''
 
 // perf_regress.py shim: the batch API of later commits, one message at a
 // time, so the current bench-hashes builds against this commit.
-pub fn hash_many(inputs: &[&[u8]], outputs: &mut [Hash]) {
-    assert_eq!(inputs.len(), outputs.len());
-    for (input, output) in inputs.iter().zip(outputs) {
-        *output = hash(input);
+pub fn hash_many(input: &[u8], message_len: usize, out: &mut [[u8; OUT_LEN]]) {
+    assert_eq!(input.len(), message_len * out.len());
+    for (i, o) in out.iter_mut().enumerate() {
+        *o = *hash(&input[i * message_len..][..message_len]).as_bytes();
     }
 }
 #[cfg(feature = "std")]
-pub fn hash_many_multithreaded(inputs: &[&[u8]], outputs: &mut [Hash]) {
-    hash_many(inputs, outputs)
-}
-#[cfg(feature = "std")]
-pub fn hash_many_multithreaded_with_budget(inputs: &[&[u8]], outputs: &mut [Hash], _max_threads: usize) {
-    hash_many(inputs, outputs)
+pub fn hash_many_multithreaded(input: &[u8], message_len: usize, out: &mut [[u8; OUT_LEN]]) {
+    hash_many(input, message_len, out)
 }
 #[cfg(feature = "std")]
 pub fn kernel_report_many() -> KernelReport {
@@ -219,6 +265,8 @@ def bench_fingerprint():
     12 hex digits: every file it builds from, so a cached executable never
     outlives a change to the benchmark."""
     digest = hashlib.sha256()
+    # The shims are part of what gets built.
+    digest.update((SHIM_FORWARD + SHIM_SLICES + SHIM + SHIM_STREAM + str(SLICES_RENAME)).encode())
     bench = ROOT / "bench-hashes"
     for path in sorted([bench / "Cargo.toml", bench / "Cargo.lock", bench / "build.rs", *(bench / "src").rglob("*.rs"),
                         *(bench / ".cargo").rglob("*")]):
@@ -237,7 +285,14 @@ def commit_bench(rev):
     # benchmark's fingerprint as well as the fork's commit.
     exe = target_dir() / "perf-ab" / f"{commit}-{bench_fingerprint()}" / "bench-hashes"
     lib_source = git("show", f"{commit}:src/lib.rs")
-    shimmed = "pub fn hash_many(" not in lib_source
+    if BATCH_ONE_BUFFER in lib_source:
+        batch_shim, shimmed = None, False
+    elif BATCH_EQUAL in lib_source:
+        batch_shim, shimmed = SHIM_FORWARD, False
+    elif BATCH_SLICES in lib_source:
+        batch_shim, shimmed = SHIM_SLICES, True
+    else:
+        batch_shim, shimmed = SHIM, True
     stream_shimmed = "pub use stream::Stream" not in lib_source
     if exe.exists():
         return str(exe), shimmed
@@ -250,8 +305,11 @@ def commit_bench(rev):
     git("worktree", "add", "--detach", str(tree), commit)
     try:
         lib = tree / "src/lib.rs"
-        if shimmed:
-            lib.write_text(lib.read_text() + SHIM)
+        if BATCH_SLICES in lib_source:
+            for source in (tree / "src").glob("*.rs"):
+                source.write_text(re.sub(*SLICES_RENAME, source.read_text()))
+        if batch_shim:
+            lib.write_text(lib.read_text() + batch_shim)
         if stream_shimmed:
             lib.write_text(lib.read_text() + SHIM_STREAM)
         # The benchmark as it is now, so only the fork differs between sides.

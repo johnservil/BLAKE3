@@ -5,7 +5,8 @@ crate `blake3-servil` so it links beside crates.io `blake3`. It has its
 own version series from 0.1.0 (tags `vX.Y.Z+<commit>`), based on BLAKE3
 1.8.7. It adds SME2
 and integer + NEON kernels for AArch64, `hash_multithreaded` over a pool
-shared by every caller, `hash_many` for batches of messages, and
+shared by every caller, `hash_many` for batches of equal-length
+messages in one buffer (Merkle-tree leaves and nodes), and
 `kernel_report()`. To use it:
 
 ```toml
@@ -16,7 +17,8 @@ blake3-servil = { git = "https://github.com/johnservil/BLAKE3", branch = "servil
 and call `blake3_servil::hash` as you would `blake3::hash`. The crate
 documentation's "For best performance" section says how to call it for
 full speed: whole inputs or large pieces, `hash_multithreaded` for large
-inputs, `hash_many` for batches, and all calls from one thread.
+inputs, `hash_many` for whole batches in one call, and all calls from
+one thread.
 [bench-hashes](https://github.com/johnservil/bench-hashes) compares it
 with the official crate and with SHA-256 on your own machine; its
 [results](https://johnservil.github.io/bench-hashes/benchmark-results/AppleM4Max.darwin25/bench-hashes.graph.svg)
