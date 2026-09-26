@@ -645,7 +645,8 @@ logs in `tmp/quality/`, outside git):
   over all of usize ran 3.5 h without an answer (bound it); the whole cut
   loop ran CBMC out of memory at every bound down to 96 KiB, so prove a
   loop step and argue by induction; always run it under `timeout`.
-  fill_table at all 144 lanes did not finish in 20 minutes.
+  fill_table at all 144 lanes: symbolic execution alone took 7 minutes;
+  stopped there.
 - Found and fixed: hash_blocks' padded-group choice (a latent assert on a
   CPU combination that does not exist), Platform::hash_many silently
   dropping the tail of an input that is not whole blocks (now a compile

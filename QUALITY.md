@@ -197,7 +197,7 @@ names the commit that introduced the code and the one that fixed it, in
   under two seconds. One proof with an unbounded symbolic thread count
   ran for hours without an answer, and bounding the count settled it. A
   proof over all 144 lanes of the batch pointer table did not finish
-  within 20 minutes; 20 lanes take 45 seconds. Kani cannot look inside
+  within 7 minutes, when we stopped it; 20 lanes take 45 seconds. Kani cannot look inside
   the assembly kernels or C code.
 - **Miri**: used (above). It checks the executions it runs, which falls
   short of a proof, and it cannot run assembly or intrinsics.
