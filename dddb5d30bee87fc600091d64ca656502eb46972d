@@ -1,0 +1,5 @@
+Gate for dddb5d3 (7cd10ec padded batch contract, 0869c79 two-chunk messages on the NEON plans, dddb5d3 report):
+suites: lib 86 (+1 ignored) / no_sme2 82 / pure 71, doc 21, vectors 2, bench-hashes 7 (VM); x86-64 cargo check clean.
+VM: perf_regress compare servil(ffcef50) dddb5d3: no regression (the first version of 7cd10ec was held: 64 B x 2 +42%, x 3 +35%; fixed before commit).
+Mac: runner jobs 282 (7cd10ec) and 284 (dddb5d3), perf_regress compare ffcef50: no regression.
+Mac probes 283, 285: odd lengths 100-3000 B at 2-1024 messages against commonware, P- and E-cores: servil ahead at every P-core cell (2000 B x 4 703 against 920).
