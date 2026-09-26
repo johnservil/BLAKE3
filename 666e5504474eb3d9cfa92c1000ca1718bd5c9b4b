@@ -1,0 +1,5 @@
+Gate for 666e550 (1ca0b1d + 666e550, NEON parent plans for batches of 2-16 blocks):
+suites: lib 76 / no_sme2 72 / pure 62, doc 21, vectors 2, bench-hashes 7: all pass (VM).
+VM: perf_regress compare servil(9fd0ac9) 666e550: no regression; faster 256 B x 2 -37%, x 4 -12%, mt 4096 -19%.
+Mac: runner job 265 (perf_regress compare 9fd0ac9 666e550): no regression; faster 256 B x 2 -37%, x 4 -12%, mt 4096 -19%.
+Mac probes 261-264 (1ca0b1d, old/new/new/old) and 266 (666e550): hash_many sweeps 1-40 at 128/256/1024 B; 666e550 no count slower than 9fd0ac9 (1ca0b1d had 21, 37, 53 slower; 666e550 fixes).
