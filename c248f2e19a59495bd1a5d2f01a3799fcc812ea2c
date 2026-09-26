@@ -1,0 +1,1 @@
+Gate for c248f2e (candidate/exact-time: tools read samples v3 as exact fractions; AGENTS integers-first): tools and docs only, src identical. VM: perf_regress compare servil candidate: no regression. Mac: runner job 304: no regression (run before the Mac got busy). bench-hashes 32fc688 (the samples format) and tools/check-report.py (1178/1178 cells).
