@@ -58,6 +58,10 @@ pub(crate) fn hash_many_on(input: &[u8], len: usize, outputs: &mut [[u8; OUT_LEN
     if chunked(len) && platform_is_sme2(platform) && (outputs.len() >= 16 || outputs.len() >= sme2_chunked_min(len)) {
         return hash_chunked(input, len, outputs, platform);
     }
+    #[cfg(blake3_neon_hybrid)]
+    if (CHUNK_LEN + 1..=2 * CHUNK_LEN).contains(&len) && outputs.len() >= 2 && neon_plans() {
+        return hash_two_chunks(input, len, outputs);
+    }
     if outputs.len() < 2 || len > CHUNK_LEN {
         for (i, output) in outputs.iter_mut().enumerate() {
             *output = *crate::hash_serial_on(&input[i * slot..][..len], IV, 0, platform).as_bytes();
@@ -150,6 +154,54 @@ fn hash_chunked(input: &[u8], len: usize, outputs: &mut [[u8; OUT_LEN]], platfor
         // Sound: the caller found SME2 (platform_is_sme2), and every lane
         // points at a whole slot inside `input`, zero past its message.
         unsafe { crate::sme2::hash_chunked_messages(&lanes, len, IV, digests.as_flattened_mut()) };
+    }
+}
+
+/// Messages of two chunks (1025 to 2048 bytes) side by side on the integer
+/// + NEON parent plans, sixteen at a time: every message's first chunk in
+/// one plan call at counter 0, every second chunk in another at counter 1,
+/// then every root. hash() gives each message a NEON pair with a spare
+/// lane (q1) or a pair alone (k2); side by side the plans fill their
+/// lanes with the batch. VM, ns per message, one hash() each / side by
+/// side: 2000 B x 2 1018 / 927, x 3 1036 / 653, x 4 1050 / 697, x 8 690
+/// (SME2 from 7); 1100 B x 3 442 / 379. Commonware's four NEON lanes: 2000
+/// B x 4 824 (Mac P-core 914 against servil's 1050 before, job 283).
+#[cfg(blake3_neon_hybrid)]
+#[inline(never)]
+fn hash_two_chunks(input: &[u8], len: usize, outputs: &mut [[u8; OUT_LEN]]) {
+    use crate::PARENT;
+    let slot = slot_len(len);
+    let second = len - CHUNK_LEN;
+    let second_blocks = second.div_ceil(BLOCK_LEN);
+    let last_len = second - (second_blocks - 1) * BLOCK_LEN;
+    // Sixteen at a time, as the plans take them: small arrays to zero.
+    const GROUP: usize = 16;
+    for (messages, digests) in input.chunks(slot * GROUP).zip(outputs.chunks_mut(GROUP)) {
+        let count = digests.len();
+        let mut firsts: [core::mem::MaybeUninit<&[u8; CHUNK_LEN]>; GROUP] = [core::mem::MaybeUninit::uninit(); GROUP];
+        let mut seconds: [core::mem::MaybeUninit<*const u8>; GROUP] = [core::mem::MaybeUninit::uninit(); GROUP];
+        for (i, message) in messages.chunks_exact(slot).enumerate() {
+            firsts[i].write(message[..CHUNK_LEN].try_into().expect("a whole first chunk"));
+            seconds[i].write(message[CHUNK_LEN..].as_ptr());
+        }
+        let mut cvs = [[0u8; OUT_LEN]; 2 * GROUP];
+        let mut pairs = [[0u8; BLOCK_LEN]; GROUP];
+        // Sound: the first `count` entries of both tables were written just
+        // above; each second-chunk pointer reaches `second_blocks` whole
+        // blocks inside its slot, zero past the message; the caller found
+        // the SHA-3 extension (neon_plans).
+        unsafe {
+            let firsts = core::slice::from_raw_parts(firsts.as_ptr() as *const &[u8; CHUNK_LEN], count);
+            crate::neon_hybrid::hash_many_last_len(firsts, IV, 0, IncrementCounter::No, 0, CHUNK_START, CHUNK_END, BLOCK_LEN, cvs[..count].as_flattened_mut());
+            crate::neon_hybrid::hash_messages_raw(seconds.as_ptr() as *const *const u8, count, second_blocks, IV, 1, CHUNK_START, CHUNK_END, last_len, cvs[count..2 * count].as_flattened_mut());
+        }
+        for (i, pair) in pairs[..count].iter_mut().enumerate() {
+            pair[..OUT_LEN].copy_from_slice(&cvs[i]);
+            pair[OUT_LEN..].copy_from_slice(&cvs[count + i]);
+        }
+        let parents: arrayvec::ArrayVec<&[u8; BLOCK_LEN], GROUP> = pairs[..count].iter().collect();
+        // Sound: as above.
+        unsafe { crate::neon_hybrid::hash_many_last_len(&parents, IV, 0, IncrementCounter::No, PARENT, 0, ROOT, BLOCK_LEN, digests.as_flattened_mut()) };
     }
 }
 
