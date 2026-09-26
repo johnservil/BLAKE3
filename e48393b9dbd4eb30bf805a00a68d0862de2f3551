@@ -1,0 +1,1 @@
+Gate for e48393b (candidate/patch-check: perf_regress and the runner lock the patched version and check the build's source): tools only. VM: perf_regress check and compare servil candidate: no regression, no unused-patch warning. Mac: runner job 312: no regression.
