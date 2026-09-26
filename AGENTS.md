@@ -1,5 +1,7 @@
 # Style Guides
 
+These style guides read the same in the fork's `AGENTS.md` and in bench-hashes' `AGENTS.md`; a change goes into both.
+
 ## Communication
 
 - Phrase positively or neutrally; avoid negations and "not this, but that" contrasts.
@@ -107,6 +109,10 @@ execution scheduling are separate concerns. Differential tests supplement
 these anchors. Keep benchmark correctness checks outside timed intervals,
 and share the implementation dispatch between checking and timing.
 
+## Coding: integers first
+
+Avoid floating point except where the domain is continuous by nature (pixel coordinates on a log axis, an elapsed-seconds display). Measurements, statistics, ratios, and thresholds are integers in fixed units: picoseconds per byte for time, permille for ratios and spreads, hundredths for opacities. Integer arithmetic is exact and reproducible; round explicitly (`(a + b / 2) / b`) at the one place a division happens. Convert to `f64` at the last moment, for drawing only.
+
 ## Coding: Design By Contract
 
 We document and `assert` every precondition our code relies on (`debug_assert` only on hot paths). Contracts are **expansive** (the caller carries the responsibility), **conceptually simple** (a few sentences of English; simplicity beats familiarity), and **structurally simple** to enforce (few lines, types, data elements, conditionals).
@@ -177,7 +183,7 @@ A candidate reaches `servil` only when all of these hold, and never without the 
 
 A regression the user accepts, as the section above describes, lands with the user's decision, the regressed cells, and their numbers in the merge's message (for a fast-forward, the promoted commit's message; amend the message only, leaving the measured tree unchanged). The user accepts such trades under this rule (September 25, 2026): every slowed cell stays ahead of every competitor, the gains outweigh the losses, and the user decides; the minimax cells, where we trail or lead narrowly, may not slow. A candidate waiting on the Mac waits on its branch; the VM's verdict alone does not promote it.
 
-After a promotion, pin bench-hashes to the new tip (`cargo update -p blake3-servil` in bench-hashes, commit the `Cargo.lock`, push): that pin is what users measure, and records are made on it.
+A promotion fast-forwards `servil` to the candidate, records the gate's evidence (suites, both verdicts, their job numbers) as a note on the tip (`git notes --ref=perf add`; push `servil` with `refs/notes/perf`), and deletes the candidate branch here and on GitHub. After a promotion, pin bench-hashes to the new tip (`cargo update -p blake3-servil` in bench-hashes, commit the `Cargo.lock`, push): that pin is what users measure, and records are made on it.
 
 # Environment
 

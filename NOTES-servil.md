@@ -212,8 +212,10 @@ messages); leftovers of 4-8 after about 500 messages. Not explained:
 after two or more groups the overlap group below also runs slow though it
 leaves no NEON work.
 
-Tried: 13-15 one-block leftovers as one more, overlapping, SME2 group
-read in place (candidate/overlap-group, not promoted). Against servil
+Taken: 13-15 one-block leftovers as one more, overlapping, SME2 group
+read in place (4d0751f; `OVERLAP_MIN`; Zooko accepted the trade on
+September 25, under the rule that a slowed cell stays ahead of every
+competitor). Against the NEON leftovers
 through the API (jobs 130-133, old/new/new/old): 29-31 messages -20 to
 -22% on P-cores in both modes (old slow, new fast), 45-47 -18 to -20%
 back to back but +4 to +5% with reads, 109-111 +8 to +11% (both slow; the
