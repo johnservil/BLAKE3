@@ -534,26 +534,74 @@ back-to-back effect; not measured natively.
 
 ## Tooling and its pitfalls
 
-**perf_regress** (`check` = working tree against HEAD, `compare OLD NEW`):
-eight runs A B B A A B B A of sha256 (the control), servil, and servil mt
-at 29 points, 48 rounds; a cell is slower when all four pairs' 5th
-percentiles are more than 3% above (solo cells) or 10% above (shared
-cells, since September 25, 2026); a second eight must agree; the control
-moving means no verdict. Confirmed solo cells hold the change (exit 1);
-confirmed shared cells are listed beside exit 0, and the commit message
-names them and the reason (since September 26, 2026). Calibrated on 32 runs of one commit: no false flag
-in 2400 cell comparisons; 5% slower caught 70%, 10% 95%, 20% always. Each
-listed cell also shows its 90th-percentile ratio, which the verdict ignores
-(a two-speed cell's 5th percentile sees only the fast speed). It measures
-only its points; a kernel no point exercises can change unseen (4 KiB was
-added for that). `check --against <last release>` before a release.
+**perf_regress** (`check` = working tree against HEAD, `compare OLD NEW`,
+`build` = the working tree's bench-hashes for runs by hand): runs A B B
+A A B B A of sha256 (the control), servil, and servil mt at 29 points, 24
+rounds each; a cell is slower when all four pairs' 5th percentiles are
+more than 3% above (solo cells) or 10% above (shared cells, since
+September 25, 2026); the control moving means no verdict. Confirmed solo
+cells hold the change (exit 1); confirmed shared cells are listed beside
+exit 0, and the commit message names them and the reason (since
+September 26, 2026). Each listed cell also shows its 90th-percentile
+ratio, which the verdict ignores (a two-speed cell's 5th percentile sees
+only the fast speed). It measures only its points; a kernel no point
+exercises can change unseen (4 KiB was added for that). `check --against
+<last release>` before a release.
+
+Since September 26, 2026 a check takes about 17 s on the VM when neither
+side's code changed (95 s before), for three reasons:
+- *Curtailment.* A pair's runs measure only the points with a cell still
+  open (every pair so far beyond its margin one way); the first pair
+  measures all 29, then typically 5-12, then 0-3. The verdict is the one
+  every pair measuring every point would give from the same pairs.
+  Confirmation (four more pairs) measures only the slower cells' points.
+- *Shorter runs.* The variance between processes exceeds a run's
+  sampling noise: a cell's 5th percentile across runs varies 1.4% at 24
+  samples, 1.5% at 12, 1.8% at 6 (VM, median cell), so rounds went 48 ->
+  24. Calibrated on unchanged code (VM, checks simulated over consecutive
+  runs): false flags before confirmation 0.07% of cells, no false
+  no-verdict in 25 checks; a solo cell 5% slower caught 81% (84% at 48
+  rounds, 61% at 12), 10% 92%, 20% 95%. The misses are the cells whose
+  speed differs between processes (servil mt at 64 KiB and 1024
+  messages, servil st at 32 KiB).
+- *Cargo's freshness.* Each side is a directory it owns (fork worktree,
+  bench-hashes copy with its own lock, target directory), changed only
+  where its sources differ, so an unchanged side builds nothing (1.2 s
+  of git and copying). Two bugs had made every build rebuild
+  bench-hashes: the committed lock patched and written back on every
+  check, and bench-hashes' build.rs watching `<git dir>/refs/tags`,
+  which a worktree's git directory lacks (a missing watched path is
+  always stale; tags live in the common directory).
+A synthetic slowdown (+33% at 64 B) was held on 64 B and one-message
+batches, confirmed over 6 then 4 points, in about 35 s.
+
+Found while calibrating (September 26, 2026), both open:
+- *The VM warms up.* Under sustained load the guest slows over its first
+  3-4 minutes, then holds: SHA-256 +5-11%, servil mt about +6% (settled
+  in about 2 minutes), servil st about +2%. Within a 9 s run there is no
+  drift (first half against second half 1.00%, odd against even
+  rounds 1.03%); the Mac's record shows none over minutes (0.31% against
+  0.29%). A B B A with the all-pairs rule cancels monotone drift (it
+  pushes alternate pairs opposite ways), so verdicts stay unbiased; a
+  record made cold compares SHA-256 with BLAKE3 up to 5-9% differently
+  than one made warm.
+- *A trivial change moves shared 32-64 KiB by a fifth.* 64 dependent
+  `black_box` steps added to `hash()` (40 ns at 32 KiB, 0.7%) made shared
+  servil st 32 KiB +24% and 64 KiB +20% in all eight pairs: code layout,
+  or a shift in when the two copies take the SME2 lock. Ours to explain.
 
 **bench-hashes depends on the fork by git** at the commit its
-`Cargo.lock` pins (what users measure). `perf_regress` and the Mac runner
-build it against a local checkout with `cargo --config
+`Cargo.lock` pins (what users measure). A build against a local checkout
+takes `cargo --config
 'patch."https://github.com/johnservil/BLAKE3".blake3-servil.path=".."'`
-(bench-hashes nested in that checkout); `perf_regress` restores the
-`Cargo.lock` the patch rewrites. Records of fork commit X: pin X in
+(bench-hashes nested in that checkout), and the patch changes the lock,
+so it happens where the lock belongs to the build: `perf_regress`'s sides
+(`tmp/perf-ab/old/`, `new/`: a fork worktree, a copy of bench-hashes
+with its own lock derived from the committed one, a target directory;
+`perf_regress.py build` for runs by hand), and the Mac runner's
+throwaway clones. Until September 26, 2026 perf_regress patched the
+committed lock and wrote it back, a change and a change back on every
+check, which made Cargo rebuild bench-hashes every time. Records of fork commit X: pin X in
 bench-hashes (`cargo update -p blake3-servil --precise X`), run
 unpatched, commit the lock with the records.
 
