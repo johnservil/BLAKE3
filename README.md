@@ -1,5 +1,20 @@
 # BLAKE3
 
+# Warning
+
+This code is new, and is the product of being written and rewritten rapidly by AI models under
+Zooko's direction. “John Servil” is AI following a bunch of directions and guidance from Zooko,
+some of which you can see in `AGENTS.md`. The *warning* is that this code hasn't been
+scrutinized — by either human or AI — for bugs and vulnerabilities. There is also not, as yet, any
+formal verification or other quality assurance techniques applied to this codebase, although it
+does have good tests (those inherited from the original BLAKE3 maintainers, and the fork's own
+tests of every kernel against the reference implementation and fixed digests) and extensive
+benchmarks (which also assert the correctness of the resulting hash values along the way). This
+fork — the servil fork — of BLAKE3 also does not have any users as of yet. You would be the
+first. Use at your own risk.
+
+# The servil fork
+
 This is the `servil` branch of John Servil's fork, published as the
 crate `blake3-servil` so it links beside crates.io `blake3`. It has its
 own version series from 0.1.0 (tags `vX.Y.Z+<commit>`), based on BLAKE3
@@ -24,6 +39,8 @@ with the official crate and with SHA-256 on your own machine; its
 [results](https://johnservil.github.io/bench-hashes/benchmark-results/AppleM4Max.darwin25/bench-hashes.graph.svg)
 include an Apple M4 Max. `CONTRIBUTING.md` says how to work on the fork.
 The text below is upstream's.
+
+# The BLAKE3 algorithm
 
 BLAKE3 is a cryptographic hash function that is:
 
