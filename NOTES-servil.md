@@ -48,10 +48,21 @@ generator, check that existing kernels stay byte-identical unless meant.
 - `hash_many(input, message_len, out)`: equal messages back to back in one
   buffer (the only batch API; the slice-of-slices one went, Zooko,
   September 26). `many::hash_many_on` picks by length:
+  - The padded batch contract (7cd10ec, Zooko's decision): message i
+    sits at i x `slot_len(len)` (len rounded up to 64; 64 for empty), zero
+    past its end; kernels record the last block's length (SME2 message
+    kernel: flags bits 40-47; NEON plans: packed last_len). Multiples of 64
+    are unchanged; 64-byte messages keep their own entry (a shared one cost
+    64 B x 3 7%).
   - One block (64 B): the platform's `hash_many` TABLE (128) at a time,
     SME2 parent-kernel groups of 16 from 16 messages, the NEON parent
-    plans (p2-p9) below and for remainders, the overlap group for 13-15
-    left over (`OVERLAP_MIN`).
+    plans (p2-p9) below and for remainders; on SME2 from 11 messages, and
+    from 13 left over past groups, every group on the message kernel with
+    a padded last group (ffcef50; `ONE_BLOCK_PAD_MIN`). Short blocks
+    (1-63 B) on SME2 always take the message kernel from 11.
+  - Two chunks (1025-2048 B) below the SME2 threshold, and on NEON-only
+    CPUs: side by side on the NEON parent plans (first chunks, second
+    chunks, roots; 0869c79): Mac 2000 B x 4 1050 -> 703 ns/msg.
   - 2-16 whole blocks (`hash_blocks`, 9fd0ac9, 666e550): below ten
     messages the integer + NEON parent plans (p2-p9 take any block count
     at one counter); from ten (`SME2_TAIL_MIN`), and from five past whole
@@ -64,7 +75,7 @@ generator, check that existing kernels stay byte-identical unless meant.
     666e550, VM: 2 180/104, 3 181/76, 5 105/70, 9 99/60, 12 91/51, 15
     106/41, 24 74/51; Mac P-core (jobs 256-266): 2 184/116, 3 183/79,
     12 99/50, 15 115/40, 24 73/50. SHA-256 ring takes about 93 (VM).
-  - 2-15 chunks of whole blocks (`hash_chunked`, 0bed4e7): on SME2, from
+  - 2-15 chunks (`hash_chunked`, 0bed4e7): on SME2, from
     `SME2_CHUNKED_MIN` messages (7-12 by chunk count), sixteen side by
     side: chunk k of every lane on the message kernel at counter k (the
     whole chunks in one call, the counter stepping per group through bits
