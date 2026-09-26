@@ -1,0 +1,1 @@
+Gate for 6ee5b7a (candidate/speed-charts: README trimmed for the newcomer, speed charts on one scale labelled by hash, media/speed-charts.md generated from the Mac record): docs and tools only, src identical to 01bc76e. VM: perf_regress compare servil candidate: no regression. Mac: runner jobs 301 and 302 (this tip), perf_regress compare: no regression.
