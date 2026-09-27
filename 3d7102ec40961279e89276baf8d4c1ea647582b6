@@ -1,0 +1,1 @@
+Gate (September 27, 2026): suites default 89, no_sme2 85, pure 74, doc 21, vectors 2 passed (VM); perf_regress VM no regression (pre-commit); Mac job 374 no regression; streamed A/B Mac jobs 375-378: mt solo 32 MiB 0.065 -> 0.043, 8 MiB 0.067 -> 0.048 ns/B, st level.
