@@ -1,0 +1,1 @@
+Gate (September 27, 2026): suites VM default 89, no_sme2 85, pure 74, doc 21, vectors 2; Mac tests job 391 passed; perf_regress VM no regression (pre-commit); Mac job 390 no regression; A/B Mac jobs 382-385 (4 x 64 B 23.2 -> 20.3 ns/msg). E-core unmeasured.
