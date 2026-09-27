@@ -1,0 +1,3 @@
+Promoted September 28, 2026 (the planned API: Mode, Threads, hash_with, hash_many_with, initialize / initialize_multithreaded, Queue in three shapes with the feed).
+Suites: VM lib 86 / no_sme2 82 / pure 71, doc 21, api_plan 12, vectors 2, bench-hashes (api-plan branch) 9; ThreadSanitizer on api_plan (7 runs) and the queue and pool unit tests, clean. Mac test job 418: lib 86 / 82 / 71, doc 21, vectors 2 (the runner predates its integration-test step: api_plan ran on the VM alone until Zooko restarts it).
+perf_regress compare servil candidate/api-plan: VM no regression; Mac job 419 no regression (mains power, High Power mode). Queue cells, Mac A B B A (jobs 410-417) in the commit messages.
