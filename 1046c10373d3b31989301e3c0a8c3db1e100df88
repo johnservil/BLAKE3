@@ -1,0 +1,1 @@
+Gate (September 27, 2026): suites default 89, no_sme2 85, pure 74, doc 21, vectors 2, bench-hashes 6 passed (VM). perf_regress VM: regression held on back-to-back mt cells (numbers in the message); Mac job 373 (tree f39a455, message amended only): regression on the same kind of cells. Accepted by Zooko: a fix to the benchmark, not a slowdown users meet.
