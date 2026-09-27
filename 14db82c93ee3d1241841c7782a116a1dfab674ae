@@ -1,0 +1,1 @@
+Gate for 14db82c (candidate/after-idle-gate), September 26, 2026: tools and NOTES only; code as 663f17e. VM compare: no regression. Mac jobs 337, 339: no regression. After-idle margin calibrated: VM (7 checks) and Mac job 338 (41 checks).
