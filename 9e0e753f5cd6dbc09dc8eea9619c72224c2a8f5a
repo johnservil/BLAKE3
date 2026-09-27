@@ -1,0 +1,1 @@
+Gate (September 27, 2026): suites VM default 84, no_sme2 80, pure 69, doc 19, vectors 2 (Stream's tests gone); Mac tests job 407 passed; perf_regress VM no regression; Mac job 406 no regression. Zooko's decision: Stream deleted.
