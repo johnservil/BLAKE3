@@ -1,0 +1,1 @@
+Gate for 663f17e (candidate/clocks), September 26, 2026: the clocks crate and the examples on it; the library unchanged. Suites (VM): lib 89 / 85 / 74, doc 21, vectors 2, clocks 2. VM: pre-commit check, no regression. Mac: job 334 no regression, job 335 suites passed, job 336 scaling reports each thread's clock.
