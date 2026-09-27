@@ -1,0 +1,1 @@
+Gate (September 27, 2026): suites VM default 89, no_sme2 85, pure 74, doc 21, vectors 2; Mac tests job 402 passed; perf_regress VM no regression; Mac job 401 no regression. Zooko's decision: P -12%, E +30% (jobs 396-399) for hash_many's top speed.
