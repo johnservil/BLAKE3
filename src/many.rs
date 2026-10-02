@@ -229,7 +229,7 @@ pub(crate) fn sme2_sized(len: usize, count: usize) -> bool {
 #[inline(never)]
 fn hash_run<const N: usize>(messages: &[u8], key: &CVWords, flags: u8, outputs: &mut [[u8; OUT_LEN]], platform: Platform) {
     #[cfg(blake3_sme2)]
-    if platform_is_sme2(platform) && outputs.len() % 16 >= if outputs.len() > 16 { ONE_BLOCK_PAD_AFTER_GROUPS } else { ONE_BLOCK_PAD_MIN } {
+    if platform_is_sme2(platform) && outputs.len() % 16 >= if outputs.len() > 16 { probe_after() } else { ONE_BLOCK_PAD_MIN } {
         return hash_run_padded::<N>(messages, key, flags, outputs, BLOCK_LEN);
     }
     let mut table: [core::mem::MaybeUninit<&[u8; N]>; TABLE] = [core::mem::MaybeUninit::uninit(); TABLE];
@@ -290,6 +290,13 @@ fn hash_run_short<const N: usize>(messages: &[u8], key: &CVWords, flags: u8, out
 /// the plans' fast state, 22, 24, 26 12-16% slower (their slow state is
 /// twice as slow). The worst case halves; the fast case pays up to 25%.
 pub(crate) const ONE_BLOCK_PAD_MIN: usize = 11;
+
+/// probe/tail-pad: the left-over count past whole groups from which the
+/// last group is padded (both thresholds), from B3_PAD_AFTER (default 5).
+fn probe_after() -> usize {
+    static AFTER: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *AFTER.get_or_init(|| std::env::var("B3_PAD_AFTER").ok().and_then(|v| v.parse().ok()).unwrap_or(SME2_TAIL_MIN_AFTER_GROUPS))
+}
 #[cfg_attr(not(blake3_sme2), allow(dead_code))]
 pub(crate) const ONE_BLOCK_PAD_AFTER_GROUPS: usize = 5;
 
@@ -356,7 +363,7 @@ fn hash_blocks<const N: usize>(messages: &[u8], key: &CVWords, flags: u8, output
     }
     let sme2 = platform_is_sme2(platform);
     let left = count % GROUP;
-    let padded = sme2 && left >= if count > GROUP { SME2_TAIL_MIN_AFTER_GROUPS } else { SME2_TAIL_MIN };
+    let padded = sme2 && left >= if count > GROUP { probe_after() } else { SME2_TAIL_MIN };
     // Messages hashed on SME2 (the first `on_sme2`), and the table's lanes.
     let on_sme2 = if padded { count } else if sme2 { count - left } else { 0 };
     let lanes = if padded { count.next_multiple_of(GROUP) } else { count };
