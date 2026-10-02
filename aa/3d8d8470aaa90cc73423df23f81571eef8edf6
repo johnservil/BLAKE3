@@ -1,0 +1,6 @@
+Promoted to servil (October 2, 2026, from candidate/api-plan-simple, 2c66bec..aa3d8d8), through the gate:
+- fast-forward of servil 2c66bec;
+- suites: VM default, no_sme2, pure (release), wasm32 lib: pass; Miri (VM, pure, 4 and 16 CPUs): update_multithreaded past the lingering threshold clean; Mac native test job 1132: passed;
+- VM: perf_regress compare servil candidate: no regression;
+- Mac: perf_regress job 1133: no regression.
+In this range: a Miri test of update_multithreaded lingering; the queue's Miri test ignored on wasm32 (CI's WASM job had failed on it).
