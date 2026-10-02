@@ -179,6 +179,9 @@ fn hash_path(args: &Args, path: &Path) -> anyhow::Result<blake3::OutputReader> {
         hasher.update_reader(io::stdin().lock())?;
     } else if args.no_mmap() {
         hasher.update_reader(File::open(path)?)?;
+    } else if std::env::var_os("B3SUM_PROBE_OVERLAP").is_some() {
+        let piece: usize = std::env::var("B3SUM_PROBE_OVERLAP").unwrap().parse().unwrap();
+        update_overlapped(&mut hasher, File::open(path)?, piece)?;
     } else {
         // The fast path: Try to mmap the file and hash it with multiple threads.
         hasher.update_mmap_multithreaded(path)?;
@@ -186,6 +189,54 @@ fn hash_path(args: &Args, path: &Path) -> anyhow::Result<blake3::OutputReader> {
     let mut output_reader = hasher.finalize_xof();
     output_reader.set_position(args.seek());
     Ok(output_reader)
+}
+
+/// Read `file` in pieces of `piece` bytes on a thread of its own, into two
+/// buffers in turn, while this thread hashes the last piece read over the
+/// pool (update_multithreaded): reading and hashing overlap.
+fn update_overlapped(hasher: &mut blake3::Hasher, mut file: File, piece: usize) -> io::Result<()> {
+    use std::sync::mpsc::sync_channel;
+    let (free_tx, free_rx) = sync_channel::<Vec<u8>>(2);
+    let (full_tx, full_rx) = sync_channel::<io::Result<Vec<u8>>>(2);
+    for _ in 0..2 {
+        free_tx.send(vec![0u8; piece]).unwrap();
+    }
+    std::thread::scope(|scope| {
+        scope.spawn(move || {
+            for mut buffer in free_rx {
+                buffer.resize(piece, 0);
+                let mut filled = 0;
+                let result = loop {
+                    match file.read(&mut buffer[filled..]) {
+                        Ok(0) => break Ok(()),
+                        Ok(n) => {
+                            filled += n;
+                            if filled == piece {
+                                break Ok(());
+                            }
+                        }
+                        Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                        Err(e) => break Err(e),
+                    }
+                };
+                buffer.truncate(filled);
+                // The last piece, or an error, ends the reading.
+                let end = filled < piece || result.is_err();
+                if full_tx.send(result.map(|()| buffer)).is_err() || end {
+                    break;
+                }
+            }
+        });
+        loop {
+            let buffer = full_rx.recv().expect("the reader sends until the end")?;
+            let end = buffer.len() < piece;
+            hasher.update_multithreaded(&buffer);
+            if end {
+                return Ok(());
+            }
+            let _ = free_tx.send(buffer);
+        }
+    })
 }
 
 fn write_hex_output(mut output: blake3::OutputReader, args: &Args) -> anyhow::Result<()> {
