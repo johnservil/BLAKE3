@@ -174,7 +174,7 @@ fn hash_path(args: &Args, path: &Path) -> anyhow::Result<blake3::OutputReader> {
     } else {
         let file = File::open(path)?;
         #[cfg(unix)]
-        if let Some(map) = mapped_if_cached(&file) {
+        if let Some(map) = mapped(&file) {
             hasher.update_multithreaded(&map);
         } else {
             update_from(&mut hasher, file)?;
@@ -187,16 +187,18 @@ fn hash_path(args: &Args, path: &Path) -> anyhow::Result<blake3::OutputReader> {
     Ok(output_reader)
 }
 
-/// `file` mapped, when it is at least MAP_LEN long and in the page cache
+/// `file` mapped, when it is at least MAP_LEN long and, outside Linux, in the page cache
 /// (its first page, by mincore): hashed in place over the pool, it skips
 /// the copy a read makes, which a reader thread does alone (Linux VM,
 /// 1 GiB in the page cache: 32 ms mapped against 79 ms read; Apple M4 Max
-/// 37 against 50). A file not in the cache is read: a mapping's page
-/// faults fetch it a few pages at a time (Mac, 1 GiB from storage: 402 ms
-/// mapped against 159 ms read). A file cached only in part may be judged
-/// either way; either way hashes it right.
+/// 37 against 50). On macOS a file not in the cache is read: a mapping's
+/// page faults fetch it a few pages at a time (Mac, 1 GiB from storage:
+/// 402 ms mapped against 159 ms read). Linux reads ahead for a mapping, so
+/// it maps every file from MAP_LEN (i7-12700K, ext4 on NVMe, 1 GiB from
+/// storage: about 325 ms mapped against 410-527 ms read). A file cached
+/// only in part may be judged either way; either way hashes it right.
 #[cfg(unix)]
-fn mapped_if_cached(file: &File) -> Option<memmap2::Mmap> {
+fn mapped(file: &File) -> Option<memmap2::Mmap> {
     let len = usize::try_from(file.metadata().ok()?.len()).ok()?;
     if len < MAP_LEN {
         return None;
@@ -205,6 +207,9 @@ fn mapped_if_cached(file: &File) -> Option<memmap2::Mmap> {
     // a file another program truncates meanwhile is the caller's risk, as
     // with any mapping (upstream b3sum mapped every file).
     let map = unsafe { memmap2::Mmap::map(file) }.ok()?;
+    if cfg!(target_os = "linux") {
+        return Some(map);
+    }
     let mut resident = 0u8;
     // Sound: the mapping's first page, from its start.
     let rc = unsafe { libc::mincore(map.as_ptr() as *mut libc::c_void, 1, (&mut resident as *mut u8).cast()) };
