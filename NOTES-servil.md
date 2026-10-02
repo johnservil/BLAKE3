@@ -1772,6 +1772,10 @@ passed / no verdict (busy): one executable 0/5/3; another layout 1/7/0;
   one executable 0 of 5 held, another layout 1 of 8, +3% 4 of 7, +6% 6 of
   6.
 
+The VM (the same launcher run in the guest, bench-hashes 5b3c5cb, solo
+alone, eight repeats, quiet): one executable 0 of 8 held, another layout
+0 of 8, +3% 5 of 8 (at 64 B or 1 MiB), +6% 8 of 8; 31 s a check.
+
 ## Memory: what each call allocates (a survey, October 2, 2026)
 
 For the memory guarantees Zooko asked to document (bench-hashes
