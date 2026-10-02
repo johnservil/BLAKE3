@@ -1,0 +1,6 @@
+Promoted to servil (October 2, 2026, from candidate/api-plan-simple, 18d1b3e..ff8f203), through the gate:
+- fast-forward of servil 18d1b3e;
+- suites: VM default, no_sme2, pure (release), debug lib: pass; Mac native test job 1081: passed (both extended-output kernels' tests, the guard pages, the reference comparisons);
+- VM: perf_regress compare servil candidate: no regression;
+- Mac: perf_regress job 1082 (18d1b3e against 4e91fa0, the code): no regression.
+In this range: extended output on NEON, eight blocks at a time (Mac, NEON-only builds 0.70 -> 0.30 ns/B; jobs 1073-1080); a guard-page test for extended output.
