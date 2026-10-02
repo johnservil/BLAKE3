@@ -1,6 +1,8 @@
 //! probe/mac-debug-tests, round two: the suites under AddressSanitizer
 //! and ThreadSanitizer on the Mac (nightly rustc, -Zsanitizer, no
 //! build-std), the pool's and the queue's unsafe code on Apple's cores.
+//! Round three: TSan alone, std uninstrumented (its reports inside std's
+//! own synchronization may be false).
 use std::io::Write;
 use std::process::Command;
 
@@ -9,8 +11,6 @@ fn main() {
     let mut report = String::new();
     let target = "aarch64-apple-darwin";
     for (sanitizer, args) in [
-        ("address", vec!["test", "--lib", "--target", target]),
-        ("address", vec!["test", "--test", "api_plan", "--test", "queue_no_alloc", "--target", target]),
         ("thread", vec!["test", "--lib", "--target", target, "--", "lanes", "unsafe_paths", "many"]),
         ("thread", vec!["test", "--test", "api_plan", "--target", target]),
     ] {
@@ -18,8 +18,8 @@ fn main() {
             .args(&args)
             .current_dir(fork)
             .env("CARGO_TARGET_DIR", format!("{fork}/target/san-{sanitizer}"))
-            .env("RUSTFLAGS", format!("-Zsanitizer={sanitizer}"))
-            .env("RUSTDOCFLAGS", format!("-Zsanitizer={sanitizer}"))
+            .env("RUSTFLAGS", format!("-Zsanitizer={sanitizer} -Cunsafe-allow-abi-mismatch=sanitizer"))
+            .env("RUSTDOCFLAGS", format!("-Zsanitizer={sanitizer} -Cunsafe-allow-abi-mismatch=sanitizer"))
             .env("TSAN_OPTIONS", "halt_on_error=0")
             .output()
             .expect("cargo runs");
