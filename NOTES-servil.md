@@ -1776,6 +1776,34 @@ The VM (the same launcher run in the guest, bench-hashes 5b3c5cb, solo
 alone, eight repeats, quiet): one executable 0 of 8 held, another layout
 0 of 8, +3% 5 of 8 (at 64 B or 1 MiB), +6% 8 of 8; 31 s a check.
 
+## The queue's cells between processes (October 2, 2026, VM)
+
+Why the regression check cannot judge the queue's cells (the section
+below). Twenty fresh processes of servil mt's queue cells, 24 rounds
+each (bench-hashes probe/queue-sample-length, BENCH_QUEUE_SAMPLE_MS for
+the queue's sample length), the spread of the processes' means beside
+what their samples' own noise predicts (SD of the mean: within-process
+variance over 24, pooled):
+
+| cell | 1 ms samples: SD, noise, ratio | 4 ms samples: SD, noise, ratio | 4 ms against 1 ms |
+|---|---|---|---|
+| messages 64 B | 7.9%, 4.3%, 1.9 | 7.3%, 4.6%, 1.6 | 0.911 |
+| messages 1 KiB | 2.0%, 1.6%, 1.2 | 1.1%, 1.0%, 1.1 | 0.866 |
+| messages 16 KiB | 2.3%, 2.6%, 0.9 | 3.5%, 1.9%, 1.9 | 0.945 |
+| batches of 16 | 2.9%, 1.3%, 2.2 | 2.1%, 1.4%, 1.5 | 0.925 |
+| batches of 4096 | 3.6%, 2.8%, 1.3 | 2.0%, 1.7%, 1.2 | 0.927 |
+
+- Most of a queue cell's spread is its samples' own noise: a 1 ms sample
+  fills the queue, wakes its workers (15-45 us each), and drains it.
+- 4 ms samples read 5-13% faster (filling and draining weigh less): the
+  1 ms samples understate the queue's steady speed.
+- The 64 B cell (and 16 KiB, and batches of 16 at 1 ms) differ between
+  processes beyond their noise: a per-process state, for the Mac to
+  locate (where each thread ran, per core kind), since a VM's host places
+  its vCPUs.
+- None gets near what a 3% check needs: a median of eight pairs moves by
+  about 0.6 of a process's spread (64 B: about 4.4%).
+
 ## Memory: what each call allocates (a survey, October 2, 2026)
 
 For the memory guarantees Zooko asked to document (bench-hashes
