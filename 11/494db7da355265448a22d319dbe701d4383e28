@@ -1,6 +1,6 @@
 Promoted to servil (October 2, 2026, from candidate/api-plan-simple, ff8f203..11494db), through the gate:
 - fast-forward of servil ff8f203;
 - suites: VM default, no_sme2, pure (release), debug lib: pass; Miri (VM, pure, seeds 0-5; and CI's command for x86-64): the queue's round trips clean; Mac native test job 1128: passed;
-- VM: perf_regress compare servil candidate: see below;
+- VM: perf_regress compare servil candidate: no regression;
 - Mac: perf_regress job 1129: no regression.
 In this range: the queue's chain under Rust's aliasing rules (0c928f9, a data race Miri found); CI fixes for the cross targets (the test-vector script, the abort test under qemu) and Miri's flags; documents.
