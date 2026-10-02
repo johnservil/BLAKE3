@@ -1263,6 +1263,10 @@ fn hash_all_at_once<J: join::Join>(
 /// once, one runs at that speed and the others at about two thirds of it,
 /// the speed every thread keeps however many hash beside it.
 pub fn hash(input: &[u8]) -> Hash {
+    // PLANT (calibration only)
+    let mut x = input.len() as u64;
+    for _ in 0..32 { x = core::hint::black_box(x.wrapping_mul(3)); }
+    core::hint::black_box(x);
     hash_serial(input, IV, 0)
 }
 
