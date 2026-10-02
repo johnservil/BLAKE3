@@ -999,6 +999,13 @@ impl Pool {
                 for _ in 0..self.owed.swap(0, Ordering::SeqCst) {
                     self.posted.notify_one();
                 }
+                // Woken after a sleep: the kernels a piece runs (a group of
+                // sixteen chunks and its parents) are likely cold; fetch
+                // them in parallel before the first piece needs them.
+                #[cfg(blake3_neon_hybrid)]
+                if crate::neon_hybrid::sha3_detected() {
+                    crate::neon_hybrid::prefetch_tree_code(16, 0);
+                }
             }
             if let Some(taken) = taken {
                 return taken;
