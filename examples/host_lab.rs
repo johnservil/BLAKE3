@@ -18,7 +18,7 @@ fn main() {
     let bench = fork.join("record-bench");
     let _ = std::fs::remove_dir_all(&bench);
     run(Command::new("git").args(["clone", "-q", "--depth", "1", "--branch", "candidate/benchmark-plan", "https://github.com/johnservil/bench-hashes"]).arg(&bench));
-    let line = run(Command::new("sh").arg(bench.join("tools/b3sum-contenders.sh")).arg(fork).arg(home.join("b3sum-contenders")).arg("servil"));
+    let line = run(Command::new("sh").arg(bench.join("tools/b3sum-contenders.sh")).arg(fork).arg(home.join("b3sum-contenders")).arg("eb5e0af"));
     let pick = |prefix: &str| line.split_whitespace().find(|w| w.starts_with(prefix)).unwrap().split_once('=').unwrap().1.to_owned();
     let target = home.join("record-bench-target");
     run(Command::new("cargo").current_dir(&bench).args(["build", "--release", "--locked"]).env("CARGO_TARGET_DIR", &target));
