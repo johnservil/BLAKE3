@@ -1,0 +1,6 @@
+Promoted to servil (October 2, 2026, from candidate/api-plan-simple, 3a8327f..3a678cf), through the gate:
+- fast-forward of servil 3a8327f;
+- suites: VM default, no_sme2, pure (release), debug default, official vectors: pass; Mac native test job 1024: passed;
+- VM: perf_regress compare servil candidate gave no verdict twice, the control (sha256 lent 64 B) +8.1% and +9.1% the same way: the change moving SHA-256's code (PROCEDURES: the Mac's verdict decides);
+- Mac: perf_regress job 1023 (3a8327f against 3a678cf, mains): no regression.
+In this range: the pause check reads the counter's frequency once (lent 4 KiB back to level, jobs 1013-1022); CI on servil, candidates, and pull requests; documents.
