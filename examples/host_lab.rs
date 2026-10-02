@@ -12,9 +12,9 @@
 
 use std::process::Command;
 
-const ALIGN: bool = true;
+const ALIGN: bool = false;
 const REPEATS: usize = 6;
-const BENCH_BRANCH: &str = "probe/summary-calibration";
+const BENCH_BRANCH: &str = "probe/summary-calibration-primed";
 
 fn main() {
     let fork = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
