@@ -1,0 +1,6 @@
+Promoted to servil (October 2, 2026, from candidate/api-plan-simple, 3a678cf..1d2b652), through the gate:
+- fast-forward of servil 3a678cf;
+- suites: VM default, no_sme2, pure (release), debug default: pass; Mac native test job 1030: passed;
+- VM: perf_regress compare servil candidate: no verdict twice, the control (sha256 lent 64 B) -7.5% and -7.1% the same way (SHA-256's code moved; the Mac decides);
+- Mac: perf_regress job 1029 (3a678cf against 7510d44, the code; the rest documents): no regression.
+In this range: a fresh Hasher's first update prefetches its code after a pause (Mac, after other work: 4 KiB -27%, 8 KiB -35%; jobs 1025-1028).
