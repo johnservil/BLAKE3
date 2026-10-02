@@ -1,0 +1,6 @@
+Promoted to servil (October 2, 2026, from candidate/api-plan-simple, 9dda4be..5739af6), through the gate:
+- fast-forward of servil 9dda4be;
+- suites: VM default, no_sme2, pure, mmap (release), debug default: pass; Mac native test job 1043: passed;
+- VM: perf_regress compare servil candidate: no regression;
+- Mac: perf_regress job 1042: no regression.
+In this range: update_reader hashes every byte it read before returning an error (a39fb7c lost them; a retrying caller would have got a wrong digest). New test test_update_reader_keeps_every_byte_across_errors fails on 9dda4be.
