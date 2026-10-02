@@ -206,6 +206,13 @@ fn mapped_if_cached(file: &File) -> Option<memmap2::Mmap> {
     // with any mapping (upstream b3sum mapped every file).
     let map = unsafe { memmap2::Mmap::map(file) }.ok()?;
     let mut resident = 0u8;
+    // Control (probe/one-page-control): the 16-page test's other 15 calls, their answers ignored.
+    let page = usize::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) }).ok()?;
+    let pages = len.div_ceil(page);
+    for k in 1..16 {
+        let mut ignored = 0u8;
+        unsafe { libc::mincore(map.as_ptr().add(pages * k / 16 * page) as *mut libc::c_void, 1, (&mut ignored as *mut u8).cast()) };
+    }
     // Sound: the mapping's first page, from its start.
     let rc = unsafe { libc::mincore(map.as_ptr() as *mut libc::c_void, 1, (&mut resident as *mut u8).cast()) };
     (rc == 0 && resident & 1 == 1).then_some(map)
