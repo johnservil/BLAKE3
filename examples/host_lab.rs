@@ -12,7 +12,7 @@
 
 use std::process::Command;
 
-const ALIGN: bool = false;
+const ALIGN: bool = true;
 const REPEATS: usize = 6;
 const BENCH_BRANCH: &str = "probe/summary-calibration";
 
