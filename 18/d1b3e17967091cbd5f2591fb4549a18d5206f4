@@ -1,0 +1,6 @@
+Promoted to servil (October 2, 2026, from candidate/api-plan-simple, 099a292..18d1b3e), through the gate:
+- fast-forward of servil 099a292;
+- suites: VM default, no_sme2, pure (release), debug lib, official vectors: pass; Mac native test job 1067: passed (the extended-output kernel's tests and the 40-case self-test among them); gdb: all 32 assembly entries reached by the self-test (VM);
+- VM: perf_regress compare servil candidate: see the check above this promotion;
+- Mac: perf_regress job 1072: no regression.
+In this range: extended output on SME2, sixteen blocks at a time (Mac jobs 1068-1071: 4 KiB-1 MiB of output 0.69-0.71 -> 0.154-0.155 ns/B).
