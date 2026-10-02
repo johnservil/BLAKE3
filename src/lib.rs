@@ -1288,6 +1288,23 @@ fn hash_all_at_once<J: join::Join>(
 /// once, one runs at that speed and the others at about two thirds of it,
 /// the speed every thread keeps however many hash beside it.
 pub fn hash(input: &[u8]) -> Hash {
+    // PLANT (probe/plant-proportional, calibration only): with B3_PLANT=P,
+    // P of every 100 calls hash their input a second time: P% more work at
+    // every length, in one executable whichever P it runs with.
+    #[cfg(feature = "std")]
+    {
+        static PLANT: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+        let plant = *PLANT.get_or_init(|| std::env::var("B3_PLANT").ok().and_then(|v| v.parse().ok()).unwrap_or(0));
+        if plant > 0 {
+            std::thread_local! {
+                static CALLS: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
+            }
+            let n = CALLS.with(|c| c.replace(c.get() + 1));
+            if n % 100 < plant {
+                core::hint::black_box(hash_serial(core::hint::black_box(input), IV, 0));
+            }
+        }
+    }
     hash_serial(input, IV, 0)
 }
 
