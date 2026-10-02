@@ -1,0 +1,6 @@
+Promoted to servil (October 2, 2026, from candidate/api-plan-simple, 5739af6..099a292), through the gate:
+- fast-forward of servil 5739af6;
+- suites: VM default, no_sme2, pure (release), debug default: pass; Mac native test job 1066: passed;
+- VM: perf_regress compare servil candidate: no regression;
+- Mac: perf_regress job 1065: no regression.
+In this range: the pause check out of line and cold for layout (2f46995, f1aafd3): calls of 1 KiB or less after other work level or better against b132f8c, four runs a side (jobs 1057-1064), where 5739af6 read 64-128 B x1.21-1.31 (jobs 1049-1056); f1aafd3 was committed with --no-verify and checked by hand against its parent (no regression).
