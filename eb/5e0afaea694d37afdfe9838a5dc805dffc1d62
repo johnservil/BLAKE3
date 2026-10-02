@@ -1,4 +1,4 @@
-Promoted to servil (October 2, 2026, from candidate/api-plan-simple, a926404..629807f), through the gate:
+Promoted to servil (October 2, 2026, from candidate/api-plan-simple, a926404..eb5e0af), through the gate:
 - fast-forward of servil a926404; no hashing source changed (clocks, docs, tools);
 - suites, VM, each by its exit status: lib default, no_sme2, pure; doc; api_plan; one_cpu; queue_no_alloc; vectors; b3sum; clocks; bench-hashes (candidate/benchmark-plan 31bdf0c, patched); wasm32-wasip1 lib; cargo check aarch64-apple-darwin (clocks); Mac test job 1168: passed;
 - regress, the new gate (bench-hashes 31bdf0c: eight pairs, each run's mean, the lent cells solo at 3%, an exact sign test): VM perf_regress compare servil candidate: no cell slower; Mac perf_regress job 1169: no cell slower.
