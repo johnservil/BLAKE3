@@ -60,10 +60,10 @@ For the original benchmarks and the design, see the
 [BLAKE3 paper](https://github.com/BLAKE3-team/BLAKE3-specs/blob/master/blake3.pdf).
 
 <p align="center">
-<img src="media/speed.svg" alt="Hashing one 1 MiB input on an Apple M4 Max, BLAKE3 on every core and on one core: speeds in GB/s">
+<img src="https://johnservil.github.io/bench-hashes/benchmark-results/AppleM4Max.darwin25/bench-hashes.chart.svg" alt="Hashing one 1 MiB message on an Apple M4 Max: BLAKE3 on every core and on one core beside SHA-256, SHA3-256, and SHA-1, in GB/s">
 </p>
 
-<p align="center"><a href="media/speed-charts.md">How this chart was made</a></p>
+<p align="center">From <a href="https://github.com/johnservil/bench-hashes">bench-hashes</a>' latest record on an Apple M4 Max (<a href="https://johnservil.github.io/bench-hashes/benchmark-results/AppleM4Max.darwin25/bench-hashes.graph.svg">every size</a>; <a href="https://github.com/johnservil/bench-hashes/blob/main/METHODOLOGY.md">how it measures</a>)</p>
 
 BLAKE3 is based on an optimized instance of the established hash
 function [BLAKE2](https://blake2.net) and on the [original Bao tree
