@@ -219,6 +219,7 @@ fn mapped_if_cached(file: &File) -> Option<memmap2::Mmap> {
             return None;
         }
     }
+    let _ = map.advise(memmap2::Advice::WillNeed);
     Some(map)
 }
 
