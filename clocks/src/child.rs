@@ -54,6 +54,46 @@ pub(crate) fn rusage_cpu_ns(words: &[i64; 18]) -> u64 {
     rusage::cpu_ns(words)
 }
 
+/// This process's own usage so far, all its threads: user and system CPU
+/// time and page faults (minor: a page already in memory mapped in; major:
+/// one read from storage). `None` off Unix.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Usage {
+    pub user_ns: u64,
+    pub system_ns: u64,
+    pub minor_faults: u64,
+    pub major_faults: u64,
+}
+
+impl Usage {
+    pub fn own() -> Option<Usage> {
+        #[cfg(unix)]
+        {
+            unsafe extern "C" {
+                fn getrusage(who: i32, usage: *mut i64) -> i32;
+            }
+            const RUSAGE_SELF: i32 = 0;
+            let mut w = [0i64; 18];
+            // Sound: `w` is writable and as long as a struct rusage.
+            assert_eq!(unsafe { getrusage(RUSAGE_SELF, w.as_mut_ptr()) }, 0, "getrusage(RUSAGE_SELF)");
+            let tv = |sec: i64, usec: i64| sec as u64 * 1_000_000_000 + u64::from(usec as u32) * 1000;
+            Some(Usage { user_ns: tv(w[0], w[1]), system_ns: tv(w[2], w[3]), minor_faults: w[8] as u64, major_faults: w[9] as u64 })
+        }
+        #[cfg(not(unix))]
+        None
+    }
+
+    /// The usage between `earlier` and this reading.
+    pub fn since(self, earlier: Usage) -> Usage {
+        Usage {
+            user_ns: self.user_ns - earlier.user_ns,
+            system_ns: self.system_ns - earlier.system_ns,
+            minor_faults: self.minor_faults - earlier.minor_faults,
+            major_faults: self.major_faults - earlier.major_faults,
+        }
+    }
+}
+
 #[cfg(unix)]
 mod rusage {
     /// `struct rusage` as 64-bit words (Linux and macOS, 64-bit): two
