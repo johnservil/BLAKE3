@@ -1,0 +1,5 @@
+Promoted to servil (October 2, 2026, from candidate/b3sum-pool, 44ab752..6039657), through the gate:
+- fast-forward of servil 44ab752;
+- suites, VM, each by its exit status: lib default, no_sme2, pure; doc; api_plan; one_cpu; queue_no_alloc (20 of 20 runs); vectors; b3sum; clocks; b3sum-bench; wasm32-wasip1 lib; Miri (pure, 4 CPUs): smoketest, the queue's round trips, update_multithreaded lingering clean; Mac test job 1154: passed (job 1153, the head before 6039657, failed queue_no_alloc: the delivery thread's start, fixed in 6039657); b3sum's tests on the Mac, job 1152;
+- VM: perf_regress gave no verdict at 9450ad2 (twice) and 6039657 (the control moving); Mac: perf_regress jobs 1147 (c725e7b..9450ad2) and 1155 (44ab752..6039657): no regression.
+In this range: b3sum on the fork's pool, mapping files already in the page cache and reading the rest while the pool hashes (b3sum-bench: Mac 1 GiB warm 68.6 -> 37.3 ms, cold 367 -> 159); the crate docs' Memory section; initialize_multithreaded starts the queue's delivery thread; b3sum-bench's file contents from BLAKE3 and its mixed tree; wait_for stops when the runner is stopped.
