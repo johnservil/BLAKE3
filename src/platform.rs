@@ -732,6 +732,17 @@ pub fn sse2_detected() -> bool {
     has_sse2::get()
 }
 
+/// `platform`, or NEON in place of SME2: what a thread hashing beside
+/// other hashing threads of its process runs.
+#[inline]
+pub(crate) fn without_sme2(platform: Platform) -> Platform {
+    #[cfg(blake3_sme2)]
+    if matches!(platform, Platform::SME2) {
+        return Platform::NEON;
+    }
+    platform
+}
+
 /// The core's virtual counter and its ticks per second (CNTVCT_EL0 and
 /// CNTFRQ_EL0, which user code reads directly: 24 MHz on Apple's cores):
 /// control, not measurement.
