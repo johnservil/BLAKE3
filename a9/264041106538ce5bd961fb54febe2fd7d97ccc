@@ -1,0 +1,5 @@
+Promoted to servil (October 2, 2026, from candidate/b3sum-map-512k, 6039657..a926404), through the gate:
+- fast-forward of servil 6039657; the library unchanged (b3sum and docs alone);
+- suites: VM b3sum's tests (by exit status); Mac test job 1162: passed; b3sum's tests on the Mac, job 1161: passed;
+- VM: perf_regress compare servil a926404: no verdict (the control moved in 3 cells, as at the last promotion); Mac: perf_regress job 1163: no regression.
+In this range: b3sum maps a cached file from 512 KiB (where the pool takes over), judged by its first page; shorter files are read. b3sum-bench, Mac jobs 1157-1160: the warm mixed tree 29.8 -> 24.4 ms, warm 256 MiB about 2% more wall time (CPU alike), the rest level; VM: the warm mixed tree 19.4 -> 20.2 ms.
