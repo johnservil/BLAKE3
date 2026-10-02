@@ -1,0 +1,6 @@
+Promoted to servil (October 2, 2026, from candidate/api-plan-simple, b132f8c..3a8327f), through the gate:
+- fast-forward of servil b132f8c;
+- suites: VM default, no_sme2, pure (release), debug default (lib, integration, doc), official vectors, bench-hashes' own tests against this tree; Mac native test job 999 (release suites, all builds) passed; earlier tonight the Mac's debug suites, ASan, and TSan (jobs 996-998, on 987a2a0's code but for the start wait) clean;
+- VM: perf_regress compare servil candidate: no regression;
+- Mac: perf_regress job 1000 (b132f8c against 3a8327f, mains, High Power): no regression.
+Measured gains in this range (Mac A/Bs): hash() after other work 4 KiB x0.59, 8 KiB x0.49-0.64, 16 KiB x0.61 (jobs 981-984); hash() of 64-128 MiB x0.89-0.91, lent 64 MiB x0.90 (jobs 990-993). Cost: lent 4 KiB x1.023 (under the 3% margin).
