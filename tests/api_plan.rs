@@ -9,6 +9,43 @@
 use blake3_servil::{FixedHandler, Hash, MessageHandler, Mode, PieceHandler, Queue};
 use std::sync::mpsc;
 
+/// A fresh process initializes the pool under one-CPU affinity. Run the
+/// whole API suite there, covering all modes, queue shapes, resubmission,
+/// concurrent submitters, and bursts after pauses. The parent bounds
+/// liveness independently of receive calls in the existing tests.
+#[cfg(target_os = "linux")]
+#[test]
+fn api_suite_completes_with_one_cpu() {
+    use std::os::unix::process::CommandExt;
+    let mut allowed: libc::cpu_set_t = unsafe { std::mem::zeroed() };
+    assert_eq!(unsafe { libc::sched_getaffinity(0, std::mem::size_of_val(&allowed), &mut allowed) }, 0);
+    let cpu = (0..libc::CPU_SETSIZE as usize).find(|&cpu| unsafe { libc::CPU_ISSET(cpu, &allowed) }).expect("at least one allowed CPU");
+    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+    command.args(["--skip", "api_suite_completes_with_one_cpu", "--test-threads=1"]);
+    unsafe {
+        command.pre_exec(move || {
+            let mut one: libc::cpu_set_t = std::mem::zeroed();
+            libc::CPU_ZERO(&mut one);
+            libc::CPU_SET(cpu, &mut one);
+            if libc::sched_setaffinity(0, std::mem::size_of_val(&one), &one) == 0 { Ok(()) } else { Err(std::io::Error::last_os_error()) }
+        });
+    }
+    let mut child = command.spawn().unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            assert!(status.success(), "one-CPU API suite: {status}");
+            break;
+        }
+        if std::time::Instant::now() >= deadline {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!("one-CPU API suite exceeded its 30-second liveness deadline");
+        }
+        std::thread::park_timeout(std::time::Duration::from_millis(20));
+    }
+}
+
 const KEY: &[u8; 32] = b"whats the Elvish word for friend";
 const CONTEXT: &str = "BLAKE3 2019-12-27 16:29:52 test vectors context";
 
@@ -149,7 +186,7 @@ fn padded_batch(count: usize, len: usize) -> (Vec<u8>, Vec<Vec<u8>>) {
 
 #[test]
 fn batches_every_form_match_the_reference() {
-    for (count, len) in [(1, 64), (2, 64), (4, 64), (12, 64), (16, 64), (17, 64), (1000, 64), (12288, 64), (13000, 64), (5, 0), (7, 1), (9, 63), (33, 100), (20, 1024), (3, 1025), (40, 4000), (2, 70000), (20, 60000)] {
+    for (count, len) in [(1, 64), (2, 64), (4, 64), (12, 64), (16, 64), (17, 64), (1000, 64), (12288, 64), (13000, 64), (5, 0), (7, 1), (9, 63), (33, 100), (20, 1024), (3, 1025), (4, 2048), (8, 2048), (17, 2048), (129, 2048), (1024, 2048), (40, 4000), (2, 70000), (20, 60000)] {
         let (buffer, messages) = padded_batch(count, len);
         let expected: Vec<Vec<[u8; 32]>> = (0..3).map(|m| messages.iter().map(|message| reference(m, message)).collect()).collect();
         let mut out = vec![[0u8; 32]; count];
@@ -166,6 +203,40 @@ fn batches_every_form_match_the_reference() {
             }
         }
     }
+}
+
+#[test]
+fn two_chunk_batches_match_published_vectors() {
+    let (_, expected) = vectors().into_iter().find(|(len, _)| *len == 2048).expect("published 2048-byte vector");
+    let bytes = input(2048).repeat(17);
+    for (m, mode) in modes().into_iter().enumerate() {
+        for threads in thread_choices() {
+            let mut out = [[0u8; 32]; 17];
+            blake3_servil::hash_many_with(mode, threads, &bytes, 2048, &mut out);
+            assert_eq!(out, [expected[m]; 17], "mode {m}, {threads:?}");
+        }
+    }
+}
+
+#[test]
+fn two_chunk_batches_from_concurrent_callers_match_reference() {
+    std::thread::scope(|scope| {
+        for t in 0..8 {
+            scope.spawn(move || {
+                let count = [8, 17, 129, 1024][t % 4];
+                let (bytes, messages) = padded_batch(count, 2048);
+                let m = t % 3;
+                let expected: Vec<[u8; 32]> = messages.iter().map(|message| reference(m, message)).collect();
+                let mut out = vec![[0u8; 32]; count];
+                for _ in 0..10 {
+                    for threads in thread_choices() {
+                        blake3_servil::hash_many_with(modes()[m], threads, &bytes, 2048, &mut out);
+                        assert_eq!(out, expected, "caller {t}, {threads:?}");
+                    }
+                }
+            });
+        }
+    });
 }
 
 #[test]
@@ -278,7 +349,7 @@ fn queue_of_pieces_returns_each_piece_and_one_digest() {
 #[test]
 #[cfg_attr(target_family = "wasm", ignore = "a queue needs threads, which this target lacks")]
 fn queue_of_fixed_length_messages_fills_the_callers_digest_space() {
-    for (len, per_buffer) in [(64usize, 1usize), (64, 4), (64, 16), (64, 1000), (64, 16384), (256, 50), (1024, 9), (100, 7)] {
+    for (len, per_buffer) in [(64usize, 1usize), (64, 4), (64, 16), (64, 1000), (64, 16384), (256, 50), (1024, 9), (2048, 4), (2048, 32), (2048, 129), (100, 7)] {
         for (m, mode) in modes().into_iter().enumerate() {
             {
                 let (tx, rx) = mpsc::channel();

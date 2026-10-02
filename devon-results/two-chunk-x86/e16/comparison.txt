@@ -1,0 +1,289 @@
+blake3-servil-st solo TwoChunkBatchProbe->TwoChunkBatchProbe 1 x 64 B (msg):
+  old/new: 76.2392 (1000/1000) -> 75.4650 (1000/1000); fast 990/1000, slow 990/1000; slow share 0/1000 -> 0/1000
+  old/old: 75.7811 (1000/1000) -> 76.4000 (1000/1000); fast 1008/1000, slow 1008/1000; slow share 0/1000 -> 0/1000
+  new/new: 75.4094 (1000/1000) -> 75.4905 (1000/1000); fast 1001/1000, slow 1001/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo TwoChunkBatchProbe->TwoChunkBatchProbe 3 x 64 B (msg):
+  old/new: 54.3012 (1000/1000) -> 54.1277 (1000/1000); fast 997/1000, slow 997/1000; slow share 0/1000 -> 0/1000
+  old/old: 54.3122 (1000/1000) -> 54.2785 (1000/1000); fast 999/1000, slow 999/1000; slow share 0/1000 -> 0/1000
+  new/new: 54.0784 (1000/1000) -> 54.1755 (1000/1000); fast 1002/1000, slow 1002/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo TwoChunkBatchProbe->TwoChunkBatchProbe 4 x 64 B (msg):
+  old/new: 45.4014 (1000/1000) -> 45.1622 (1000/1000); fast 995/1000, slow 995/1000; slow share 0/1000 -> 0/1000
+  old/old: 45.4323 (1000/1000) -> 45.2958 (1000/1000); fast 997/1000, slow 997/1000; slow share 0/1000 -> 0/1000
+  new/new: 44.9817 (1000/1000) -> 45.2824 (1000/1000); fast 1007/1000, slow 1007/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo TwoChunkBatchProbe->TwoChunkBatchProbe 6 x 64 B (msg):
+  old/new: 45.5490 (1000/1000) -> 45.4455 (1000/1000); fast 998/1000, slow 998/1000; slow share 0/1000 -> 0/1000
+  old/old: 45.6077 (1000/1000) -> 45.4515 (1000/1000); fast 997/1000, slow 997/1000; slow share 0/1000 -> 0/1000
+  new/new: 45.4422 (1000/1000) -> 45.4489 (1000/1000); fast 1000/1000, slow 1000/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo TwoChunkBatchProbe->TwoChunkBatchProbe 8 x 64 B (msg):
+  old/new: 28.9719 (1000/1000) -> 28.9567 (1000/1000); fast 999/1000, slow 999/1000; slow share 0/1000 -> 0/1000
+  old/old: 28.9882 (1000/1000) -> 28.9332 (1000/1000); fast 998/1000, slow 998/1000; slow share 0/1000 -> 0/1000
+  new/new: 28.8961 (1000/1000) -> 29.0204 (1000/1000); fast 1004/1000, slow 1004/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo TwoChunkBatchProbe->TwoChunkBatchProbe 12 x 64 B (msg):
+  old/new: 32.9489 (1000/1000) -> 32.9339 (1000/1000); fast 1000/1000, slow 1000/1000; slow share 0/1000 -> 0/1000
+  old/old: 32.9617 (1000/1000) -> 32.9428 (1000/1000); fast 999/1000, slow 999/1000; slow share 0/1000 -> 0/1000
+  new/new: 32.9327 (1000/1000) -> 32.9500 (1000/1000); fast 1001/1000, slow 1001/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo TwoChunkBatchProbe->TwoChunkBatchProbe 16 x 64 B (msg):
+  old/new: 27.8878 (1000/1000) -> 27.8914 (1000/1000); fast 1000/1000, slow 1000/1000; slow share 0/1000 -> 0/1000
+  old/old: 27.8995 (1000/1000) -> 27.8670 (1000/1000); fast 999/1000, slow 999/1000; slow share 0/1000 -> 0/1000
+  new/new: 27.8579 (1000/1000) -> 27.9032 (1000/1000); fast 1002/1000, slow 1002/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo TwoChunkBatchProbe->TwoChunkBatchProbe 24 x 64 B (msg):
+  old/new: 27.5478 (1000/1000) -> 27.5765 (1000/1000); fast 1001/1000, slow 1001/1000; slow share 0/1000 -> 0/1000
+  old/old: 27.4740 (1000/1000) -> 27.6087 (1000/1000); fast 1005/1000, slow 1005/1000; slow share 0/1000 -> 0/1000
+  new/new: 27.5406 (1000/1000) -> 27.6088 (1000/1000); fast 1002/1000, slow 1002/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo TwoChunkBatchProbe->TwoChunkBatchProbe 64 x 64 B (msg):
+  old/new: 27.1193 (1000/1000) -> 27.1609 (1000/1000); fast 1002/1000, slow 1002/1000; slow share 0/1000 -> 0/1000
+  old/old: 27.1026 (1000/1000) -> 27.1353 (1000/1000); fast 1001/1000, slow 1001/1000; slow share 0/1000 -> 0/1000
+  new/new: 27.1621 (1000/1000) -> 27.1603 (1000/1000); fast 1000/1000, slow 1000/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo TwoChunkBatchProbe->TwoChunkBatchProbe 128 x 64 B (msg):
+  old/new: 26.9121 (1000/1000) -> 26.9898 (1000/1000); fast 1003/1000, slow 1003/1000; slow share 0/1000 -> 0/1000
+  old/old: 26.8548 (1000/1000) -> 26.9396 (1000/1000); fast 1003/1000, slow 1003/1000; slow share 0/1000 -> 0/1000
+  new/new: 27.0045 (1000/1000) -> 26.9584 (1000/1000); fast 998/1000, slow 998/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo TwoChunkBatchProbe->TwoChunkBatchProbe 129 x 64 B (msg):
+  old/new: 27.1809 (1000/1000) -> 27.2408 (1000/1000); fast 1002/1000, slow 1002/1000; slow share 0/1000 -> 0/1000
+  old/old: 27.1303 (1000/1000) -> 27.2072 (1000/1000); fast 1003/1000, slow 1003/1000; slow share 0/1000 -> 0/1000
+  new/new: 27.1717 (1000/1000) -> 27.2616 (1000/1000); fast 1003/1000, slow 1003/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo TwoChunkBatchProbe->TwoChunkBatchProbe 1024 x 64 B (msg):
+  old/new: 27.2845 (1000/1000) -> 27.2675 (1000/1000); fast 999/1000, slow 999/1000; slow share 0/1000 -> 0/1000
+  old/old: 27.2260 (1000/1000) -> 27.2955 (1000/1000); fast 1003/1000, slow 1003/1000; slow share 0/1000 -> 0/1000
+  new/new: 27.2116 (1000/1000) -> 27.2816 (1000/1000); fast 1003/1000, slow 1003/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo TwoChunkBatchProbe->TwoChunkBatchProbe 1 x 256 B (msg):
+  old/new: 250.3473 (1000/1000) -> 250.6276 (1000/1000); fast 1001/1000, slow 1001/1000; slow share 0/1000 -> 0/1000
+  old/old: 249.9134 (1000/1000) -> 250.7442 (1000/1000); fast 1003/1000, slow 1003/1000; slow share 0/1000 -> 0/1000
+  new/new: 250.6363 (1000/1000) -> 250.5058 (1000/1000); fast 999/1000, slow 999/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo TwoChunkBatchProbe->TwoChunkBatchProbe 3 x 256 B (msg):
+  old/new: 224.7621 (1000/1000) -> 224.5072 (1000/1000); fast 999/1000, slow 999/1000; slow share 0/1000 -> 0/1000
+  old/old: 224.5190 (1000/1000) -> 225.0549 (1000/1000); fast 1002/1000, slow 1002/1000; slow share 0/1000 -> 0/1000
+  new/new: 224.1098 (1000/1000) -> 224.5751 (1000/1000); fast 1002/1000, slow 1002/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo TwoChunkBatchProbe->TwoChunkBatchProbe 4 x 256 B (msg):
+  old/new: 165.4288 (1000/1000) -> 165.5510 (1000/1000); fast 1001/1000, slow 1001/1000; slow share 0/1000 -> 0/1000
+  old/old: 165.8768 (1000/1000) -> 165.1628 (1000/1000); fast 996/1000, slow 996/1000; slow share 0/1000 -> 0/1000
+  new/new: 165.6681 (1000/1000) -> 165.3212 (1000/1000); fast 998/1000, slow 998/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo TwoChunkBatchProbe->TwoChunkBatchProbe 6 x 256 B (msg):
+  old/new: 190.0918 (1000/1000) -> 190.1390 (1000/1000); fast 1000/1000, slow 1000/1000; slow share 0/1000 -> 0/1000
+  old/old: 190.0282 (1000/1000) -> 190.1427 (1000/1000); fast 1001/1000, slow 1001/1000; slow share 0/1000 -> 0/1000
+  new/new: 190.2250 (1000/1000) -> 189.9949 (1000/1000); fast 999/1000, slow 999/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo TwoChunkBatchProbe->TwoChunkBatchProbe 8 x 256 B (msg):
+  old/new: 105.8848 (1000/1000) -> 106.0120 (1000/1000); fast 1001/1000, slow 1001/1000; slow share 0/1000 -> 0/1000
+  old/old: 105.8978 (1000/1000) -> 105.8460 (1000/1000); fast 1000/1000, slow 1000/1000; slow share 0/1000 -> 0/1000
+  new/new: 106.0046 (1000/1000) -> 106.1239 (1000/1000); fast 1001/1000, slow 1001/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo TwoChunkBatchProbe->TwoChunkBatchProbe 12 x 256 B (msg):
+  old/new: 124.1768 (1000/1000) -> 123.9322 (1000/1000); fast 998/1000, slow 998/1000; slow share 0/1000 -> 0/1000
+  old/old: 124.0637 (1000/1000) -> 124.2859 (1000/1000); fast 1002/1000, slow 1002/1000; slow share 0/1000 -> 0/1000
+  new/new: 123.7961 (1000/1000) -> 124.1240 (1000/1000); fast 1003/1000, slow 1003/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo TwoChunkBatchProbe->TwoChunkBatchProbe 16 x 256 B (msg):
+  old/new: 104.9893 (1000/1000) -> 104.7526 (1000/1000); fast 998/1000, slow 998/1000; slow share 0/1000 -> 0/1000
+  old/old: 104.9607 (1000/1000) -> 105.0335 (1000/1000); fast 1001/1000, slow 1001/1000; slow share 0/1000 -> 0/1000
+  new/new: 104.6026 (1000/1000) -> 104.9037 (1000/1000); fast 1003/1000, slow 1003/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo TwoChunkBatchProbe->TwoChunkBatchProbe 24 x 256 B (msg):
+  old/new: 104.4248 (1000/1000) -> 104.3907 (1000/1000); fast 1000/1000, slow 1000/1000; slow share 0/1000 -> 0/1000
+  old/old: 104.3666 (1000/1000) -> 104.4891 (1000/1000); fast 1001/1000, slow 1001/1000; slow share 0/1000 -> 0/1000
+  new/new: 104.3228 (1000/1000) -> 104.4440 (1000/1000); fast 1001/1000, slow 1001/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo TwoChunkBatchProbe->TwoChunkBatchProbe 64 x 256 B (msg):
+  old/new: 103.9864 (1000/1000) -> 103.7982 (1000/1000); fast 998/1000, slow 998/1000; slow share 0/1000 -> 0/1000
+  old/old: 103.6290 (1000/1000) -> 104.0819 (1000/1000); fast 1004/1000, slow 1004/1000; slow share 0/1000 -> 0/1000
+  new/new: 103.6544 (1000/1000) -> 103.8347 (1000/1000); fast 1002/1000, slow 1002/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo TwoChunkBatchProbe->TwoChunkBatchProbe 128 x 256 B (msg):
+  old/new: 105.0568 (1000/1000) -> 105.0304 (1000/1000); fast 1000/1000, slow 1000/1000; slow share 0/1000 -> 0/1000
+  old/old: 105.0078 (1000/1000) -> 105.1051 (1000/1000); fast 1001/1000, slow 1001/1000; slow share 0/1000 -> 0/1000
+  new/new: 105.0590 (1000/1000) -> 105.0111 (1000/1000); fast 1000/1000, slow 1000/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo TwoChunkBatchProbe->TwoChunkBatchProbe 129 x 256 B (msg):
+  old/new: 105.7716 (1000/1000) -> 105.8690 (1000/1000); fast 1001/1000, slow 1001/1000; slow share 0/1000 -> 0/1000
+  old/old: 105.6755 (1000/1000) -> 105.8712 (1000/1000); fast 1002/1000, slow 1002/1000; slow share 0/1000 -> 0/1000
+  new/new: 105.8929 (1000/1000) -> 105.8460 (1000/1000); fast 1000/1000, slow 1000/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo TwoChunkBatchProbe->TwoChunkBatchProbe 1024 x 256 B (msg):
+  old/new: 105.5473 (1000/1000) -> 105.4903 (1000/1000); fast 999/1000, slow 999/1000; slow share 0/1000 -> 0/1000
+  old/old: 105.3843 (1000/1000) -> 105.5724 (1000/1000); fast 1002/1000, slow 1002/1000; slow share 0/1000 -> 0/1000
+  new/new: 105.4724 (1000/1000) -> 105.5100 (1000/1000); fast 1000/1000, slow 1000/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo TwoChunkBatchProbe->TwoChunkBatchProbe 1 x 1024 B (msg):
+  old/new: 943.9791 (1000/1000) -> 943.8097 (1000/1000); fast 1000/1000, slow 1000/1000; slow share 0/1000 -> 0/1000
+  old/old: 943.9707 (1000/1000) -> 943.9903 (1000/1000); fast 1000/1000, slow 1000/1000; slow share 0/1000 -> 0/1000
+  new/new: 943.8227 (1000/1000) -> 943.8013 (1000/1000); fast 1000/1000, slow 1000/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo TwoChunkBatchProbe->TwoChunkBatchProbe 3 x 1024 B (msg):
+  old/new: 843.9983 (1000/1000) -> 847.7719 (1000/1000); fast 1004/1000, slow 1004/1000; slow share 0/1000 -> 0/1000
+  old/old: 843.1422 (1000/1000) -> 852.8184 (1000/1000); fast 1011/1000, slow 1011/1000; slow share 0/1000 -> 0/1000
+  new/new: 847.9464 (1000/1000) -> 847.7456 (1000/1000); fast 1000/1000, slow 1000/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo TwoChunkBatchProbe->TwoChunkBatchProbe 4 x 1024 B (msg):
+  old/new: 643.0297 (1000/1000) -> 646.7714 (1000/1000); fast 1006/1000, slow 1006/1000; slow share 0/1000 -> 0/1000
+  old/old: 641.9207 (1000/1000) -> 646.8251 (1000/1000); fast 1008/1000, slow 1008/1000; slow share 0/1000 -> 0/1000
+  new/new: 644.0607 (1000/1000) -> 650.3127 (1000/1000); fast 1010/1000, slow 1010/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo TwoChunkBatchProbe->TwoChunkBatchProbe 6 x 1024 B (msg):
+  old/new: 739.8930 (1000/1000) -> 745.2276 (1000/1000); fast 1007/1000, slow 1007/1000; slow share 0/1000 -> 0/1000
+  old/old: 742.1106 (1000/1000) -> 733.6865 (1000/1000); fast 989/1000, slow 989/1000; slow share 0/1000 -> 0/1000
+  new/new: 746.6637 (1000/1000) -> 742.4015 (1000/1000); fast 994/1000, slow 994/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo TwoChunkBatchProbe->TwoChunkBatchProbe 8 x 1024 B (msg):
+  old/new: 412.3028 (1000/1000) -> 411.7532 (1000/1000); fast 999/1000, slow 999/1000; slow share 0/1000 -> 0/1000
+  old/old: 410.7833 (1000/1000) -> 412.9273 (1000/1000); fast 1005/1000, slow 1005/1000; slow share 0/1000 -> 0/1000
+  new/new: 411.9029 (1000/1000) -> 410.8483 (1000/1000); fast 997/1000, slow 997/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo TwoChunkBatchProbe->TwoChunkBatchProbe 12 x 1024 B (msg):
+  old/new: 484.1339 (1000/1000) -> 484.3791 (1000/1000); fast 1001/1000, slow 1001/1000; slow share 0/1000 -> 0/1000
+  old/old: 484.1650 (1000/1000) -> 484.1339 (1000/1000); fast 1000/1000, slow 1000/1000; slow share 0/1000 -> 0/1000
+  new/new: 485.6919 (1000/1000) -> 483.8406 (1000/1000); fast 996/1000, slow 996/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo TwoChunkBatchProbe->TwoChunkBatchProbe 16 x 1024 B (msg):
+  old/new: 410.6500 (1000/1000) -> 410.3493 (1000/1000); fast 999/1000, slow 999/1000; slow share 0/1000 -> 0/1000
+  old/old: 409.7067 (1000/1000) -> 410.7504 (1000/1000); fast 1003/1000, slow 1003/1000; slow share 0/1000 -> 0/1000
+  new/new: 410.5582 (1000/1000) -> 409.1991 (1000/1000); fast 997/1000, slow 997/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo TwoChunkBatchProbe->TwoChunkBatchProbe 24 x 1024 B (msg):
+  old/new: 410.7744 (1000/1000) -> 410.7910 (1000/1000); fast 1000/1000, slow 1000/1000; slow share 0/1000 -> 0/1000
+  old/old: 411.1173 (1000/1000) -> 410.1959 (1000/1000); fast 998/1000, slow 998/1000; slow share 0/1000 -> 0/1000
+  new/new: 410.6214 (1000/1000) -> 411.5348 (1000/1000); fast 1002/1000, slow 1002/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo TwoChunkBatchProbe->TwoChunkBatchProbe 64 x 1024 B (msg):
+  old/new: 411.1294 (1000/1000) -> 411.3490 (1000/1000); fast 1001/1000, slow 1001/1000; slow share 0/1000 -> 0/1000
+  old/old: 411.2714 (1000/1000) -> 410.6051 (1000/1000); fast 998/1000, slow 998/1000; slow share 0/1000 -> 0/1000
+  new/new: 411.3123 (1000/1000) -> 411.4287 (1000/1000); fast 1000/1000, slow 1000/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo TwoChunkBatchProbe->TwoChunkBatchProbe 128 x 1024 B (msg):
+  old/new: 415.0526 (1000/1000) -> 414.2751 (1000/1000); fast 998/1000, slow 998/1000; slow share 0/1000 -> 0/1000
+  old/old: 415.9124 (1000/1000) -> 414.2942 (1000/1000); fast 996/1000, slow 996/1000; slow share 0/1000 -> 0/1000
+  new/new: 414.2258 (1000/1000) -> 414.2814 (1000/1000); fast 1000/1000, slow 1000/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo TwoChunkBatchProbe->TwoChunkBatchProbe 129 x 1024 B (msg):
+  old/new: 419.1198 (1000/1000) -> 418.4828 (1000/1000); fast 998/1000, slow 998/1000; slow share 0/1000 -> 0/1000
+  old/old: 419.8549 (1000/1000) -> 418.3536 (1000/1000); fast 996/1000, slow 996/1000; slow share 0/1000 -> 0/1000
+  new/new: 418.4962 (1000/1000) -> 418.4828 (1000/1000); fast 1000/1000, slow 1000/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo TwoChunkBatchProbe->TwoChunkBatchProbe 1024 x 1024 B (msg):
+  old/new: 412.7373 (1000/1000) -> 412.1848 (1000/1000); fast 999/1000, slow 999/1000; slow share 0/1000 -> 0/1000
+  old/old: 412.6165 (1000/1000) -> 412.8021 (1000/1000); fast 1000/1000, slow 1000/1000; slow share 0/1000 -> 0/1000
+  new/new: 411.9909 (1000/1000) -> 412.3815 (1000/1000); fast 1001/1000, slow 1001/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo TwoChunkBatchProbe->TwoChunkBatchProbe 1 x 2048 B (msg):
+  old/new: 1516.8400 (1000/1000) -> 1520.7232 (1000/1000); fast 1003/1000, slow 1003/1000; slow share 0/1000 -> 0/1000
+  old/old: 1517.1130 (1000/1000) -> 1503.6472 (1000/1000); fast 991/1000, slow 991/1000; slow share 0/1000 -> 0/1000
+  new/new: 1520.3390 (1000/1000) -> 1520.9722 (1000/1000); fast 1000/1000, slow 1000/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo TwoChunkBatchProbe->TwoChunkBatchProbe 3 x 2048 B (msg):
+  old/new: 1523.0169 (1000/1000) -> 1522.4674 (1000/1000); fast 1000/1000, slow 1000/1000; slow share 0/1000 -> 0/1000
+  old/old: 1516.6998 (1000/1000) -> 1523.7632 (1000/1000); fast 1005/1000, slow 1005/1000; slow share 0/1000 -> 0/1000
+  new/new: 1524.4731 (1000/1000) -> 1519.6170 (1000/1000); fast 997/1000, slow 997/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo TwoChunkBatchProbe->TwoChunkBatchProbe 4 x 2048 B (msg):
+  old/new: 1521.4163 (1000/1000) -> 1351.8438 (1000/1000); fast 889/1000, slow 889/1000; slow share 0/1000 -> 0/1000
+  old/old: 1520.2793 (1000/1000) -> 1522.0149 (1000/1000); fast 1001/1000, slow 1001/1000; slow share 0/1000 -> 0/1000
+  new/new: 1345.1457 (1000/1000) -> 1352.2212 (1000/1000); fast 1005/1000, slow 1005/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo TwoChunkBatchProbe->TwoChunkBatchProbe 6 x 2048 B (msg):
+  old/new: 1523.7896 (1000/1000) -> 1387.4951 (1000/1000); fast 911/1000, slow 911/1000; slow share 0/1000 -> 0/1000
+  old/old: 1515.1196 (1000/1000) -> 1524.1713 (1000/1000); fast 1006/1000, slow 1006/1000; slow share 0/1000 -> 0/1000
+  new/new: 1387.5927 (1000/1000) -> 1387.0448 (1000/1000); fast 1000/1000, slow 1000/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo TwoChunkBatchProbe->TwoChunkBatchProbe 8 x 2048 B (msg):
+  old/new: 1521.6775 (1000/1000) -> 855.1862 (1000/1000); fast 562/1000, slow 562/1000; slow share 0/1000 -> 0/1000
+  old/old: 1515.6189 (1000/1000) -> 1524.4611 (1000/1000); fast 1006/1000, slow 1006/1000; slow share 0/1000 -> 0/1000
+  new/new: 855.9745 (1000/1000) -> 855.0666 (1000/1000); fast 999/1000, slow 999/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo TwoChunkBatchProbe->TwoChunkBatchProbe 12 x 2048 B (msg):
+  old/new: 1517.2064 (1000/1000) -> 1015.7218 (1000/1000); fast 669/1000, slow 669/1000; slow share 0/1000 -> 0/1000
+  old/old: 1514.9739 (1000/1000) -> 1522.9095 (1000/1000); fast 1005/1000, slow 1005/1000; slow share 0/1000 -> 0/1000
+  new/new: 1016.2960 (1000/1000) -> 1013.5293 (1000/1000); fast 997/1000, slow 997/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo TwoChunkBatchProbe->TwoChunkBatchProbe 16 x 2048 B (msg):
+  old/new: 1518.9631 (1000/1000) -> 862.2504 (1000/1000); fast 568/1000, slow 568/1000; slow share 0/1000 -> 0/1000
+  old/old: 1516.9311 (1000/1000) -> 1520.2779 (1000/1000); fast 1002/1000, slow 1002/1000; slow share 0/1000 -> 0/1000
+  new/new: 861.6545 (1000/1000) -> 862.5629 (1000/1000); fast 1001/1000, slow 1001/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo TwoChunkBatchProbe->TwoChunkBatchProbe 24 x 2048 B (msg):
+  old/new: 1517.0860 (1000/1000) -> 860.2274 (1000/1000); fast 567/1000, slow 567/1000; slow share 0/1000 -> 0/1000
+  old/old: 1515.5545 (1000/1000) -> 1518.9856 (1000/1000); fast 1002/1000, slow 1002/1000; slow share 0/1000 -> 0/1000
+  new/new: 859.7988 (1000/1000) -> 860.3759 (1000/1000); fast 1001/1000, slow 1001/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo TwoChunkBatchProbe->TwoChunkBatchProbe 64 x 2048 B (msg):
+  old/new: 1513.3850 (1000/1000) -> 860.4992 (1000/1000); fast 569/1000, slow 569/1000; slow share 0/1000 -> 0/1000
+  old/old: 1521.0138 (1000/1000) -> 1511.1890 (1000/1000); fast 994/1000, slow 994/1000; slow share 0/1000 -> 0/1000
+  new/new: 858.9191 (1000/1000) -> 860.7082 (1000/1000); fast 1002/1000, slow 1002/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo TwoChunkBatchProbe->TwoChunkBatchProbe 128 x 2048 B (msg):
+  old/new: 1520.6942 (1000/1000) -> 860.4792 (1000/1000); fast 566/1000, slow 566/1000; slow share 0/1000 -> 0/1000
+  old/old: 1521.3182 (1000/1000) -> 1518.3686 (1000/1000); fast 998/1000, slow 998/1000; slow share 0/1000 -> 0/1000
+  new/new: 858.7895 (1000/1000) -> 860.6281 (1000/1000); fast 1002/1000, slow 1002/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo TwoChunkBatchProbe->TwoChunkBatchProbe 129 x 2048 B (msg):
+  old/new: 1522.9796 (1000/1000) -> 867.6210 (1000/1000); fast 570/1000, slow 570/1000; slow share 0/1000 -> 0/1000
+  old/old: 1525.4859 (1000/1000) -> 1521.9774 (1000/1000); fast 998/1000, slow 998/1000; slow share 0/1000 -> 0/1000
+  new/new: 865.2791 (1000/1000) -> 868.0629 (1000/1000); fast 1003/1000, slow 1003/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo TwoChunkBatchProbe->TwoChunkBatchProbe 1024 x 2048 B (msg):
+  old/new: 1524.5229 (1000/1000) -> 862.0477 (1000/1000); fast 565/1000, slow 565/1000; slow share 0/1000 -> 0/1000
+  old/old: 1520.8203 (1000/1000) -> 1525.3018 (1000/1000); fast 1003/1000, slow 1003/1000; slow share 0/1000 -> 0/1000
+  new/new: 861.0741 (1000/1000) -> 863.4530 (1000/1000); fast 1003/1000, slow 1003/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo TwoChunkBatchProbe->TwoChunkBatchProbe 1 x 2047 B (msg):
+  old/new: 1913.1057 (1000/1000) -> 1913.7076 (1000/1000); fast 1000/1000, slow 1000/1000; slow share 0/1000 -> 0/1000
+  old/old: 1913.4413 (1000/1000) -> 1912.4002 (1000/1000); fast 999/1000, slow 999/1000; slow share 0/1000 -> 0/1000
+  new/new: 1916.3887 (1000/1000) -> 1912.7711 (1000/1000); fast 998/1000, slow 998/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo TwoChunkBatchProbe->TwoChunkBatchProbe 3 x 2047 B (msg):
+  old/new: 1917.0857 (1000/1000) -> 1922.0684 (1000/1000); fast 1003/1000, slow 1003/1000; slow share 0/1000 -> 0/1000
+  old/old: 1914.7008 (1000/1000) -> 1917.6267 (1000/1000); fast 1002/1000, slow 1002/1000; slow share 0/1000 -> 0/1000
+  new/new: 1922.7230 (1000/1000) -> 1918.2286 (1000/1000); fast 998/1000, slow 998/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo TwoChunkBatchProbe->TwoChunkBatchProbe 4 x 2047 B (msg):
+  old/new: 1913.4483 (1000/1000) -> 1915.5398 (1000/1000); fast 1001/1000, slow 1001/1000; slow share 0/1000 -> 0/1000
+  old/old: 1914.1590 (1000/1000) -> 1912.6830 (1000/1000); fast 999/1000, slow 999/1000; slow share 0/1000 -> 0/1000
+  new/new: 1912.9856 (1000/1000) -> 1918.4875 (1000/1000); fast 1003/1000, slow 1003/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo TwoChunkBatchProbe->TwoChunkBatchProbe 6 x 2047 B (msg):
+  old/new: 1910.8167 (1000/1000) -> 1916.4655 (1000/1000); fast 1003/1000, slow 1003/1000; slow share 0/1000 -> 0/1000
+  old/old: 1910.5300 (1000/1000) -> 1910.9695 (1000/1000); fast 1000/1000, slow 1000/1000; slow share 0/1000 -> 0/1000
+  new/new: 1912.2543 (1000/1000) -> 1917.1489 (1000/1000); fast 1003/1000, slow 1003/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo TwoChunkBatchProbe->TwoChunkBatchProbe 8 x 2047 B (msg):
+  old/new: 1907.8182 (1000/1000) -> 1913.2219 (1000/1000); fast 1003/1000, slow 1003/1000; slow share 0/1000 -> 0/1000
+  old/old: 1908.4127 (1000/1000) -> 1904.8397 (1000/1000); fast 998/1000, slow 998/1000; slow share 0/1000 -> 0/1000
+  new/new: 1911.5825 (1000/1000) -> 1913.4327 (1000/1000); fast 1001/1000, slow 1001/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo TwoChunkBatchProbe->TwoChunkBatchProbe 12 x 2047 B (msg):
+  old/new: 1911.5417 (1000/1000) -> 1916.2093 (1000/1000); fast 1002/1000, slow 1002/1000; slow share 0/1000 -> 0/1000
+  old/old: 1911.7756 (1000/1000) -> 1911.3224 (1000/1000); fast 1000/1000, slow 1000/1000; slow share 0/1000 -> 0/1000
+  new/new: 1916.5939 (1000/1000) -> 1915.4593 (1000/1000); fast 999/1000, slow 999/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo TwoChunkBatchProbe->TwoChunkBatchProbe 16 x 2047 B (msg):
+  old/new: 1912.4023 (1000/1000) -> 1915.9039 (1000/1000); fast 1002/1000, slow 1002/1000; slow share 0/1000 -> 0/1000
+  old/old: 1916.8611 (1000/1000) -> 1909.6870 (1000/1000); fast 996/1000, slow 996/1000; slow share 0/1000 -> 0/1000
+  new/new: 1916.1581 (1000/1000) -> 1915.6037 (1000/1000); fast 1000/1000, slow 1000/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo TwoChunkBatchProbe->TwoChunkBatchProbe 24 x 2047 B (msg):
+  old/new: 1911.5464 (1000/1000) -> 1916.1354 (1000/1000); fast 1002/1000, slow 1002/1000; slow share 0/1000 -> 0/1000
+  old/old: 1913.9853 (1000/1000) -> 1910.7500 (1000/1000); fast 998/1000, slow 998/1000; slow share 0/1000 -> 0/1000
+  new/new: 1916.2746 (1000/1000) -> 1915.7311 (1000/1000); fast 1000/1000, slow 1000/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo TwoChunkBatchProbe->TwoChunkBatchProbe 64 x 2047 B (msg):
+  old/new: 1907.8759 (1000/1000) -> 1911.8139 (1000/1000); fast 1002/1000, slow 1002/1000; slow share 0/1000 -> 0/1000
+  old/old: 1908.8107 (1000/1000) -> 1906.3686 (1000/1000); fast 999/1000, slow 999/1000; slow share 0/1000 -> 0/1000
+  new/new: 1910.4660 (1000/1000) -> 1912.5620 (1000/1000); fast 1001/1000, slow 1001/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo TwoChunkBatchProbe->TwoChunkBatchProbe 128 x 2047 B (msg):
+  old/new: 1908.6871 (1000/1000) -> 1911.9470 (1000/1000); fast 1002/1000, slow 1002/1000; slow share 0/1000 -> 0/1000
+  old/old: 1908.8602 (1000/1000) -> 1908.3950 (1000/1000); fast 1000/1000, slow 1000/1000; slow share 0/1000 -> 0/1000
+  new/new: 1910.5217 (1000/1000) -> 1912.3507 (1000/1000); fast 1001/1000, slow 1001/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo TwoChunkBatchProbe->TwoChunkBatchProbe 129 x 2047 B (msg):
+  old/new: 1908.7059 (1000/1000) -> 1910.1507 (1000/1000); fast 1001/1000, slow 1001/1000; slow share 0/1000 -> 0/1000
+  old/old: 1909.0422 (1000/1000) -> 1908.5487 (1000/1000); fast 1000/1000, slow 1000/1000; slow share 0/1000 -> 0/1000
+  new/new: 1910.5095 (1000/1000) -> 1909.8450 (1000/1000); fast 1000/1000, slow 1000/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo TwoChunkBatchProbe->TwoChunkBatchProbe 1024 x 2047 B (msg):
+  old/new: 1908.8423 (1000/1000) -> 1911.1521 (1000/1000); fast 1001/1000, slow 1001/1000; slow share 0/1000 -> 0/1000
+  old/old: 1909.2461 (1000/1000) -> 1908.3362 (1000/1000); fast 1000/1000, slow 1000/1000; slow share 0/1000 -> 0/1000
+  new/new: 1911.3130 (1000/1000) -> 1910.9534 (1000/1000); fast 1000/1000, slow 1000/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo TwoChunkBatchProbe->TwoChunkBatchProbe 1 x 2049 B (msg):
+  old/new: 1665.9219 (1000/1000) -> 1664.9001 (1000/1000); fast 999/1000, slow 999/1000; slow share 0/1000 -> 0/1000
+  old/old: 1658.9339 (1000/1000) -> 1668.3634 (1000/1000); fast 1006/1000, slow 1006/1000; slow share 0/1000 -> 0/1000
+  new/new: 1670.0139 (1000/1000) -> 1659.0395 (1000/1000); fast 993/1000, slow 993/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo TwoChunkBatchProbe->TwoChunkBatchProbe 3 x 2049 B (msg):
+  old/new: 1658.2477 (1000/1000) -> 1656.0086 (1000/1000); fast 999/1000, slow 999/1000; slow share 0/1000 -> 0/1000
+  old/old: 1652.6911 (1000/1000) -> 1659.2772 (1000/1000); fast 1004/1000, slow 1004/1000; slow share 0/1000 -> 0/1000
+  new/new: 1656.4111 (1000/1000) -> 1651.8937 (1000/1000); fast 997/1000, slow 997/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo TwoChunkBatchProbe->TwoChunkBatchProbe 4 x 2049 B (msg):
+  old/new: 1655.1158 (1000/1000) -> 1653.5414 (1000/1000); fast 999/1000, slow 999/1000; slow share 0/1000 -> 0/1000
+  old/old: 1645.9641 (1000/1000) -> 1656.7351 (1000/1000); fast 1007/1000, slow 1007/1000; slow share 0/1000 -> 0/1000
+  new/new: 1654.1780 (1000/1000) -> 1645.5091 (1000/1000); fast 995/1000, slow 995/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo TwoChunkBatchProbe->TwoChunkBatchProbe 6 x 2049 B (msg):
+  old/new: 1655.0614 (1000/1000) -> 1651.7950 (1000/1000); fast 998/1000, slow 998/1000; slow share 0/1000 -> 0/1000
+  old/old: 1652.9080 (1000/1000) -> 1659.6870 (1000/1000); fast 1004/1000, slow 1004/1000; slow share 0/1000 -> 0/1000
+  new/new: 1652.5648 (1000/1000) -> 1648.6696 (1000/1000); fast 998/1000, slow 998/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo TwoChunkBatchProbe->TwoChunkBatchProbe 8 x 2049 B (msg):
+  old/new: 1650.0185 (1000/1000) -> 1651.6600 (1000/1000); fast 1001/1000, slow 1001/1000; slow share 0/1000 -> 0/1000
+  old/old: 1647.7829 (1000/1000) -> 1650.4827 (1000/1000); fast 1002/1000, slow 1002/1000; slow share 0/1000 -> 0/1000
+  new/new: 1654.7233 (1000/1000) -> 1642.0818 (1000/1000); fast 992/1000, slow 992/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo TwoChunkBatchProbe->TwoChunkBatchProbe 12 x 2049 B (msg):
+  old/new: 1651.4538 (1000/1000) -> 1653.2735 (1000/1000); fast 1001/1000, slow 1001/1000; slow share 0/1000 -> 0/1000
+  old/old: 1652.3238 (1000/1000) -> 1649.7438 (1000/1000); fast 998/1000, slow 998/1000; slow share 0/1000 -> 0/1000
+  new/new: 1650.4959 (1000/1000) -> 1655.0800 (1000/1000); fast 1003/1000, slow 1003/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo TwoChunkBatchProbe->TwoChunkBatchProbe 16 x 2049 B (msg):
+  old/new: 1651.4975 (1000/1000) -> 1652.5892 (1000/1000); fast 1001/1000, slow 1001/1000; slow share 0/1000 -> 0/1000
+  old/old: 1652.3775 (1000/1000) -> 1650.2208 (1000/1000); fast 999/1000, slow 999/1000; slow share 0/1000 -> 0/1000
+  new/new: 1651.0757 (1000/1000) -> 1653.3170 (1000/1000); fast 1001/1000, slow 1001/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo TwoChunkBatchProbe->TwoChunkBatchProbe 24 x 2049 B (msg):
+  old/new: 1655.8738 (1000/1000) -> 1656.1238 (1000/1000); fast 1000/1000, slow 1000/1000; slow share 0/1000 -> 0/1000
+  old/old: 1655.8836 (1000/1000) -> 1655.8333 (1000/1000); fast 1000/1000, slow 1000/1000; slow share 0/1000 -> 0/1000
+  new/new: 1654.5976 (1000/1000) -> 1657.3158 (1000/1000); fast 1002/1000, slow 1002/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo TwoChunkBatchProbe->TwoChunkBatchProbe 64 x 2049 B (msg):
+  old/new: 1654.5078 (1000/1000) -> 1661.0448 (1000/1000); fast 1004/1000, slow 1004/1000; slow share 0/1000 -> 0/1000
+  old/old: 1654.9095 (1000/1000) -> 1653.3536 (1000/1000); fast 999/1000, slow 999/1000; slow share 0/1000 -> 0/1000
+  new/new: 1647.1303 (1000/1000) -> 1661.6155 (1000/1000); fast 1009/1000, slow 1009/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo TwoChunkBatchProbe->TwoChunkBatchProbe 128 x 2049 B (msg):
+  old/new: 1655.0234 (1000/1000) -> 1652.8621 (1000/1000); fast 999/1000, slow 999/1000; slow share 0/1000 -> 0/1000
+  old/old: 1655.4559 (1000/1000) -> 1653.8617 (1000/1000); fast 999/1000, slow 999/1000; slow share 0/1000 -> 0/1000
+  new/new: 1646.0996 (1000/1000) -> 1655.0980 (1000/1000); fast 1005/1000, slow 1005/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo TwoChunkBatchProbe->TwoChunkBatchProbe 129 x 2049 B (msg):
+  old/new: 1654.9202 (1000/1000) -> 1652.9713 (1000/1000); fast 999/1000, slow 999/1000; slow share 0/1000 -> 0/1000
+  old/old: 1654.9353 (1000/1000) -> 1654.7531 (1000/1000); fast 1000/1000, slow 1000/1000; slow share 0/1000 -> 0/1000
+  new/new: 1646.1469 (1000/1000) -> 1653.5764 (1000/1000); fast 1005/1000, slow 1005/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo TwoChunkBatchProbe->TwoChunkBatchProbe 1024 x 2049 B (msg):
+  old/new: 1658.9880 (1000/1000) -> 1656.9241 (1000/1000); fast 999/1000, slow 999/1000; slow share 0/1000 -> 0/1000
+  old/old: 1659.0635 (1000/1000) -> 1658.6150 (1000/1000); fast 1000/1000, slow 1000/1000; slow share 0/1000 -> 0/1000
+  new/new: 1653.4016 (1000/1000) -> 1658.0684 (1000/1000); fast 1003/1000, slow 1003/1000; slow share 0/1000 -> 0/1000
+72 cells compared; ratios are new/old elapsed time, each speed separately.

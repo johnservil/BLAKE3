@@ -1546,7 +1546,9 @@ fn hash_serial_on(input: &[u8], key: &CVWords, flags: u8, platform: Platform) ->
 /// hashed several at a time, sixteen per group on SME2, so a batch of them
 /// hashes at a multiple of one [`hash`] call's rate; on Apple M4 and later
 /// so are messages of up to 15 KiB, in batches of about ten or more.
-/// Longer messages cost what [`hash`] costs. On Apple M4 and
+/// With x86 SIMD kernels, four or more 2 KiB messages are also hashed several at a time,
+/// filling SIMD lanes across messages at each chunk index and root.
+/// Other longer messages cost what [`hash`] costs. On Apple M4 and
 /// later, batches that run on SME2 follow [`hash`]'s rule for large
 /// inputs: when several threads hash them at once, one runs at the full
 /// rate and the others at about half of it. Always single-threaded; see [`hash_many_multithreaded`] for
@@ -1726,7 +1728,9 @@ pub fn kernel_report() -> KernelReport {
 /// by the batch's length in bytes: `from_len` is the batch's length at
 /// which each kernel starts. Messages of 1 to 16 whole blocks (64 B to
 /// 1 KiB) are hashed several at a time, and on SME2 so are messages of
-/// whole blocks up to 15 KiB; messages of other lengths run
+/// whole blocks up to 15 KiB. On x86, batches of four or more 2 KiB
+/// messages fill SIMD lanes across messages at each chunk index and root.
+/// Messages of other lengths run
 /// [`kernel_report`]'s kernel for their length, one message per call.
 #[cfg(feature = "std")]
 pub fn kernel_report_many(message_len: usize) -> KernelReport {
@@ -1741,6 +1745,14 @@ pub fn kernel_report_many(message_len: usize) -> KernelReport {
             name: kernel.name,
             why: "Messages of this length are hashed one call each, as one input of that length.",
         });
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        if message_len == 2 * CHUNK_LEN && platform.simd_degree() >= 4 {
+            kernels.push(Kernel {
+                from_len: 4 * message_len,
+                name: platform.hash_many_name(),
+                why: "From four two-chunk messages, chunks at the same index are hashed across messages, then their separate roots; groups hold up to sixteen messages and keep the platform's SIMD lanes filled.",
+            });
+        }
         #[cfg(blake3_neon_hybrid)]
         if (CHUNK_LEN + 1..=2 * CHUNK_LEN).contains(&message_len) && neon_hybrid::sha3_detected() {
             kernels.push(Kernel {

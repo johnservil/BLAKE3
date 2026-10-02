@@ -1,0 +1,140 @@
+
+running 78 tests
+test avx512::test::test_hash_many ... ok
+test avx512::test::test_compress ... ok
+test avx512::test::test_xof_many ... ok
+test hazmat::test::test_derive_key ... ok
+test hazmat::test::test_keyed_hash_xof ... ok
+test hazmat::test::test_hasher_already_accepted_input_should_panic - should panic ... ok
+test hazmat::test::test_set_input_offset_cant_finalize - should panic ... ok
+test hazmat::test::test_empty_subtree_should_panic - should panic ... ok
+test hazmat::test::test_set_input_offset_cant_finalize_xof - should panic ... ok
+test hazmat::test::test_too_much_input_should_panic - should panic ... ok
+test hazmat::test::test_unaligned_offset_should_panic - should panic ... ok
+test hazmat::test_left_subtree_len ... ok
+test hazmat::test_max_subtree_len ... ok
+test avx2::test::test_hash_many ... ok
+test join::test::test_serial_join ... ok
+test lanes::test::test_cut_messages_shapes ... ok
+test lanes::test::test_cut_subtrees_shapes ... ok
+test lanes::test::test_next_piece_len ... ok
+test many::test::test_hash_many_needs_the_input_it_names - should panic ... ok
+test many::test::test_hash_many_needs_whole_slots - should panic ... ok
+test platform::sme2_turn_test::test_one_sme2_call_at_a_time ... ok
+test hazmat::test::test_grouped_hash ... ok
+test portable::test::test_compress ... ok
+test many::test::test_hash_many_blocks ... ok
+test self_test::test::self_test_chain_carries_a_fault_forward ... ok
+test self_test::test::self_test_matches_the_reference ... ok
+test self_test::test::self_test_passes ... ok
+test sse2::test::test_compress ... ok
+test sse2::test::test_hash_many ... ok
+test sse41::test::test_compress ... ok
+test sse41::test::test_hash_many ... ok
+test test::guts_tests::test_chunk ... ok
+test test::guts_tests::test_parents ... ok
+test portable::test::test_hash_many ... ok
+test test::test_block_buffer_alignment ... ok
+test test::test_compare_reference_impl ... ok
+test lanes::test::test_merge_every_cut ... ok
+test test::test_compare_reference_impl_long_xof ... ok
+test lanes::test::test_budget_caps_agree ... ok
+test queue::test::planned_pieces_match_update ... ok
+test test::test_compare_update_multiple ... ok
+test test::test_counter_words ... ok
+test test::test_hash_const_conversions ... ok
+test test::test_hash_conversions ... ok
+test test::test_hex_encoding_decoding ... ok
+test test::test_issue_206_windows_sse2 ... ok
+test test::test_kernel_reports ... ok
+test many::test::test_hash_many_whole_blocks ... ok
+test many::test::test_hash_many_padded_groups_every_platform ... ok
+test lanes::test::test_simd_merge_matches_recursive ... ok
+test many::test::test_hash_many_other_lengths ... ok
+test lanes::test::test_cut_with_prefix_shapes_and_hashes ... ok
+test lanes::test::test_hash_matches_serial ... ok
+test lanes::test::test_hash_many_budgets_agree ... ok
+test test::test_key_bytes_equal_key_words ... ok
+test test::test_reset ... ok
+test test::test_update_reader_interrupted ... ok
+test test::test_largest_power_of_two_leq ... ok
+test test::test_miri_smoketest ... ok
+test test::test_msg_schedule_permutation ... ok
+test test::test_reference_impl_size ... ok
+test test::test_xof_partial_blocks ... ok
+test test::test_update_reader ... ok
+test test::platform_hash_many::test_every_platform_every_shape ... ok
+test test::test_xof_seek ... ok
+test test::unsafe_paths::test_batches_small ... ok
+test test::unsafe_paths::test_pool_from_two_callers ... ok
+test lanes::test::test_concurrent_batch_callers_agree ... ok
+test lanes::test::test_concurrent_callers_agree ... ok
+test many::test::test_hash_many_modes_every_platform ... ok
+test lanes::test::test_thread_reservations_obey_cap ... ok
+test many::test::test_hash_many_chunked_every_platform ... ok
+test test::test_fuzz_hasher ... ok
+test test::test_fuzz_xof ... ok
+test lanes::test::test_update_multithreaded_matches_hash ... ok
+test test::test_every_length_1_to_17_chunks_against_reference ... ok
+test many::test::test_hash_many_every_length ... ok
+test many::test::two_chunk_batches_match_reference_at_every_alignment ... ok
+
+test result: ok. 78 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.49s
+
+
+running 16 tests
+test a_budget_of_no_threads_is_refused - should panic ... 
+running 15 tests
+ok
+test a_batch_whose_buffer_is_not_whole_slots_is_refused - should panic ... test a_batch_whose_buffer_is_not_whole_slots_is_refused - should panic ... ok
+
+running 1 test
+ok
+test a_budget_of_no_threads_is_refused - should panic ... ok
+test a_handler_may_resubmit_its_buffer ... ok
+test a_message_in_pieces_matches_the_reference ... test one_message_every_form_matches_the_vectors ... ok
+test dropping_a_queue_cancels_nothing ... ok
+test a_handler_may_resubmit_its_buffer ... ok
+test batches_every_form_match_the_reference ... ok
+test a_panicking_handler_aborts_the_process ... ok
+test queue_of_messages_returns_every_buffer_in_order_with_its_digest ... ok
+test one_message_large_inputs_match_the_reference ... ok
+test a_message_in_pieces_matches_the_reference ... ok
+ok
+test a_panicking_handler_aborts_the_process ... 
+running 1 test
+test a_panicking_handler_aborts_the_process ... test queue_of_fixed_length_messages_fills_the_callers_digest_space ... ok
+test queues_on_several_threads_keep_their_own_order ... ok
+test one_queue_shared_by_several_submitting_threads ... ok
+test bursts_of_large_batches_after_pauses_complete ... ok
+ok
+test batches_every_form_match_the_reference ... ok
+test bursts_of_large_batches_after_pauses_complete ... test queue_of_pieces_returns_each_piece_and_one_digest ... ok
+ok
+test dropping_a_queue_cancels_nothing ... ok
+test one_message_every_form_matches_the_vectors ... ok
+test one_message_large_inputs_match_the_reference ... ok
+test one_queue_shared_by_several_submitting_threads ... ok
+test queue_of_fixed_length_messages_fills_the_callers_digest_space ... ok
+test queue_of_messages_returns_every_buffer_in_order_with_its_digest ... ok
+test queue_of_pieces_returns_each_piece_and_one_digest ... ok
+test queues_on_several_threads_keep_their_own_order ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 1.74s
+
+test api_suite_completes_with_one_cpu ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.75s
+
+
+running 1 test
+test every_queue_completes_on_one_cpu ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+
+running 1 test
+test a_warm_queue_allocates_nothing ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.30s
+

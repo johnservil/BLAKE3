@@ -1,0 +1,351 @@
+
+/home/agent/bench-hashes-audit/target/perf-final-dispatch/release/bench-hashes:     file format elf64-x86-64
+
+
+Disassembly of section .text:
+
+00000000000c7170 <_RNvNtCsarCedRcwGOw_13blake3_servil4many12hash_many_on>:
+   c7170:	push   %rbp
+   c7171:	push   %r15
+   c7173:	push   %r14
+   c7175:	push   %r13
+   c7177:	push   %r12
+   c7179:	push   %rbx
+   c717a:	sub    $0x48,%rsp
+   c717e:	mov    %r9,%rbx
+   c7181:	mov    %rcx,%r10
+   c7184:	mov    %rdx,%r14
+   c7187:	mov    %rdi,%r15
+   c718a:	movzbl 0x88(%rsp),%ecx
+   c7192:	mov    0x80(%rsp),%r9
+   c719a:	cmp    $0x40,%rdx
+   c719e:	sete   %al
+   c71a1:	cmp    $0x2,%r9
+   c71a5:	setae  %dl
+   c71a8:	test   %dl,%al
+   c71aa:	mov    %r10,0x28(%rsp)
+   c71af:	je     c7279 <_RNvNtCsarCedRcwGOw_13blake3_servil4many12hash_many_on+0x109>
+   c71b5:	mov    %rsi,0x38(%rsp)
+   c71ba:	movq   $0x1,0x30(%rsp)
+   c71c3:	mov    %r9,%rax
+   c71c6:	shl    $0x6,%rax
+   c71ca:	mov    %rax,0x20(%rsp)
+   c71cf:	movq   $0x1,0x18(%rsp)
+   c71d8:	cmp    %rax,%rsi
+   c71db:	jne    c7609 <_RNvNtCsarCedRcwGOw_13blake3_servil4many12hash_many_on+0x499>
+   c71e1:	lea    0x1fff(%rsi),%rax
+   c71e8:	shr    $0xd,%rax
+   c71ec:	lea    0x7f(%r9),%r12
+   c71f0:	shr    $0x7,%r12
+   c71f4:	cmp    %rax,%r12
+   c71f7:	cmovae %rax,%r12
+   c71fb:	movzbl %cl,%eax
+   c71fe:	mov    %rax,0x10(%rsp)
+   c7203:	movzbl %r8b,%ebp
+   c7207:	mov    %rsi,%r14
+   c720a:	mov    %r9,%r13
+   c720d:	nopl   (%rax)
+   c7210:	sub    $0x2000,%r14
+   c7217:	mov    $0x2000,%eax
+   c721c:	cmovae %rax,%rsi
+   c7220:	sub    $0x80,%r13
+   c7227:	mov    $0x80,%eax
+   c722c:	cmovae %rax,%r9
+   c7230:	sub    $0x8,%rsp
+   c7234:	mov    %r15,%rdi
+   c7237:	mov    %r10,%rdx
+   c723a:	mov    %ebp,%ecx
+   c723c:	mov    %rbx,%r8
+   c723f:	push   0x18(%rsp)
+   c7243:	call   c7960 <_RINvNtCsarCedRcwGOw_13blake3_servil4many8hash_runKj40_EB4_>
+   c7248:	mov    0x38(%rsp),%r10
+   c724d:	add    $0x10,%rsp
+   c7251:	add    $0x1000,%rbx
+   c7258:	add    $0x2000,%r15
+   c725f:	mov    %r14,%rsi
+   c7262:	mov    %r13,%r9
+   c7265:	dec    %r12
+   c7268:	jne    c7210 <_RNvNtCsarCedRcwGOw_13blake3_servil4many12hash_many_on+0xa0>
+   c726a:	add    $0x48,%rsp
+   c726e:	pop    %rbx
+   c726f:	pop    %r12
+   c7271:	pop    %r13
+   c7273:	pop    %r14
+   c7275:	pop    %r15
+   c7277:	pop    %rbp
+   c7278:	ret
+   c7279:	lea    0x3f(%r14),%rax
+   c727d:	and    $0xffffffffffffffc0,%rax
+   c7281:	cmp    $0x41,%rax
+   c7285:	mov    $0x40,%edi
+   c728a:	cmovae %rax,%rdi
+   c728e:	mov    %rsi,0x38(%rsp)
+   c7293:	movq   $0x1,0x30(%rsp)
+   c729c:	mov    %rdi,%rax
+   c729f:	mul    %r9
+   c72a2:	jo     c762b <_RNvNtCsarCedRcwGOw_13blake3_servil4many12hash_many_on+0x4bb>
+   c72a8:	mov    %rax,0x20(%rsp)
+   c72ad:	movq   $0x1,0x18(%rsp)
+   c72b6:	cmp    %rax,%rsi
+   c72b9:	jne    c7634 <_RNvNtCsarCedRcwGOw_13blake3_servil4many12hash_many_on+0x4c4>
+   c72bf:	test   %r14,%r14
+   c72c2:	je     c72fb <_RNvNtCsarCedRcwGOw_13blake3_servil4many12hash_many_on+0x18b>
+   c72c4:	cmp    $0x2,%r9
+   c72c8:	setb   %al
+   c72cb:	cmp    $0x401,%r14
+   c72d2:	setae  %dl
+   c72d5:	or     %al,%dl
+   c72d7:	jne    c72fe <_RNvNtCsarCedRcwGOw_13blake3_servil4many12hash_many_on+0x18e>
+   c72d9:	mov    %rdi,%r13
+   c72dc:	shl    $0x7,%r13
+   c72e0:	test   %rsi,%rsi
+   c72e3:	je     c7321 <_RNvNtCsarCedRcwGOw_13blake3_servil4many12hash_many_on+0x1b1>
+   c72e5:	mov    %rsi,%rax
+   c72e8:	or     %r13,%rax
+   c72eb:	shr    $0x20,%rax
+   c72ef:	je     c7325 <_RNvNtCsarCedRcwGOw_13blake3_servil4many12hash_many_on+0x1b5>
+   c72f1:	mov    %rsi,%rax
+   c72f4:	xor    %edx,%edx
+   c72f6:	div    %r13
+   c72f9:	jmp    c732c <_RNvNtCsarCedRcwGOw_13blake3_servil4many12hash_many_on+0x1bc>
+   c72fb:	xor    %r14d,%r14d
+   c72fe:	movzbl %r8b,%r8d
+   c7302:	mov    %r15,%rdi
+   c7305:	mov    %r14,%rdx
+   c7308:	mov    %r10,%rcx
+   c730b:	mov    %rbx,%r9
+   c730e:	add    $0x48,%rsp
+   c7312:	pop    %rbx
+   c7313:	pop    %r12
+   c7315:	pop    %r13
+   c7317:	pop    %r14
+   c7319:	pop    %r15
+   c731b:	pop    %rbp
+   c731c:	jmp    c7a60 <_RNvNtCsarCedRcwGOw_13blake3_servil4many19hash_long_or_single>
+   c7321:	xor    %eax,%eax
+   c7323:	jmp    c7334 <_RNvNtCsarCedRcwGOw_13blake3_servil4many12hash_many_on+0x1c4>
+   c7325:	mov    %esi,%eax
+   c7327:	xor    %edx,%edx
+   c7329:	div    %r13d
+   c732c:	cmp    $0x1,%rdx
+   c7330:	sbb    $0xffffffffffffffff,%rax
+   c7334:	lea    0x7f(%r9),%r12
+   c7338:	shr    $0x7,%r12
+   c733c:	cmp    %rax,%r12
+   c733f:	cmovae %rax,%r12
+   c7343:	test   %r12,%r12
+   c7346:	je     c726a <_RNvNtCsarCedRcwGOw_13blake3_servil4many12hash_many_on+0xfa>
+   c734c:	sub    %rdi,%r14
+   c734f:	add    $0x40,%r14
+   c7353:	shr    $0x6,%rdi
+   c7357:	dec    %rdi
+   c735a:	movzbl %cl,%eax
+   c735d:	mov    %rax,0x8(%rsp)
+   c7362:	movzbl %r8b,%eax
+   c7366:	mov    %eax,0x4(%rsp)
+   c736a:	mov    %rdi,0x40(%rsp)
+   c736f:	jmp    c73c0 <_RNvNtCsarCedRcwGOw_13blake3_servil4many12hash_many_on+0x250>
+   c7371:	mov    %r15,%rdi
+   c7374:	mov    %rcx,%rsi
+   c7377:	mov    %r10,%rdx
+   c737a:	mov    0x4(%rsp),%ecx
+   c737e:	mov    %rbx,%r8
+   c7381:	mov    %rax,%r9
+   c7384:	push   %r14
+   c7386:	push   0x10(%rsp)
+   c738a:	call   ca8e0 <_RINvNtCsarCedRcwGOw_13blake3_servil4many11hash_blocksKj3c0_EB4_>
+   c738f:	nop
+   c7390:	add    $0x10,%rsp
+   c7394:	add    $0x1000,%rbx
+   c739b:	mov    %rbp,%r9
+   c739e:	add    $0xffffffffffffff80,%r9
+   c73a2:	add    %r13,%r15
+   c73a5:	mov    0x10(%rsp),%rsi
+   c73aa:	sub    %r13,%rsi
+   c73ad:	dec    %r12
+   c73b0:	mov    0x28(%rsp),%r10
+   c73b5:	mov    0x40(%rsp),%rdi
+   c73ba:	je     c726a <_RNvNtCsarCedRcwGOw_13blake3_servil4many12hash_many_on+0xfa>
+   c73c0:	cmp    %rsi,%r13
+   c73c3:	mov    %rsi,%rcx
+   c73c6:	cmovb  %r13,%rcx
+   c73ca:	cmp    $0x80,%r9
+   c73d1:	mov    $0x80,%eax
+   c73d6:	cmovb  %r9,%rax
+   c73da:	cmp    $0xe,%rdi
+   c73de:	mov    %rsi,0x10(%rsp)
+   c73e3:	mov    %r9,%rbp
+   c73e6:	ja     c74ce <_RNvNtCsarCedRcwGOw_13blake3_servil4many12hash_many_on+0x35e>
+   c73ec:	lea    -0xb5f63(%rip),%rsi        # 11490 <__abi_tag+0x11194>
+   c73f3:	movslq (%rsi,%rdi,4),%rdx
+   c73f7:	add    %rsi,%rdx
+   c73fa:	jmp    *%rdx
+   c73fc:	mov    %r15,%rdi
+   c73ff:	mov    %rcx,%rsi
+   c7402:	mov    %r10,%rdx
+   c7405:	mov    0x4(%rsp),%ecx
+   c7409:	mov    %rbx,%r8
+   c740c:	mov    %rax,%r9
+   c740f:	push   %r14
+   c7411:	push   0x10(%rsp)
+   c7415:	call   c8040 <_RINvNtCsarCedRcwGOw_13blake3_servil4many14hash_run_shortKj40_EB4_>
+   c741a:	jmp    c7390 <_RNvNtCsarCedRcwGOw_13blake3_servil4many12hash_many_on+0x220>
+   c741f:	mov    %r15,%rdi
+   c7422:	mov    %rcx,%rsi
+   c7425:	mov    %r10,%rdx
+   c7428:	mov    0x4(%rsp),%ecx
+   c742c:	mov    %rbx,%r8
+   c742f:	mov    %rax,%r9
+   c7432:	push   %r14
+   c7434:	push   0x10(%rsp)
+   c7438:	call   c9fe0 <_RINvNtCsarCedRcwGOw_13blake3_servil4many11hash_blocksKj300_EB4_>
+   c743d:	jmp    c7390 <_RNvNtCsarCedRcwGOw_13blake3_servil4many12hash_many_on+0x220>
+   c7442:	mov    %r15,%rdi
+   c7445:	mov    %rcx,%rsi
+   c7448:	mov    %r10,%rdx
+   c744b:	mov    0x4(%rsp),%ecx
+   c744f:	mov    %rbx,%r8
+   c7452:	mov    %rax,%r9
+   c7455:	push   %r14
+   c7457:	push   0x10(%rsp)
+   c745b:	call   c8af0 <_RINvNtCsarCedRcwGOw_13blake3_servil4many11hash_blocksKj140_EB4_>
+   c7460:	jmp    c7390 <_RNvNtCsarCedRcwGOw_13blake3_servil4many12hash_many_on+0x220>
+   c7465:	mov    %r15,%rdi
+   c7468:	mov    %rcx,%rsi
+   c746b:	mov    %r10,%rdx
+   c746e:	mov    0x4(%rsp),%ecx
+   c7472:	mov    %rbx,%r8
+   c7475:	mov    %rax,%r9
+   c7478:	push   %r14
+   c747a:	push   0x10(%rsp)
+   c747e:	call   ca2e0 <_RINvNtCsarCedRcwGOw_13blake3_servil4many11hash_blocksKj340_EB4_>
+   c7483:	jmp    c7390 <_RNvNtCsarCedRcwGOw_13blake3_servil4many12hash_many_on+0x220>
+   c7488:	mov    %r15,%rdi
+   c748b:	mov    %rcx,%rsi
+   c748e:	mov    %r10,%rdx
+   c7491:	mov    0x4(%rsp),%ecx
+   c7495:	mov    %rbx,%r8
+   c7498:	mov    %rax,%r9
+   c749b:	push   %r14
+   c749d:	push   0x10(%rsp)
+   c74a1:	call   c99e0 <_RINvNtCsarCedRcwGOw_13blake3_servil4many11hash_blocksKj280_EB4_>
+   c74a6:	jmp    c7390 <_RNvNtCsarCedRcwGOw_13blake3_servil4many12hash_many_on+0x220>
+   c74ab:	mov    %r15,%rdi
+   c74ae:	mov    %rcx,%rsi
+   c74b1:	mov    %r10,%rdx
+   c74b4:	mov    0x4(%rsp),%ecx
+   c74b8:	mov    %rbx,%r8
+   c74bb:	mov    %rax,%r9
+   c74be:	push   %r14
+   c74c0:	push   0x10(%rsp)
+   c74c4:	call   c8500 <_RINvNtCsarCedRcwGOw_13blake3_servil4many11hash_blocksKjc0_EB4_>
+   c74c9:	jmp    c7390 <_RNvNtCsarCedRcwGOw_13blake3_servil4many12hash_many_on+0x220>
+   c74ce:	mov    %r15,%rdi
+   c74d1:	mov    %rcx,%rsi
+   c74d4:	mov    %r10,%rdx
+   c74d7:	mov    0x4(%rsp),%ecx
+   c74db:	mov    %rbx,%r8
+   c74de:	mov    %rax,%r9
+   c74e1:	push   %r14
+   c74e3:	push   0x10(%rsp)
+   c74e7:	call   cabe0 <_RINvNtCsarCedRcwGOw_13blake3_servil4many11hash_blocksKj400_EB4_>
+   c74ec:	jmp    c7390 <_RNvNtCsarCedRcwGOw_13blake3_servil4many12hash_many_on+0x220>
+   c74f1:	mov    %r15,%rdi
+   c74f4:	mov    %rcx,%rsi
+   c74f7:	mov    %r10,%rdx
+   c74fa:	mov    0x4(%rsp),%ecx
+   c74fe:	mov    %rbx,%r8
+   c7501:	mov    %rax,%r9
+   c7504:	push   %r14
+   c7506:	push   0x10(%rsp)
+   c750a:	call   c8800 <_RINvNtCsarCedRcwGOw_13blake3_servil4many11hash_blocksKj100_EB4_>
+   c750f:	jmp    c7390 <_RNvNtCsarCedRcwGOw_13blake3_servil4many12hash_many_on+0x220>
+   c7514:	mov    %r15,%rdi
+   c7517:	mov    %rcx,%rsi
+   c751a:	mov    %r10,%rdx
+   c751d:	mov    0x4(%rsp),%ecx
+   c7521:	mov    %rbx,%r8
+   c7524:	mov    %rax,%r9
+   c7527:	push   %r14
+   c7529:	push   0x10(%rsp)
+   c752d:	call   c93f0 <_RINvNtCsarCedRcwGOw_13blake3_servil4many11hash_blocksKj200_EB4_>
+   c7532:	jmp    c7390 <_RNvNtCsarCedRcwGOw_13blake3_servil4many12hash_many_on+0x220>
+   c7537:	mov    %r15,%rdi
+   c753a:	mov    %rcx,%rsi
+   c753d:	mov    %r10,%rdx
+   c7540:	mov    0x4(%rsp),%ecx
+   c7544:	mov    %rbx,%r8
+   c7547:	mov    %rax,%r9
+   c754a:	push   %r14
+   c754c:	push   0x10(%rsp)
+   c7550:	call   c8210 <_RINvNtCsarCedRcwGOw_13blake3_servil4many11hash_blocksKj80_EB4_>
+   c7555:	jmp    c7390 <_RNvNtCsarCedRcwGOw_13blake3_servil4many12hash_many_on+0x220>
+   c755a:	mov    %r15,%rdi
+   c755d:	mov    %rcx,%rsi
+   c7560:	mov    %r10,%rdx
+   c7563:	mov    0x4(%rsp),%ecx
+   c7567:	mov    %rbx,%r8
+   c756a:	mov    %rax,%r9
+   c756d:	push   %r14
+   c756f:	push   0x10(%rsp)
+   c7573:	call   c8df0 <_RINvNtCsarCedRcwGOw_13blake3_servil4many11hash_blocksKj180_EB4_>
+   c7578:	jmp    c7390 <_RNvNtCsarCedRcwGOw_13blake3_servil4many12hash_many_on+0x220>
+   c757d:	mov    %r15,%rdi
+   c7580:	mov    %rcx,%rsi
+   c7583:	mov    %r10,%rdx
+   c7586:	mov    0x4(%rsp),%ecx
+   c758a:	mov    %rbx,%r8
+   c758d:	mov    %rax,%r9
+   c7590:	push   %r14
+   c7592:	push   0x10(%rsp)
+   c7596:	call   ca5e0 <_RINvNtCsarCedRcwGOw_13blake3_servil4many11hash_blocksKj380_EB4_>
+   c759b:	jmp    c7390 <_RNvNtCsarCedRcwGOw_13blake3_servil4many12hash_many_on+0x220>
+   c75a0:	mov    %r15,%rdi
+   c75a3:	mov    %rcx,%rsi
+   c75a6:	mov    %r10,%rdx
+   c75a9:	mov    0x4(%rsp),%ecx
+   c75ad:	mov    %rbx,%r8
+   c75b0:	mov    %rax,%r9
+   c75b3:	push   %r14
+   c75b5:	push   0x10(%rsp)
+   c75b9:	call   c90f0 <_RINvNtCsarCedRcwGOw_13blake3_servil4many11hash_blocksKj1c0_EB4_>
+   c75be:	jmp    c7390 <_RNvNtCsarCedRcwGOw_13blake3_servil4many12hash_many_on+0x220>
+   c75c3:	mov    %r15,%rdi
+   c75c6:	mov    %rcx,%rsi
+   c75c9:	mov    %r10,%rdx
+   c75cc:	mov    0x4(%rsp),%ecx
+   c75d0:	mov    %rbx,%r8
+   c75d3:	mov    %rax,%r9
+   c75d6:	push   %r14
+   c75d8:	push   0x10(%rsp)
+   c75dc:	call   c9ce0 <_RINvNtCsarCedRcwGOw_13blake3_servil4many11hash_blocksKj2c0_EB4_>
+   c75e1:	jmp    c7390 <_RNvNtCsarCedRcwGOw_13blake3_servil4many12hash_many_on+0x220>
+   c75e6:	mov    %r15,%rdi
+   c75e9:	mov    %rcx,%rsi
+   c75ec:	mov    %r10,%rdx
+   c75ef:	mov    0x4(%rsp),%ecx
+   c75f3:	mov    %rbx,%r8
+   c75f6:	mov    %rax,%r9
+   c75f9:	push   %r14
+   c75fb:	push   0x10(%rsp)
+   c75ff:	call   c96e0 <_RINvNtCsarCedRcwGOw_13blake3_servil4many11hash_blocksKj240_EB4_>
+   c7604:	jmp    c7390 <_RNvNtCsarCedRcwGOw_13blake3_servil4many12hash_many_on+0x220>
+   c7609:	lea    -0x947e3(%rip),%rdx        # 32e2d <__abi_tag+0x32b31>
+   c7610:	lea    0x18d391(%rip),%r8        # 2549a8 <__frame_dummy_init_array_entry+0x5930>
+   c7617:	lea    0x30(%rsp),%rdi
+   c761c:	lea    0x18(%rsp),%rsi
+   c7621:	mov    $0x5f,%ecx
+   c7626:	call   1d3643 <_RINvNtCsgxBkk5gSRhY_4core9panicking13assert_failedINtNtB4_6option6OptionjEBM_EB4_>
+   c762b:	movq   $0x0,0x18(%rsp)
+   c7634:	lea    -0x9480e(%rip),%rdx        # 32e2d <__abi_tag+0x32b31>
+   c763b:	lea    0x18d37e(%rip),%r8        # 2549c0 <__frame_dummy_init_array_entry+0x5948>
+   c7642:	lea    0x30(%rsp),%rdi
+   c7647:	lea    0x18(%rsp),%rsi
+   c764c:	mov    $0x5f,%ecx
+   c7651:	call   1d3643 <_RINvNtCsgxBkk5gSRhY_4core9panicking13assert_failedINtNtB4_6option6OptionjEBM_EB4_>
+
+Disassembly of section .init:
+
+Disassembly of section .fini:
+
+Disassembly of section .plt:

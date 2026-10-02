@@ -1,0 +1,32 @@
+warning: variable does not need to be mutable
+   --> /home/agent/BLAKE3-devon/tmp/perf-ab/old/src/src/self_test.rs:248:9
+    |
+248 |     let mut out = std::vec![0u8; chunks.len() * crate::OUT_LEN];
+    |         ----^^^
+    |         |
+    |         help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: `blake3-servil` (lib) generated 1 warning (run `cargo fix --lib -p blake3-servil` to apply 1 suggestion)
+   Compiling bench-hashes v0.7.0+115ddb91e7ab86e85e9430de171de1cf2347834e (/home/agent/BLAKE3-devon/tmp/perf-ab/old/src/bench-hashes)
+    Finished `release` profile [optimized] target(s) in 10.72s
+   Compiling blake3-servil v0.3.0+2e4fa821f9db07b945dbb2b0d02eb76cb19617b5 (/home/agent/BLAKE3-devon/tmp/perf-ab/new/src)
+   Compiling bench-hashes v0.7.0+115ddb91e7ab86e85e9430de171de1cf2347834e (/home/agent/BLAKE3-devon/tmp/perf-ab/new/src/bench-hashes)
+warning: variable does not need to be mutable
+   --> /home/agent/BLAKE3-devon/tmp/perf-ab/new/src/src/self_test.rs:248:9
+    |
+248 |     let mut out = std::vec![0u8; chunks.len() * crate::OUT_LEN];
+    |         ----^^^
+    |         |
+    |         help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: `blake3-servil` (lib) generated 1 warning (run `cargo fix --lib -p blake3-servil` to apply 1 suggestion)
+    Finished `release` profile [optimized] target(s) in 11.43s
+perf_regress: the working tree against HEAD, 4 alternating pairs, use cases ContinuousBatches, ContinuousMessages, IdleManyMessages, IdleOneMessage, LentBatches, LentMessages, LentPieces, ManyMessages, OneMessage
+perf_regress: pair 1 done in 45.6 s (35 points; 10 still open)
+perf_regress: pair 2 done in 9.9 s (10 points; 6 still open)
+perf_regress: pair 3 done in 7.5 s (6 points; 1 still open)
+perf_regress: pair 4 done in 0.9 s (1 points; 0 still open)

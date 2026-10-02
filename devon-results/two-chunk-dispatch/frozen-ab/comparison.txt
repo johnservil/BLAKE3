@@ -1,0 +1,525 @@
+sha256 solo OneMessage->OneMessage 64 B (B):
+  old/new: 8.2495 (854/1000) | 11.3125 (146/1000) -> 7.9102 (1000/1000); fast 959/1000, slow 699/1000; slow share 146/1000 -> 0/1000
+  old/old: 7.5625 (854/1000) | 11.9312 (146/1000) -> 9.1667 (1000/1000); fast 1212/1000, slow 768/1000; slow share 146/1000 -> 0/1000
+  new/new: 8.0000 (896/1000) | 11.8867 (104/1000) -> 7.2682 (875/1000) | 10.2734 (125/1000); fast 909/1000, slow 864/1000; slow share 104/1000 -> 125/1000
+sha256 solo OneMessage->OneMessage 1 KiB (B):
+  old/new: 1.3149 (1000/1000) -> 1.2737 (1000/1000); fast 969/1000, slow 969/1000; slow share 0/1000 -> 0/1000
+  old/old: 1.3257 (1000/1000) -> 1.3074 (1000/1000); fast 986/1000, slow 986/1000; slow share 0/1000 -> 0/1000
+  new/new: 1.2712 (1000/1000) -> 1.2781 (1000/1000); fast 1005/1000, slow 1005/1000; slow share 0/1000 -> 0/1000
+sha256 solo OneMessage->OneMessage 2304 B (B):
+  old/new: 0.8293 (1000/1000) -> 0.8381 (1000/1000); fast 1011/1000, slow 1011/1000; slow share 0/1000 -> 0/1000
+  old/old: 0.8319 (1000/1000) -> 0.8264 (1000/1000); fast 993/1000, slow 993/1000; slow share 0/1000 -> 0/1000
+  new/new: 0.8465 (1000/1000) -> 0.8285 (1000/1000); fast 979/1000, slow 979/1000; slow share 0/1000 -> 0/1000
+sha256 solo OneMessage->OneMessage 4 KiB (B):
+  old/new: 0.6798 (1000/1000) -> 0.6786 (1000/1000); fast 998/1000, slow 998/1000; slow share 0/1000 -> 0/1000
+  old/old: 0.6814 (1000/1000) -> 0.6775 (1000/1000); fast 994/1000, slow 994/1000; slow share 0/1000 -> 0/1000
+  new/new: 0.6837 (1000/1000) -> 0.6737 (1000/1000); fast 985/1000, slow 985/1000; slow share 0/1000 -> 0/1000
+sha256 solo OneMessage->OneMessage 7935 B (B):
+  old/new: 0.5856 (1000/1000) -> 0.5894 (1000/1000); fast 1006/1000, slow 1006/1000; slow share 0/1000 -> 0/1000
+  old/old: 0.5866 (1000/1000) -> 0.5853 (1000/1000); fast 998/1000, slow 998/1000; slow share 0/1000 -> 0/1000
+  new/new: 0.5904 (1000/1000) -> 0.5861 (1000/1000); fast 993/1000, slow 993/1000; slow share 0/1000 -> 0/1000
+sha256 solo OneMessage->OneMessage 16 KiB (B):
+  old/new: 0.5322 (1000/1000) -> 0.5377 (1000/1000); fast 1010/1000, slow 1010/1000; slow share 0/1000 -> 0/1000
+  old/old: 0.5341 (1000/1000) -> 0.5317 (1000/1000); fast 995/1000, slow 995/1000; slow share 0/1000 -> 0/1000
+  new/new: 0.5373 (1000/1000) -> 0.5381 (1000/1000); fast 1001/1000, slow 1001/1000; slow share 0/1000 -> 0/1000
+sha256 solo OneMessage->OneMessage 64 KiB (B):
+  old/new: 0.5119 (1000/1000) -> 0.5117 (1000/1000); fast 1000/1000, slow 1000/1000; slow share 0/1000 -> 0/1000
+  old/old: 0.5166 (1000/1000) -> 0.5106 (1000/1000); fast 988/1000, slow 988/1000; slow share 0/1000 -> 0/1000
+  new/new: 0.5156 (1000/1000) -> 0.5104 (1000/1000); fast 990/1000, slow 990/1000; slow share 0/1000 -> 0/1000
+sha256 solo OneMessage->OneMessage 256 KiB (B):
+  old/new: 0.5018 (1000/1000) -> 0.5011 (1000/1000); fast 999/1000, slow 999/1000; slow share 0/1000 -> 0/1000
+  old/old: 0.5012 (1000/1000) -> 0.5025 (1000/1000); fast 1003/1000, slow 1003/1000; slow share 0/1000 -> 0/1000
+  new/new: 0.5022 (1000/1000) -> 0.5008 (1000/1000); fast 997/1000, slow 997/1000; slow share 0/1000 -> 0/1000
+sha256 solo OneMessage->OneMessage 1 MiB (B):
+  old/new: 0.4299 (1000/1000) -> 0.4338 (1000/1000); fast 1009/1000, slow 1009/1000; slow share 0/1000 -> 0/1000
+  old/old: 0.4289 (1000/1000) -> 0.4326 (1000/1000); fast 1009/1000, slow 1009/1000; slow share 0/1000 -> 0/1000
+  new/new: 0.4324 (1000/1000) -> 0.4347 (1000/1000); fast 1005/1000, slow 1005/1000; slow share 0/1000 -> 0/1000
+sha256 solo OneMessage->OneMessage 8 MiB (B):
+  old/new: 0.4133 (1000/1000) -> 0.4120 (1000/1000); fast 997/1000, slow 997/1000; slow share 0/1000 -> 0/1000
+  old/old: 0.4121 (1000/1000) -> 0.4134 (1000/1000); fast 1003/1000, slow 1003/1000; slow share 0/1000 -> 0/1000
+  new/new: 0.4133 (1000/1000) -> 0.4115 (1000/1000); fast 996/1000, slow 996/1000; slow share 0/1000 -> 0/1000
+sha256 solo ManyMessages->ManyMessages 1 (msg):
+  old/new: 492.1250 (1000/1000) -> 471.6500 (896/1000) | 726.2500 (104/1000); fast 958/1000, slow 1476/1000; slow share 0/1000 -> 104/1000
+  old/old: 483.0000 (896/1000) | 711.0000 (104/1000) -> 445.4000 (458/1000) | 595.5000 (542/1000); fast 922/1000, slow 838/1000; slow share 104/1000 -> 542/1000
+  new/new: 458.8000 (875/1000) | 649.5000 (125/1000) -> 487.0000 (896/1000) | 727.2500 (104/1000); fast 1061/1000, slow 1120/1000; slow share 125/1000 -> 104/1000
+sha256 solo ManyMessages->ManyMessages 4 (msg):
+  old/new: 243.6667 (1000/1000) -> 236.7500 (1000/1000); fast 972/1000, slow 972/1000; slow share 0/1000 -> 0/1000
+  old/old: 239.6667 (1000/1000) -> 248.4583 (1000/1000); fast 1037/1000, slow 1037/1000; slow share 0/1000 -> 0/1000
+  new/new: 230.0000 (896/1000) | 302.2500 (104/1000) -> 241.5000 (1000/1000); fast 1050/1000, slow 799/1000; slow share 104/1000 -> 0/1000
+sha256 solo ManyMessages->ManyMessages 16 (msg):
+  old/new: 121.0781 (1000/1000) -> 117.4688 (1000/1000); fast 970/1000, slow 970/1000; slow share 0/1000 -> 0/1000
+  old/old: 120.1250 (1000/1000) -> 121.9844 (1000/1000); fast 1015/1000, slow 1015/1000; slow share 0/1000 -> 0/1000
+  new/new: 117.9844 (1000/1000) -> 116.9375 (1000/1000); fast 991/1000, slow 991/1000; slow share 0/1000 -> 0/1000
+sha256 solo ManyMessages->ManyMessages 64 (msg):
+  old/new: 84.4688 (1000/1000) -> 84.2266 (1000/1000); fast 997/1000, slow 997/1000; slow share 0/1000 -> 0/1000
+  old/old: 84.3906 (1000/1000) -> 84.4766 (1000/1000); fast 1001/1000, slow 1001/1000; slow share 0/1000 -> 0/1000
+  new/new: 84.3281 (1000/1000) -> 84.0625 (1000/1000); fast 997/1000, slow 997/1000; slow share 0/1000 -> 0/1000
+sha256 solo ManyMessages->ManyMessages 1024 (msg):
+  old/new: 73.9932 (1000/1000) -> 74.2085 (1000/1000); fast 1003/1000, slow 1003/1000; slow share 0/1000 -> 0/1000
+  old/old: 74.3804 (1000/1000) -> 73.9775 (1000/1000); fast 995/1000, slow 995/1000; slow share 0/1000 -> 0/1000
+  new/new: 74.1299 (1000/1000) -> 74.2241 (1000/1000); fast 1001/1000, slow 1001/1000; slow share 0/1000 -> 0/1000
+sha256 solo ManyMessages->ManyMessages 16384 (msg):
+  old/new: 62.3505 (1000/1000) -> 62.3919 (1000/1000); fast 1001/1000, slow 1001/1000; slow share 0/1000 -> 0/1000
+  old/old: 62.2785 (1000/1000) -> 62.3973 (1000/1000); fast 1002/1000, slow 1002/1000; slow share 0/1000 -> 0/1000
+  new/new: 62.2278 (1000/1000) -> 62.4273 (1000/1000); fast 1003/1000, slow 1003/1000; slow share 0/1000 -> 0/1000
+sha256 solo IdleOneMessage->IdleOneMessage 64 B (B):
+  old/new: 2.2930 (115/1000) | 4.7422 (885/1000) -> 4.5276 (865/1000) | 8.0938 (135/1000); fast 1975/1000, slow 1707/1000; slow share 885/1000 -> 135/1000
+  old/old: 4.3408 (875/1000) | 6.1745 (125/1000) -> 3.6719 (833/1000) | 9.6875 (167/1000); fast 846/1000, slow 1569/1000; slow share 125/1000 -> 167/1000
+  new/new: 4.1906 (771/1000) | 8.3469 (229/1000) -> 4.5661 (833/1000) | 6.3918 (167/1000); fast 1090/1000, slow 766/1000; slow share 229/1000 -> 167/1000
+sha256 solo IdleOneMessage->IdleOneMessage 4 KiB (B):
+  old/new: 0.4575 (844/1000) | 0.6287 (156/1000) -> 0.4761 (865/1000) | 0.6499 (135/1000); fast 1041/1000, slow 1034/1000; slow share 156/1000 -> 135/1000
+  old/old: 0.4559 (854/1000) | 0.6282 (146/1000) -> 0.4762 (833/1000) | 0.6389 (167/1000); fast 1044/1000, slow 1017/1000; slow share 146/1000 -> 167/1000
+  new/new: 0.4792 (813/1000) | 0.6790 (188/1000) -> 0.4739 (1000/1000); fast 989/1000, slow 698/1000; slow share 188/1000 -> 0/1000
+sha256 solo IdleOneMessage->IdleOneMessage 64 KiB (B):
+  old/new: 0.4189 (1000/1000) -> 0.4189 (1000/1000); fast 1000/1000, slow 1000/1000; slow share 0/1000 -> 0/1000
+  old/old: 0.4219 (1000/1000) -> 0.4139 (1000/1000); fast 981/1000, slow 981/1000; slow share 0/1000 -> 0/1000
+  new/new: 0.4188 (1000/1000) -> 0.4190 (1000/1000); fast 1000/1000, slow 1000/1000; slow share 0/1000 -> 0/1000
+sha256 solo IdleOneMessage->IdleOneMessage 1 MiB (B):
+  old/new: 0.4139 (1000/1000) -> 0.4134 (1000/1000); fast 999/1000, slow 999/1000; slow share 0/1000 -> 0/1000
+  old/old: 0.4179 (1000/1000) -> 0.4115 (1000/1000); fast 985/1000, slow 985/1000; slow share 0/1000 -> 0/1000
+  new/new: 0.4135 (1000/1000) -> 0.4116 (1000/1000); fast 995/1000, slow 995/1000; slow share 0/1000 -> 0/1000
+sha256 solo IdleManyMessages->IdleManyMessages 16 (msg):
+  old/new: 73.5938 (823/1000) | 111.9063 (177/1000) -> 82.9531 (833/1000) | 125.4844 (167/1000); fast 1127/1000, slow 1121/1000; slow share 177/1000 -> 167/1000
+  old/old: 73.1875 (833/1000) | 110.1563 (167/1000) -> 74.3750 (813/1000) | 112.3125 (188/1000); fast 1016/1000, slow 1020/1000; slow share 167/1000 -> 188/1000
+  new/new: 83.6094 (792/1000) | 129.6406 (208/1000) -> 82.3750 (875/1000) | 116.9375 (125/1000); fast 985/1000, slow 902/1000; slow share 208/1000 -> 125/1000
+sha256 solo ContinuousMessages->ContinuousMessages 64 B (B):
+  old/new: 0.9737 (1000/1000) -> 0.9757 (1000/1000); fast 1002/1000, slow 1002/1000; slow share 0/1000 -> 0/1000
+  old/old: 0.9733 (1000/1000) -> 0.9741 (1000/1000); fast 1001/1000, slow 1001/1000; slow share 0/1000 -> 0/1000
+  new/new: 0.9774 (1000/1000) -> 0.9750 (1000/1000); fast 998/1000, slow 998/1000; slow share 0/1000 -> 0/1000
+sha256 solo ContinuousMessages->ContinuousMessages 1 KiB (B):
+  old/new: 0.4594 (1000/1000) -> 0.4606 (1000/1000); fast 1003/1000, slow 1003/1000; slow share 0/1000 -> 0/1000
+  old/old: 0.4593 (1000/1000) -> 0.4596 (1000/1000); fast 1001/1000, slow 1001/1000; slow share 0/1000 -> 0/1000
+  new/new: 0.4607 (1000/1000) -> 0.4605 (1000/1000); fast 1000/1000, slow 1000/1000; slow share 0/1000 -> 0/1000
+sha256 solo ContinuousMessages->ContinuousMessages 16 KiB (B):
+  old/new: 0.4283 (1000/1000) -> 0.4284 (1000/1000); fast 1000/1000, slow 1000/1000; slow share 0/1000 -> 0/1000
+  old/old: 0.4285 (1000/1000) -> 0.4282 (1000/1000); fast 999/1000, slow 999/1000; slow share 0/1000 -> 0/1000
+  new/new: 0.4281 (1000/1000) -> 0.4289 (1000/1000); fast 1002/1000, slow 1002/1000; slow share 0/1000 -> 0/1000
+sha256 solo ContinuousMessages->ContinuousMessages 64 KiB (B):
+  old/new: 0.4355 (1000/1000) -> 0.4363 (1000/1000); fast 1002/1000, slow 1002/1000; slow share 0/1000 -> 0/1000
+  old/old: 0.4362 (1000/1000) -> 0.4353 (1000/1000); fast 998/1000, slow 998/1000; slow share 0/1000 -> 0/1000
+  new/new: 0.4366 (1000/1000) -> 0.4361 (1000/1000); fast 999/1000, slow 999/1000; slow share 0/1000 -> 0/1000
+sha256 solo ContinuousMessages->ContinuousMessages 1 MiB (B):
+  old/new: 0.4521 (1000/1000) -> 0.4533 (1000/1000); fast 1003/1000, slow 1003/1000; slow share 0/1000 -> 0/1000
+  old/old: 0.4516 (1000/1000) -> 0.4529 (1000/1000); fast 1003/1000, slow 1003/1000; slow share 0/1000 -> 0/1000
+  new/new: 0.4556 (1000/1000) -> 0.4517 (1000/1000); fast 992/1000, slow 992/1000; slow share 0/1000 -> 0/1000
+sha256 solo ContinuousBatches->ContinuousBatches 16 (msg):
+  old/new: 62.2200 (1000/1000) -> 62.3803 (1000/1000); fast 1003/1000, slow 1003/1000; slow share 0/1000 -> 0/1000
+  old/old: 62.2040 (1000/1000) -> 62.2464 (1000/1000); fast 1001/1000, slow 1001/1000; slow share 0/1000 -> 0/1000
+  new/new: 62.3637 (1000/1000) -> 62.4354 (1000/1000); fast 1001/1000, slow 1001/1000; slow share 0/1000 -> 0/1000
+sha256 solo ContinuousBatches->ContinuousBatches 256 (msg):
+  old/new: 62.0750 (1000/1000) -> 62.1375 (1000/1000); fast 1001/1000, slow 1001/1000; slow share 0/1000 -> 0/1000
+  old/old: 62.0704 (1000/1000) -> 62.0877 (1000/1000); fast 1000/1000, slow 1000/1000; slow share 0/1000 -> 0/1000
+  new/new: 62.1060 (1000/1000) -> 62.2118 (1000/1000); fast 1002/1000, slow 1002/1000; slow share 0/1000 -> 0/1000
+sha256 solo ContinuousBatches->ContinuousBatches 4096 (msg):
+  old/new: 63.3871 (1000/1000) -> 63.4533 (1000/1000); fast 1001/1000, slow 1001/1000; slow share 0/1000 -> 0/1000
+  old/old: 63.3608 (1000/1000) -> 63.6224 (1000/1000); fast 1004/1000, slow 1004/1000; slow share 0/1000 -> 0/1000
+  new/new: 63.6207 (1000/1000) -> 63.2523 (1000/1000); fast 994/1000, slow 994/1000; slow share 0/1000 -> 0/1000
+sha256 solo LentMessages->LentMessages 64 B (B):
+  old/new: 0.9786 (1000/1000) -> 0.9774 (1000/1000); fast 999/1000, slow 999/1000; slow share 0/1000 -> 0/1000
+  old/old: 0.9781 (1000/1000) -> 0.9793 (1000/1000); fast 1001/1000, slow 1001/1000; slow share 0/1000 -> 0/1000
+  new/new: 0.9771 (1000/1000) -> 0.9779 (1000/1000); fast 1001/1000, slow 1001/1000; slow share 0/1000 -> 0/1000
+sha256 solo LentMessages->LentMessages 64 KiB (B):
+  old/new: 0.4338 (1000/1000) -> 0.4348 (1000/1000); fast 1002/1000, slow 1002/1000; slow share 0/1000 -> 0/1000
+  old/old: 0.4341 (1000/1000) -> 0.4336 (1000/1000); fast 999/1000, slow 999/1000; slow share 0/1000 -> 0/1000
+  new/new: 0.4346 (1000/1000) -> 0.4349 (1000/1000); fast 1001/1000, slow 1001/1000; slow share 0/1000 -> 0/1000
+sha256 solo LentMessages->LentMessages 1 MiB (B):
+  old/new: 0.4710 (1000/1000) -> 0.4707 (1000/1000); fast 999/1000, slow 999/1000; slow share 0/1000 -> 0/1000
+  old/old: 0.4708 (1000/1000) -> 0.4717 (1000/1000); fast 1002/1000, slow 1002/1000; slow share 0/1000 -> 0/1000
+  new/new: 0.4704 (1000/1000) -> 0.4712 (1000/1000); fast 1002/1000, slow 1002/1000; slow share 0/1000 -> 0/1000
+sha256 solo LentPieces->LentPieces 64 MiB (B):
+  old/new: 0.4618 (1000/1000) -> 0.4629 (1000/1000); fast 1002/1000, slow 1002/1000; slow share 0/1000 -> 0/1000
+  old/old: 0.4604 (1000/1000) -> 0.4635 (1000/1000); fast 1007/1000, slow 1007/1000; slow share 0/1000 -> 0/1000
+  new/new: 0.4629 (1000/1000) -> 0.4627 (1000/1000); fast 1000/1000, slow 1000/1000; slow share 0/1000 -> 0/1000
+sha256 solo LentBatches->LentBatches 16 (msg):
+  old/new: 62.1770 (1000/1000) -> 62.3434 (1000/1000); fast 1003/1000, slow 1003/1000; slow share 0/1000 -> 0/1000
+  old/old: 62.1320 (1000/1000) -> 62.1969 (1000/1000); fast 1001/1000, slow 1001/1000; slow share 0/1000 -> 0/1000
+  new/new: 62.2533 (1000/1000) -> 62.4305 (1000/1000); fast 1003/1000, slow 1003/1000; slow share 0/1000 -> 0/1000
+sha256 solo LentBatches->LentBatches 4096 (msg):
+  old/new: 62.8786 (1000/1000) -> 62.9216 (1000/1000); fast 1001/1000, slow 1001/1000; slow share 0/1000 -> 0/1000
+  old/old: 62.8530 (1000/1000) -> 62.8798 (1000/1000); fast 1000/1000, slow 1000/1000; slow share 0/1000 -> 0/1000
+  new/new: 63.0336 (1000/1000) -> 62.8423 (1000/1000); fast 997/1000, slow 997/1000; slow share 0/1000 -> 0/1000
+sha256 shared ContinuousMessages->ContinuousMessages 64 B (B):
+  old/new: 0.9783 (1000/1000) -> 0.9753 (1000/1000); fast 997/1000, slow 997/1000; slow share 0/1000 -> 0/1000
+  old/old: 0.9780 (1000/1000) -> 0.9785 (1000/1000); fast 1001/1000, slow 1001/1000; slow share 0/1000 -> 0/1000
+  new/new: 0.9749 (1000/1000) -> 0.9756 (1000/1000); fast 1001/1000, slow 1001/1000; slow share 0/1000 -> 0/1000
+sha256 shared ContinuousMessages->ContinuousMessages 1 KiB (B):
+  old/new: 0.4600 (1000/1000) -> 0.4596 (1000/1000); fast 999/1000, slow 999/1000; slow share 0/1000 -> 0/1000
+  old/old: 0.4602 (1000/1000) -> 0.4598 (1000/1000); fast 999/1000, slow 999/1000; slow share 0/1000 -> 0/1000
+  new/new: 0.4594 (1000/1000) -> 0.4597 (1000/1000); fast 1001/1000, slow 1001/1000; slow share 0/1000 -> 0/1000
+sha256 shared ContinuousMessages->ContinuousMessages 16 KiB (B):
+  old/new: 0.4281 (1000/1000) -> 0.4275 (1000/1000); fast 999/1000, slow 999/1000; slow share 0/1000 -> 0/1000
+  old/old: 0.4280 (1000/1000) -> 0.4282 (1000/1000); fast 1000/1000, slow 1000/1000; slow share 0/1000 -> 0/1000
+  new/new: 0.4276 (1000/1000) -> 0.4275 (1000/1000); fast 1000/1000, slow 1000/1000; slow share 0/1000 -> 0/1000
+sha256 shared ContinuousMessages->ContinuousMessages 64 KiB (B):
+  old/new: 0.4351 (1000/1000) -> 0.4361 (1000/1000); fast 1002/1000, slow 1002/1000; slow share 0/1000 -> 0/1000
+  old/old: 0.4349 (1000/1000) -> 0.4356 (1000/1000); fast 1002/1000, slow 1002/1000; slow share 0/1000 -> 0/1000
+  new/new: 0.4361 (1000/1000) -> 0.4360 (1000/1000); fast 1000/1000, slow 1000/1000; slow share 0/1000 -> 0/1000
+sha256 shared ContinuousMessages->ContinuousMessages 1 MiB (B):
+  old/new: 0.4450 (1000/1000) -> 0.4483 (1000/1000); fast 1007/1000, slow 1007/1000; slow share 0/1000 -> 0/1000
+  old/old: 0.4444 (1000/1000) -> 0.4465 (1000/1000); fast 1005/1000, slow 1005/1000; slow share 0/1000 -> 0/1000
+  new/new: 0.4488 (1000/1000) -> 0.4468 (1000/1000); fast 995/1000, slow 995/1000; slow share 0/1000 -> 0/1000
+sha256 shared ContinuousBatches->ContinuousBatches 16 (msg):
+  old/new: 62.2842 (1000/1000) -> 62.2302 (1000/1000); fast 999/1000, slow 999/1000; slow share 0/1000 -> 0/1000
+  old/old: 62.3213 (1000/1000) -> 62.2497 (1000/1000); fast 999/1000, slow 999/1000; slow share 0/1000 -> 0/1000
+  new/new: 62.2147 (1000/1000) -> 62.2728 (1000/1000); fast 1001/1000, slow 1001/1000; slow share 0/1000 -> 0/1000
+sha256 shared ContinuousBatches->ContinuousBatches 256 (msg):
+  old/new: 62.0186 (1000/1000) -> 61.9941 (1000/1000); fast 1000/1000, slow 1000/1000; slow share 0/1000 -> 0/1000
+  old/old: 62.0305 (1000/1000) -> 62.0049 (1000/1000); fast 1000/1000, slow 1000/1000; slow share 0/1000 -> 0/1000
+  new/new: 61.9833 (1000/1000) -> 61.9997 (1000/1000); fast 1000/1000, slow 1000/1000; slow share 0/1000 -> 0/1000
+sha256 shared ContinuousBatches->ContinuousBatches 4096 (msg):
+  old/new: 63.6486 (1000/1000) -> 63.5108 (1000/1000); fast 998/1000, slow 998/1000; slow share 0/1000 -> 0/1000
+  old/old: 63.5594 (1000/1000) -> 63.8414 (1000/1000); fast 1004/1000, slow 1004/1000; slow share 0/1000 -> 0/1000
+  new/new: 63.4152 (1000/1000) -> 63.5326 (1000/1000); fast 1002/1000, slow 1002/1000; slow share 0/1000 -> 0/1000
+sha256 shared LentMessages->LentMessages 64 B (B):
+  old/new: 0.9824 (1000/1000) -> 0.9785 (1000/1000); fast 996/1000, slow 996/1000; slow share 0/1000 -> 0/1000
+  old/old: 0.9808 (1000/1000) -> 0.9861 (1000/1000); fast 1005/1000, slow 1005/1000; slow share 0/1000 -> 0/1000
+  new/new: 0.9791 (1000/1000) -> 0.9771 (1000/1000); fast 998/1000, slow 998/1000; slow share 0/1000 -> 0/1000
+sha256 shared LentMessages->LentMessages 64 KiB (B):
+  old/new: 0.4368 (1000/1000) -> 0.4390 (1000/1000); fast 1005/1000, slow 1005/1000; slow share 0/1000 -> 0/1000
+  old/old: 0.4361 (1000/1000) -> 0.4377 (1000/1000); fast 1004/1000, slow 1004/1000; slow share 0/1000 -> 0/1000
+  new/new: 0.4369 (1000/1000) -> 0.4396 (1000/1000); fast 1006/1000, slow 1006/1000; slow share 0/1000 -> 0/1000
+sha256 shared LentMessages->LentMessages 1 MiB (B):
+  old/new: 0.4713 (1000/1000) -> 0.4728 (1000/1000); fast 1003/1000, slow 1003/1000; slow share 0/1000 -> 0/1000
+  old/old: 0.4706 (1000/1000) -> 0.4730 (1000/1000); fast 1005/1000, slow 1005/1000; slow share 0/1000 -> 0/1000
+  new/new: 0.4736 (1000/1000) -> 0.4727 (1000/1000); fast 998/1000, slow 998/1000; slow share 0/1000 -> 0/1000
+sha256 shared LentPieces->LentPieces 64 MiB (B):
+  old/new: 0.4670 (1000/1000) -> 0.4675 (1000/1000); fast 1001/1000, slow 1001/1000; slow share 0/1000 -> 0/1000
+  old/old: 0.4664 (1000/1000) -> 0.4675 (1000/1000); fast 1003/1000, slow 1003/1000; slow share 0/1000 -> 0/1000
+  new/new: 0.4679 (1000/1000) -> 0.4674 (1000/1000); fast 999/1000, slow 999/1000; slow share 0/1000 -> 0/1000
+sha256 shared LentBatches->LentBatches 16 (msg):
+  old/new: 62.3275 (1000/1000) -> 62.3106 (1000/1000); fast 1000/1000, slow 1000/1000; slow share 0/1000 -> 0/1000
+  old/old: 62.3551 (1000/1000) -> 62.2886 (1000/1000); fast 999/1000, slow 999/1000; slow share 0/1000 -> 0/1000
+  new/new: 62.2813 (1000/1000) -> 62.3313 (1000/1000); fast 1001/1000, slow 1001/1000; slow share 0/1000 -> 0/1000
+sha256 shared LentBatches->LentBatches 4096 (msg):
+  old/new: 63.1023 (1000/1000) -> 63.0388 (1000/1000); fast 999/1000, slow 999/1000; slow share 0/1000 -> 0/1000
+  old/old: 63.0725 (1000/1000) -> 63.1170 (1000/1000); fast 1001/1000, slow 1001/1000; slow share 0/1000 -> 0/1000
+  new/new: 63.0237 (1000/1000) -> 63.1600 (1000/1000); fast 1002/1000, slow 1002/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo OneMessage->OneMessage 64 B (B):
+  old/new: 7.8379 (729/1000) | 10.6855 (271/1000) -> 7.4805 (844/1000) | 11.2148 (156/1000); fast 954/1000, slow 1050/1000; slow share 271/1000 -> 156/1000
+  old/old: 7.9922 (896/1000) | 11.7305 (104/1000) -> 8.0273 (896/1000) | 12.5625 (104/1000); fast 1004/1000, slow 1071/1000; slow share 104/1000 -> 104/1000
+  new/new: 7.4805 (813/1000) | 11.2148 (188/1000) -> 7.4563 (875/1000) | 11.0500 (125/1000); fast 997/1000, slow 985/1000; slow share 188/1000 -> 125/1000
+blake3-servil-st solo OneMessage->OneMessage 1 KiB (B):
+  old/new: 1.6931 (1000/1000) -> 1.6716 (1000/1000); fast 987/1000, slow 987/1000; slow share 0/1000 -> 0/1000
+  old/old: 1.6973 (1000/1000) -> 1.6694 (1000/1000); fast 984/1000, slow 984/1000; slow share 0/1000 -> 0/1000
+  new/new: 1.6528 (1000/1000) -> 1.3352 (125/1000) | 1.7112 (875/1000); fast 808/1000, slow 1035/1000; slow share 0/1000 -> 875/1000
+blake3-servil-st solo OneMessage->OneMessage 2304 B (B):
+  old/new: 1.0002 (896/1000) | 1.4169 (104/1000) -> 0.9885 (1000/1000); fast 988/1000, slow 698/1000; slow share 104/1000 -> 0/1000
+  old/old: 1.0098 (875/1000) | 1.4169 (125/1000) -> 0.9980 (1000/1000); fast 988/1000, slow 704/1000; slow share 125/1000 -> 0/1000
+  new/new: 0.9518 (896/1000) | 1.3381 (104/1000) -> 0.9631 (625/1000) | 1.2068 (375/1000); fast 1012/1000, slow 902/1000; slow share 104/1000 -> 375/1000
+blake3-servil-st solo OneMessage->OneMessage 4 KiB (B):
+  old/new: 0.5503 (1000/1000) -> 0.5353 (1000/1000); fast 973/1000, slow 973/1000; slow share 0/1000 -> 0/1000
+  old/old: 0.5396 (875/1000) | 0.6812 (125/1000) -> 0.5469 (1000/1000); fast 1014/1000, slow 803/1000; slow share 125/1000 -> 0/1000
+  new/new: 0.5397 (1000/1000) -> 0.5319 (1000/1000); fast 986/1000, slow 986/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo OneMessage->OneMessage 7935 B (B):
+  old/new: 0.5861 (1000/1000) -> 0.5812 (1000/1000); fast 992/1000, slow 992/1000; slow share 0/1000 -> 0/1000
+  old/old: 0.5965 (1000/1000) -> 0.5809 (1000/1000); fast 974/1000, slow 974/1000; slow share 0/1000 -> 0/1000
+  new/new: 0.5819 (1000/1000) -> 0.5805 (1000/1000); fast 998/1000, slow 998/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo OneMessage->OneMessage 16 KiB (B):
+  old/new: 0.2888 (1000/1000) -> 0.2893 (1000/1000); fast 1002/1000, slow 1002/1000; slow share 0/1000 -> 0/1000
+  old/old: 0.2814 (896/1000) | 0.3857 (104/1000) -> 0.2879 (1000/1000); fast 1023/1000, slow 746/1000; slow share 104/1000 -> 0/1000
+  new/new: 0.2807 (896/1000) | 0.3576 (104/1000) -> 0.2926 (1000/1000); fast 1043/1000, slow 818/1000; slow share 104/1000 -> 0/1000
+blake3-servil-st solo OneMessage->OneMessage 64 KiB (B):
+  old/new: 0.2470 (1000/1000) -> 0.2478 (1000/1000); fast 1003/1000, slow 1003/1000; slow share 0/1000 -> 0/1000
+  old/old: 0.2483 (1000/1000) -> 0.2456 (1000/1000); fast 989/1000, slow 989/1000; slow share 0/1000 -> 0/1000
+  new/new: 0.2464 (1000/1000) -> 0.2484 (1000/1000); fast 1008/1000, slow 1008/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo OneMessage->OneMessage 256 KiB (B):
+  old/new: 0.2443 (1000/1000) -> 0.2432 (1000/1000); fast 996/1000, slow 996/1000; slow share 0/1000 -> 0/1000
+  old/old: 0.2448 (1000/1000) -> 0.2442 (1000/1000); fast 997/1000, slow 997/1000; slow share 0/1000 -> 0/1000
+  new/new: 0.2476 (1000/1000) -> 0.2401 (1000/1000); fast 970/1000, slow 970/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo OneMessage->OneMessage 1 MiB (B):
+  old/new: 0.2161 (1000/1000) -> 0.2157 (1000/1000); fast 999/1000, slow 999/1000; slow share 0/1000 -> 0/1000
+  old/old: 0.2134 (1000/1000) -> 0.2176 (1000/1000); fast 1020/1000, slow 1020/1000; slow share 0/1000 -> 0/1000
+  new/new: 0.2152 (1000/1000) -> 0.2179 (1000/1000); fast 1012/1000, slow 1012/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo OneMessage->OneMessage 8 MiB (B):
+  old/new: 0.1925 (1000/1000) -> 0.1954 (1000/1000); fast 1015/1000, slow 1015/1000; slow share 0/1000 -> 0/1000
+  old/old: 0.1925 (1000/1000) -> 0.1925 (1000/1000); fast 1000/1000, slow 1000/1000; slow share 0/1000 -> 0/1000
+  new/new: 0.1942 (1000/1000) -> 0.1971 (1000/1000); fast 1015/1000, slow 1015/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo ManyMessages->ManyMessages 1 (msg):
+  old/new: 541.3333 (833/1000) | 829.5000 (167/1000) -> 435.3333 (240/1000) | 655.6667 (760/1000); fast 804/1000, slow 790/1000; slow share 167/1000 -> 760/1000
+  old/old: 479.0000 (688/1000) | 666.5000 (313/1000) -> 589.6667 (896/1000) | 1107.0000 (104/1000); fast 1231/1000, slow 1661/1000; slow share 313/1000 -> 104/1000
+  new/new: 571.2000 (813/1000) | 810.4000 (188/1000) -> 594.6667 (896/1000) | 834.0000 (104/1000); fast 1041/1000, slow 1029/1000; slow share 188/1000 -> 104/1000
+blake3-servil-st solo ManyMessages->ManyMessages 4 (msg):
+  old/new: 180.4688 (1000/1000) -> 165.1667 (875/1000) | 263.9583 (125/1000); fast 915/1000, slow 1463/1000; slow share 0/1000 -> 125/1000
+  old/old: 174.4375 (1000/1000) -> 186.5000 (896/1000) | 257.9167 (104/1000); fast 1069/1000, slow 1479/1000; slow share 0/1000 -> 104/1000
+  new/new: 162.6667 (854/1000) | 250.7500 (146/1000) -> 168.9167 (875/1000) | 273.3333 (125/1000); fast 1038/1000, slow 1090/1000; slow share 146/1000 -> 125/1000
+blake3-servil-st solo ManyMessages->ManyMessages 16 (msg):
+  old/new: 67.2500 (1000/1000) -> 68.2969 (1000/1000); fast 1016/1000, slow 1016/1000; slow share 0/1000 -> 0/1000
+  old/old: 67.3125 (1000/1000) -> 67.0469 (1000/1000); fast 996/1000, slow 996/1000; slow share 0/1000 -> 0/1000
+  new/new: 67.3438 (1000/1000) -> 68.0313 (896/1000) | 90.3750 (104/1000); fast 1010/1000, slow 1342/1000; slow share 0/1000 -> 104/1000
+blake3-servil-st solo ManyMessages->ManyMessages 64 (msg):
+  old/new: 27.1367 (1000/1000) -> 27.5938 (1000/1000); fast 1017/1000, slow 1017/1000; slow share 0/1000 -> 0/1000
+  old/old: 27.3281 (1000/1000) -> 27.0703 (1000/1000); fast 991/1000, slow 991/1000; slow share 0/1000 -> 0/1000
+  new/new: 26.9688 (1000/1000) -> 28.4258 (1000/1000); fast 1054/1000, slow 1054/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo ManyMessages->ManyMessages 1024 (msg):
+  old/new: 15.5698 (1000/1000) -> 15.6104 (1000/1000); fast 1003/1000, slow 1003/1000; slow share 0/1000 -> 0/1000
+  old/old: 15.5498 (1000/1000) -> 15.5825 (1000/1000); fast 1002/1000, slow 1002/1000; slow share 0/1000 -> 0/1000
+  new/new: 15.5654 (1000/1000) -> 15.6411 (1000/1000); fast 1005/1000, slow 1005/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo ManyMessages->ManyMessages 16384 (msg):
+  old/new: 13.6275 (1000/1000) -> 13.5747 (1000/1000); fast 996/1000, slow 996/1000; slow share 0/1000 -> 0/1000
+  old/old: 13.8464 (1000/1000) -> 13.5671 (1000/1000); fast 980/1000, slow 980/1000; slow share 0/1000 -> 0/1000
+  new/new: 13.6019 (1000/1000) -> 13.5033 (1000/1000); fast 993/1000, slow 993/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo IdleOneMessage->IdleOneMessage 64 B (B):
+  old/new: 4.6445 (865/1000) | 9.0117 (135/1000) -> 3.2406 (677/1000) | 7.4094 (323/1000); fast 698/1000, slow 822/1000; slow share 135/1000 -> 323/1000
+  old/old: 2.9710 (167/1000) | 5.5926 (833/1000) -> 4.0508 (750/1000) | 9.0156 (250/1000); fast 1363/1000, slow 1612/1000; slow share 833/1000 -> 250/1000
+  new/new: 3.3578 (625/1000) | 7.4063 (375/1000) -> 3.2563 (854/1000) | 9.0562 (146/1000); fast 970/1000, slow 1223/1000; slow share 375/1000 -> 146/1000
+blake3-servil-st solo IdleOneMessage->IdleOneMessage 4 KiB (B):
+  old/new: 0.2774 (375/1000) | 0.4589 (625/1000) -> 0.2681 (344/1000) | 0.3866 (656/1000); fast 966/1000, slow 843/1000; slow share 625/1000 -> 656/1000
+  old/old: 0.3744 (854/1000) | 0.6119 (146/1000) -> 0.3204 (583/1000) | 0.5087 (417/1000); fast 856/1000, slow 831/1000; slow share 146/1000 -> 417/1000
+  new/new: 0.2717 (354/1000) | 0.3835 (646/1000) -> 0.2643 (250/1000) | 0.3873 (750/1000); fast 973/1000, slow 1010/1000; slow share 646/1000 -> 750/1000
+blake3-servil-st solo IdleOneMessage->IdleOneMessage 64 KiB (B):
+  old/new: 0.1873 (1000/1000) -> 0.1902 (1000/1000); fast 1015/1000, slow 1015/1000; slow share 0/1000 -> 0/1000
+  old/old: 0.1873 (1000/1000) -> 0.1873 (1000/1000); fast 1000/1000, slow 1000/1000; slow share 0/1000 -> 0/1000
+  new/new: 0.1905 (1000/1000) -> 0.1872 (1000/1000); fast 982/1000, slow 982/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo IdleOneMessage->IdleOneMessage 1 MiB (B):
+  old/new: 0.1817 (1000/1000) -> 0.1818 (1000/1000); fast 1001/1000, slow 1001/1000; slow share 0/1000 -> 0/1000
+  old/old: 0.1827 (1000/1000) -> 0.1803 (1000/1000); fast 987/1000, slow 987/1000; slow share 0/1000 -> 0/1000
+  new/new: 0.1818 (1000/1000) -> 0.1817 (1000/1000); fast 999/1000, slow 999/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo IdleManyMessages->IdleManyMessages 16 (msg):
+  old/new: 27.1786 (583/1000) | 47.2902 (417/1000) -> 26.7188 (823/1000) | 64.5625 (177/1000); fast 983/1000, slow 1365/1000; slow share 417/1000 -> 177/1000
+  old/old: 24.2813 (708/1000) | 55.9792 (292/1000) -> 20.9911 (167/1000) | 38.8705 (833/1000); fast 864/1000, slow 694/1000; slow share 292/1000 -> 833/1000
+  new/new: 26.3958 (771/1000) | 65.1458 (229/1000) -> 27.0234 (875/1000) | 57.9141 (125/1000); fast 1024/1000, slow 889/1000; slow share 229/1000 -> 125/1000
+blake3-servil-st solo LentMessages->LentMessages 64 B (B):
+  old/new: 0.7085 (1000/1000) -> 0.7123 (1000/1000); fast 1005/1000, slow 1005/1000; slow share 0/1000 -> 0/1000
+  old/old: 0.7085 (1000/1000) -> 0.7087 (1000/1000); fast 1000/1000, slow 1000/1000; slow share 0/1000 -> 0/1000
+  new/new: 0.7123 (1000/1000) -> 0.7123 (1000/1000); fast 1000/1000, slow 1000/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo LentMessages->LentMessages 64 KiB (B):
+  old/new: 0.1979 (1000/1000) -> 0.1971 (1000/1000); fast 996/1000, slow 996/1000; slow share 0/1000 -> 0/1000
+  old/old: 0.1980 (1000/1000) -> 0.1979 (1000/1000); fast 1000/1000, slow 1000/1000; slow share 0/1000 -> 0/1000
+  new/new: 0.1967 (1000/1000) -> 0.1976 (1000/1000); fast 1004/1000, slow 1004/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo LentMessages->LentMessages 1 MiB (B):
+  old/new: 0.2227 (1000/1000) -> 0.2223 (1000/1000); fast 998/1000, slow 998/1000; slow share 0/1000 -> 0/1000
+  old/old: 0.2220 (1000/1000) -> 0.2239 (1000/1000); fast 1009/1000, slow 1009/1000; slow share 0/1000 -> 0/1000
+  new/new: 0.2206 (1000/1000) -> 0.2230 (1000/1000); fast 1011/1000, slow 1011/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo LentPieces->LentPieces 64 MiB (B):
+  old/new: 0.2256 (1000/1000) -> 0.2273 (1000/1000); fast 1007/1000, slow 1007/1000; slow share 0/1000 -> 0/1000
+  old/old: 0.2276 (1000/1000) -> 0.2246 (1000/1000); fast 987/1000, slow 987/1000; slow share 0/1000 -> 0/1000
+  new/new: 0.2265 (1000/1000) -> 0.2283 (1000/1000); fast 1008/1000, slow 1008/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo LentBatches->LentBatches 16 (msg):
+  old/new: 12.6037 (1000/1000) -> 12.6059 (1000/1000); fast 1000/1000, slow 1000/1000; slow share 0/1000 -> 0/1000
+  old/old: 12.5774 (1000/1000) -> 12.6318 (1000/1000); fast 1004/1000, slow 1004/1000; slow share 0/1000 -> 0/1000
+  new/new: 12.6676 (1000/1000) -> 12.5684 (1000/1000); fast 992/1000, slow 992/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st solo LentBatches->LentBatches 4096 (msg):
+  old/new: 12.6914 (1000/1000) -> 12.6855 (1000/1000); fast 1000/1000, slow 1000/1000; slow share 0/1000 -> 0/1000
+  old/old: 12.6994 (1000/1000) -> 12.6914 (1000/1000); fast 999/1000, slow 999/1000; slow share 0/1000 -> 0/1000
+  new/new: 12.6765 (1000/1000) -> 12.7757 (1000/1000); fast 1008/1000, slow 1008/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st shared LentMessages->LentMessages 64 B (B):
+  old/new: 0.7111 (1000/1000) -> 0.7156 (1000/1000); fast 1006/1000, slow 1006/1000; slow share 0/1000 -> 0/1000
+  old/old: 0.7104 (885/1000) | 1.1040 (115/1000) -> 0.7103 (1000/1000); fast 1000/1000, slow 643/1000; slow share 115/1000 -> 0/1000
+  new/new: 0.7122 (1000/1000) -> 0.7153 (896/1000) | 1.1024 (104/1000); fast 1004/1000, slow 1548/1000; slow share 0/1000 -> 104/1000
+blake3-servil-st shared LentMessages->LentMessages 64 KiB (B):
+  old/new: 0.1994 (1000/1000) -> 0.1985 (1000/1000); fast 996/1000, slow 996/1000; slow share 0/1000 -> 0/1000
+  old/old: 0.1998 (1000/1000) -> 0.1984 (1000/1000); fast 993/1000, slow 993/1000; slow share 0/1000 -> 0/1000
+  new/new: 0.1972 (1000/1000) -> 0.1995 (1000/1000); fast 1011/1000, slow 1011/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st shared LentMessages->LentMessages 1 MiB (B):
+  old/new: 0.2233 (1000/1000) -> 0.2243 (859/1000) | 0.4893 (141/1000); fast 1005/1000, slow 2191/1000; slow share 0/1000 -> 141/1000
+  old/old: 0.2237 (1000/1000) -> 0.2233 (1000/1000); fast 998/1000, slow 998/1000; slow share 0/1000 -> 0/1000
+  new/new: 0.2251 (823/1000) | 0.4818 (177/1000) -> 0.2230 (885/1000) | 0.4917 (115/1000); fast 991/1000, slow 1020/1000; slow share 177/1000 -> 115/1000
+blake3-servil-st shared LentPieces->LentPieces 64 MiB (B):
+  old/new: 0.2286 (1000/1000) -> 0.2286 (1000/1000); fast 1000/1000, slow 1000/1000; slow share 0/1000 -> 0/1000
+  old/old: 0.2270 (1000/1000) -> 0.2294 (1000/1000); fast 1010/1000, slow 1010/1000; slow share 0/1000 -> 0/1000
+  new/new: 0.2277 (1000/1000) -> 0.2289 (1000/1000); fast 1005/1000, slow 1005/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st shared LentBatches->LentBatches 16 (msg):
+  old/new: 12.6530 (1000/1000) -> 12.6360 (1000/1000); fast 999/1000, slow 999/1000; slow share 0/1000 -> 0/1000
+  old/old: 12.6658 (1000/1000) -> 12.6444 (1000/1000); fast 998/1000, slow 998/1000; slow share 0/1000 -> 0/1000
+  new/new: 12.6278 (1000/1000) -> 12.6406 (1000/1000); fast 1001/1000, slow 1001/1000; slow share 0/1000 -> 0/1000
+blake3-servil-st shared LentBatches->LentBatches 4096 (msg):
+  old/new: 12.7896 (1000/1000) -> 12.8056 (1000/1000); fast 1001/1000, slow 1001/1000; slow share 0/1000 -> 0/1000
+  old/old: 12.7862 (1000/1000) -> 12.7915 (1000/1000); fast 1000/1000, slow 1000/1000; slow share 0/1000 -> 0/1000
+  new/new: 12.8210 (1000/1000) -> 12.7998 (1000/1000); fast 998/1000, slow 998/1000; slow share 0/1000 -> 0/1000
+blake3-servil-mt solo OneMessage->OneMessage 64 B (B):
+  old/new: 8.0895 (1000/1000) -> 8.1113 (1000/1000); fast 1003/1000, slow 1003/1000; slow share 0/1000 -> 0/1000
+  old/old: 7.7930 (854/1000) | 11.4961 (146/1000) -> 6.2219 (146/1000) | 8.4187 (854/1000); fast 798/1000, slow 732/1000; slow share 146/1000 -> 854/1000
+  new/new: 5.7773 (125/1000) | 8.1406 (875/1000) -> 6.2227 (125/1000) | 8.5508 (875/1000); fast 1077/1000, slow 1050/1000; slow share 875/1000 -> 875/1000
+blake3-servil-mt solo OneMessage->OneMessage 1 KiB (B):
+  old/new: 1.6997 (1000/1000) -> 1.6577 (1000/1000); fast 975/1000, slow 975/1000; slow share 0/1000 -> 0/1000
+  old/old: 1.6777 (1000/1000) -> 1.7068 (1000/1000); fast 1017/1000, slow 1017/1000; slow share 0/1000 -> 0/1000
+  new/new: 1.6355 (1000/1000) -> 1.6885 (1000/1000); fast 1032/1000, slow 1032/1000; slow share 0/1000 -> 0/1000
+blake3-servil-mt solo OneMessage->OneMessage 2304 B (B):
+  old/new: 1.0078 (1000/1000) -> 0.9622 (1000/1000); fast 955/1000, slow 955/1000; slow share 0/1000 -> 0/1000
+  old/old: 1.0124 (1000/1000) -> 1.0033 (1000/1000); fast 991/1000, slow 991/1000; slow share 0/1000 -> 0/1000
+  new/new: 0.9492 (1000/1000) -> 0.9642 (875/1000) | 1.3231 (125/1000); fast 1016/1000, slow 1394/1000; slow share 0/1000 -> 125/1000
+blake3-servil-mt solo OneMessage->OneMessage 4 KiB (B):
+  old/new: 0.5509 (1000/1000) -> 0.5372 (1000/1000); fast 975/1000, slow 975/1000; slow share 0/1000 -> 0/1000
+  old/old: 0.5625 (1000/1000) -> 0.5361 (1000/1000); fast 953/1000, slow 953/1000; slow share 0/1000 -> 0/1000
+  new/new: 0.5231 (1000/1000) -> 0.5450 (1000/1000); fast 1042/1000, slow 1042/1000; slow share 0/1000 -> 0/1000
+blake3-servil-mt solo OneMessage->OneMessage 7935 B (B):
+  old/new: 0.5870 (1000/1000) -> 0.5798 (1000/1000); fast 988/1000, slow 988/1000; slow share 0/1000 -> 0/1000
+  old/old: 0.5928 (1000/1000) -> 0.5853 (1000/1000); fast 987/1000, slow 987/1000; slow share 0/1000 -> 0/1000
+  new/new: 0.5787 (1000/1000) -> 0.5835 (1000/1000); fast 1008/1000, slow 1008/1000; slow share 0/1000 -> 0/1000
+blake3-servil-mt solo OneMessage->OneMessage 16 KiB (B):
+  old/new: 0.2861 (1000/1000) -> 0.2894 (1000/1000); fast 1011/1000, slow 1011/1000; slow share 0/1000 -> 0/1000
+  old/old: 0.2877 (1000/1000) -> 0.2779 (833/1000) | 0.3500 (167/1000); fast 966/1000, slow 1217/1000; slow share 0/1000 -> 167/1000
+  new/new: 0.2844 (1000/1000) -> 0.2958 (1000/1000); fast 1040/1000, slow 1040/1000; slow share 0/1000 -> 0/1000
+blake3-servil-mt solo OneMessage->OneMessage 64 KiB (B):
+  old/new: 0.2463 (1000/1000) -> 0.2479 (1000/1000); fast 1007/1000, slow 1007/1000; slow share 0/1000 -> 0/1000
+  old/old: 0.2472 (1000/1000) -> 0.2439 (1000/1000); fast 987/1000, slow 987/1000; slow share 0/1000 -> 0/1000
+  new/new: 0.2460 (1000/1000) -> 0.2492 (1000/1000); fast 1013/1000, slow 1013/1000; slow share 0/1000 -> 0/1000
+blake3-servil-mt solo OneMessage->OneMessage 256 KiB (B):
+  old/new: 0.2443 (1000/1000) -> 0.2428 (1000/1000); fast 994/1000, slow 994/1000; slow share 0/1000 -> 0/1000
+  old/old: 0.2453 (1000/1000) -> 0.2442 (1000/1000); fast 996/1000, slow 996/1000; slow share 0/1000 -> 0/1000
+  new/new: 0.2468 (1000/1000) -> 0.2415 (1000/1000); fast 978/1000, slow 978/1000; slow share 0/1000 -> 0/1000
+blake3-servil-mt solo OneMessage->OneMessage 1 MiB (B):
+  old/new: 0.1284 (1000/1000) -> 0.1272 (1000/1000); fast 991/1000, slow 991/1000; slow share 0/1000 -> 0/1000
+  old/old: 0.1289 (1000/1000) -> 0.1276 (1000/1000); fast 991/1000, slow 991/1000; slow share 0/1000 -> 0/1000
+  new/new: 0.0966 (104/1000) | 0.1289 (896/1000) -> 0.1259 (1000/1000); fast 1303/1000, slow 976/1000; slow share 896/1000 -> 0/1000
+blake3-servil-mt solo OneMessage->OneMessage 8 MiB (B):
+  old/new: 0.0325 (1000/1000) -> 0.0325 (1000/1000); fast 1000/1000, slow 1000/1000; slow share 0/1000 -> 0/1000
+  old/old: 0.0321 (1000/1000) -> 0.0327 (1000/1000); fast 1019/1000, slow 1019/1000; slow share 0/1000 -> 0/1000
+  new/new: 0.0319 (896/1000) | 0.0418 (104/1000) -> 0.0328 (1000/1000); fast 1029/1000, slow 786/1000; slow share 104/1000 -> 0/1000
+blake3-servil-mt solo ManyMessages->ManyMessages 1 (msg):
+  old/new: 644.8333 (1000/1000) -> 445.3000 (188/1000) | 667.8750 (813/1000); fast 691/1000, slow 1036/1000; slow share 0/1000 -> 813/1000
+  old/old: 413.0000 (188/1000) | 670.0000 (813/1000) -> 529.0000 (479/1000) | 729.0000 (521/1000); fast 1281/1000, slow 1088/1000; slow share 813/1000 -> 521/1000
+  new/new: 616.5000 (792/1000) | 886.1250 (208/1000) -> 445.2000 (229/1000) | 653.8000 (771/1000); fast 722/1000, slow 738/1000; slow share 208/1000 -> 771/1000
+blake3-servil-mt solo ManyMessages->ManyMessages 4 (msg):
+  old/new: 183.6250 (1000/1000) -> 182.9583 (875/1000) | 259.8125 (125/1000); fast 996/1000, slow 1415/1000; slow share 0/1000 -> 125/1000
+  old/old: 180.8333 (896/1000) | 251.7500 (104/1000) -> 165.3750 (688/1000) | 230.8750 (313/1000); fast 915/1000, slow 917/1000; slow share 104/1000 -> 313/1000
+  new/new: 179.8125 (875/1000) | 250.5625 (125/1000) -> 187.8333 (875/1000) | 265.8333 (125/1000); fast 1045/1000, slow 1061/1000; slow share 125/1000 -> 125/1000
+blake3-servil-mt solo ManyMessages->ManyMessages 16 (msg):
+  old/new: 68.5313 (844/1000) | 95.2188 (156/1000) -> 64.9375 (865/1000) | 88.9063 (135/1000); fast 948/1000, slow 934/1000; slow share 156/1000 -> 135/1000
+  old/old: 68.4063 (875/1000) | 90.1719 (125/1000) -> 69.4063 (875/1000) | 105.0313 (125/1000); fast 1015/1000, slow 1165/1000; slow share 125/1000 -> 125/1000
+  new/new: 63.2188 (896/1000) | 92.9688 (104/1000) -> 67.5469 (833/1000) | 87.6094 (167/1000); fast 1068/1000, slow 942/1000; slow share 104/1000 -> 167/1000
+blake3-servil-mt solo ManyMessages->ManyMessages 64 (msg):
+  old/new: 27.0430 (1000/1000) -> 27.5469 (885/1000) | 37.2344 (115/1000); fast 1019/1000, slow 1377/1000; slow share 0/1000 -> 115/1000
+  old/old: 26.9141 (1000/1000) -> 27.1563 (1000/1000); fast 1009/1000, slow 1009/1000; slow share 0/1000 -> 0/1000
+  new/new: 27.2734 (1000/1000) -> 27.6406 (896/1000) | 39.1094 (104/1000); fast 1013/1000, slow 1434/1000; slow share 0/1000 -> 104/1000
+blake3-servil-mt solo ManyMessages->ManyMessages 1024 (msg):
+  old/new: 15.5962 (1000/1000) -> 15.6401 (1000/1000); fast 1003/1000, slow 1003/1000; slow share 0/1000 -> 0/1000
+  old/old: 15.6475 (1000/1000) -> 15.5146 (1000/1000); fast 992/1000, slow 992/1000; slow share 0/1000 -> 0/1000
+  new/new: 15.5947 (1000/1000) -> 15.7417 (1000/1000); fast 1009/1000, slow 1009/1000; slow share 0/1000 -> 0/1000
+blake3-servil-mt solo ManyMessages->ManyMessages 16384 (msg):
+  old/new: 8.0567 (1000/1000) -> 6.3859 (115/1000) | 8.0817 (885/1000); fast 793/1000, slow 1003/1000; slow share 0/1000 -> 885/1000
+  old/old: 8.2094 (1000/1000) -> 7.9616 (1000/1000); fast 970/1000, slow 970/1000; slow share 0/1000 -> 0/1000
+  new/new: 6.3409 (146/1000) | 8.0589 (854/1000) -> 8.0483 (1000/1000); fast 1269/1000, slow 999/1000; slow share 854/1000 -> 0/1000
+blake3-servil-mt solo IdleOneMessage->IdleOneMessage 64 B (B):
+  old/new: 2.7773 (260/1000) | 5.1615 (740/1000) -> 4.3750 (875/1000) | 9.0449 (125/1000); fast 1575/1000, slow 1752/1000; slow share 740/1000 -> 125/1000
+  old/old: 4.7109 (875/1000) | 10.1816 (125/1000) -> 4.1927 (750/1000) | 8.0469 (250/1000); fast 890/1000, slow 790/1000; slow share 125/1000 -> 250/1000
+  new/new: 3.8192 (604/1000) | 6.4554 (396/1000) -> 3.1953 (646/1000) | 8.7266 (354/1000); fast 837/1000, slow 1352/1000; slow share 396/1000 -> 354/1000
+blake3-servil-mt solo IdleOneMessage->IdleOneMessage 4 KiB (B):
+  old/new: 0.3689 (740/1000) | 0.6277 (260/1000) -> 0.3783 (833/1000) | 0.5777 (167/1000); fast 1025/1000, slow 920/1000; slow share 260/1000 -> 167/1000
+  old/old: 0.3256 (771/1000) | 0.5594 (229/1000) -> 0.3739 (750/1000) | 0.6394 (250/1000); fast 1148/1000, slow 1143/1000; slow share 229/1000 -> 250/1000
+  new/new: 0.2769 (250/1000) | 0.3854 (750/1000) -> 0.3789 (792/1000) | 0.5366 (208/1000); fast 1369/1000, slow 1392/1000; slow share 750/1000 -> 208/1000
+blake3-servil-mt solo IdleOneMessage->IdleOneMessage 64 KiB (B):
+  old/new: 0.1874 (1000/1000) -> 0.1883 (1000/1000); fast 1005/1000, slow 1005/1000; slow share 0/1000 -> 0/1000
+  old/old: 0.1900 (1000/1000) -> 0.1869 (1000/1000); fast 983/1000, slow 983/1000; slow share 0/1000 -> 0/1000
+  new/new: 0.1895 (1000/1000) -> 0.1875 (1000/1000); fast 990/1000, slow 990/1000; slow share 0/1000 -> 0/1000
+blake3-servil-mt solo IdleOneMessage->IdleOneMessage 1 MiB (B):
+  old/new: 0.1188 (1000/1000) -> 0.1157 (1000/1000); fast 974/1000, slow 974/1000; slow share 0/1000 -> 0/1000
+  old/old: 0.1181 (1000/1000) -> 0.1188 (1000/1000); fast 1006/1000, slow 1006/1000; slow share 0/1000 -> 0/1000
+  new/new: 0.1145 (1000/1000) -> 0.1185 (1000/1000); fast 1034/1000, slow 1034/1000; slow share 0/1000 -> 0/1000
+blake3-servil-mt solo IdleManyMessages->IdleManyMessages 16 (msg):
+  old/new: 24.1000 (844/1000) | 55.6500 (156/1000) -> 26.5625 (802/1000) | 59.6406 (198/1000); fast 1102/1000, slow 1072/1000; slow share 156/1000 -> 198/1000
+  old/old: 28.6875 (854/1000) | 55.6500 (146/1000) -> 21.7875 (833/1000) | 55.7625 (167/1000); fast 759/1000, slow 1002/1000; slow share 146/1000 -> 167/1000
+  new/new: 22.8958 (688/1000) | 58.2083 (313/1000) -> 24.8594 (792/1000) | 54.6875 (208/1000); fast 1086/1000, slow 940/1000; slow share 313/1000 -> 208/1000
+blake3-servil-mt solo ContinuousMessages->ContinuousMessages 64 B (B):
+  old/new: 1.1353 (875/1000) | 2.3517 (125/1000) -> 1.1707 (865/1000) | 2.5873 (135/1000); fast 1031/1000, slow 1100/1000; slow share 125/1000 -> 135/1000
+  old/old: 1.1491 (875/1000) | 2.3113 (125/1000) -> 1.1009 (875/1000) | 2.5970 (125/1000); fast 958/1000, slow 1124/1000; slow share 125/1000 -> 125/1000
+  new/new: 1.1518 (854/1000) | 2.6579 (146/1000) -> 1.1759 (875/1000) | 2.2240 (125/1000); fast 1021/1000, slow 837/1000; slow share 146/1000 -> 125/1000
+blake3-servil-mt solo ContinuousMessages->ContinuousMessages 1 KiB (B):
+  old/new: 0.1478 (1000/1000) -> 0.1501 (1000/1000); fast 1016/1000, slow 1016/1000; slow share 0/1000 -> 0/1000
+  old/old: 0.1482 (1000/1000) -> 0.1472 (1000/1000); fast 994/1000, slow 994/1000; slow share 0/1000 -> 0/1000
+  new/new: 0.1495 (1000/1000) -> 0.1524 (1000/1000); fast 1019/1000, slow 1019/1000; slow share 0/1000 -> 0/1000
+blake3-servil-mt solo ContinuousMessages->ContinuousMessages 16 KiB (B):
+  old/new: 0.0768 (844/1000) | 0.1125 (156/1000) -> 0.0773 (875/1000) | 0.1104 (125/1000); fast 1007/1000, slow 982/1000; slow share 156/1000 -> 125/1000
+  old/old: 0.0768 (813/1000) | 0.1138 (188/1000) -> 0.0767 (875/1000) | 0.1100 (125/1000); fast 999/1000, slow 967/1000; slow share 188/1000 -> 125/1000
+  new/new: 0.0773 (854/1000) | 0.1091 (146/1000) -> 0.0773 (875/1000) | 0.1110 (125/1000); fast 1000/1000, slow 1017/1000; slow share 146/1000 -> 125/1000
+blake3-servil-mt solo ContinuousMessages->ContinuousMessages 64 KiB (B):
+  old/new: 0.0633 (1000/1000) -> 0.0672 (1000/1000); fast 1062/1000, slow 1062/1000; slow share 0/1000 -> 0/1000
+  old/old: 0.0626 (1000/1000) -> 0.0640 (1000/1000); fast 1023/1000, slow 1023/1000; slow share 0/1000 -> 0/1000
+  new/new: 0.0656 (896/1000) | 0.1061 (104/1000) -> 0.0675 (1000/1000); fast 1030/1000, slow 636/1000; slow share 104/1000 -> 0/1000
+blake3-servil-mt solo ContinuousMessages->ContinuousMessages 1 MiB (B):
+  old/new: 0.0571 (1000/1000) -> 0.0517 (1000/1000); fast 905/1000, slow 905/1000; slow share 0/1000 -> 0/1000
+  old/old: 0.0595 (1000/1000) -> 0.0516 (896/1000) | 0.0678 (104/1000); fast 866/1000, slow 1139/1000; slow share 0/1000 -> 104/1000
+  new/new: 0.0516 (1000/1000) -> 0.0515 (833/1000) | 0.0686 (167/1000); fast 997/1000, slow 1330/1000; slow share 0/1000 -> 167/1000
+blake3-servil-mt solo ContinuousBatches->ContinuousBatches 16 (msg):
+  old/new: 8.5986 (1000/1000) -> 8.7556 (1000/1000); fast 1018/1000, slow 1018/1000; slow share 0/1000 -> 0/1000
+  old/old: 8.5623 (1000/1000) -> 8.6333 (1000/1000); fast 1008/1000, slow 1008/1000; slow share 0/1000 -> 0/1000
+  new/new: 8.4904 (1000/1000) -> 8.8760 (1000/1000); fast 1045/1000, slow 1045/1000; slow share 0/1000 -> 0/1000
+blake3-servil-mt solo ContinuousBatches->ContinuousBatches 256 (msg):
+  old/new: 4.7656 (1000/1000) -> 4.9246 (1000/1000); fast 1033/1000, slow 1033/1000; slow share 0/1000 -> 0/1000
+  old/old: 4.7237 (1000/1000) -> 4.7800 (1000/1000); fast 1012/1000, slow 1012/1000; slow share 0/1000 -> 0/1000
+  new/new: 5.1649 (896/1000) | 7.1171 (104/1000) -> 4.6406 (1000/1000); fast 898/1000, slow 652/1000; slow share 104/1000 -> 0/1000
+blake3-servil-mt solo ContinuousBatches->ContinuousBatches 4096 (msg):
+  old/new: 4.8245 (885/1000) | 7.2234 (115/1000) -> 5.4334 (854/1000) | 8.8961 (146/1000); fast 1126/1000, slow 1232/1000; slow share 115/1000 -> 146/1000
+  old/old: 4.7635 (833/1000) | 7.0482 (167/1000) -> 4.8770 (1000/1000); fast 1024/1000, slow 692/1000; slow share 167/1000 -> 0/1000
+  new/new: 5.9839 (875/1000) | 11.1171 (125/1000) -> 4.9905 (896/1000) | 7.4915 (104/1000); fast 834/1000, slow 674/1000; slow share 125/1000 -> 104/1000
+blake3-servil-mt solo LentMessages->LentMessages 64 B (B):
+  old/new: 0.7080 (1000/1000) -> 0.7065 (1000/1000); fast 998/1000, slow 998/1000; slow share 0/1000 -> 0/1000
+  old/old: 0.7082 (1000/1000) -> 0.7073 (1000/1000); fast 999/1000, slow 999/1000; slow share 0/1000 -> 0/1000
+  new/new: 0.7063 (1000/1000) -> 0.7066 (1000/1000); fast 1000/1000, slow 1000/1000; slow share 0/1000 -> 0/1000
+blake3-servil-mt solo LentMessages->LentMessages 64 KiB (B):
+  old/new: 0.1976 (1000/1000) -> 0.1969 (1000/1000); fast 996/1000, slow 996/1000; slow share 0/1000 -> 0/1000
+  old/old: 0.1983 (1000/1000) -> 0.1974 (1000/1000); fast 995/1000, slow 995/1000; slow share 0/1000 -> 0/1000
+  new/new: 0.1970 (1000/1000) -> 0.1966 (1000/1000); fast 998/1000, slow 998/1000; slow share 0/1000 -> 0/1000
+blake3-servil-mt solo LentMessages->LentMessages 1 MiB (B):
+  old/new: 0.0902 (1000/1000) -> 0.1012 (1000/1000); fast 1121/1000, slow 1121/1000; slow share 0/1000 -> 0/1000
+  old/old: 0.0852 (1000/1000) -> 0.1019 (1000/1000); fast 1196/1000, slow 1196/1000; slow share 0/1000 -> 0/1000
+  new/new: 0.1027 (1000/1000) -> 0.0995 (1000/1000); fast 968/1000, slow 968/1000; slow share 0/1000 -> 0/1000
+blake3-servil-mt solo LentPieces->LentPieces 64 MiB (B):
+  old/new: 0.1515 (1000/1000) -> 0.1513 (1000/1000); fast 999/1000, slow 999/1000; slow share 0/1000 -> 0/1000
+  old/old: 0.1526 (1000/1000) -> 0.1508 (1000/1000); fast 988/1000, slow 988/1000; slow share 0/1000 -> 0/1000
+  new/new: 0.1497 (854/1000) | 0.1984 (146/1000) -> 0.1514 (1000/1000); fast 1011/1000, slow 763/1000; slow share 146/1000 -> 0/1000
+blake3-servil-mt solo LentBatches->LentBatches 16 (msg):
+  old/new: 12.5920 (1000/1000) -> 12.5984 (1000/1000); fast 1001/1000, slow 1001/1000; slow share 0/1000 -> 0/1000
+  old/old: 12.5889 (1000/1000) -> 12.5961 (1000/1000); fast 1001/1000, slow 1001/1000; slow share 0/1000 -> 0/1000
+  new/new: 12.6024 (1000/1000) -> 12.5646 (1000/1000); fast 997/1000, slow 997/1000; slow share 0/1000 -> 0/1000
+blake3-servil-mt solo LentBatches->LentBatches 4096 (msg):
+  old/new: 12.6798 (1000/1000) -> 12.7227 (1000/1000); fast 1003/1000, slow 1003/1000; slow share 0/1000 -> 0/1000
+  old/old: 12.6884 (1000/1000) -> 12.6798 (1000/1000); fast 999/1000, slow 999/1000; slow share 0/1000 -> 0/1000
+  new/new: 12.7278 (1000/1000) -> 12.6873 (1000/1000); fast 997/1000, slow 997/1000; slow share 0/1000 -> 0/1000
+blake3-servil-mt shared ContinuousMessages->ContinuousMessages 64 B (B):
+  old/new: 1.8754 (1000/1000) -> 1.8439 (719/1000) | 3.0069 (281/1000); fast 983/1000, slow 1603/1000; slow share 0/1000 -> 281/1000
+  old/old: 1.3125 (292/1000) | 1.9946 (708/1000) -> 1.8213 (875/1000) | 2.9811 (125/1000); fast 1388/1000, slow 1495/1000; slow share 708/1000 -> 125/1000
+  new/new: 2.0561 (896/1000) | 3.4425 (104/1000) -> 1.9417 (896/1000) | 3.5800 (104/1000); fast 944/1000, slow 1040/1000; slow share 104/1000 -> 104/1000
+blake3-servil-mt shared ContinuousMessages->ContinuousMessages 1 KiB (B):
+  old/new: 0.1626 (1000/1000) -> 0.1676 (1000/1000); fast 1031/1000, slow 1031/1000; slow share 0/1000 -> 0/1000
+  old/old: 0.1591 (1000/1000) -> 0.1629 (854/1000) | 0.2036 (146/1000); fast 1023/1000, slow 1279/1000; slow share 0/1000 -> 146/1000
+  new/new: 0.1672 (1000/1000) -> 0.1683 (1000/1000); fast 1007/1000, slow 1007/1000; slow share 0/1000 -> 0/1000
+blake3-servil-mt shared ContinuousMessages->ContinuousMessages 16 KiB (B):
+  old/new: 0.1291 (833/1000) | 0.1958 (167/1000) -> 0.1258 (854/1000) | 0.2019 (146/1000); fast 974/1000, slow 1031/1000; slow share 167/1000 -> 146/1000
+  old/old: 0.1268 (813/1000) | 0.1953 (188/1000) -> 0.1304 (865/1000) | 0.1970 (135/1000); fast 1029/1000, slow 1009/1000; slow share 188/1000 -> 135/1000
+  new/new: 0.1238 (854/1000) | 0.2070 (146/1000) -> 0.1270 (854/1000) | 0.1957 (146/1000); fast 1026/1000, slow 945/1000; slow share 146/1000 -> 146/1000
+blake3-servil-mt shared ContinuousMessages->ContinuousMessages 64 KiB (B):
+  old/new: 0.0659 (1000/1000) -> 0.0711 (1000/1000); fast 1080/1000, slow 1080/1000; slow share 0/1000 -> 0/1000
+  old/old: 0.0660 (1000/1000) -> 0.0646 (875/1000) | 0.1049 (125/1000); fast 980/1000, slow 1590/1000; slow share 0/1000 -> 125/1000
+  new/new: 0.0707 (1000/1000) -> 0.0709 (885/1000) | 0.1083 (115/1000); fast 1003/1000, slow 1532/1000; slow share 0/1000 -> 115/1000
+blake3-servil-mt shared ContinuousMessages->ContinuousMessages 1 MiB (B):
+  old/new: 0.0602 (1000/1000) -> 0.0550 (1000/1000); fast 914/1000, slow 914/1000; slow share 0/1000 -> 0/1000
+  old/old: 0.0622 (1000/1000) -> 0.0536 (719/1000) | 0.0728 (281/1000); fast 862/1000, slow 1170/1000; slow share 0/1000 -> 281/1000
+  new/new: 0.0535 (625/1000) | 0.0718 (375/1000) -> 0.0543 (729/1000) | 0.0690 (271/1000); fast 1015/1000, slow 961/1000; slow share 375/1000 -> 271/1000
+blake3-servil-mt shared ContinuousBatches->ContinuousBatches 16 (msg):
+  old/new: 9.4993 (1000/1000) -> 9.5649 (1000/1000); fast 1007/1000, slow 1007/1000; slow share 0/1000 -> 0/1000
+  old/old: 9.3279 (875/1000) | 12.0877 (125/1000) -> 9.5449 (1000/1000); fast 1023/1000, slow 790/1000; slow share 125/1000 -> 0/1000
+  new/new: 9.2993 (896/1000) | 13.9548 (104/1000) -> 9.5854 (1000/1000); fast 1031/1000, slow 687/1000; slow share 104/1000 -> 0/1000
+blake3-servil-mt shared ContinuousBatches->ContinuousBatches 256 (msg):
+  old/new: 4.9621 (896/1000) | 7.6366 (104/1000) -> 5.3610 (1000/1000); fast 1080/1000, slow 702/1000; slow share 104/1000 -> 0/1000
+  old/old: 4.9310 (896/1000) | 7.9124 (104/1000) -> 5.0024 (896/1000) | 7.5945 (104/1000); fast 1014/1000, slow 960/1000; slow share 104/1000 -> 104/1000
+  new/new: 5.5721 (896/1000) | 10.3972 (104/1000) -> 4.7968 (896/1000) | 7.0706 (104/1000); fast 861/1000, slow 680/1000; slow share 104/1000 -> 104/1000
+blake3-servil-mt shared ContinuousBatches->ContinuousBatches 4096 (msg):
+  old/new: 5.0095 (896/1000) | 9.5792 (104/1000) -> 5.8634 (1000/1000); fast 1170/1000, slow 612/1000; slow share 104/1000 -> 0/1000
+  old/old: 4.9856 (896/1000) | 9.8443 (104/1000) -> 5.0274 (896/1000) | 9.5792 (104/1000); fast 1008/1000, slow 973/1000; slow share 104/1000 -> 104/1000
+  new/new: 4.9991 (104/1000) | 6.4207 (896/1000) -> 5.3214 (875/1000) | 7.7139 (125/1000); fast 1064/1000, slow 1201/1000; slow share 896/1000 -> 125/1000
+blake3-servil-mt shared LentMessages->LentMessages 64 B (B):
+  old/new: 0.7137 (1000/1000) -> 0.7133 (1000/1000); fast 999/1000, slow 999/1000; slow share 0/1000 -> 0/1000
+  old/old: 0.7093 (896/1000) | 1.1059 (104/1000) -> 0.7169 (1000/1000); fast 1011/1000, slow 648/1000; slow share 104/1000 -> 0/1000
+  new/new: 0.7081 (1000/1000) -> 0.7183 (1000/1000); fast 1014/1000, slow 1014/1000; slow share 0/1000 -> 0/1000
+blake3-servil-mt shared LentMessages->LentMessages 64 KiB (B):
+  old/new: 0.1985 (1000/1000) -> 0.1984 (1000/1000); fast 999/1000, slow 999/1000; slow share 0/1000 -> 0/1000
+  old/old: 0.1974 (1000/1000) -> 0.1995 (1000/1000); fast 1011/1000, slow 1011/1000; slow share 0/1000 -> 0/1000
+  new/new: 0.1981 (1000/1000) -> 0.1991 (1000/1000); fast 1005/1000, slow 1005/1000; slow share 0/1000 -> 0/1000
+blake3-servil-mt shared LentMessages->LentMessages 1 MiB (B):
+  old/new: 0.0876 (1000/1000) -> 0.0889 (1000/1000); fast 1015/1000, slow 1015/1000; slow share 0/1000 -> 0/1000
+  old/old: 0.0873 (1000/1000) -> 0.0883 (1000/1000); fast 1013/1000, slow 1013/1000; slow share 0/1000 -> 0/1000
+  new/new: 0.0893 (1000/1000) -> 0.0883 (1000/1000); fast 988/1000, slow 988/1000; slow share 0/1000 -> 0/1000
+blake3-servil-mt shared LentPieces->LentPieces 64 MiB (B):
+  old/new: 0.1518 (1000/1000) -> 0.1523 (1000/1000); fast 1003/1000, slow 1003/1000; slow share 0/1000 -> 0/1000
+  old/old: 0.1502 (1000/1000) -> 0.1527 (1000/1000); fast 1017/1000, slow 1017/1000; slow share 0/1000 -> 0/1000
+  new/new: 0.1532 (1000/1000) -> 0.1514 (1000/1000); fast 988/1000, slow 988/1000; slow share 0/1000 -> 0/1000
+blake3-servil-mt shared LentBatches->LentBatches 16 (msg):
+  old/new: 12.6448 (1000/1000) -> 12.6162 (1000/1000); fast 998/1000, slow 998/1000; slow share 0/1000 -> 0/1000
+  old/old: 12.6513 (1000/1000) -> 12.6306 (1000/1000); fast 998/1000, slow 998/1000; slow share 0/1000 -> 0/1000
+  new/new: 12.6163 (1000/1000) -> 12.6162 (1000/1000); fast 1000/1000, slow 1000/1000; slow share 0/1000 -> 0/1000
+blake3-servil-mt shared LentBatches->LentBatches 4096 (msg):
+  old/new: 12.7823 (1000/1000) -> 12.7743 (1000/1000); fast 999/1000, slow 999/1000; slow share 0/1000 -> 0/1000
+  old/old: 12.7823 (1000/1000) -> 12.7686 (1000/1000); fast 999/1000, slow 999/1000; slow share 0/1000 -> 0/1000
+  new/new: 12.7646 (1000/1000) -> 12.8099 (1000/1000); fast 1004/1000, slow 1004/1000; slow share 0/1000 -> 0/1000
+131 cells compared; ratios are new/old elapsed time, each speed separately.

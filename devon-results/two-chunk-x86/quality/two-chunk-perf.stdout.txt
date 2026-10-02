@@ -1,0 +1,2 @@
+perf_regress: no regression against HEAD
+perf_regress: power during the check: not reported by this OS

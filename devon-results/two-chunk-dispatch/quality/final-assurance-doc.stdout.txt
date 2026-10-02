@@ -1,0 +1,28 @@
+
+running 22 tests
+test src/lib.rs - Hasher::update_reader (line 2444) - compile ... ok
+test src/hazmat.rs - hazmat (line 50) ... ok
+test src/hazmat.rs - hazmat::hash_derive_key_context (line 549) ... ok
+test src/hazmat.rs - hazmat (line 128) - should panic ... ok
+test src/hazmat.rs - hazmat (line 95) ... ok
+test src/hazmat.rs - hazmat::HasherExt::new_from_context_key (line 171) ... ok
+test src/lib.rs - (line 6) ... ok
+test src/lib.rs - Hasher (line 1884) ... ok
+test src/lib.rs - derive_key (line 1824) ... ok
+test src/lib.rs - hash (line 1242) ... ok
+test src/hazmat.rs - hazmat::merge_subtrees_root_xof (line 498) ... ok
+test src/lib.rs - keyed_hash (line 1775) ... ok
+test src/lib.rs - initialize (line 1311) ... ok
+test src/lib.rs - hash_many_with (line 1529) ... ok
+test src/lib.rs - hash_many (line 1470) ... ok
+test src/lib.rs - hash_multithreaded (line 1297) ... ok
+test src/queue.rs - queue::Queue (line 147) ... ok
+test src/lib.rs - initialize_multithreaded (line 1328) ... ok
+test src/lib.rs - hash_many_multithreaded (line 1511) ... ok
+test src/lib.rs - hash_with (line 1398) ... ok
+test src/lib.rs - Hasher::update_multithreaded (line 2076) ... ok
+test src/hazmat.rs - hazmat::left_subtree_len (line 349) ... ok
+
+test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+all doctests ran in 0.26s; merged doctests compilation took 0.24s

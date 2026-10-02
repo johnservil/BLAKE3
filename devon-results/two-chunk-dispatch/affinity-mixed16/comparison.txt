@@ -1,0 +1,49 @@
+sha256 solo ContinuousMessages->ContinuousMessages 1 KiB (B):
+  old/new: 0.4626 (1000/1000) -> 0.4629 (1000/1000); fast 1001/1000, slow 1001/1000; slow share 0/1000 -> 0/1000
+  old/old: 0.4626 (1000/1000) -> 0.4626 (1000/1000); fast 1000/1000, slow 1000/1000; slow share 0/1000 -> 0/1000
+  new/new: 0.4632 (1000/1000) -> 0.4627 (1000/1000); fast 999/1000, slow 999/1000; slow share 0/1000 -> 0/1000
+sha256 solo ContinuousBatches->ContinuousBatches 16 (msg):
+  old/new: 62.7002 (1000/1000) -> 62.7873 (1000/1000); fast 1001/1000, slow 1001/1000; slow share 0/1000 -> 0/1000
+  old/old: 62.6322 (1000/1000) -> 62.7307 (1000/1000); fast 1002/1000, slow 1002/1000; slow share 0/1000 -> 0/1000
+  new/new: 62.7873 (1000/1000) -> 62.7775 (1000/1000); fast 1000/1000, slow 1000/1000; slow share 0/1000 -> 0/1000
+sha256 solo ContinuousBatches->ContinuousBatches 4096 (msg):
+  old/new: 63.2570 (1000/1000) -> 63.3047 (1000/1000); fast 1001/1000, slow 1001/1000; slow share 0/1000 -> 0/1000
+  old/old: 63.2333 (1000/1000) -> 63.3276 (1000/1000); fast 1001/1000, slow 1001/1000; slow share 0/1000 -> 0/1000
+  new/new: 63.3168 (1000/1000) -> 63.2948 (1000/1000); fast 1000/1000, slow 1000/1000; slow share 0/1000 -> 0/1000
+sha256 shared ContinuousMessages->ContinuousMessages 1 KiB (B):
+  old/new: 0.4621 (1000/1000) -> 0.4622 (1000/1000); fast 1000/1000, slow 1000/1000; slow share 0/1000 -> 0/1000
+  old/old: 0.4623 (1000/1000) -> 0.4619 (1000/1000); fast 999/1000, slow 999/1000; slow share 0/1000 -> 0/1000
+  new/new: 0.4622 (1000/1000) -> 0.4622 (1000/1000); fast 1000/1000, slow 1000/1000; slow share 0/1000 -> 0/1000
+sha256 shared ContinuousBatches->ContinuousBatches 16 (msg):
+  old/new: 62.4851 (1000/1000) -> 62.6042 (1000/1000); fast 1002/1000, slow 1002/1000; slow share 0/1000 -> 0/1000
+  old/old: 62.4704 (1000/1000) -> 62.5021 (1000/1000); fast 1001/1000, slow 1001/1000; slow share 0/1000 -> 0/1000
+  new/new: 62.6944 (1000/1000) -> 62.4974 (1000/1000); fast 997/1000, slow 997/1000; slow share 0/1000 -> 0/1000
+sha256 shared ContinuousBatches->ContinuousBatches 4096 (msg):
+  old/new: 63.3376 (1000/1000) -> 63.3488 (1000/1000); fast 1000/1000, slow 1000/1000; slow share 0/1000 -> 0/1000
+  old/old: 63.3011 (1000/1000) -> 63.3554 (1000/1000); fast 1001/1000, slow 1001/1000; slow share 0/1000 -> 0/1000
+  new/new: 63.3111 (1000/1000) -> 63.3958 (1000/1000); fast 1001/1000, slow 1001/1000; slow share 0/1000 -> 0/1000
+blake3-servil-mt solo ContinuousMessages->ContinuousMessages 1 KiB (B):
+  old/new: 0.1517 (1000/1000) -> 0.1521 (1000/1000); fast 1003/1000, slow 1003/1000; slow share 0/1000 -> 0/1000
+  old/old: 0.1524 (1000/1000) -> 0.1513 (1000/1000); fast 992/1000, slow 992/1000; slow share 0/1000 -> 0/1000
+  new/new: 0.1522 (1000/1000) -> 0.1521 (1000/1000); fast 1000/1000, slow 1000/1000; slow share 0/1000 -> 0/1000
+blake3-servil-mt solo ContinuousBatches->ContinuousBatches 16 (msg):
+  old/new: 7.9958 (1000/1000) -> 8.0064 (1000/1000); fast 1001/1000, slow 1001/1000; slow share 0/1000 -> 0/1000
+  old/old: 8.1160 (1000/1000) -> 7.8965 (1000/1000); fast 973/1000, slow 973/1000; slow share 0/1000 -> 0/1000
+  new/new: 7.9029 (1000/1000) -> 8.0986 (1000/1000); fast 1025/1000, slow 1025/1000; slow share 0/1000 -> 0/1000
+blake3-servil-mt solo ContinuousBatches->ContinuousBatches 4096 (msg):
+  old/new: 5.4701 (1000/1000) -> 5.1687 (1000/1000); fast 945/1000, slow 945/1000; slow share 0/1000 -> 0/1000
+  old/old: 5.2737 (1000/1000) -> 5.7283 (1000/1000); fast 1086/1000, slow 1086/1000; slow share 0/1000 -> 0/1000
+  new/new: 5.1524 (1000/1000) -> 5.1833 (1000/1000); fast 1006/1000, slow 1006/1000; slow share 0/1000 -> 0/1000
+blake3-servil-mt shared ContinuousMessages->ContinuousMessages 1 KiB (B):
+  old/new: 0.2021 (1000/1000) -> 0.2012 (1000/1000); fast 995/1000, slow 995/1000; slow share 0/1000 -> 0/1000
+  old/old: 0.2010 (1000/1000) -> 0.2029 (1000/1000); fast 1009/1000, slow 1009/1000; slow share 0/1000 -> 0/1000
+  new/new: 0.2006 (1000/1000) -> 0.2026 (1000/1000); fast 1010/1000, slow 1010/1000; slow share 0/1000 -> 0/1000
+blake3-servil-mt shared ContinuousBatches->ContinuousBatches 16 (msg):
+  old/new: 8.0215 (1000/1000) -> 8.1112 (1000/1000); fast 1011/1000, slow 1011/1000; slow share 0/1000 -> 0/1000
+  old/old: 7.9961 (1000/1000) -> 8.0284 (1000/1000); fast 1004/1000, slow 1004/1000; slow share 0/1000 -> 0/1000
+  new/new: 7.9245 (1000/1000) -> 8.2404 (1000/1000); fast 1040/1000, slow 1040/1000; slow share 0/1000 -> 0/1000
+blake3-servil-mt shared ContinuousBatches->ContinuousBatches 4096 (msg):
+  old/new: 5.0768 (1000/1000) -> 5.1110 (1000/1000); fast 1007/1000, slow 1007/1000; slow share 0/1000 -> 0/1000
+  old/old: 5.1960 (1000/1000) -> 5.0201 (1000/1000); fast 966/1000, slow 966/1000; slow share 0/1000 -> 0/1000
+  new/new: 5.0634 (1000/1000) -> 5.1351 (1000/1000); fast 1014/1000, slow 1014/1000; slow share 0/1000 -> 0/1000
+12 cells compared; ratios are new/old elapsed time, each speed separately.

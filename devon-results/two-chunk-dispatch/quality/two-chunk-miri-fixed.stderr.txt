@@ -1,0 +1,35 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.02s
+     Running unittests src/lib.rs (bench-hashes-validation/miri-target/miri/x86_64-unknown-linux-gnu/debug/build/blake3-servil/78b222ad7ae0a72f/out/blake3_servil-78b222ad7ae0a72f)
+warning: use of deprecated method `std::sync::atomic::Atomic::<usize>::fetch_update`: renamed to `try_update` for consistency
+   --> src/lanes.rs:959:39
+    |
+959 |                 let _ = self.notified.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| Some(n.saturating_sub(1)));
+    |                                       ^^^^^^^^^^^^
+    |
+    = note: `#[warn(deprecated)]` on by default
+help: replace the use of the deprecated method
+    |
+959 -                 let _ = self.notified.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| Some(n.saturating_sub(1)));
+959 +                 let _ = self.notified.try_update(Ordering::SeqCst, Ordering::SeqCst, |n| Some(n.saturating_sub(1)));
+    |
+
+warning: variable does not need to be mutable
+   --> src/self_test.rs:248:9
+    |
+248 |     let mut out = std::vec![0u8; chunks.len() * crate::OUT_LEN];
+    |         ----^^^
+    |         |
+    |         help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `run` is never used
+   --> src/self_test.rs:291:4
+    |
+291 | fn run() {
+    |    ^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: 3 warnings emitted
+

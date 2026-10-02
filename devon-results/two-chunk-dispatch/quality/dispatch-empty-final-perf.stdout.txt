@@ -1,0 +1,5 @@
+perf_regress: the second 4 pairs did not confirm; no regression
+  faster  blake3-servil-mt|shared|ContinuousMessages|64 B: +8.5% (90th percentile -1.4%)
+      speeds: 1.79 (90%) | 3.45 (10%) -> 1.86 (89%) | 3.08 (11%)  [fast x1.04, slow x0.89, slow share 10% -> 11%]
+perf_regress: no regression against HEAD
+perf_regress: power during the check: not reported by this OS
