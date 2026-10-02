@@ -12,7 +12,8 @@
 //! excluded. Then the same variants nonstop (back to back, code warm):
 //! the prefetch's cost when it finds the lines near.
 //!
-//! Lengths 2, 4, 8, 16, 64 KiB; rounds interleave the variants.
+//! Round two: 64 B, 512 B, 1 KiB, the scalar kernel c1 (k1's code) alone.
+//! Rounds interleave the variants.
 use std::hint::black_box;
 use std::io::Write;
 
@@ -46,6 +47,7 @@ fn ranges(len: usize) -> Vec<(usize, usize)> {
     let c1 = span(blake3_hybrid_k1, blake3_hybrid_k2);
     let sme2 = (at(blake3_sme2_hash16_chunks_512), SME2_TEXT);
     match len {
+        64 | 512 | 1024 => vec![c1],
         2048 => vec![span(blake3_hybrid_k2, blake3_hybrid_k3), p2, c1],
         4096 => vec![span(blake3_hybrid_k4, blake3_hybrid_k5), p2, c1],
         8192 => vec![span(blake3_hybrid_k8, blake3_hybrid_k9), p4, p2, c1],
@@ -105,7 +107,7 @@ fn show(values: &[u128]) -> String {
 
 fn main() {
     blake3_servil::initialize();
-    let lengths = [2048usize, 4096, 8192, 16384, 65536];
+    let lengths = [64usize, 512, 1024];
     let rounds = 64;
     let calls = 4u64;
     let work = vec![1u8; 128 << 20];
