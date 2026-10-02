@@ -778,6 +778,7 @@ impl Delivery {
     fn hold(&self, queue: Arc<dyn Deliver>) {
         static STARTED: std::sync::Once = std::sync::Once::new();
         STARTED.call_once(|| {
+            crate::lanes::prepare(&self.queues, &self.wake);
             std::thread::Builder::new().name("blake3-servil-queue".into()).spawn(|| DELIVERY.run()).expect("the queue's delivery thread starts");
         });
         let mut queues = crate::lanes::lock_polling(&self.queues);

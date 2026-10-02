@@ -701,6 +701,15 @@ pub(crate) fn initialize() {
     pool();
 }
 
+/// Make `mutex` and `condvar` ready now: on Apple's systems the standard
+/// library allocates each on its first use, which the pool's threads would
+/// otherwise reach at their first sleep, after `initialize_multithreaded`
+/// returned (the SME2 thread's: 64 and 48 bytes, probe/lazy-sync, job 987).
+pub(crate) fn prepare<T>(mutex: &Mutex<T>, condvar: &Condvar) {
+    drop(mutex.lock());
+    condvar.notify_one();
+}
+
 /// The pool, created on first use. Creation spawns the workers, then
 /// returns; [`crate::initialize`] is this function's public face. Workers
 /// calling `pool()` wait until the creator returns.
@@ -725,6 +734,10 @@ fn pool() -> &'static Pool {
             finished: Mutex::new(()),
             finished_signal: Condvar::new(),
         };
+        prepare(&pool.sleep_lock, &pool.posted);
+        prepare(&pool.finished, &pool.finished_signal);
+        prepare(&TASKS.sme2_asleep, &TASKS.sme2_wake);
+        drop(TASKS.list.lock());
         if pool.sme2 {
             std::thread::Builder::new().name("blake3-sme2".into()).spawn(sme2_main).expect("spawning the SME2 thread");
         }
