@@ -1,0 +1,6 @@
+Promoted to servil (October 2, 2026, from candidate/api-plan-simple, aa3d8d8..44ab752), through the gate:
+- fast-forward of servil aa3d8d8;
+- suites: VM default, no_sme2, pure (release lib 92/87/74), doc 24, api_plan, one_cpu, queue_no_alloc, vectors, b3sum 21, clocks 14, b3sum-bench 3, wasm32-wasip1 lib 59; Miri (VM, pure, 4 and 16 CPUs): smoketest, update_multithreaded lingering, the queue's round trips clean; Mac native test job 1138 (0d99f9a, a superset): passed; cargo check for aarch64-apple-darwin and x86_64-pc-windows-gnu (clocks, b3sum-bench);
+- VM: regression check across the API change by hand (perf_regress build of the old fork with the old benchmark and the new with the new; bench-hashes regress): no regression; CI perf-regress on 3a84f00: success;
+- Mac: perf_regress cannot build across the API change; the direct A/B, jobs 1139-1142 (old aa3d8d8 + bench 5584e06, new 0d99f9a + bench e2d9e4e, old new new old): 16 servil cells faster and 14 slower beyond both controls, in the after-gap batch cells, ring 9 of 76 cells over 10%: no evidence of a change.
+In this range: Threads and Efficiency removed (Zooko's decision), the _with forms take a mode; b3sum --num-threads ignored with a warning; clocks::child and tools/b3sum-bench; clocks::load counts reaped children; the qemu one_cpu fix; docs (Which call to use, api-design.md, Future work).
