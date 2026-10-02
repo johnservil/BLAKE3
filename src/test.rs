@@ -973,6 +973,26 @@ fn test_mmap_virtual_file() -> Result<(), std::io::Error> {
 }
 
 #[test]
+#[cfg(feature = "rayon")]
+fn test_update_rayon_past_one_walk() {
+    // Past 1 MiB, update_rayon hashes on NEON on every Rayon thread: every
+    // shape of input there, whole and with a partial chunk, from an empty
+    // hasher and from one mid-chunk, gives hash()'s digest.
+    let mut input = vec![0; (8 << 20) + 12345];
+    paint_test_input(&mut input);
+    for len in [(1 << 20) + 1, (1 << 20) + 1024, 3 << 20, (5 << 20) + 777, 8 << 20, (8 << 20) + 12345] {
+        let input = &input[..len];
+        let mut hasher = crate::Hasher::new();
+        hasher.update_rayon(input);
+        assert_eq!(hasher.finalize(), crate::hash(input), "{len} bytes at once");
+        let mut hasher = crate::Hasher::new();
+        hasher.update(&input[..100]);
+        hasher.update_rayon(&input[100..]);
+        assert_eq!(hasher.finalize(), crate::hash(input), "{len} bytes after 100");
+    }
+}
+
+#[test]
 #[cfg(feature = "mmap")]
 #[cfg(feature = "rayon")]
 // NamedTempFile isn't Miri-compatible

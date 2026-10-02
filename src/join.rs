@@ -20,6 +20,9 @@
 ///
 /// See the [`join` module docs](index.html) for more details.
 pub trait Join {
+    /// Whether the two halves may run on two threads at once.
+    const PARALLEL: bool;
+
     fn join<A, B, RA, RB>(oper_a: A, oper_b: B) -> (RA, RB)
     where
         A: FnOnce() -> RA + Send,
@@ -37,6 +40,8 @@ pub trait Join {
 pub enum SerialJoin {}
 
 impl Join for SerialJoin {
+    const PARALLEL: bool = false;
+
     #[inline]
     fn join<A, B, RA, RB>(oper_a: A, oper_b: B) -> (RA, RB)
     where
@@ -59,6 +64,8 @@ pub enum RayonJoin {}
 
 #[cfg(feature = "rayon")]
 impl Join for RayonJoin {
+    const PARALLEL: bool = true;
+
     #[inline]
     fn join<A, B, RA, RB>(oper_a: A, oper_b: B) -> (RA, RB)
     where

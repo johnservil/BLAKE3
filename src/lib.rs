@@ -2243,8 +2243,15 @@ impl Hasher {
         // Because we might need to break up the input to form powers of 2, or
         // to evenly divide what we already have, this part runs in a loop.
         // Pooled, the subtrees below take the lock one at a time, and the
-        // pool's own never use SME2.
-        let turn = platform::Sme2Turn::take(self.chunk_state.platform, !pooled && input.len() >= SME2_SIZED_LEN);
+        // pool's own never use SME2. Under a parallel join (Rayon), an
+        // input past what one SME2 walk takes (1 MiB) hashes on NEON on
+        // every thread, as the pool's workers do: SME2 threads of one
+        // process share one SME unit, each slower than NEON (M4 Max,
+        // update_rayon 16 MiB 0.063 -> 0.031 ns/B, 64 MiB 0.058 -> 0.024,
+        // 1 MiB 0.150 -> 0.126; probe/rayon-vs-pool, jobs 1002-1003).
+        let neon_parallel = J::PARALLEL && input.len() > 1 << 20;
+        let turn = platform::Sme2Turn::take(self.chunk_state.platform, !pooled && !neon_parallel && input.len() >= SME2_SIZED_LEN);
+        let platform = if neon_parallel { platform::without_sme2(turn.platform()) } else { turn.platform() };
         while input.len() > CHUNK_LEN {
             debug_assert_eq!(self.chunk_state.count(), 0, "no partial chunk data");
             debug_assert_eq!(CHUNK_LEN.count_ones(), 1, "power of 2 chunk len");
@@ -2279,7 +2286,7 @@ impl Hasher {
             #[cfg(blake3_sme2)]
             if !pooled
                 && self.chunk_state.chunk_counter > self.initial_chunk_counter
-                && matches!(turn.platform(), Platform::SME2)
+                && matches!(platform, Platform::SME2)
                 && sme2::flat_takes(subtree_len)
             {
                 // Safe: the SME2 platform is selected only where the CPU has it.
@@ -2342,7 +2349,7 @@ impl Hasher {
                         &self.key,
                         self.chunk_state.chunk_counter,
                         self.chunk_state.flags,
-                        turn.platform(),
+                        platform,
                     )
                 };
                 let left_cv = (&cv_pair[..32]).try_into().unwrap();
