@@ -2629,6 +2629,34 @@ impl Hasher {
         Ok(self)
     }
 
+    /// [`update_mmap`](Hasher::update_mmap) over several threads: a file
+    /// long enough to map is hashed by
+    /// [`update_multithreaded`](Hasher::update_multithreaded), with the
+    /// same result. This is how `b3sum` hashes files.
+    ///
+    /// This method requires the `mmap` Cargo feature.
+    ///
+    /// ```no_run
+    /// # fn main() -> std::io::Result<()> {
+    /// let mut hasher = blake3_servil::Hasher::new();
+    /// hasher.update_mmap_multithreaded("file.dat")?;
+    /// println!("{}", hasher.finalize());
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[cfg(feature = "mmap")]
+    pub fn update_mmap_multithreaded(&mut self, path: impl AsRef<std::path::Path>) -> std::io::Result<&mut Self> {
+        let mut file = std::fs::File::open(path.as_ref())?;
+        if let Some(mmap) = io::maybe_mmap_file(&mut file)? {
+            #[cfg(unix)]
+            let _ = mmap.advise(memmap2::Advice::WillNeed);
+            self.update_multithreaded(&mmap);
+        } else {
+            io::copy_wide(&file, self)?;
+        }
+        Ok(self)
+    }
+
     /// As [`update_rayon`](Hasher::update_rayon), but reading the contents of a file using
     /// memory mapping. This is the default behavior of `b3sum`.
     ///

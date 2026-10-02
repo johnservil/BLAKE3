@@ -704,3 +704,18 @@ fn test_num_threads_is_ignored_with_a_warning() {
     let stderr = std::str::from_utf8(&output.stderr).unwrap();
     assert!(stderr.contains("--num-threads is no longer supported"), "stderr: {stderr}");
 }
+
+/// A file long enough for the worker threads (past 1 MiB, not a power of
+/// two), through the mapping and through reads: both give hash()'s digest.
+#[test]
+fn test_large_file_mapped_and_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("large");
+    let data: Vec<u8> = (0..(3u32 << 20) + 12345).map(|i| (i % 251) as u8).collect();
+    fs::write(&path, &data).unwrap();
+    let expected = blake3::hash(&data).to_hex().to_string();
+    for flags in [&[][..], &["--no-mmap"][..]] {
+        let output = cmd(b3sum_exe(), flags.iter().copied().chain([path.to_str().unwrap()])).read().unwrap();
+        assert_eq!(&output[..64], expected, "{flags:?}");
+    }
+}

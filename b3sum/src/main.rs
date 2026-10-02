@@ -181,7 +181,7 @@ fn hash_path(args: &Args, path: &Path) -> anyhow::Result<blake3::OutputReader> {
         hasher.update_reader(File::open(path)?)?;
     } else {
         // The fast path: Try to mmap the file and hash it with multiple threads.
-        hasher.update_mmap_rayon(path)?;
+        hasher.update_mmap_multithreaded(path)?;
     }
     let mut output_reader = hasher.finalize_xof();
     output_reader.set_position(args.seek());
@@ -518,35 +518,32 @@ fn main() -> anyhow::Result<()> {
     if args.num_threads().is_some() {
         eprintln!("{NAME}: warning: --num-threads is no longer supported and is ignored; b3sum chooses its threads itself");
     }
-    let thread_pool = rayon_core::ThreadPoolBuilder::new().build()?;
-    thread_pool.install(|| {
-        let mut files_failed = 0u64;
-        // Note that file_args automatically includes `-` if nothing is given.
-        for path in &args.file_args {
-            if args.check() {
-                check_one_checkfile(path, &args, &mut files_failed)?;
-            } else {
-                // Errors encountered in hashing are tolerated and printed to
-                // stderr. This allows e.g. `b3sum *` to print errors for
-                // non-files and keep going. However, if we encounter any
-                // errors we'll still return non-zero at the end.
-                let result = hash_one_input(path, &args);
-                if let Err(e) = result {
-                    files_failed = files_failed.saturating_add(1);
-                    eprintln!("{}: {}: {}", NAME, path.to_string_lossy(), e);
-                }
+    let mut files_failed = 0u64;
+    // Note that file_args automatically includes `-` if nothing is given.
+    for path in &args.file_args {
+        if args.check() {
+            check_one_checkfile(path, &args, &mut files_failed)?;
+        } else {
+            // Errors encountered in hashing are tolerated and printed to
+            // stderr. This allows e.g. `b3sum *` to print errors for
+            // non-files and keep going. However, if we encounter any
+            // errors we'll still return non-zero at the end.
+            let result = hash_one_input(path, &args);
+            if let Err(e) = result {
+                files_failed = files_failed.saturating_add(1);
+                eprintln!("{}: {}: {}", NAME, path.to_string_lossy(), e);
             }
         }
-        if args.check() && files_failed > 0 {
-            eprintln!(
-                "{}: WARNING: {} computed checksum{} did NOT match",
-                NAME,
-                files_failed,
-                if files_failed == 1 { "" } else { "s" },
-            );
-        }
-        std::process::exit(if files_failed > 0 { 1 } else { 0 });
-    })
+    }
+    if args.check() && files_failed > 0 {
+        eprintln!(
+            "{}: WARNING: {} computed checksum{} did NOT match",
+            NAME,
+            files_failed,
+            if files_failed == 1 { "" } else { "s" },
+        );
+    }
+    std::process::exit(if files_failed > 0 { 1 } else { 0 });
 }
 
 #[cfg(test)]

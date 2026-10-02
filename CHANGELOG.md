@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- `b3sum` hashes on this crate's own worker threads instead of Rayon's,
+  through the new `Hasher::update_mmap_multithreaded`. On an Apple M4 Max
+  in a Linux VM (tools/b3sum-bench), a 1 GiB file in the page cache takes
+  half the time (16 to 34 GB/s, beside official b3sum 1.8.2's 26), and a
+  4 KiB file half the time too (1.0 to 0.55 ms: no Rayon pool to start).
 - Simpler: no thread budgets and no time-or-energy choice. A call's
   threading is in its name, and its one option is the mode. Each one-shot
   call has a full form that takes a `Mode`: `hash_with(mode, input)`,
