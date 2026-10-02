@@ -1,0 +1,6 @@
+Promoted to servil (October 2, 2026, from candidate/api-plan-simple, 1d2b652..9dda4be), through the gate:
+- fast-forward of servil 1d2b652;
+- suites: VM default, no_sme2, pure, mmap (release), debug default: pass; Mac native test job 1041: passed;
+- VM: perf_regress compare servil candidate: no regression;
+- Mac: perf_regress job 1040 (1d2b652 against a39fb7c, the code; the rest documents and CI): no regression.
+In this range: update_reader through a 1 MiB buffer (Mac, files of 8-64 MiB 23-33% less time, jobs 1036-1039); the hosted perf-regress CI limited to servil, candidates, and PRs.
