@@ -21,13 +21,14 @@ fn main() {
     let home = std::path::PathBuf::from(std::env::var_os("HOME").expect("HOME"));
     let out = std::env::current_dir().unwrap();
     let contenders = home.join("b3sum-contenders");
-    let line = run(Command::new("sh").arg(root.join("tools/b3sum-bench/build-contenders.sh")).arg(&contenders).args(["6039657", "ea5e885"]));
+    let line = run(Command::new("sh").arg(root.join("tools/b3sum-bench/build-contenders.sh")).arg(&contenders).args(["e50291f", "ea5e885", "29c2834"]));
     let mut args: Vec<String> = Vec::new();
     // Rayon first: every other cell is compared with it.
     let words: Vec<&str> = line.split_whitespace().collect();
     let pick = |prefix: &str| words.iter().find(|w| w.starts_with(prefix)).unwrap().to_string();
-    args.push(pick("fork-6039657=").replacen("fork-6039657=", "servil=", 1));
+    args.push(pick("fork-e50291f=").replacen("fork-e50291f=", "sixteen=", 1));
     args.push(pick("fork-ea5e885=").replacen("fork-ea5e885=", "one-page=", 1));
+    args.push(pick("fork-29c2834=").replacen("fork-29c2834=", "control=", 1));
     let bench_target = home.join("b3sum-bench-target");
     run(Command::new("cargo").args(["build", "--release", "--manifest-path"]).arg(root.join("tools/b3sum-bench/Cargo.toml")).env("CARGO_TARGET_DIR", &bench_target));
     let status = Command::new(bench_target.join("release/b3sum-bench"))
