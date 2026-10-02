@@ -1804,6 +1804,21 @@ variance over 24, pooled):
 - None gets near what a 3% check needs: a median of eight pairs moves by
   about 0.6 of a process's spread (64 B: about 4.4%).
 
+**The Mac** (probe/queue-processes-mac, job 1176, 20 processes, 1 ms and
+4 ms samples, traced): the queue's cells settle into a per-process state.
+Messages of 1 KiB: 13 processes near the median, 7 at 1.30-1.51x (4 ms:
+11 and 9); batches of 16: 10 at 0.75-0.80x, 10 at 1.20-1.55x (spread over
+noise 4.6; 4 ms alike); 16 KiB over noise 3.9-5.5; 64 B and batches of
+4096 near their noise. Longer samples do not merge the states. The
+producer (the calling thread) runs the same instructions per input in
+both states (1 KiB: 671-686; batches of 16: 643-667), on P-cores, at the
+same clock (3.7-3.9 GHz), yet takes about 1.3x the time per input in a
+slow process, busier (92-95% of wall against 84-88% for 1 KiB): more
+stall cycles, likely its handovers' lines crossing between the M4 Max's
+two P-clusters when macOS places the pool's or the delivery thread on
+the other. Next: which CPU each queue thread and the producer ran on
+(pthread_cpu_number_np), fast processes beside slow.
+
 ## Memory: what each call allocates (a survey, October 2, 2026)
 
 For the memory guarantees Zooko asked to document (bench-hashes
