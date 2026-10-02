@@ -1,0 +1,6 @@
+Promoted to servil (October 2, 2026, from candidate/api-plan-simple, 11494db..2c66bec), through the gate:
+- fast-forward of servil 11494db;
+- suites: VM default, no_sme2, pure (release): pass; Miri (VM, pure): unsafe_paths and the queue's round trips (now with the pool's tasks) clean; Mac native test job 1130: passed;
+- VM: perf_regress compare servil candidate: no regression;
+- Mac: perf_regress job 1131: no regression.
+In this range: the queue's Miri test reaches the pool's tasks; documents (QUALITY.md's Miri section).
