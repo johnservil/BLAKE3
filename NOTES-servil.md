@@ -1756,6 +1756,22 @@ next work), solo at 3% and shared at 10%, with no control and no
 confirmation stage; priming in place of the single-call retiming. A check
 takes about 31 s in the VM (was about 60).
 
+**The gate as built** (bench-hashes 1a2d01f, Mac job 1167, eight repeats,
+probe/plant-final with bench-hashes probe/final-calibration), held /
+passed / no verdict (busy): one executable 0/5/3; another layout 1/7/0;
++3% 5/2/1; +6% 6/0/2; 28 s a check. Two findings:
+- The layout hold: servil st's solo lent 64 B at +3.5% (pairs +4.1 +17.1
+  +1.4 -4.4 +2.8 +1.5 +5.0 +11.4%): that build ran the cell slower, which
+  no count of pairs separates from code. A 3% margin on the 64 B call
+  holds about one layout-only change in eight; PROCEDURES says how such a
+  hold lands.
+- The shared lent 64 B cells switch between states 20-30% apart per
+  process (layout checks: the other layout about 20% faster in 6 of 8; one
+  +3% check held by that cell alone at +19.5%). So the gate judges solo
+  cells alone (bench-hashes 1a2d01f's successor): from the same runs,
+  one executable 0 of 5 held, another layout 1 of 8, +3% 4 of 7, +6% 6 of
+  6.
+
 ## Memory: what each call allocates (a survey, October 2, 2026)
 
 For the memory guarantees Zooko asked to document (bench-hashes
