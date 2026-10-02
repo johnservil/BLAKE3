@@ -1275,6 +1275,13 @@ impl Tasks {
         // Another thread popping means this one would wait for it: poll on.
         let mut list = self.list.try_lock().ok()?;
         let task = list.pop_front()?;
+        if list.is_empty() {
+            // Back to the ring's start (clear resets its head): the next
+            // pushes write the lines just used, not the next of the room's
+            // places, which the queues size for every slot (1024 small
+            // messages in flight: about 2 MiB of 2 KiB tasks).
+            list.clear();
+        }
         self.queued.store(list.len(), Ordering::SeqCst);
         Some(task)
     }
