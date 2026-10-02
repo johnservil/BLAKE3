@@ -1572,7 +1572,9 @@ fn hash_serial_on(input: &[u8], key: &CVWords, flags: u8, platform: Platform) ->
 /// hashed several at a time, sixteen per group on SME2, so a batch of them
 /// hashes at a multiple of one [`hash`] call's rate; on Apple M4 and later
 /// so are messages of up to 15 KiB, in batches of about ten or more.
-/// Longer messages cost what [`hash`] costs. On Apple M4 and
+/// On x86 with four or more SIMD lanes, batches of at least four
+/// 2048- or 4096-byte messages hash their chunks and tree levels across messages.
+/// Other longer messages use one [`hash`] path per message. On Apple M4 and
 /// later, batches that run on SME2 follow [`hash`]'s rule for large
 /// inputs: when several threads hash them at once, one runs at the full
 /// rate and the others at about half of it. Always single-threaded; see [`hash_many_multithreaded`] for
@@ -1752,8 +1754,9 @@ pub fn kernel_report() -> KernelReport {
 /// by the batch's length in bytes: `from_len` is the batch's length at
 /// which each kernel starts. Messages of 1 to 16 whole blocks (64 B to
 /// 1 KiB) are hashed several at a time, and on SME2 so are messages of
-/// whole blocks up to 15 KiB; messages of other lengths run
-/// [`kernel_report`]'s kernel for their length, one message per call.
+/// whole blocks up to 15 KiB. On x86, 2048- and 4096-byte messages batch chunks
+/// and tree levels from four messages where four SIMD lanes are available;
+/// other lengths run [`kernel_report`]'s kernel, one message per call.
 #[cfg(feature = "std")]
 pub fn kernel_report_many(message_len: usize) -> KernelReport {
     let platform = Platform::detect();
@@ -1767,6 +1770,14 @@ pub fn kernel_report_many(message_len: usize) -> KernelReport {
             name: kernel.name,
             why: "Messages of this length are hashed one call each, as one input of that length.",
         });
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        if (message_len == 2 * CHUNK_LEN || message_len == 4 * CHUNK_LEN) && platform.simd_degree() >= 4 {
+            kernels.push(Kernel {
+                from_len: 4 * message_len,
+                name: platform.hash_many_name(),
+                why: "From four messages, each chunk index is batched across independent messages, then every tree level; chunk indices stay their counters and only the final parents carry ROOT.",
+            });
+        }
         #[cfg(blake3_neon_hybrid)]
         if (CHUNK_LEN + 1..=2 * CHUNK_LEN).contains(&message_len) && neon_hybrid::sha3_detected() {
             kernels.push(Kernel {
