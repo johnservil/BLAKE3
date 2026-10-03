@@ -8,6 +8,27 @@ behind them, the decisions with their dates, the open questions (each
 marked **Q**), and how the benchmark measures each call. bench-hashes'
 `FROZEN.md` turns it into measurements.
 
+## Decided October 3, 2026, to build next (Zooko)
+
+1. **Every cell charges the program's write**: each byte is written into
+   memory (a copy from a fixed source, standing in for a read) inside the
+   timed work, in every use case, so that cells compare as the whole job a
+   user's program does. Today the after-a-gap cells time the write apart and
+   the nonstop cells include it.
+2. **A stream that owns its buffer** replaces the queue: the program writes
+   each message straight into space the stream lends it, threads hash each
+   64 KiB segment as it is committed, and each message's hash comes back
+   with the program's own tag, on the program's thread, inside its calls
+   to the stream. The API is settling (NOTES-servil.md, Future work); a
+   prototype (probe/owned-buffer, Mac job 1194) hashed 64 MiB messages,
+   write included, 1.4x as fast as writing them whole and calling
+   `hash_multithreaded`, and 2.3x the queue.
+3. **No thread lingers**, and the benchmark's "in pieces" row goes: pieces
+   lent to `update_multithreaded` hash as one buffer of their length does.
+4. **The API docs are the doors**: each function's documentation is the one
+   place for its contract and behaviour, published, holding no measured
+   numbers; the graph, the guide, and the READMEs link to it.
+
 ## Four questions lead a user to one call
 
 The crate docs put the questions right after their first example (Zooko,
