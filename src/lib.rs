@@ -1532,11 +1532,6 @@ fn prefetch_update_kernels(len: usize, platform: Platform) {
     let _ = platform;
 }
 
-/// How much of a message `Hasher::update_multithreaded` hashes before it
-/// keeps the workers ready between updates: two 64 KiB pieces.
-#[cfg(feature = "std")]
-const LINGER_AFTER: u64 = 2 * 64 * 1024;
-
 /// The smallest input the SME2 kernels take part in: one group of sixteen
 /// chunks. Below it the SME2 platform runs the NEON hybrids.
 pub(crate) const SME2_SIZED_LEN: usize = 16 * CHUNK_LEN;
@@ -2182,15 +2177,14 @@ impl Hasher {
     }
 
     /// [`update`](Hasher::update) over several threads, with the same
-    /// result: the whole subtrees of 1 MiB and more in `input` are cut into
-    /// pieces that the calling thread and this crate's worker threads hash
-    /// at once, under the rules of [`hash_multithreaded`]. A message in
-    /// pieces promises more updates: past its first 128 KiB, each update of
-    /// 64 KiB or more keeps the worker threads ready for 50 µs after it
-    /// returns, so the next update, when it comes that soon, hashes its
-    /// 64 KiB pieces over them too (on an Apple M4 Max, a long message in
-    /// 64 KiB pieces 2.4x as fast as with `update`). Never slower than
-    /// `update` on the same input, and one `Hasher` may mix the two.
+    /// result: the whole subtrees of 512 KiB and more in `input` are cut
+    /// into pieces that the calling thread and this crate's worker threads
+    /// hash at once, under the rules of [`hash_multithreaded`]; shorter
+    /// updates run on the calling thread, as [`update`](Hasher::update).
+    /// Never slower than `update` on the same input, and one `Hasher` may
+    /// mix the two. A long message read in pieces hashes fastest through a
+    /// [`Queue::pieces`], which hashes each piece while your thread reads
+    /// the next.
     ///
     /// ```
     /// let input = vec![7u8; 3 << 20];
@@ -2202,16 +2196,7 @@ impl Hasher {
     /// ```
     #[cfg(feature = "std")]
     pub fn update_multithreaded(&mut self, input: &[u8]) -> &mut Self {
-        let before = self.count();
-        self.update_with_join::<join::SerialJoin>(input, true);
-        // Past its first pieces a message promises more (lanes::linger):
-        // the workers stay ready for the next update, which then hashes its
-        // whole subtrees of 64 KiB and more over them. The first two
-        // pieces pay no wake, so a short message costs what update costs.
-        if before >= LINGER_AFTER && input.len() >= lanes::LINGER_SPLIT_LEN {
-            lanes::linger();
-        }
-        self
+        self.update_with_join::<join::SerialJoin>(input, true)
     }
 
     /// [`update`](Hasher::update) with every whole subtree's result taken
@@ -2378,7 +2363,7 @@ impl Hasher {
                 // This is the high-performance happy path, though getting here
                 // depends on the caller giving us a long enough input.
                 #[cfg(feature = "std")]
-                let pool_takes = pooled && (subtree_len >= lanes::MIN_SPLIT_LEN || (subtree_len >= lanes::LINGER_SPLIT_LEN && lanes::lingering()));
+                let pool_takes = pooled && subtree_len >= lanes::MIN_SPLIT_LEN;
                 #[cfg(not(feature = "std"))]
                 let pool_takes = false;
                 let cv_pair = if pool_takes {

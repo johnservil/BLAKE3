@@ -55,12 +55,10 @@
 //!
 //! # Waiting
 //!
-//! Nothing keeps a worker awake between calls (AGENTS.md, "Serve real
-//! programs"): a worker polls the slots only while a job is registered
-//! (or a queue's delivery thread, or a lingering `Hasher`, holds the
-//! pool), and sleeps on a condition variable as soon as none is, or once
-//! it has found nothing to take for [`WORKER_IDLE`]. So every call
-//! meets sleeping workers, and a call wakes only as many as it can use
+//! Nothing keeps a worker awake for work that may come (AGENTS.md, "Serve
+//! real programs"): a worker takes pieces and tasks while it finds them,
+//! and sleeps on a condition variable as soon as it finds none. So every
+//! call meets sleeping workers, and a call wakes only as many as it can use
 //! (its pieces less one): it wakes one itself,
 //! about 3 µs of the caller's time (a wake of all fifteen at once cost the
 //! caller 25-56 µs), and the first to wake wakes the rest. A woken worker
@@ -74,10 +72,6 @@
 //! to 2 ms). Beside eight hashing threads on a 16-vCPU VM, eight idle
 //! pollers that call `sched_yield` in a loop slowed each hash by 36%, eight
 //! that spin by 18%, eight asleep by nothing.
-//!
-//! Workers are ranked, and worker `r` takes from a job only
-//! [`RANK_STAGGER_NS`]` × r` after it was registered, so the lowest ranks
-//! take a call's pieces.
 
 use crate::hazmat::ChainingValue;
 #[cfg(test)]
@@ -104,28 +98,11 @@ use std::sync::{Condvar, Mutex, OnceLock};
 /// 512 KiB 20-30% slower than on the caller's thread.
 pub(crate) const MIN_SPLIT_LEN: usize = 512 * 1024;
 
-/// The shortest whole subtree a lingering Hasher hashes over the pool: a
-/// common read's 64 KiB.
-pub(crate) const LINGER_SPLIT_LEN: usize = 64 * 1024;
-
 /// The shortest piece: eight chunks, a hybrid kernel's worth.
 const MIN_PIECE_LEN: usize = 8 * CHUNK_LEN;
 
 /// The longest piece.
 const MAX_PIECE_LEN: usize = 128 * CHUNK_LEN;
-
-/// How long a worker polls finding nothing before it sleeps (next_piece):
-/// about what a wake costs, so polling spends at most twice what knowing
-/// the future would.
-const WORKER_IDLE: std::time::Duration = std::time::Duration::from_micros(50);
-
-/// Worker `r` takes from a job only once it has been registered for
-/// `r` times this long. The lowest ranks take the pieces a call needs;
-/// the highest find none, stop polling after WORKER_IDLE, and sleep, so a
-/// small call runs beside few idle pollers. It need only
-/// exceed the jitter of noticing a job (about 0.1 µs); the highest rank
-/// on a 16-CPU machine starts 0.3 µs late.
-const RANK_STAGGER_NS: u64 = 20;
 
 /// Between polls a thread spins in user space, and every YIELD_EVERY it
 /// hands the CPU to any runnable thread (a caller the OS has queued
@@ -220,29 +197,6 @@ fn hash_over_pool(input: &[u8], key: &crate::CVWords, flags: u8) -> Hash {
     merge_root(&pieces, &mut cvs, key, flags)
 }
 
-/*
- * Lingering (Zooko, September 28, 2026: a `Hasher` between multithreaded
- * updates may keep its workers ready, for a bounded time). A message in
- * progress promises more updates, which usually come in swift succession;
- * waking sleeping workers for each 64 KiB piece costs more than the piece
- * (tens of microseconds against about ten), so each update past the
- * first ones keeps them polling for LINGER after it, and wakes them when
- * they sleep; the next update finds them ready and hashes its piece over
- * the pool. A program that stops updating leaves them polling for at
- * most LINGER. LINGER is about what a wake costs: waiting that long
- * before sleeping spends at most twice what knowing the future would.
- */
-const LINGER: std::time::Duration = std::time::Duration::from_micros(50);
-
-/// Keep the workers polling for LINGER from now, waking sleepers (the
-/// caller does not wait for them).
-pub(crate) fn linger() {
-    let pool = pool();
-    let until = (pool.epoch.elapsed() + LINGER).as_nanos() as u64;
-    pool.linger_until.fetch_max(until, Ordering::Relaxed);
-    pool.wake_for(LINGER_WORKERS);
-}
-
 /// Whether the pool has a thread that takes queue tasks: a worker, or the
 /// SME2 thread. With one CPU to the process (`available_parallelism`, which
 /// counts its affinity and quota) and no SME2 it has none, and a queue
@@ -252,25 +206,11 @@ pub(crate) fn takes_tasks() -> bool {
     pool.cpus > 1 || pool.sme2
 }
 
-/// The workers a lingering Hasher keeps ready: a 64 KiB piece's cut.
-const LINGER_WORKERS: usize = 8;
-
-/// Whether workers are polling for a lingering Hasher, so a whole subtree
-/// shorter than MIN_SPLIT_LEN pays to go over the pool: lingering, and the
-/// workers it wants awake (a wake takes tens of microseconds to land, and
-/// a job the caller finds alone runs on NEON, slower than its own SME2:
-/// 256 KiB messages in 64 KiB pieces 10% slower on the Mac, jobs 508-511).
-pub(crate) fn lingering() -> bool {
-    let pool = pool();
-    let wanted = LINGER_WORKERS.min(pool.cpus - 1);
-    wanted > 0 && pool.lingering() && pool.cpus - 1 - pool.sleepers.load(Ordering::SeqCst) >= wanted
-}
-
 /// The two child chaining values of the subtree `input` at chunk
 /// `counter`, over the machine's threads: what
 /// `compress_subtree_to_parent_node` returns for a whole subtree.
-/// Requires a power-of-two number of chunks, at least LINGER_SPLIT_LEN
-/// bytes (MIN_SPLIT_LEN when no Hasher lingers), and `counter` a multiple
+/// Requires a power-of-two number of chunks, at least MIN_SPLIT_LEN
+/// bytes, and `counter` a multiple
 /// of that number, as `Hasher::update` hands out.
 pub(crate) fn subtree_children(
     input: &[u8],
@@ -278,7 +218,7 @@ pub(crate) fn subtree_children(
     counter: u64,
     flags: u8,
 ) -> [u8; 2 * crate::OUT_LEN] {
-    assert!(input.len().is_power_of_two() && input.len() >= LINGER_SPLIT_LEN, "a whole subtree of at least LINGER_SPLIT_LEN bytes");
+    assert!(input.len().is_power_of_two() && input.len() >= MIN_SPLIT_LEN, "a whole subtree of at least MIN_SPLIT_LEN bytes");
     assert_eq!(counter % (input.len() / CHUNK_LEN) as u64, 0, "a subtree starts at a multiple of its chunk count");
     let pool = pool();
     let callers = pool.callers.fetch_add(1, Ordering::SeqCst) + 1;
@@ -361,9 +301,6 @@ impl Drop for Caller<'_> {
 /// every worker access falls inside the caller's frame.
 struct Job<'a> {
     work: Work<'a>,
-    /// When the job was registered, in nanoseconds of the pool's epoch;
-    /// a worker of rank r takes from it only r × RANK_STAGGER later.
-    registered_ns: u64,
     /// How many pieces the work has; `cursor` counts up to it.
     pieces: usize,
     /// The next piece to take.
@@ -640,13 +577,6 @@ struct Pool {
     cpus: usize,
     /// Whether the SME2 thread runs (this CPU has SME2).
     sme2: bool,
-    /// The clock jobs' registration times count from.
-    epoch: std::time::Instant,
-    /// Workers poll until this time (ns from `epoch`) with no job: a
-    /// `Hasher` between multithreaded updates keeps them ready (`linger`).
-    linger_until: std::sync::atomic::AtomicU64,
-    /// Jobs in the slots: workers poll while there are any.
-    registered: AtomicUsize,
     /// Workers asleep on `posted`.
     sleepers: AtomicUsize,
     /// Of those, the ones a caller has asked to wake and that have yet to.
@@ -698,9 +628,6 @@ fn pool() -> &'static Pool {
             callers: AtomicUsize::new(0),
             cpus,
             sme2: cfg!(blake3_sme2) && !matches!(pool_platform(), p if core::mem::discriminant(&p) == core::mem::discriminant(&Platform::detect())),
-            epoch: std::time::Instant::now(),
-            linger_until: std::sync::atomic::AtomicU64::new(0),
-            registered: AtomicUsize::new(0),
             sleepers: AtomicUsize::new(0),
             notified: AtomicUsize::new(0),
             owed: AtomicUsize::new(0),
@@ -736,7 +663,7 @@ fn pool() -> &'static Pool {
                 .name(format!("blake3-worker-{worker}"))
                 .spawn(move || {
                     STARTED.fetch_add(1, Ordering::SeqCst);
-                    worker_main(worker - 1)
+                    worker_main()
                 })
                 .expect("spawning a BLAKE3 worker");
         }
@@ -748,11 +675,6 @@ fn pool() -> &'static Pool {
 }
 
 impl Pool {
-    /// Whether workers keep polling with no job (`linger`).
-    fn lingering(&self) -> bool {
-        (self.epoch.elapsed().as_nanos() as u64) < self.linger_until.load(Ordering::Relaxed)
-    }
-
     /// Register `work` of `pieces` pieces, take pieces on this thread until
     /// none remain, and return once every piece is finished, on whichever
     /// thread took it. The caller first hashes pieces `0..own` on `own_platform`, back to
@@ -761,7 +683,6 @@ impl Pool {
     fn run_job(&self, work: Work, pieces: usize, own: usize, own_platform: Platform) {
         let job = Job {
             work,
-            registered_ns: self.epoch.elapsed().as_nanos() as u64,
             pieces,
             cursor: Line(AtomicUsize::new(own)),
             active: Line(AtomicUsize::new(1)),
@@ -804,7 +725,6 @@ impl Pool {
         let slot = (0..MAX_JOBS).find(|&i| {
             self.slots[i].job.compare_exchange(std::ptr::null_mut(), ptr, Ordering::SeqCst, Ordering::Relaxed).is_ok()
         })?;
-        self.registered.fetch_add(1, Ordering::SeqCst);
         self.wake_for(job.pieces - 1);
         Some(slot)
     }
@@ -835,7 +755,6 @@ impl Pool {
     /// Clear the slot and wait out any worker mid-take on it.
     fn unregister(&self, slot: usize) {
         self.slots[slot].job.store(std::ptr::null_mut(), Ordering::SeqCst);
-        self.registered.fetch_sub(1, Ordering::SeqCst);
         while self.slots[slot].readers.load(Ordering::SeqCst) > 0 {
             std::hint::spin_loop();
         }
@@ -876,8 +795,7 @@ impl Pool {
     /// from `start`, that has one.
     /// The pointer stays valid until
     /// this worker's `piece_done` (see the pool's comment).
-    fn take_piece(&self, start: &mut usize, rank: usize) -> Option<(*const Job<'static>, usize)> {
-        let now = self.epoch.elapsed().as_nanos() as u64;
+    fn take_piece(&self, start: &mut usize) -> Option<(*const Job<'static>, usize)> {
         for k in 0..MAX_JOBS {
             let at = (*start + k) % MAX_JOBS;
             let slot = &self.slots[at];
@@ -893,9 +811,7 @@ impl Pool {
             if !ptr.is_null() {
                 // Sound: a reader of the slot; the caller waits for readers.
                 let job = unsafe { &*ptr };
-                if now.saturating_sub(job.registered_ns) >= rank as u64 * RANK_STAGGER_NS
-                    && job.cursor.load(Ordering::SeqCst) < job.pieces
-                {
+                if job.cursor.load(Ordering::SeqCst) < job.pieces {
                     job.active.fetch_add(1, Ordering::SeqCst);
                     let index = job.cursor.fetch_add(1, Ordering::SeqCst);
                     if index < job.pieces {
@@ -914,44 +830,28 @@ impl Pool {
         None
     }
 
-    /// The next piece for a worker: polled for while a job is registered
-    /// (yielding the CPU between polls, so a thread that has work on this
-    /// CPU runs), else waited for asleep. Nothing keeps a worker awake
-    /// between calls (AGENTS.md, "Serve real programs").
-    fn next_piece(&self, start: &mut usize, rank: usize) -> (*const Job<'static>, usize) {
+    /// The next piece for a worker, hashing the queues' tasks it finds on
+    /// the way; asleep whenever it finds neither.
+    fn next_piece(&self, start: &mut usize) -> (*const Job<'static>, usize) {
         loop {
-            let mut yielded = std::time::Instant::now();
-            // A worker that finds nothing for WORKER_IDLE sleeps even while
-            // a job or a queue holds the pool: pushes and jobs wake as many
-            // as they want awake, and a stream of short tasks needs a few
-            // (fifteen pollers on the queue's 64-byte messages cost CPU time,
-            // and in a VM the host time the busy threads need).
-            let mut idle_since = std::time::Instant::now();
-            while self.registered.load(Ordering::SeqCst) > 0 || self.lingering() || TASKS.queued.load(Ordering::SeqCst) > 0 {
-                if let Some(task) = TASKS.pop() {
-                    task.run(pool_platform());
-                    TASKS.in_flight.fetch_sub(1, Ordering::SeqCst);
-                    idle_since = std::time::Instant::now();
-                    continue;
-                }
-                if let Some(taken) = self.take_piece(start, rank) {
-                    return taken;
-                }
-                if idle_since.elapsed() >= WORKER_IDLE {
-                    break;
-                }
-                poll_pause(&mut yielded);
+            if let Some(task) = TASKS.pop() {
+                task.run(pool_platform());
+                TASKS.in_flight.fetch_sub(1, Ordering::SeqCst);
+                continue;
             }
-            // No job: asleep until a wake, then back to polling while a
-            // job is registered. The guard is held from the count's
-            // increment through the take, the wait, and the decrement, so
+            if let Some(taken) = self.take_piece(start) {
+                return taken;
+            }
+            // Nothing to take: asleep until a wake. The guard is held from
+            // the count's increment through the take, the wait, and the
+            // decrement, so
             // under sleep_lock every sleeper counted is waiting, and
             // notified never exceeds sleepers: a caller's wake cannot fall
             // between the check and the wait, and a sleeper that leaves
             // without waiting was never counted as notified.
             let mut guard = self.sleep_lock.lock().unwrap();
             self.sleepers.fetch_add(1, Ordering::SeqCst);
-            let taken = self.take_piece(start, rank);
+            let taken = self.take_piece(start);
             // Asleep only with nothing to take: no piece, no task queued. A
             // queue's tasks can be queued while nothing is registered (the
             // delivery thread takes its hold after the push), and a worker
@@ -1106,14 +1006,12 @@ impl Task {
     }
 }
 
-/// Every queue's tasks waiting for a worker, in the order pushed. Workers
-/// poll it while the pool is held (a [`Hold`]: the queue's delivery thread
-/// holds it while any submission is in flight).
+/// Every queue's tasks waiting for a worker, in the order pushed.
 pub(crate) struct Tasks {
-    /// Each on a line of its own: pollers read `queued`, every finishing
+    /// Each on a line of its own: threads read `queued`, every finishing
     /// thread writes `in_flight`, and pushers and poppers take the lock.
     list: OwnLine<Mutex<std::collections::VecDeque<Task>>>,
-    /// The list's length, read without the lock by pollers.
+    /// The list's length, read without the lock.
     queued: OwnLine<AtomicUsize>,
     /// Tasks pushed and not yet finished: what pushes wake threads for.
     in_flight: OwnLine<AtomicUsize>,
@@ -1138,18 +1036,14 @@ pub(crate) static TASKS: Tasks = Tasks {
 /// The SME2 thread, on CPUs with SME2: it hashes tasks only, on SME2 (the
 /// SME unit hashes a 64 KiB piece in 14 us where a NEON worker takes 22,
 /// Mac, probe/queue-timeline), under the process's turn so that a caller of
-/// hash() elsewhere keeps the unit; without the turn, on NEON. It polls
-/// while the pool is held or tasks wait, and sleeps otherwise; every push
-/// wakes it first.
+/// hash() elsewhere keeps the unit; without the turn, on NEON. It takes
+/// tasks while any wait, and sleeps as soon as none does; every push wakes
+/// it first.
 fn sme2_main() {
-    let pool = pool();
-    // Whether the last polling found nothing for WORKER_IDLE: then the
-    // thread sleeps even while the pool is held, as the workers do.
-    let mut idle = false;
     loop {
         {
             let mut asleep = TASKS.sme2_asleep.lock().unwrap();
-            while TASKS.queued.load(Ordering::SeqCst) == 0 && (idle || pool.registered.load(Ordering::SeqCst) == 0) {
+            while TASKS.queued.load(Ordering::SeqCst) == 0 {
                 *asleep = true;
                 TASKS.sme2_sleeps.store(true, Ordering::SeqCst);
                 // A push between the check above and this store sees the
@@ -1163,9 +1057,7 @@ fn sme2_main() {
             TASKS.sme2_sleeps.store(false, Ordering::SeqCst);
         }
         let mut yielded = std::time::Instant::now();
-        let mut idle_since = std::time::Instant::now();
-        idle = false;
-        while TASKS.queued.load(Ordering::SeqCst) > 0 || pool.registered.load(Ordering::SeqCst) > 0 {
+        while TASKS.queued.load(Ordering::SeqCst) > 0 {
             match TASKS.pop() {
                 Some(task) if task.members > 0 => {
                     // Short messages and small batches, gathered, run
@@ -1175,19 +1067,14 @@ fn sme2_main() {
                     // the NEON kernels on either platform.
                     task.run(pool_platform());
                     TASKS.in_flight.fetch_sub(1, Ordering::SeqCst);
-                    idle_since = std::time::Instant::now();
                 }
                 Some(task) => {
                     let turn = crate::platform::Sme2Turn::take(Platform::detect(), true);
                     task.run(turn.platform());
                     drop(turn);
                     TASKS.in_flight.fetch_sub(1, Ordering::SeqCst);
-                    idle_since = std::time::Instant::now();
                 }
-                None if idle_since.elapsed() >= WORKER_IDLE => {
-                    idle = true;
-                    break;
-                }
+                // Another thread is taking a task: poll on.
                 None => poll_pause(&mut yielded),
             }
         }
@@ -1252,31 +1139,11 @@ impl Tasks {
     }
 }
 
-/// While it lives, the pool's workers and the SME2 thread poll as they do
-/// for a registered job instead of sleeping when they find no work: held
-/// by the queue's delivery thread while any submission is in flight, so
-/// the gaps between a stream's tasks fall inside one call. It wakes no
-/// sleeper; pushed tasks do.
-pub(crate) struct Hold(());
-
-impl Hold {
-    pub(crate) fn new() -> Hold {
-        pool().registered.fetch_add(1, Ordering::SeqCst);
-        Hold(())
-    }
-}
-
-impl Drop for Hold {
-    fn drop(&mut self) {
-        pool().registered.fetch_sub(1, Ordering::SeqCst);
-    }
-}
-
-fn worker_main(rank: usize) {
+fn worker_main() {
     let pool = pool();
     let mut start = 0;
     loop {
-        let (job_ptr, index) = pool.next_piece(&mut start, rank);
+        let (job_ptr, index) = pool.next_piece(&mut start);
         // Sound by the pool's contract: our active reservation keeps the job alive.
         let job = unsafe { &*job_ptr };
         unsafe { job.hash_piece(index, pool_platform()) };
@@ -1400,21 +1267,6 @@ mod test {
     /// `Hasher::update_multithreaded` against `hash`, fed in pieces of
     /// several sizes after a first piece that leaves the counter unaligned
     /// (so `update` shrinks the subtrees it hands the pool), keyed too.
-    /// A long message in 64 KiB pieces through update_multithreaded, past
-    /// the 128 KiB from which the workers linger between updates: each
-    /// update's job lives on the caller's stack until it returns. Small
-    /// enough for Miri (the CI's smoketest runs it).
-    #[test]
-    fn test_miri_update_multithreaded_lingers() {
-        let mut input = vec![0u8; 5 * 64 * 1024];
-        crate::test::paint_test_input(&mut input);
-        let mut hasher = Hasher::new();
-        for piece in input.chunks(64 * 1024) {
-            hasher.update_multithreaded(piece);
-        }
-        assert_eq!(hasher.finalize(), crate::hash(&input));
-    }
-
     #[test]
     fn test_update_multithreaded_matches_hash() {
         let mut input = vec![0u8; (5 * MIN_SPLIT_LEN + 1025).max(3 << 20) + 12345];

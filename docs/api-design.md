@@ -46,9 +46,10 @@ against 42 through `hash`, single-threaded, Mac).
   design with BLAKE3 owning the buffers or doing the reads goes here
   (NOTES-servil.md, "Future work").
 - Falls behind, buffer lent: each call spreads over threads before
-  returning, while the program and the hashing still take turns. Here
-  pieces reliably come in swift succession, which is what lingering
-  (below) is for.
+  returning, while the program and the hashing still take turns. Pieces
+  shorter than 512 KiB stay on the calling thread, as `update`; a program
+  that wants them hashed on other threads hands them over to a
+  `Queue::pieces`.
 
 **One concept per choice** (Zooko, October 2, 2026). Threading is in a
 call's name (`hash` and `hash_multithreaded`, `hash_many` and
@@ -69,16 +70,11 @@ mode. Two concepts left the API, each costing more than it gave:
 ## The synchronous calls
 
 Each call returns its result; nothing keeps running for a call that may
-come (AGENTS.md, "Serve real programs"), with one exception:
-
-**A `Hasher` between updates may linger** (Zooko, September 28, 2026): a
-message in progress promises more updates, usually in swift succession,
-so `update_multithreaded` keeps its workers ready for 50 us after each
-update of 64 KiB or more (Mac: 2.4x the speed of `update`; about eight
-cores poll between updates).
-- **Q**: the bound. A program that keeps a `Hasher` open for a long time
-  (one per network connection, say) must leave no workers spinning; 50 us
-  is reasoned as a wake's cost.
+come (AGENTS.md, "Serve real programs"), and no thread lingers: a worker
+sleeps as soon as it finds nothing to take (Zooko, October 2, 2026).
+Performance-sensitive programs pipeline through a queue, which needs no
+lingering; a thread that lingered for the synchronous calls would spin
+for work that may never come.
 
 **Settled, as the code documents them:** initialization (`initialize`,
 `initialize_multithreaded`; September 27), the batch layout (`hash_many`;

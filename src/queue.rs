@@ -31,12 +31,10 @@
 //!   alone. The submitters and the delivery thread
 //!   share no lock on these paths: delivered slots go back through
 //!   `returned`, and the queue's hold passes by a store-then-recheck
-//!   handshake (`Inner::activate`, the end of `deliver_with`). While any
-//!   entry is in flight the delivery thread holds the pool (the threads
-//!   poll across the gaps between tasks, and sleep after 50 us with
-//!   nothing to take); with none it and the pool sleep, so nothing runs
-//!   between bursts for work that may come (AGENTS.md, "Serve real
-//!   programs").
+//!   handshake (`Inner::activate`, the end of `deliver_with`). The
+//!   delivery thread polls while any entry is in flight, and sleeps when
+//!   none is; the pool's threads sleep as soon as no task waits. Nothing
+//!   runs for work that may come (AGENTS.md, "Serve real programs").
 //!
 //! The pool's workers never run user code; the delivery thread does, in
 //! the handler calls.
@@ -816,13 +814,11 @@ impl Delivery {
     }
 
     /// Deliver from every queue in flight, in turn; poll while any entry
-    /// waits on its tasks, holding the pool (its workers poll too), and
-    /// sleep while no queue is in flight. A panic in a
+    /// waits on its tasks, and sleep while no queue is in flight. A panic in a
     /// handler aborts the process (handler rule 4); so does one in the
     /// hashing, a bug.
     fn run(&self) {
         let mut polled = std::time::Instant::now();
-        let mut hold = None;
         // The queues this round serves, swapped with the held list's (both
         // keep their capacity: no allocation).
         let mut queues: Vec<Arc<dyn Deliver>> = Vec::new();
@@ -830,8 +826,7 @@ impl Delivery {
             {
                 let mut held = crate::lanes::lock_polling(&self.queues);
                 while held.0.is_empty() {
-                    // Nothing in flight: the pool may sleep, and so does this thread.
-                    hold = None;
+                    // Nothing in flight: this thread sleeps.
                     held.1 = true;
                     held = self.wake.wait(held).unwrap();
                     held.1 = false;
@@ -840,7 +835,6 @@ impl Delivery {
                 let room = held.2;
                 held.0.reserve(room);
             }
-            hold.get_or_insert_with(crate::lanes::Hold::new);
             let mut delivered = false;
             queues.retain(|queue| {
                 let (any, in_flight) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| queue.deliver())).unwrap_or_else(|_| std::process::abort());
