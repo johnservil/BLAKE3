@@ -1317,6 +1317,14 @@ item out when it lands or is rejected.
 - In that design, test the wake threshold (wake a worker when half the
   ring waits) against waking on every push into an empty ring, and
   remove the threshold if they measure level (Zooko, October 3, 2026).
+- Once the BLAKE3-owned buffer works and is measured: measure serving
+  data already in the program's own buffers by a copy into it, and
+  revisit whether that one design can replace the owned-buffers queue
+  (simpler, perhaps a little slower; Zooko, October 3, 2026).
+- Benchmark many short messages of different lengths, one after another
+  (the benchmark's message cells repeat one length): a use case the
+  BLAKE3-owned buffer must serve or steer elsewhere (Zooko, October 3,
+  2026, "make sure we have benchmarks of this use case").
 - The queue's cells stable enough for the regression check: on identical
   code their per-process means move 6-60% ("The regression check,
   calibrated"); the streaming APIs come first, so this is first.
