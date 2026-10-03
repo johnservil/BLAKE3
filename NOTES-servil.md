@@ -1306,6 +1306,17 @@ item out when it lands or is rejected.
 
 ### Speed
 
+- The queue redesigned (October 3, 2026, under discussion with Zooko):
+  the calling thread hashes what no worker has taken when it needs room,
+  workers woken by backlog and sleeping when none waits, no delivery
+  thread; possibly one ring of input bytes the queue owns, read into in
+  place. Removing all lingering (candidate/no-linger 0ba5a45) slowed the
+  current queue's cells (Mac jobs 1186-1189: solo 16 KiB x2.7, 64 B x1.4,
+  batches of 64 x1.3; shared x1.3-2.1) because the calling thread pays a
+  wake per push; b3sum level, less CPU time.
+- In that design, test the wake threshold (wake a worker when half the
+  ring waits) against waking on every push into an empty ring, and
+  remove the threshold if they measure level (Zooko, October 3, 2026).
 - The queue's cells stable enough for the regression check: on identical
   code their per-process means move 6-60% ("The regression check,
   calibrated"); the streaming APIs come first, so this is first.
