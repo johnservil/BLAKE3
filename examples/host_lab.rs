@@ -354,7 +354,7 @@ fn main() {
     blake3_servil::initialize_multithreaded();
     let len = 64 << 20;
     let source: Vec<u8> = (0..len).map(|i| (i as u32).wrapping_mul(2654435761).to_le_bytes()[3]).collect();
-    let expected = blake3_servil::hash(&source);
+    assert_eq!(blake3_servil::hash(&source), blake3_servil::hash_multithreaded(&source));
     // Correctness first, at lengths around the segments and halves.
     {
         for layout in [Layout::Halves, Layout::Ring] {
@@ -367,6 +367,9 @@ fn main() {
         }
     }
     let rounds = 6;
+    for len in [64 << 20, 1 << 20] {
+    let source = &source[..len];
+    let expected = blake3_servil::hash(source);
     let report = |name: &str, f: &mut dyn FnMut()| {
         let cpu = clocks::process_cpu_ns();
         let batches = clocks::measure(rounds, 200_000_000, &mut *f);
@@ -377,24 +380,40 @@ fn main() {
         let ns_b = |ns: u64, calls: u64| (ns as u128 * 10_000 / (calls as u128 * len as u128)) as u64;
         let w = ns_b(wall, calls);
         let c = ns_b(cpu, cpu_calls);
-        println!("{name:48} wall {}.{:04} ns/B   CPU {}.{:04} ns/B ({}.{:02} CPUs)   batches: {}", w / 10000, w % 10000, c / 10000, c % 10000, c * 100 / w.max(1) / 100, c * 100 / w.max(1) % 100,
-            batches.iter().map(|b| b.show()).collect::<Vec<_>>().join("; "));
+        println!("  {name:62} wall {}.{:04} ns/B   CPU {}.{:04} ns/B ({}.{:02} CPUs)", w / 10000, w % 10000, c / 10000, c % 10000, c * 100 / w.max(1) / 100, c * 100 / w.max(1) % 100);
     };
-    println!("64 MiB messages, one after another, {threads} CPUs; ns per byte of message (lower is better)");
-    report("hash_multithreaded (data already in memory)", &mut || assert_eq!(blake3_servil::hash_multithreaded(&source), expected));
-    report("Hasher::update, 64 KiB at a time (one thread)", &mut || {
-        let mut h = blake3_servil::Hasher::new();
-        for p in source.chunks(SEG) {
-            h.update(p);
-        }
-        assert_eq!(h.finalize(), expected);
-    });
+    println!("\n{} MiB messages, one after another, {threads} CPUs; ns per byte of message (lower is better)", len >> 20);
+    println!(" The whole job: each byte written into memory (a copy, standing in for a read), and hashed");
+    {
+        let mut whole = vec![0u8; len];
+        report("write the message, then Hasher::update (one thread)", &mut || {
+            whole.copy_from_slice(source);
+            let mut h = blake3_servil::Hasher::new();
+            h.update(&whole);
+            assert_eq!(h.finalize(), expected);
+        });
+        report("write the message, then hash_multithreaded", &mut || {
+            whole.copy_from_slice(source);
+            assert_eq!(blake3_servil::hash_multithreaded(&whole), expected);
+        });
+    }
+    {
+        let mut piece = vec![0u8; 4 << 20];
+        report("write 4 MiB at a time, update_multithreaded each", &mut || {
+            let mut h = blake3_servil::Hasher::new();
+            for p in source.chunks(4 << 20) {
+                piece[..p.len()].copy_from_slice(p);
+                h.update_multithreaded(&piece[..p.len()]);
+            }
+            assert_eq!(h.finalize(), expected);
+        });
+    }
     {
         let (pieces, back) = std::sync::mpsc::sync_channel(64);
         let (hashes, digest) = std::sync::mpsc::sync_channel(4);
         let queue = blake3_servil::Queue::pieces(blake3_servil::Mode::Hash, Back(pieces, hashes));
         let mut free: Vec<Vec<u8>> = (0..16).map(|_| Vec::with_capacity(SEG)).collect();
-        report("Queue::pieces, 64 KiB buffers, 16 in flight (now)", &mut || {
+        report("write 64 KiB buffers, Queue::pieces, 16 in flight (now)", &mut || {
             for p in source.chunks(SEG) {
                 while free.is_empty() {
                     free.push(back.recv().unwrap().unwrap());
@@ -411,26 +430,30 @@ fn main() {
             }
         });
     }
-    for layout in [Layout::Halves, Layout::Ring] {
-    for half_segs in [8, 32] {
-    for wake in [Wake::Every, Wake::Half] {
-    for help in [true, false] {
-        let piece = SEG;
-        let mut stream = Stream::new(half_segs, threads - 1, wake, layout, help);
-        let name = format!("owned {layout:?} {} KiB, wake {wake:?}, help {help}", half_segs * 128);
-        for c in [&COPY_NS, &COMMIT_NS, &WAIT_NS, &FINISH_NS, &WAKES_PROGRAM, &WAKES_WORKER, &PARKS, &HELPED, &MERGE_NS, &PUBLISH_NS] {
-            c.store(0, Relaxed);
-        }
-        let messages = std::cell::Cell::new(0u64);
-        report(&name, &mut || {
-            assert_eq!(through_stream(&mut stream, &source, piece), expected);
-            messages.set(messages.get() + 1);
+    for (layout, half_segs) in [(Layout::Halves, 16), (Layout::Halves, 32), (Layout::Halves, 128), (Layout::Ring, 32)] {
+        let mut stream = Stream::new(half_segs, threads - 1, Wake::Half, layout, false);
+        let name = format!("write 64 KiB at a time into the owned buffer, {layout:?}, 2 x {} MiB", half_segs * 64 >> 10);
+        report(&name, &mut || assert_eq!(through_stream(&mut stream, source, SEG), expected));
+    }
+    {
+        let mut stream = Stream::new(32, threads - 1, Wake::Every, Layout::Halves, false);
+        report("  the same, Halves, 2 x 2 MiB, waking a thread at every commit", &mut || assert_eq!(through_stream(&mut stream, source, SEG), expected));
+    }
+    println!(" The hashing alone: the data already in place, nothing written");
+    report("hash_multithreaded on the message in memory", &mut || assert_eq!(blake3_servil::hash_multithreaded(source), expected));
+    {
+        let mut stream = Stream::new(32, threads - 1, Wake::Half, Layout::Halves, false);
+        // Fill the buffer once; the commits then hash whatever it holds.
+        report("owned buffer, Halves, 2 x 2 MiB, commits without writing", &mut || {
+            let mut left = len;
+            while left > 0 {
+                let n = stream.space().len().min(SEG).min(left);
+                stream.commit(n);
+                left -= n;
+            }
+            std::hint::black_box(stream.finish());
         });
-        let m = messages.get();
-        let us = |c: &AtomicU64| c.load(Relaxed) / m / 1000;
-        let per = |c: &AtomicU64| c.load(Relaxed) / m;
-        println!("    per message: copy {} us, commit {} us, wait for room {} us, finish {} us; wakes by program {}, by workers {}, parks {}, segments the program hashed {} of 1024; in commit: publish {} us, merge {} us",
-            us(&COPY_NS), us(&COMMIT_NS), us(&WAIT_NS), us(&FINISH_NS), per(&WAKES_PROGRAM), per(&WAKES_WORKER), per(&PARKS), per(&HELPED), us(&PUBLISH_NS), us(&MERGE_NS));
-    }}}}
+    }
+    }
     eprintln!("host_lab: {}", clocks::load::describe(&clocks::load::windows()));
 }
