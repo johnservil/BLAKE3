@@ -2208,9 +2208,8 @@ impl Hasher {
         // the workers stay ready for the next update, which then hashes its
         // whole subtrees of 64 KiB and more over them. The first two
         // pieces pay no wake, so a short message costs what update costs.
-        if before >= LINGER_AFTER && input.len() >= lanes::LINGER_SPLIT_LEN {
-            lanes::linger();
-        }
+        // probe/no-linger: the workers never linger.
+        let _ = (before, LINGER_AFTER);
         self
     }
 
