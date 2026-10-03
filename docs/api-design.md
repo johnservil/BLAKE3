@@ -17,17 +17,83 @@ marked **Q**), and how the benchmark measures each call. bench-hashes'
    the nonstop cells include it.
 2. **A stream that owns its buffer** replaces the queue: the program writes
    each message straight into space the stream lends it, threads hash each
-   64 KiB segment as it is committed, and each message's hash comes back
-   with the program's own tag, on the program's thread, inside its calls
-   to the stream. The API is settling (NOTES-servil.md, Future work); a
+   64 KiB segment as it is committed, and each message's hash goes to a
+   function of the program's with the program's own tag for it. A
    prototype (probe/owned-buffer, Mac job 1194) hashed 64 MiB messages,
    write included, 1.4x as fast as writing them whole and calling
-   `hash_multithreaded`, and 2.3x the queue.
+   `hash_multithreaded`, and 2.3x the queue. The API as planned:
+
+   ```rust
+   /// A stream that hashes messages written straight into its own buffer.
+   pub fn hash_stream<T, F>(mode: Mode, on_hash: F) -> HashStream<T, F>
+   where T: Send + 'static, F: Fn(T, Hash) + Send + Sync + 'static;
+
+   /// The unit the stream hashes: 64 aligned chunks, one whole subtree.
+   pub const SEGMENT_LEN: usize = 64 * 1024;
+
+   impl<T, F> HashStream<T, F> {
+       /// The next free bytes of the current message, a whole number of
+       /// segments; waits until some are free.
+       pub fn space(&mut self) -> Space;
+       /// Ends the current message, named `tag`, and returns at once; it
+       /// ends once every Space taken for it is committed. `on_hash(tag,
+       /// hash)` is called with its hash once that is ready, on whichever
+       /// thread finishes hashing it; calls may overlap and come in any
+       /// order, and should return quickly (a hashing thread runs them).
+       /// The next space() starts the next message.
+       pub fn finish(&mut self, tag: T);
+   }
+
+   /// Bytes of a stream's buffer, yours to write until you commit them.
+   pub struct Space { /* its place in its message, its length */ }
+
+   impl Space {
+       pub fn bytes(&mut self) -> &mut [u8];
+       /// Two Spaces, split at `at`, a multiple of SEGMENT_LEN.
+       pub fn split_at(self, at: usize) -> (Space, Space);
+       /// You wrote the first `len` bytes; the stream hashes them. `len` is
+       /// a multiple of SEGMENT_LEN, unless these are the message's last
+       /// bytes, after which `finish` comes next. Any thread may commit.
+       pub fn commit(self, len: usize);
+   }
+   ```
+
+   - **Who writes**: a thread of the program's reading or computing into
+     `space()`; io_uring or a device writing into split Spaces, committed
+     as each write completes, in any order; several threads filling parts
+     of one message. Data already in memory the program does not control
+     (a mapped file, a network library's buffers) goes to
+     `hash_multithreaded`, or is copied in (to measure: NOTES-servil.md,
+     Future work).
+   - **The hash, by tag**: `finish(tag)` names the message, and `on_hash`
+     receives that name with its hash; nothing is matched by order.
+   - **`on_hash` is `Fn + Sync`** (Zooko, October 3, 2026): the hashing
+     thread that completes a message calls it directly, with no thread or
+     handover between, and two may call it at once.
+   - **Lifetimes**: the stream adds no threads (it uses the crate's pool,
+     which lasts for the process). Its buffer is shared by the stream, each
+     outstanding Space, and each thread hashing a segment of it, and is
+     freed when the last lets go (AGENTS.md, "Crash-only": releasing is
+     simpler here than keeping and reusing, for tests above all). Dropping
+     the stream drops its unfinished message; finished ones still reach
+     `on_hash`.
+   - **Open**: short messages each start a segment, so many small ones
+     waste the buffer (the benchmark of short messages of different
+     lengths, Future work); a short read mid-message breaks the segment
+     rule, which a helper that fills a Space from a reader would serve.
 3. **No thread lingers**, and the benchmark's "in pieces" row goes: pieces
    lent to `update_multithreaded` hash as one buffer of their length does.
 4. **The API docs are the doors**: each function's documentation is the one
    place for its contract and behaviour, published, holding no measured
    numbers; the graph, the guide, and the READMEs link to it.
+5. **Every cell charges the use of each result** (Zooko, October 3, 2026),
+   as item 1 charges the write: every cell makes the same use of each hash
+   (the benchmark's `consume`, which FROZEN.md defines), wherever its
+   design delivers it (on the calling thread for a returned hash, inside
+   `on_hash` for the stream), and its timed work ends when the last hash
+   has been used. Latency, lock contention, handovers, or copies that a
+   design adds between a hash existing and its use count against that
+   design.
 
 ## Four questions lead a user to one call
 
