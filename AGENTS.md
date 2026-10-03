@@ -73,7 +73,7 @@ interfaces, documentation, and performance optimizations.
 
 **Every piece earns its place** (Zooko, October 1, 2026). Each piece of a design (a mechanism, a check, an option, a threshold, a line of output, a paragraph of documentation) adds complexity, and it stays while its demonstrated benefit exceeds its complexity-cost. Weigh it whenever you propose to add, keep, change, or rescue a piece. A piece's cost comes with its presence: every reader reads it, every run carries it, every later change works around it. Its benefit comes with what it reliably delivers: how often it acts, and how often it is right when it does (for a detector, its rate on real changes beside its rate on identical inputs). So an optional, partial, advisory, or unreliable piece carries its whole cost for a share of its benefit, and the design to weigh is the one a change leaves, piece by piece. To rescue a piece that falls short, first estimate from the measurements in hand whether it can earn its place at a cost worth paying; then improve it or remove it, and say which and why.
 
-**Reach for the simplest first** (Zooko, October 3, 2026). Before adding a piece, write down the simplest version that could do its job (often nothing at all, a constant, a fixed sequence, or code and data the repositories already have) and use it, unless you can name a problem it causes from evidence: a measurement, a documented fact, a decision on the record. A generator, a check, an abstraction, or a test added to be thorough, with no such problem named, is complexity that has not earned its place. Before deciding any question, search the notes for an earlier decision on it, the "What is settled" list in bench-hashes' `NOTES.md` first; a settled question is decided again only with new evidence. When you find yourself deciding a question a second time, write the conclusion into that list.
+**These principles govern this file too** (Zooko, October 3, 2026). These guides, and every document of the team's, are a design like any other: each rule, reminder, and decision earns its place, and too many crowd out the ones that matter. When one fails, first look for what to remove, or to move to where its subject lives (the code, the subject's own document); add only what nothing else can do.
 
 **Revisit complexity as you learn** (Zooko, September 30, 2026). Complexity is a large cost that never stops being paid, so its benefit is never settled: whenever new information shows a piece of complexity doing less than it was built for, weigh removing it, since its cost may now exceed its benefit. Above all, when you find yourself building a second solution to a problem that an earlier solution already addresses, stop: you are very likely making a mistake. Go back and either make the first solution good enough, or remove it entirely; say which, and why, before building anything.
 
@@ -102,25 +102,6 @@ Our duty is to the user, so we take responsibility for every performance problem
 3. At the least, understand it well enough to predict when it happens and how large it is, and state that in the user-facing results or docs.
 
 Until a problem reaches one of these outcomes it stays open: it goes on the next-steps list, the record or commit that shows it says so, and it blocks the claim that a change has no regression.
-
-## Correctness tests
-
-Use reproducible inputs and fixed, independently established expected
-outputs. A deterministic RNG is a compact specification of test bytes;
-record its algorithm, seed, and length, and check in the expected digests.
-Published test vectors and independent reference implementations establish
-the answers. Regenerating golden outputs is an explicit, reviewed action.
-Tests never silently regenerate their own expected answers.
-
-The same fixed vectors can exercise different kernels, thread budgets,
-concurrent calls, and scheduling interleavings. Input generation and
-execution scheduling are separate concerns. Differential tests supplement
-these anchors. Correctness is each project's tests' business: a benchmark,
-and its tests, check no contender's outputs (Zooko, September 26, 2026,
-and October 3, 2026); the benchmark only keeps every result from being
-optimized away. A benchmark's inputs and schedules are the simplest that
-serve (Reach for the simplest first), deterministic generators being for
-tests.
 
 ## Measuring: wall time and cycles, both, always
 
