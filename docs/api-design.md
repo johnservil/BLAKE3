@@ -31,10 +31,14 @@ marked **Q**), and how the benchmark measures each call. bench-hashes'
    /// The unit the stream hashes: 64 aligned chunks, one whole subtree.
    pub const SEGMENT_LEN: usize = 64 * 1024;
 
+   /// The most one Space holds: half the stream's buffer.
+   pub const MAX_SPACE_LEN: usize = 2 * 1024 * 1024;
+
    impl<T, F> HashStream<T, F> {
-       /// The next free bytes of the current message, a whole number of
-       /// segments; waits until some are free.
-       pub fn space(&mut self) -> Space;
+       /// Blocks until `len` bytes of the buffer are free, then lends them
+       /// to you as the current message's next bytes. Requires `len` a
+       /// multiple of SEGMENT_LEN, at most MAX_SPACE_LEN.
+       pub fn space(&mut self, len: usize) -> Space;
        /// Ends the current message, named `tag`, and returns at once; it
        /// ends once every Space taken for it is committed. `on_hash(tag,
        /// hash)` is called with its hash once that is ready, on whichever
@@ -49,8 +53,6 @@ marked **Q**), and how the benchmark measures each call. bench-hashes'
 
    impl Space {
        pub fn bytes(&mut self) -> &mut [u8];
-       /// Two Spaces, split at `at`, a multiple of SEGMENT_LEN.
-       pub fn split_at(self, at: usize) -> (Space, Space);
        /// You wrote the first `len` bytes; the stream hashes them. `len` is
        /// a multiple of SEGMENT_LEN, unless these are the message's last
        /// bytes, after which `finish` comes next. Any thread may commit.
@@ -59,12 +61,22 @@ marked **Q**), and how the benchmark measures each call. bench-hashes'
    ```
 
    - **Who writes**: a thread of the program's reading or computing into
-     `space()`; io_uring or a device writing into split Spaces, committed
-     as each write completes, in any order; several threads filling parts
+     a Space; io_uring or a device writing into several Spaces at once,
+     one taken per write, each committed as its write completes, in any
+     order; several threads filling parts
      of one message. Data already in memory the program does not control
      (a mapped file, a network library's buffers) goes to
      `hash_multithreaded`, or is copied in (to measure: NOTES-servil.md,
      Future work).
+   - **Space comes back a half at a time**: the buffer has two halves;
+     `space` lends from the current one, and when that has fewer than
+     `len` bytes free, it blocks until the other half is wholly hashed and
+     lends from there (what the current half had left waits for its next
+     turn).
+   - **Merging in batches**: chaining values merge into their parents only
+     when a level holds 32 adjacent ones (sixteen parents, one call of the
+     widest SIMD kernels: SME2, AVX-512), or when the message is finished;
+     the thread that completes such a run merges it.
    - **The hash, by tag**: `finish(tag)` names the message, and `on_hash`
      receives that name with its hash; nothing is matched by order.
    - **`on_hash` is `Fn + Sync`** (Zooko, October 3, 2026): the hashing
