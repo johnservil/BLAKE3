@@ -73,7 +73,8 @@ a faster hash saves CPU time and energy rather than waiting.
 3. **The stream** (the plan of "Decided October 3, 2026", below): one to
    three long messages arriving faster than one core hashes; 1.33x the
    next-best way with one stream, 1.10x with two, level at four, 19%
-   slower at sixteen (probe/owned-buffer, Mac job 1196, on battery).
+   slower at sixteen (probe/owned-buffer, Mac jobs 1196 on battery and
+   1199 on mains, within 3% of each other).
    Heavy in complexity, so weighed again as measurements come; it may
    also pay in b3sum's own reads and in building a Bao outboard (its
    segment results are most of one).
@@ -102,9 +103,9 @@ implementation comes with the fork's tests against fixed answers
    `for` loop): 1000 files of 16 KiB, a b3sum process each, start to
    exit; settles whether the start-up (the self-test, the pool) costs
    more than the hashing.
-   *First run* (Mac job 1197, October 3, 2026: on battery, and other
-   programs busy in 52 of 417 load windows, so a first reading, to repeat
-   on mains): the stream does not pay in b3sum. A cached file is fastest
+   *Measured* (Mac jobs 1197 on battery and 1198 on mains, October 3,
+   2026; every cell within 1-3% between them, the second busy in 11 of 414
+   load windows): the stream does not pay in b3sum. A cached file is fastest
    mapped (1 GiB: 38.8 ms, no copy); read instead, today's reader thread
    with two 4 MiB buffers and `update_multithreaded` beats the stream
    (51.6 ms against 58.1); from storage every multithreaded path reads at
