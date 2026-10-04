@@ -138,8 +138,13 @@ implementation comes with the fork's tests against fixed answers
      against microseconds of hashing), so a hashing API pays only beside
      batched bookkeeping, and the API should make batching natural: results
      by index, one call per batch.
-   - **`hash_each_with(mode, items, out)`** (probe/hash-each: tested against
-     `hash_with`, never measured) fits that shape: one mode per call (group by object type), the
+   - **`hash_each_with(mode, items, out)`** (probe/hash-each, tested against
+     `hash_with`) fits that shape; on the collection cell's items it takes
+     26-28% less time than one `hash` per item for items under 16 KiB, and
+     9-11% for whole collections (Mac job 1204, on battery, quiet; the VM
+     alike). Items of one chunk or less still go one at a time (a quarter of
+     git's objects): laning them needs a kernel that starts each lane from
+     the key over a different number of blocks. It one mode per call (group by object type), the
      caller's own buffers, so the caller keeps each file's stat with its
      bytes.
    - **The largest remaining cost is the file system** (per-file opens,
