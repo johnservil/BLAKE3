@@ -212,6 +212,16 @@ fn left_chunks(size: u64) -> u64 {
 mod test {
     use super::*;
 
+    /// The pool's ranges of groups (lanes::Work::Groups), just past where
+    /// the pool takes them, against the calling thread's: small enough for
+    /// Miri (the CI's smoketest runs it).
+    #[test]
+    fn test_miri_outboard_multithreaded() {
+        let mut input = vec![0u8; 33 * GROUP_LEN + 100];
+        crate::test::paint_test_input(&mut input);
+        assert_eq!(outboard_multithreaded_with(Mode::Hash, &input), outboard_with(Mode::Hash, &input));
+    }
+
     /// Every message length around group and tree boundaries, every mode:
     /// the hash is hash_with's, the outboard's length is right, every group
     /// and every range verifies, and a changed byte, a changed parent node,
