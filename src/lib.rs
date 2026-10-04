@@ -1499,6 +1499,32 @@ fn code_may_be_cold() -> bool {
     now.wrapping_sub(last) > platform::ticks_in_100_us()
 }
 
+/// Batches of one-block messages up to this many prefetch their code after
+/// a pause: past it the hashing's own time dwarfs a cold kernel's.
+#[cfg(all(blake3_neon_hybrid, feature = "std"))]
+const PREFETCH_BATCH_BELOW: usize = 64;
+
+/// After a pause (code_may_be_cold), prefetch the code a batch of `count`
+/// one-block messages runs on `platform`: SME2's message kernel where it
+/// takes the batch, else the hybrids' parent plans.
+#[cfg(all(blake3_neon_hybrid, feature = "std"))]
+#[cold]
+#[inline(never)]
+fn prefetch_batch_after_pause(count: usize, platform: Platform) {
+    if !code_may_be_cold() {
+        return;
+    }
+    #[cfg(blake3_sme2)]
+    if matches!(platform, Platform::SME2) && count >= many::ONE_BLOCK_PAD_MIN {
+        sme2::prefetch_code();
+        return;
+    }
+    let _ = platform;
+    if neon_hybrid::sha3_detected() {
+        neon_hybrid::prefetch_message_code(count);
+    }
+}
+
 /// Prefetch the code of the kernels hashing `len` bytes on `platform`
 /// runs: SME2's from 16 chunks, else the hybrids', chunks to root.
 #[cfg(all(blake3_neon_hybrid, feature = "std"))]
@@ -1616,6 +1642,12 @@ pub fn hash_many(input: &[u8], message_len: usize, out: &mut [[u8; OUT_LEN]]) {
 #[inline]
 pub(crate) fn hash_many_serial(input: &[u8], message_len: usize, key: &CVWords, flags: u8, out: &mut [[u8; OUT_LEN]]) {
     let turn = platform::Sme2Turn::take(Platform::detect(), many::sme2_sized(message_len, out.len()));
+    // A small batch of one-block messages after a pause fetches its kernels'
+    // code in parallel (as hash_serial does): its time is mostly that code.
+    #[cfg(all(blake3_neon_hybrid, feature = "std"))]
+    if message_len <= BLOCK_LEN && (1..=PREFETCH_BATCH_BELOW).contains(&out.len()) {
+        prefetch_batch_after_pause(out.len(), turn.platform());
+    }
     many::hash_many_on(input, message_len, key, flags, out, turn.platform());
 }
 
