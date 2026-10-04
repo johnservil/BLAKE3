@@ -1,0 +1,2 @@
+Promoted to servil (October 4, 2026, from candidate/no-linger, 21a3684..840930e): outboard_multithreaded_with (a third kind of pool work, ranges of 16 KiB groups) and its Miri test.
+Mac: test job 1209 passed; perf_regress job 1211 found no cell slower (job 1210 gave no verdict: other programs busy). VM: the pre-commit gate found no cell slower; Miri passes.
