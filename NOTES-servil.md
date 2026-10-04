@@ -1306,6 +1306,12 @@ item out when it lands or is rejected.
 
 ### Speed
 
+- **The queue's long messages** (October 5, 2026): from 1 MiB the queue
+  is slower than waiting for each call (64 MiB: 0.058 ns/B against
+  hash_multithreaded's 0.046, Mac job 1213), where the stream prototype
+  reached 0.026: larger tasks for long messages (fewer handovers, the
+  SME2 flat walk), or a reader thread's double buffering, are the first
+  things to try.
 - **b3sum's read paths on native Linux** (needs a Linux computer, not a VM
   guest; Zooko, October 3, 2026): repeat measurement 1 of
   docs/api-design.md (the probe/b3sum-* branches, `bench-hashes b3sum`),

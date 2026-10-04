@@ -84,7 +84,21 @@ a faster hash saves CPU time and energy rather than waiting.
    Next: items of one chunk or less (a quarter of git's objects) still
    hash one at a time; a multithreaded form for collections larger than
    a core's share.
-3. **The stream** (the plan of "Decided October 3, 2026", below): one to
+3. **The stream does not replace the queue** (decided October 5, 2026,
+   on Zooko's request to evaluate and judge). The queue pays most where
+   pipelining matters most, and the stream has no form there: on the Mac
+   (job 1213) pipelined 1 KiB messages take 0.121 ns/B against 0.683
+   waiting for each call (5.6x), 64 KiB 0.061 against 0.229, batches of 16
+   5.1 ns per message against 19.5. The stream beat the queue on long
+   messages alone (64 MiB: 0.026 against 0.058, Mac job 1194; about level
+   in the VM), where waiting for each call beats the queue too (0.046):
+   the queue's long-message path is the gap, so it is the queue that
+   improves there, and a second pipelined API for long messages would be
+   a second solution. Simplicity: the queue is about 1,300 lines (queue.rs
+   and its task list in lanes.rs) behind three shapes, three handler
+   traits, and a delivery thread; the stream prototype about 300, for long
+   messages only. The prototype stays on probe/owned-buffer. The history:
+   one to
    three long messages arriving faster than one core hashes; 1.33x the
    next-best way with one stream, 1.10x with two, level at four, 19%
    slower at sixteen (probe/owned-buffer, Mac jobs 1196 on battery and
