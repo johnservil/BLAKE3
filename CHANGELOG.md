@@ -11,10 +11,6 @@
   the parent nodes above its 16 KiB groups (the layout iroh-blobs stores),
   and `verify_range_with` checks any range of whole groups against the
   hash as it arrives. Building an outboard costs about what hashing costs.
-- Worker threads sleep as soon as they find nothing to take; nothing keeps
-  running between calls. `Hasher::update_multithreaded` splits updates of
-  512 KiB or more; a long message read in shorter pieces hashes fastest
-  through `Queue::pieces`.
 - `b3sum` hashes on this crate's own worker threads instead of Rayon's.
   A file of 512 KiB or more already in the page cache is mapped and
   hashed in place; any other input, standard input included, is read
