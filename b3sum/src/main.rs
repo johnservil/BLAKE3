@@ -197,6 +197,10 @@ fn hash_path(args: &Args, path: &Path) -> anyhow::Result<blake3::OutputReader> {
 /// either way; either way hashes it right.
 #[cfg(unix)]
 fn mapped_if_cached(file: &File) -> Option<memmap2::Mmap> {
+    // probe/b3sum-nomap: nothing is mapped; every file is read.
+    if true {
+        return None;
+    }
     let len = usize::try_from(file.metadata().ok()?.len()).ok()?;
     if len < MAP_LEN {
         return None;
