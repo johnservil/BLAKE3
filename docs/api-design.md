@@ -46,6 +46,10 @@ marked **Q**), and how the benchmark measures each call. bench-hashes'
        /// order, and should return quickly (a hashing thread runs them).
        /// The next space() starts the next message.
        pub fn finish(&mut self, tag: T);
+       /// Abandons the current message: `on_hash` is never called for it,
+       /// and its space comes back once hashing already under way on it
+       /// ends. The next space() starts a new message.
+       pub fn cancel(&mut self);
    }
 
    /// Bytes of a stream's buffer, yours to write until you commit them.
@@ -89,6 +93,26 @@ marked **Q**), and how the benchmark measures each call. bench-hashes'
      simpler here than keeping and reusing, for tests above all). Dropping
      the stream drops its unfinished message; finished ones still reach
      `on_hash`.
+   - **Cancelling** (Zooko, October 3, 2026): a server must not let a
+     client hold its resources by sending half a message and stopping.
+     `cancel` frees the stream for its next message; deciding when to give
+     up (a timeout, a limit) is the caller's. A `Hasher` cancels by being
+     dropped. A Space dropped uncommitted is part of no message: `finish`
+     after one fails stop, and `cancel` is the way out.
+   - **What the stream leaves to `Hasher`**: output longer than 32 bytes
+     (`finalize_xof`); the stream's `on_hash` gets a `Hash`.
+   - **Many messages at once** (a server's uploads): a `Hasher` per
+     message, on the thread that receives it; the server's own threads
+     keep the cores busy, and a thread hashing is a thread not reading,
+     so TCP pushes back on the sender. The caller's part: at least 16 KiB
+     per `update`, so BLAKE3 hashes 16 chunks at once (to measure: the
+     benchmark's "many messages at once" cell with the pieces gathered
+     first).
+   - **Several streams at once share one pool** (to measure: 1, 2, 4, and
+     16 streams, against writing each message whole and calling
+     `hash_multithreaded`). Each stream's buffer, two halves of 2 MiB, is
+     sized for the whole machine's speed; whether a caller should choose
+     it follows from that measurement.
    - **Open**: short messages each start a segment, so many small ones
      waste the buffer (the benchmark of short messages of different
      lengths, Future work); a short read mid-message breaks the segment
