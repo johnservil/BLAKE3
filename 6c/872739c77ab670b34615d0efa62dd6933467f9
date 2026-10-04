@@ -1,0 +1,2 @@
+Promoted to servil (October 4, 2026, from candidate/no-linger, a64d495..6c87273): no thread lingers (Zooko's decision, option A, October 3), hash_each_with, docs.
+Mac: test job 1205 passed; perf_regress job 1206 held blake3-servil-mt solo LentPieces 64 MiB +146.5% (8 of 8 pairs), the cell lingering served, which bench-hashes' next release drops; every other cell level (also job 1191). VM: perf_regress held only that cell on 0ba5a45 (+96%), and found no cell slower on 6c87273.
