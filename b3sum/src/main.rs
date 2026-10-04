@@ -197,6 +197,10 @@ fn hash_path(args: &Args, path: &Path) -> anyhow::Result<blake3::OutputReader> {
 /// either way; either way hashes it right.
 #[cfg(unix)]
 fn mapped_if_cached(file: &File) -> Option<memmap2::Mmap> {
+    // probe/b3sum-onethread: nothing is mapped; every file is read.
+    if true {
+        return None;
+    }
     let len = usize::try_from(file.metadata().ok()?.len()).ok()?;
     if len < MAP_LEN {
         return None;
@@ -251,6 +255,16 @@ fn fill(reader: &mut impl Read, buffer: &mut [u8]) -> io::Result<usize> {
 /// buffer while this one hashes the last piece over the pool
 /// (`bench-hashes b3sum`; NOTES-servil.md, "b3sum, measured").
 fn update_from(hasher: &mut blake3::Hasher, mut reader: impl Read + Send) -> io::Result<()> {
+    // probe/b3sum-onethread: 4 MiB reads and update, on this thread alone.
+    if true {
+        return BUFFERS.with_borrow_mut(|[first, _]| loop {
+            let len = fill(&mut reader, first)?;
+            hasher.update(&first[..len]);
+            if len < PIECE {
+                return Ok(());
+            }
+        });
+    }
     BUFFERS.with_borrow_mut(|[first, second]| {
         let len = fill(&mut reader, first)?;
         if len < PIECE {
