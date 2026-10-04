@@ -1,0 +1,35 @@
+# The crate's API documentation, published at johnservil.github.io/BLAKE3
+# from every push to servil: the doors that the benchmark's map links its
+# call names to (bench-hashes tools/map-mockup).
+name: docs
+
+on:
+  push:
+    branches: [servil]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  docs:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo doc --no-deps -p blake3-servil --features "rayon mmap"
+      - run: echo '<meta http-equiv="refresh" content="0; url=blake3_servil/index.html">' > target/doc/index.html
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: target/doc
+      - id: deployment
+        uses: actions/deploy-pages@v4
