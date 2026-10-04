@@ -124,6 +124,28 @@ implementation comes with the fork's tests against fixed answers
    hashing in place saves 7% in `fsck` and 12% in `add`, by the copies it
    removes; its time goes to thread handoffs (about 106 context switches per
    file added, 330 per object checked).
+   *What Libra taught the API* (October 4, 2026; johnservil/libra
+   `faster-add`, 7.37 s against 9.75 for `add`, nearly all of it
+   independent of the hash):
+   - **Framing is the commonest copy.** Five places in Libra copied each
+     object behind its `"<type> <size>\0"` header before hashing. A `Mode`
+     whose derive-key context names the object type replaces the header, and
+     the crate's docs should show it, with the context key computed once
+     (`Mode::DeriveKey(&str)` derives it again per call; a mode taking a
+     precomputed `hazmat::ContextKey` would serve many small calls).
+   - **A program's per-item bookkeeping dwarfs the hash** (database rows,
+     marker files, ignore lookups, thread handoffs, about 1.5 ms per file
+     against microseconds of hashing), so a hashing API pays only beside
+     batched bookkeeping, and the API should make batching natural: results
+     by index, one call per batch.
+   - **`hash_each_with(mode, items, out)`** (probe/hash-each: tested against
+     `hash_with`, never measured) fits that shape: one mode per call (group by object type), the
+     caller's own buffers, so the caller keeps each file's stat with its
+     bytes.
+   - **The largest remaining cost is the file system** (per-file opens,
+     stats, path resolution), which only an API that does the reading itself
+     (`hash_files`, Level 3) could batch.
+   - **The stream played no part:** these are many small items.
 2. **A collection of items of different lengths**: a real collection's
    sizes, in a fixed order (the objects of a git repository at a fixed
    commit, the sizes listed in the code), in memory, each hashed once
