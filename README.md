@@ -37,7 +37,7 @@ and call `blake3_servil::hash` as you would `blake3::hash`. The crate documentat
 best performance" section says how to reach full speed.
 [bench-hashes](https://github.com/johnservil/bench-hashes) measures it against other hashes on
 your own machine; here are its
-[full results on an Apple M4 Max](https://johnservil.github.io/bench-hashes/benchmark-results/AppleM4Max.darwin25/bench-hashes.graph.svg).
+[full results on an Apple M4 Max](https://johnservil.github.io/bench-hashes/benchmark-results/AppleM4Max.darwin25/bench-hashes.map.html).
 `CONTRIBUTING.md` says how to work on the fork. Everything below is upstream's README, apart
 from the speed chart.
 
@@ -63,7 +63,7 @@ For the original benchmarks and the design, see the
 <img src="https://johnservil.github.io/bench-hashes/benchmark-results/AppleM4Max.darwin25/bench-hashes.chart.svg" alt="Hashing one 1 MiB message on an Apple M4 Max: BLAKE3 on every core and on one core beside SHA-256, SHA3-256, and SHA-1, in GB/s">
 </p>
 
-<p align="center">From <a href="https://github.com/johnservil/bench-hashes">bench-hashes</a>' latest record on an Apple M4 Max (<a href="https://johnservil.github.io/bench-hashes/benchmark-results/AppleM4Max.darwin25/bench-hashes.graph.svg">every size</a>; <a href="https://github.com/johnservil/bench-hashes/blob/main/METHODOLOGY.md">how it measures</a>)</p>
+<p align="center">From <a href="https://github.com/johnservil/bench-hashes">bench-hashes</a>' latest record on an Apple M4 Max (<a href="https://johnservil.github.io/bench-hashes/benchmark-results/AppleM4Max.darwin25/bench-hashes.map.html">every size</a>; <a href="https://github.com/johnservil/bench-hashes/blob/main/METHODOLOGY.md">how it measures</a>)</p>
 
 BLAKE3 is based on an optimized instance of the established hash
 function [BLAKE2](https://blake2.net) and on the [original Bao tree
