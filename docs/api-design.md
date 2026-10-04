@@ -58,31 +58,44 @@ a faster hash saves CPU time and energy rather than waiting.
   solution), and b3sum's read path moves to the stream.
 - **Leaving**: the `Queue`, in its three shapes; the stream replaces it.
 
-### APIs considered, and why
+### APIs added, and the one still considered
 
-1. **Verified streaming (Bao, Iroh-blobs)**: build a message's outboard
-   (the tree's inner chaining values) at full speed, and verify a stream
-   or a range against it as it arrives. The capability that sets BLAKE3
-   apart; the `bao` and `bao-tree` crates offer it, one subtree at a time,
-   with neither many cores nor the widest SIMD.
-2. **A collection of messages of different lengths, hashed together**:
-   a list of messages in, a hash per message out, 16 small messages side
-   by side in the SIMD lanes (as `hash_many` does for one length, about
-   5x), and over the pool's threads. For the content-addressed stores,
-   git, Bazel, and Nix: a small message leaves most of the 16 lanes idle.
+1. **Verified streaming (Bao, iroh-blobs)**, in servil since October 4,
+   2026: `outboard_with(mode, input) -> (Hash, Vec<u8>)` and
+   `outboard_multithreaded_with` build a message's outboard (its tree's
+   parent nodes above 16 KiB groups, pre-order: byte for byte bao-tree's
+   pre-order outboard with 16 KiB blocks, as iroh-blobs stores it), and
+   `verify_range_with(mode, hash, len, outboard, first, bytes)` checks any
+   range of whole groups against the hash, as it arrives. One mechanism:
+   groups hash in batches through the many-inputs kernels, on the pool
+   for the multithreaded form (a third kind of pool work). VM, 64 MiB:
+   build 0.173 ns/B on one thread and 0.026 on the pool, against
+   bao-tree's 0.41-0.43 (2.4x, 16x); verify a megabyte at a time at about
+   building's cost, one group at a time at twice it. The benchmark's
+   outboard cell measures the build, with each message written first.
+   Next: a stream verifier keeping the parents it has checked, so groups
+   arriving one at a time cost building's price; ranges' proofs (the path
+   nodes alone) for a reader that holds no outboard.
+2. **A collection of messages of different lengths**, in servil since
+   October 4, 2026: `hash_each_with(mode, items, out)`, short messages
+   side by side in the SIMD lanes; items under 16 KiB 26-28% less time
+   than one `hash` each, whole collections 9-11% (Mac job 1204); the
+   benchmark's collection cell uses it for BLAKE3 servil on one thread.
+   Next: items of one chunk or less (a quarter of git's objects) still
+   hash one at a time; a multithreaded form for collections larger than
+   a core's share.
 3. **The stream** (the plan of "Decided October 3, 2026", below): one to
    three long messages arriving faster than one core hashes; 1.33x the
    next-best way with one stream, 1.10x with two, level at four, 19%
    slower at sixteen (probe/owned-buffer, Mac jobs 1196 on battery and
-   1199 on mains, within 3% of each other).
-   Heavy in complexity, so weighed again as measurements come; it may
-   also pay in b3sum's own reads and in building a Bao outboard (its
-   segment results are most of one).
+   1199 on mains, within 3% of each other); in b3sum, today's reader
+   thread beat it (jobs 1197-1198). Kept until native Linux with io_uring
+   is measured (NOTES-servil.md, Future work); a prototype, not in the
+   crate.
 
-All three hash many independent pieces in SIMD lanes and over the pool,
-and keep each piece's chaining value (16-chunk groups, whole small
-messages, 64 KiB segments): one mechanism might serve them all, a reason
-to design them together once the measurements below are in hand.
+The two added APIs share the batched group hashing of `outboard.rs`
+(`group_cvs_into`); `hash_each_with` lanes its own chunks. A stream, if it
+lands, would hash its segments the same way.
 
 ### The measurements that settle them
 
