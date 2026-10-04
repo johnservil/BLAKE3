@@ -11,7 +11,7 @@ fn main() {
     let _ = std::fs::remove_dir_all(&bench);
     let ok = |c: &mut Command| assert!(c.status().unwrap().success(), "{c:?} failed");
     ok(Command::new("git").args(["clone", "-q", "https://github.com/johnservil/bench-hashes"]).arg(&bench));
-    ok(Command::new("git").current_dir(&bench).args(["checkout", "-q", "62241af87906ef1fa02711dc10808cf87e8f556b"]));
+    ok(Command::new("git").current_dir(&bench).args(["checkout", "-q", "9568c54b2629e468177c53b4fb4875f1ce202a45"]));
     let out = std::env::current_dir().unwrap().join("libra-bench-results");
     ok(Command::new("sh").arg(bench.join("apps/libra-bench/run.sh")).arg(fork).arg(home.join("libra-bench-work")).arg(&out).arg("5"));
 }
