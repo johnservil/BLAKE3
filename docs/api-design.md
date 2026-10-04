@@ -102,6 +102,21 @@ implementation comes with the fork's tests against fixed answers
    `for` loop): 1000 files of 16 KiB, a b3sum process each, start to
    exit; settles whether the start-up (the self-test, the pool) costs
    more than the hashing.
+   *First run* (Mac job 1197, October 3, 2026: on battery, and other
+   programs busy in 52 of 417 load windows, so a first reading, to repeat
+   on mains): the stream does not pay in b3sum. A cached file is fastest
+   mapped (1 GiB: 38.8 ms, no copy); read instead, today's reader thread
+   with two 4 MiB buffers and `update_multithreaded` beats the stream
+   (51.6 ms against 58.1); from storage every multithreaded path reads at
+   the drive's 6.7 GB/s (1 GiB: 159-160 ms), about one core's hashing
+   rate, so they tie; small files lose with the stream or the queue
+   (1000 files of 16 KiB, cached: 29.8 and 46.7 ms against 19.6), from
+   their own pools and buffers. b3sum's own pipelining, a reader thread
+   ahead of the hashing, already gets the overlap the stream offers: the
+   stream's 1.33x (job 1196) was against writing whole messages, then
+   hashing. One process per file: 1.40 ms a file today, against official
+   b3sum's 1.58, the same as on one thread: the start-up is the process's,
+   not the crate's.
 2. **A collection of items of different lengths**: a real collection's
    sizes, in a fixed order (the objects of a git repository at a fixed
    commit, the sizes listed in the code), in memory, each hashed once
