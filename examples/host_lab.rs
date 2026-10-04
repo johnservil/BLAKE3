@@ -1,86 +1,37 @@
-//! probe/owned-buffer: a prototype of a stream hasher that owns its input
-//! buffer (Zooko, October 3, 2026), against the fork's Queue::pieces, on one
-//! long message after another.
-//!
-//! The prototype: BLAKE3 owns two halves of one buffer, each a whole number
-//! of 64 KiB segments (a segment: 64 aligned chunks, one subtree of the
-//! tree). The program writes its data straight into the current half
-//! (`space`) and commits whole segments (only a message's last may be
-//! shorter). Hashing threads claim committed segments in order through one
-//! counter, and write each segment's chaining value into that segment's
-//! slot of a results array. The program's thread merges the chaining values
-//! in order, in its own calls, and moves into the other half only once
-//! everything that half held is hashed; until then it hashes unclaimed
-//! segments itself, and waits only for segments other threads are hashing.
-//! Hashing threads sleep as soon as nothing is committed and unclaimed.
+//! probe/owned-buffer: several streams at once, each a buffer BLAKE3 owns
+//! (two halves of 2 MiB, 64 KiB segments), sharing one pool of hashing
+//! threads; against writing each message whole and calling
+//! hash_multithreaded, and against Hasher::update on the writer's thread.
+//! Each stream has a writer thread of its own; every byte is written (a
+//! copy, standing in for a read) and hashed, and each hash is stored in
+//! the writer's slot for its message.
 
 use blake3_servil::hazmat::{self, HasherExt, Mode};
 use std::cell::UnsafeCell;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::*};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering::*};
+use std::sync::{Arc, OnceLock};
 
 const SEG: usize = 64 * 1024;
+const HALF_SEGS: u64 = 32;
 
-/// Diagnostics: the program's thread's time copying, committing, and
-/// waiting for room; wakes by the program's thread and by workers; parks.
-static COPY_NS: AtomicU64 = AtomicU64::new(0);
-static COMMIT_NS: AtomicU64 = AtomicU64::new(0);
-static WAIT_NS: AtomicU64 = AtomicU64::new(0);
-static FINISH_NS: AtomicU64 = AtomicU64::new(0);
-static WAKES_PROGRAM: AtomicU64 = AtomicU64::new(0);
-static WAKES_WORKER: AtomicU64 = AtomicU64::new(0);
-static PARKS: AtomicU64 = AtomicU64::new(0);
-static HELPED: AtomicU64 = AtomicU64::new(0);
-static MERGE_NS: AtomicU64 = AtomicU64::new(0);
-static PUBLISH_NS: AtomicU64 = AtomicU64::new(0);
-
-/// When the program's commit wakes a sleeping hashing thread.
-#[derive(Clone, Copy, PartialEq, Debug)]
-enum Wake {
-    /// Whenever a commit leaves segments unclaimed and a thread sleeps.
-    Every,
-    /// Only once half a half's segments wait unclaimed.
-    Half,
-}
-
+/// One stream's buffer and its hashing state, shared with the pool.
 struct Shared {
     data: Box<[UnsafeCell<u8>]>,
-    /// Segments in the whole buffer (two halves).
     segs: u64,
-    /// Segments committed and claimed, counted from the stream's start.
     committed: AtomicU64,
     claimed: AtomicU64,
-    /// Per slot: the segment's input offset and length, written before its commit.
     offset: Box<[UnsafeCell<u64>]>,
     len: Box<[UnsafeCell<usize>]>,
-    /// Per slot: 1 + the index of the segment whose chaining value it holds.
     done: Box<[AtomicU64]>,
     cvs: Box<[UnsafeCell<[u8; 32]>]>,
-    idle: Box<[AtomicBool]>,
-    threads: std::sync::OnceLock<Vec<std::thread::Thread>>,
-    stop: AtomicBool,
 }
-
 unsafe impl Sync for Shared {}
+unsafe impl Send for Shared {}
 
 impl Shared {
     fn slot(&self, k: u64) -> usize {
         (k % self.segs) as usize
     }
-
-    /// Hash segment k (claimed by this thread) into its slot.
-    fn hash(&self, k: u64) {
-        let s = self.slot(k);
-        let (offset, len) = unsafe { (*self.offset[s].get(), *self.len[s].get()) };
-        let bytes = unsafe { std::slice::from_raw_parts(self.data[s * SEG].get() as *const u8, len) };
-        let mut h = blake3_servil::Hasher::new();
-        h.set_input_offset(offset);
-        h.update(bytes);
-        unsafe { *self.cvs[s].get() = h.finalize_non_root() };
-        self.done[s].store(k + 1, Release);
-    }
-
-    /// Claim the next committed segment, if any.
     fn claim(&self) -> Option<u64> {
         let mut c = self.claimed.load(Relaxed);
         loop {
@@ -93,8 +44,44 @@ impl Shared {
             }
         }
     }
+    fn waiting(&self) -> bool {
+        self.claimed.load(Relaxed) < self.committed.load(Relaxed)
+    }
+    fn hash(&self, k: u64) {
+        let s = self.slot(k);
+        let (offset, len) = unsafe { (*self.offset[s].get(), *self.len[s].get()) };
+        let bytes = unsafe { std::slice::from_raw_parts(self.data[s * SEG].get() as *const u8, len) };
+        let mut h = blake3_servil::Hasher::new();
+        h.set_input_offset(offset);
+        h.update(bytes);
+        unsafe { *self.cvs[s].get() = h.finalize_non_root() };
+        self.done[s].store(k + 1, Release);
+    }
+}
 
-    /// Wake one sleeping hashing thread, if one sleeps.
+/// The hashing threads every stream shares; they sleep when no stream has
+/// a committed segment unclaimed.
+struct Pool {
+    /// Every stream, fixed before the measurements (the prototype's
+    /// simplification: no lock on the workers' path).
+    streams: OnceLock<Vec<Arc<Shared>>>,
+    idle: Box<[AtomicBool]>,
+    threads: OnceLock<Vec<std::thread::Thread>>,
+    next: AtomicUsize,
+}
+
+fn pool() -> &'static Pool {
+    static POOL: OnceLock<&'static Pool> = OnceLock::new();
+    POOL.get_or_init(|| {
+        let n = std::thread::available_parallelism().unwrap().get() - 1;
+        let pool: &'static Pool = Box::leak(Box::new(Pool { streams: OnceLock::new(), idle: (0..n).map(|_| AtomicBool::new(false)).collect(), threads: OnceLock::new(), next: AtomicUsize::new(0) }));
+        let threads = (0..n).map(|i| std::thread::spawn(move || pool.worker(i)).thread().clone()).collect();
+        pool.threads.set(threads).unwrap();
+        pool
+    })
+}
+
+impl Pool {
     fn wake_one(&self) {
         for (i, idle) in self.idle.iter().enumerate() {
             if idle.load(Relaxed) && idle.compare_exchange(true, false, AcqRel, Relaxed).is_ok() {
@@ -103,51 +90,45 @@ impl Shared {
             }
         }
     }
-
+    fn any_waiting(&self) -> bool {
+        self.streams.get().map_or(false, |all| all.iter().any(|s| s.waiting()))
+    }
+    /// A committed, unclaimed segment from some stream, the streams taken
+    /// in turn.
+    fn take(&self) -> Option<(Arc<Shared>, u64)> {
+        let streams = self.streams.get()?;
+        let n = streams.len();
+        let start = self.next.fetch_add(1, Relaxed);
+        (0..n).find_map(|i| {
+            let s = &streams[(start + i) % n];
+            s.claim().map(|k| (s.clone(), k))
+        })
+    }
     fn worker(&self, me: usize) {
-        while !self.stop.load(Relaxed) {
-            if let Some(k) = self.claim() {
-                // More waiting: pass the wake on.
-                if self.claimed.load(Relaxed) < self.committed.load(Relaxed) {
-                    WAKES_WORKER.fetch_add(1, Relaxed);
+        loop {
+            if let Some((s, k)) = self.take() {
+                if self.any_waiting() {
                     self.wake_one();
                 }
-                self.hash(k);
+                s.hash(k);
                 continue;
             }
             self.idle[me].store(true, SeqCst);
-            if self.claimed.load(SeqCst) < self.committed.load(SeqCst) || self.stop.load(SeqCst) {
+            if self.any_waiting() {
                 let _ = self.idle[me].compare_exchange(true, false, AcqRel, Relaxed);
                 continue;
             }
-            PARKS.fetch_add(1, Relaxed);
             std::thread::park();
             self.idle[me].store(false, Relaxed);
         }
     }
 }
 
-/// When the program's thread may write into freed space.
-#[derive(Clone, Copy, PartialEq, Debug)]
-enum Layout {
-    /// Two halves: a half is written only once all it held is hashed.
-    Halves,
-    /// A ring: each segment is written once the one it held is hashed.
-    Ring,
-}
-
+/// The writer's side of one stream.
 struct Stream {
     shared: Arc<Shared>,
-    workers: Vec<std::thread::JoinHandle<()>>,
-    wake: Wake,
-    layout: Layout,
-    /// Whether the program's thread hashes unclaimed segments while it waits.
-    help: bool,
-    /// The next segment to write, and the bytes already in it.
     write: u64,
-    /// Segments merged into the chaining-value stack.
     merged: u64,
-    /// The message's first segment, its bytes so far, and its stack.
     start: u64,
     bytes: u64,
     stack: Vec<[u8; 32]>,
@@ -155,10 +136,10 @@ struct Stream {
 }
 
 impl Stream {
-    fn new(half_segs: u64, threads: usize, wake: Wake, layout: Layout, help: bool) -> Stream {
-        let segs = 2 * half_segs;
+    fn new() -> Stream {
+        let segs = 2 * HALF_SEGS;
         let shared = Arc::new(Shared {
-            data: (0..segs as usize * SEG).map(|_| UnsafeCell::new(0)).collect(),
+            data: (0..segs as usize * SEG).map(|_| UnsafeCell::new(1)).collect(),
             segs,
             committed: AtomicU64::new(0),
             claimed: AtomicU64::new(0),
@@ -166,25 +147,9 @@ impl Stream {
             len: (0..segs).map(|_| UnsafeCell::new(0)).collect(),
             done: (0..segs).map(|_| AtomicU64::new(0)).collect(),
             cvs: (0..segs).map(|_| UnsafeCell::new([0; 32])).collect(),
-            idle: (0..threads).map(|_| AtomicBool::new(false)).collect(),
-            threads: std::sync::OnceLock::new(),
-            stop: AtomicBool::new(false),
         });
-        let workers: Vec<_> = (0..threads)
-            .map(|i| {
-                let s = shared.clone();
-                std::thread::spawn(move || s.worker(i))
-            })
-            .collect();
-        shared.threads.set(workers.iter().map(|w| w.thread().clone()).collect()).unwrap();
-        Stream { shared, workers, wake, layout, help, write: 0, merged: 0, start: 0, bytes: 0, stack: Vec::new(), count: 0 }
+        Stream { shared, write: 0, merged: 0, start: 0, bytes: 0, stack: Vec::new(), count: 0 }
     }
-
-    fn half(&self) -> u64 {
-        self.shared.segs / 2
-    }
-
-    /// Merge every segment hashed, in order. Returns whether it merged any.
     fn merge(&mut self) -> bool {
         let sh = &*self.shared;
         let mut moved = false;
@@ -202,60 +167,28 @@ impl Stream {
         }
         moved
     }
-
-    /// One step of waiting for hashing to finish: merge what is ready;
-    /// else hash an unclaimed segment (with `help`), or wake a thread for
-    /// it; else spin a moment (another thread is hashing).
+    /// Wait for hashing under way: merge what is ready, wake a thread if
+    /// segments wait unclaimed and every thread sleeps, else yield.
     fn wait_step(&mut self) {
         if self.merge() {
             return;
         }
-        let sh = &*self.shared;
-        if self.help {
-            if let Some(k) = sh.claim() {
-                HELPED.fetch_add(1, Relaxed);
-                sh.hash(k);
-                return;
-            }
-        } else if sh.claimed.load(Relaxed) < sh.committed.load(Relaxed) && sh.idle.iter().all(|i| i.load(Relaxed)) {
-            // Waiting on segments nobody has taken, every thread asleep.
-            WAKES_PROGRAM.fetch_add(1, Relaxed);
-            sh.wake_one();
+        if self.shared.waiting() && pool().idle.iter().all(|i| i.load(Relaxed)) {
+            pool().wake_one();
         }
-        std::hint::spin_loop();
+        std::thread::yield_now();
     }
-
-    /// The free bytes of the current half, after waiting (hashing) for
-    /// room. Requires the last commit to have been whole segments.
     fn space(&mut self) -> &mut [u8] {
-        let (half, segs) = (self.half(), self.shared.segs);
-        let end = match self.layout {
-            Layout::Halves => {
-                if self.write % half == 0 {
-                    // Entering a half: everything it held must be merged.
-                    while self.merged + half < self.write {
-                        self.wait_step();
-                    }
-                }
-                (self.write / half + 1) * half
+        if self.write % HALF_SEGS == 0 {
+            while self.merged + HALF_SEGS < self.write {
+                self.wait_step();
             }
-            Layout::Ring => {
-                // A free segment: the one it held is merged.
-                while self.merged + segs <= self.write {
-                    self.wait_step();
-                }
-                (self.merged + segs).min((self.write / segs + 1) * segs)
-            }
-        };
+        }
+        let end = (self.write / HALF_SEGS + 1) * HALF_SEGS;
         let s = self.shared.slot(self.write);
-        let len = (end - self.write) as usize * SEG;
-        unsafe { std::slice::from_raw_parts_mut(self.shared.data[s * SEG].get(), len) }
+        unsafe { std::slice::from_raw_parts_mut(self.shared.data[s * SEG].get(), (end - self.write) as usize * SEG) }
     }
-
-    /// `n` bytes written at the start of `space()`: whole segments, or a
-    /// message's last bytes (then `finish` comes next).
     fn commit(&mut self, n: usize) {
-        let t = clocks::now();
         let segs = n.div_ceil(SEG) as u64;
         for i in 0..segs {
             let s = self.shared.slot(self.write + i);
@@ -267,26 +200,18 @@ impl Stream {
         self.write += segs;
         self.bytes += n as u64;
         self.shared.committed.store(self.write, Release);
-        PUBLISH_NS.fetch_add(clocks::since_ns(t), Relaxed);
-        let waiting = self.write - self.shared.claimed.load(Relaxed);
-        if waiting > 0 && (self.wake == Wake::Every || waiting >= self.half() / 2) {
-            WAKES_PROGRAM.fetch_add(1, Relaxed);
-            self.shared.wake_one();
+        if self.write - self.shared.claimed.load(Relaxed) >= HALF_SEGS / 2 {
+            pool().wake_one();
         }
-        let t = clocks::now();
         self.merge();
-        MERGE_NS.fetch_add(clocks::since_ns(t), Relaxed);
     }
-
-    /// The message's hash; the next message starts at the next segment.
     fn finish(&mut self) -> blake3_servil::Hash {
         while self.merged < self.write {
             self.wait_step();
         }
         let hash = if self.bytes <= SEG as u64 {
             let s = self.shared.slot(self.start);
-            let bytes = unsafe { std::slice::from_raw_parts(self.shared.data[s * SEG].get() as *const u8, self.bytes as usize) };
-            blake3_servil::hash(bytes)
+            blake3_servil::hash(unsafe { std::slice::from_raw_parts(self.shared.data[s * SEG].get() as *const u8, self.bytes as usize) })
         } else {
             let mut right = self.stack.pop().unwrap();
             while self.stack.len() > 1 {
@@ -302,158 +227,112 @@ impl Stream {
     }
 }
 
-impl Drop for Stream {
-    fn drop(&mut self) {
-        self.shared.stop.store(true, SeqCst);
-        for w in &self.workers {
-            w.thread().unpark();
-        }
-        for w in self.workers.drain(..) {
-            w.join().unwrap();
-        }
-    }
-}
-
-/// One message from `source` through the stream, written `piece` bytes at a time.
-fn through_stream(stream: &mut Stream, source: &[u8], piece: usize) -> blake3_servil::Hash {
+/// One message from `source` through the stream, written 64 KiB at a time.
+fn through_stream(stream: &mut Stream, source: &[u8]) -> blake3_servil::Hash {
     let mut at = 0;
     while at < source.len() {
-        let t = clocks::now();
         let space = stream.space();
-        WAIT_NS.fetch_add(clocks::since_ns(t), Relaxed);
-        let t = clocks::now();
-        let n = piece.min(space.len()).min(source.len() - at);
+        let n = SEG.min(space.len()).min(source.len() - at);
         space[..n].copy_from_slice(&source[at..at + n]);
-        COPY_NS.fetch_add(clocks::since_ns(t), Relaxed);
-        let t = clocks::now();
         stream.commit(n);
-        COMMIT_NS.fetch_add(clocks::since_ns(t), Relaxed);
         at += n;
     }
-    let t = clocks::now();
-    let hash = stream.finish();
-    FINISH_NS.fetch_add(clocks::since_ns(t), Relaxed);
-    hash
+    stream.finish()
 }
 
-/// The fork's queue as bench-hashes uses it: owned buffers of `piece`
-/// bytes, `count` in flight, back through a channel.
-struct Back(std::sync::mpsc::SyncSender<Option<Vec<u8>>>, std::sync::mpsc::SyncSender<blake3_servil::Hash>);
-impl blake3_servil::PieceHandler for Back {
-    type Buffer = Vec<u8>;
-    fn piece_done(&mut self, buffer: Vec<u8>) {
-        self.0.send(Some(buffer)).unwrap();
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum How {
+    /// Each message written whole into the writer's buffer, then hash_multithreaded.
+    WholeThenMt,
+    /// Each 64 KiB written into the writer's buffer, then Hasher::update on its thread.
+    UpdateEach,
+    /// Each 64 KiB written into the stream's space, then committed.
+    Stream,
+}
+
+/// `writers` threads, each hashing `messages` messages of `source` in the
+/// way `how` says, each hash stored in the writer's slot. Returns the wall
+/// time from the first write to the last hash stored, and the process's CPU time.
+fn run(how: How, writers: usize, messages: usize, source: &Arc<Vec<u8>>, streams: &mut Vec<Option<Stream>>) -> (u64, u64) {
+    let start = Arc::new(std::sync::Barrier::new(writers + 1));
+    let handles: Vec<_> = (0..writers)
+        .map(|w| {
+            let (source, start) = (source.clone(), start.clone());
+            let mut stream = streams[w].take();
+            std::thread::spawn(move || {
+                let mut slots = vec![[0u8; 32]; messages];
+                let mut whole = if how == How::WholeThenMt { vec![1u8; source.len()] } else { vec![1u8; SEG] };
+                start.wait();
+                for slot in slots.iter_mut() {
+                    let hash = match how {
+                        How::WholeThenMt => {
+                            whole.copy_from_slice(&source);
+                            blake3_servil::hash_multithreaded(&whole)
+                        }
+                        How::UpdateEach => {
+                            let mut h = blake3_servil::Hasher::new();
+                            for piece in source.chunks(SEG) {
+                                whole[..piece.len()].copy_from_slice(piece);
+                                h.update(&whole[..piece.len()]);
+                            }
+                            h.finalize()
+                        }
+                        How::Stream => through_stream(stream.as_mut().unwrap(), &source),
+                    };
+                    *slot = *hash.as_bytes();
+                }
+                std::hint::black_box(&slots);
+                stream
+            })
+        })
+        .collect();
+    let cpu = clocks::process_cpu_ns();
+    let t = clocks::now();
+    start.wait();
+    for (w, h) in handles.into_iter().enumerate() {
+        streams[w] = h.join().unwrap();
     }
-    fn finished(&mut self, hash: blake3_servil::Hash) {
-        self.1.send(hash).unwrap();
-    }
+    (clocks::since_ns(t), clocks::process_cpu_ns() - cpu)
 }
 
 fn main() {
-    let threads = std::thread::available_parallelism().unwrap().get();
     blake3_servil::initialize_multithreaded();
-    let len = 64 << 20;
-    let source: Vec<u8> = (0..len).map(|i| (i as u32).wrapping_mul(2654435761).to_le_bytes()[3]).collect();
-    assert_eq!(blake3_servil::hash(&source), blake3_servil::hash_multithreaded(&source));
-    // Correctness first, at lengths around the segments and halves.
+    pool();
+    let len = 16 << 20;
+    let source: Arc<Vec<u8>> = Arc::new((0..len).map(|i| (i as u32).wrapping_mul(2654435761).to_le_bytes()[3]).collect());
+    let max_writers = 16;
+    let mut streams: Vec<Option<Stream>> = (0..max_writers + 1).map(|_| Some(Stream::new())).collect();
+    pool().streams.set(streams.iter().map(|s| s.as_ref().unwrap().shared.clone()).collect()).unwrap_or_else(|_| unreachable!());
+    // Correctness of the stream at lengths around segments and halves.
     {
-        for layout in [Layout::Halves, Layout::Ring] {
-        let mut stream = Stream::new(4, threads - 1, Wake::Every, layout, true);
-        for l in [0, 1, 1024, 1025, SEG - 1, SEG, SEG + 1, 3 * SEG + 7, 8 * SEG, 9 * SEG + 1, 40 * SEG + 5, len] {
-            for piece in [SEG, 4 * SEG, 1 << 20] {
-                assert_eq!(through_stream(&mut stream, &source[..l], piece), blake3_servil::hash(&source[..l]), "len {l}, piece {piece}");
-            }
+        let mut stream = streams.pop().unwrap().unwrap();
+        for l in [0, 1, 1025, SEG - 1, SEG, SEG + 1, 3 * SEG + 7, 40 * SEG + 5, 100 * SEG, len] {
+            assert_eq!(through_stream(&mut stream, &source[..l]), blake3_servil::hash(&source[..l]), "len {l}");
         }
+    }
+    let total_bytes = 2u64 << 30; // per measurement, over all writers
+    let repeats = 5;
+    println!("{} MiB messages; every byte written (a copy) and hashed, each hash stored; {} CPUs", len >> 20, std::thread::available_parallelism().unwrap());
+    println!("{:>8} {:<44} {:>14} {:>14} {:>10}", "writers", "how", "wall ns/B", "CPU ns/B", "CPUs busy");
+    for writers in [1usize, 2, 4, 16] {
+        let messages = (total_bytes / len as u64 / writers as u64).max(1) as usize;
+        let bytes = (messages * writers * len) as u128;
+        for how in [How::WholeThenMt, How::UpdateEach, How::Stream] {
+            let mut walls = Vec::new();
+            let mut cpus = Vec::new();
+            run(how, writers, 1, &source, &mut streams); // warm-up
+            for _ in 0..repeats {
+                let (wall, cpu) = run(how, writers, messages, &source, &mut streams);
+                walls.push(wall);
+                cpus.push(cpu);
+            }
+            let per = |ns: u64| ((ns as u128 * 100_000 + bytes / 2) / bytes) as u64; // ns/B x 1e5
+            let wall: Vec<String> = walls.iter().map(|&w| format!("{}.{:05}", per(w) / 100_000, per(w) % 100_000)).collect();
+            let mean_wall: u64 = walls.iter().sum::<u64>() / repeats as u64;
+            let mean_cpu: u64 = cpus.iter().sum::<u64>() / repeats as u64;
+            let (w, c) = (per(mean_wall), per(mean_cpu));
+            println!("{writers:>8} {:<44} {:>4}.{:05} {:>8}.{:05} {:>7}.{:02}   ({})", format!("{how:?}"), w / 100_000, w % 100_000, c / 100_000, c % 100_000, c * 100 / w.max(1) / 100, c * 100 / w.max(1) % 100, wall.join(" "));
         }
-    }
-    let rounds = 6;
-    for len in [64 << 20, 1 << 20] {
-    let source = &source[..len];
-    let expected = blake3_servil::hash(source);
-    let report = |name: &str, f: &mut dyn FnMut()| {
-        let cpu = clocks::process_cpu_ns();
-        let batches = clocks::measure(rounds, 200_000_000, &mut *f);
-        let cpu = clocks::process_cpu_ns() - cpu;
-        let calls: u64 = batches.iter().map(|b| b.calls).sum();
-        let wall: u64 = batches.iter().map(|b| b.wall_ns).sum();
-        let cpu_calls = calls + batches[0].calls;
-        let ns_b = |ns: u64, calls: u64| (ns as u128 * 10_000 / (calls as u128 * len as u128)) as u64;
-        let w = ns_b(wall, calls);
-        let c = ns_b(cpu, cpu_calls);
-        println!("  {name:62} wall {}.{:04} ns/B   CPU {}.{:04} ns/B ({}.{:02} CPUs)", w / 10000, w % 10000, c / 10000, c % 10000, c * 100 / w.max(1) / 100, c * 100 / w.max(1) % 100);
-    };
-    println!("\n{} MiB messages, one after another, {threads} CPUs; ns per byte of message (lower is better)", len >> 20);
-    println!(" The whole job: each byte written into memory (a copy, standing in for a read), and hashed");
-    {
-        let mut whole = vec![0u8; len];
-        report("write the message, then Hasher::update (one thread)", &mut || {
-            whole.copy_from_slice(source);
-            let mut h = blake3_servil::Hasher::new();
-            h.update(&whole);
-            assert_eq!(h.finalize(), expected);
-        });
-        report("write the message, then hash_multithreaded", &mut || {
-            whole.copy_from_slice(source);
-            assert_eq!(blake3_servil::hash_multithreaded(&whole), expected);
-        });
-    }
-    {
-        let mut piece = vec![0u8; 4 << 20];
-        report("write 4 MiB at a time, update_multithreaded each", &mut || {
-            let mut h = blake3_servil::Hasher::new();
-            for p in source.chunks(4 << 20) {
-                piece[..p.len()].copy_from_slice(p);
-                h.update_multithreaded(&piece[..p.len()]);
-            }
-            assert_eq!(h.finalize(), expected);
-        });
-    }
-    {
-        let (pieces, back) = std::sync::mpsc::sync_channel(64);
-        let (hashes, digest) = std::sync::mpsc::sync_channel(4);
-        let queue = blake3_servil::Queue::pieces(blake3_servil::Mode::Hash, Back(pieces, hashes));
-        let mut free: Vec<Vec<u8>> = (0..16).map(|_| Vec::with_capacity(SEG)).collect();
-        report("write 64 KiB buffers, Queue::pieces, 16 in flight (now)", &mut || {
-            for p in source.chunks(SEG) {
-                while free.is_empty() {
-                    free.push(back.recv().unwrap().unwrap());
-                }
-                let mut b = free.pop().unwrap();
-                b.clear();
-                b.extend_from_slice(p);
-                queue.submit(b);
-            }
-            queue.finish();
-            assert_eq!(digest.recv().unwrap(), expected);
-            while free.len() < 16 {
-                free.push(back.recv().unwrap().unwrap());
-            }
-        });
-    }
-    for (layout, half_segs) in [(Layout::Halves, 16), (Layout::Halves, 32), (Layout::Halves, 128), (Layout::Ring, 32)] {
-        let mut stream = Stream::new(half_segs, threads - 1, Wake::Half, layout, false);
-        let name = format!("write 64 KiB at a time into the owned buffer, {layout:?}, 2 x {} MiB", half_segs * 64 >> 10);
-        report(&name, &mut || assert_eq!(through_stream(&mut stream, source, SEG), expected));
-    }
-    {
-        let mut stream = Stream::new(32, threads - 1, Wake::Every, Layout::Halves, false);
-        report("  the same, Halves, 2 x 2 MiB, waking a thread at every commit", &mut || assert_eq!(through_stream(&mut stream, source, SEG), expected));
-    }
-    println!(" The hashing alone: the data already in place, nothing written");
-    report("hash_multithreaded on the message in memory", &mut || assert_eq!(blake3_servil::hash_multithreaded(source), expected));
-    {
-        let mut stream = Stream::new(32, threads - 1, Wake::Half, Layout::Halves, false);
-        // Fill the buffer once; the commits then hash whatever it holds.
-        report("owned buffer, Halves, 2 x 2 MiB, commits without writing", &mut || {
-            let mut left = len;
-            while left > 0 {
-                let n = stream.space().len().min(SEG).min(left);
-                stream.commit(n);
-                left -= n;
-            }
-            std::hint::black_box(stream.finish());
-        });
-    }
     }
     eprintln!("host_lab: {}", clocks::load::describe(&clocks::load::windows()));
 }
