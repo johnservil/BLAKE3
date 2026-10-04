@@ -6,6 +6,8 @@ use std::io;
 use std::io::prelude::*;
 use std::path::{Path, PathBuf};
 
+mod stream;
+
 #[cfg(test)]
 mod unit_tests;
 
@@ -165,6 +167,22 @@ impl Args {
 }
 
 fn hash_path(args: &Args, path: &Path) -> anyhow::Result<blake3::OutputReader> {
+    // probe/b3sum-stream: plain mode reads go into the stream.
+    let plain = !args.keyed() && args.inner.derive_key.is_none();
+    if plain && path != Path::new("-") {
+        let file = File::open(path)?;
+        #[cfg(unix)]
+        if MAP && let Some(map) = mapped_if_cached(&file) {
+            let mut hasher = args.base_hasher.clone();
+            hasher.update_multithreaded(&map);
+            let mut output_reader = hasher.finalize_xof();
+            output_reader.set_position(args.seek());
+            return Ok(output_reader);
+        }
+        let mut output_reader = stream::hash_reader(file)?;
+        output_reader.set_position(args.seek());
+        return Ok(output_reader);
+    }
     let mut hasher = args.base_hasher.clone();
     if path == Path::new("-") {
         if args.keyed() {
@@ -219,6 +237,10 @@ fn mapped_if_cached(file: &File) -> Option<memmap2::Mmap> {
 /// read's copy into a cached buffer faults nothing.
 #[cfg(unix)]
 const MAP_LEN: usize = 512 << 10;
+
+/// probe/b3sum-stream: whether a file in the page cache is mapped (else
+/// read into the stream).
+const MAP: bool = true;
 
 /// The read size: each piece is hashed over the pool while the next is read.
 const PIECE: usize = 4 << 20;
