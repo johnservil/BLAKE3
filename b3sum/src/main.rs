@@ -238,9 +238,9 @@ fn mapped_if_cached(file: &File) -> Option<memmap2::Mmap> {
 #[cfg(unix)]
 const MAP_LEN: usize = 512 << 10;
 
-/// probe/b3sum-stream: whether a file in the page cache is mapped (else
+/// probe/b3sum-stream-nomap: whether a file in the page cache is mapped (else
 /// read into the stream).
-const MAP: bool = true;
+const MAP: bool = false;
 
 /// The read size: each piece is hashed over the pool while the next is read.
 const PIECE: usize = 4 << 20;
