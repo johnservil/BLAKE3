@@ -187,9 +187,12 @@
 extern crate std;
 
 #[cfg(test)]
-mod each;
-pub use each::hash_each_with;
 mod test;
+
+#[cfg(feature = "std")]
+mod each;
+#[cfg(feature = "std")]
+pub use each::hash_each_with;
 
 #[doc(hidden)]
 #[deprecated(since = "1.8.0", note = "use the hazmat module instead")]
