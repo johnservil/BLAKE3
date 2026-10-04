@@ -1,0 +1,2 @@
+Promoted to servil (October 4, 2026, from candidate/no-linger, 6c87273..21a3684): outboard_with and verify_range_with, new functions only.
+Mac: test job 1207 passed; perf_regress job 1208 held blake3-servil-mt solo LentMessages 64 B +3.3% (pairs -0.8 +0.6 +4.0 +8.2 +2.0 +4.0 +2.6 +4.7%), a path the change does not touch: code layout, as PROCEDURES reads a lone 64 B hold near the margin. VM: the pre-commit gate found no cell slower.
