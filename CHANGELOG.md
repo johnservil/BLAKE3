@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- `hash_each_with(mode, items, out)` hashes a collection of messages of any
+  lengths in one call, short ones side by side in the SIMD lanes: on an
+  Apple M4 Max a repository's objects or a store's files under 16 KiB take
+  about a quarter less time than one `hash` call each.
+- Verified streaming and range reads: `outboard_with` and
+  `outboard_multithreaded_with` return a message's hash and its outboard,
+  the parent nodes above its 16 KiB groups (the layout iroh-blobs stores),
+  and `verify_range_with` checks any range of whole groups against the
+  hash as it arrives. Building an outboard costs about what hashing costs.
+- Worker threads sleep as soon as they find nothing to take; nothing keeps
+  running between calls. `Hasher::update_multithreaded` splits updates of
+  512 KiB or more; a long message read in shorter pieces hashes fastest
+  through `Queue::pieces`.
 - `b3sum` hashes on this crate's own worker threads instead of Rayon's.
   A file of 512 KiB or more already in the page cache is mapped and
   hashed in place; any other input, standard input included, is read
