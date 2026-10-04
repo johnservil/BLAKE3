@@ -66,6 +66,9 @@
 //! of use and the lowest latency for one input. Each call's own
 //! documentation gives its speed and its rules. Beside them:
 //!
+//! - **A collection of messages of different lengths** (a tree's files, a
+//!   repository's objects), all in memory: [`hash_each_with`] hashes them
+//!   in one call, short ones side by side in the SIMD lanes.
 //! - **Keyed hashing and key derivation** run at plain hashing's speed in
 //!   every call: [`keyed_hash`], [`derive_key`], and a [`Mode`] for every
 //!   other one: each one-shot call's `_with` form ([`hash_with`],
@@ -95,7 +98,8 @@
 //!   [`derive_key`], [`hash_with`], [`hash_many`], [`hash_many_with`],
 //!   [`Hasher::update`] and [`Hasher::finalize`], and [`OutputReader`].
 //!   [`Hasher::update_reader`] uses a 1 MiB buffer while it reads past
-//!   64 KiB, freed when it returns.
+//!   64 KiB, and [`hash_each_with`] 32 bytes for each chunk of its messages
+//!   of 2 to 15 chunks, each freed when it returns.
 //! - **Multithreaded calls** allocate nothing below 512 KiB, where they
 //!   hash on the calling thread. Above it they keep a list of the pieces
 //!   they hand out, freed when they return: 48 bytes for each 128 KiB of
@@ -188,6 +192,11 @@ extern crate std;
 
 #[cfg(test)]
 mod test;
+
+#[cfg(feature = "std")]
+mod each;
+#[cfg(feature = "std")]
+pub use each::hash_each_with;
 
 #[doc(hidden)]
 #[deprecated(since = "1.8.0", note = "use the hazmat module instead")]
