@@ -111,6 +111,24 @@ The two added APIs share the batched group hashing of `outboard.rs`
 (`group_cvs_into`); `hash_each_with` lanes its own chunks. A stream, if it
 lands, would hash its segments the same way.
 
+### Many messages at once: the caller gathers, or the Hasher does (for Zooko)
+
+The one large cell BLAKE3 servil loses (Mac job 1213: 0.504 ns/B against
+SHA-256's 0.309) flips when each message's pieces reach `Hasher::update` in
+whole 16 KiB from a 16 KiB boundary of the message (probe/gather-16k, Mac
+job 1215, the benchmark's schedule, the copy charged): 0.283 ns/B, and 0.251
+gathering 64 KiB, against 0.484 updating per piece (VM alike: 0.297, 0.268,
+0.472). Updates of 16 KiB or more off that boundary gain a tenth (0.424).
+Two ways to the cell, either a decision of Zooko's:
+- **The caller's job** (his contract idea of October 3): `Hasher::update`'s
+  docs say it is fastest given whole multiples of 16 KiB from a 16 KiB
+  boundary, and the benchmark's servil contenders gather so in this cell
+  (a change to what the benchmark asks). No code in the crate; the memory
+  (16 KiB a message) is the program's to choose.
+- **The Hasher's**: it keeps a 16 KiB staging buffer and gathers itself;
+  the cell stays as it is, and every `Hasher` grows from about 1.9 KiB to
+  about 18 KiB (git-internal already boxes `Hasher` for its size).
+
 ### The measurements that settle them
 
 Each with the question it answers. Every cell charges the program's
