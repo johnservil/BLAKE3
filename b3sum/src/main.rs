@@ -164,7 +164,97 @@ impl Args {
     }
 }
 
-fn hash_path(args: &Args, path: &Path) -> anyhow::Result<blake3::OutputReader> {
+/// A file's digest: the extended output, or (through the queue) its hash.
+enum Out {
+    Xof(blake3::OutputReader),
+    Hash([u8; blake3::OUT_LEN]),
+}
+
+impl Out {
+    fn fill(&mut self, buf: &mut [u8]) {
+        match self {
+            Out::Xof(o) => o.fill(buf),
+            Out::Hash(h) => {
+                let n = buf.len().min(h.len());
+                buf[..n].copy_from_slice(&h[..n]);
+                buf[n..].fill(0);
+            }
+        }
+    }
+}
+
+/// probe/b3sum-queue: the reads of a file not mapped, in plain mode with the
+/// default output, go through `Queue::pieces`: owned 4 MiB buffers, four in
+/// flight, back through a channel.
+struct Back(std::sync::mpsc::Sender<Vec<u8>>, std::sync::mpsc::Sender<blake3::Hash>);
+
+impl blake3::PieceHandler for Back {
+    type Buffer = Vec<u8>;
+    fn piece_done(&mut self, buffer: Vec<u8>) {
+        self.0.send(buffer).unwrap();
+    }
+    fn finished(&mut self, hash: blake3::Hash) {
+        self.1.send(hash).unwrap();
+    }
+}
+
+const IN_FLIGHT: usize = 4;
+
+struct Piped {
+    queue: blake3::Queue<Back, blake3::shape::Pieces>,
+    buffers: std::sync::mpsc::Receiver<Vec<u8>>,
+    hashes: std::sync::mpsc::Receiver<blake3::Hash>,
+    free: Vec<Vec<u8>>,
+}
+
+fn through_queue(reader: &mut impl Read) -> io::Result<[u8; blake3::OUT_LEN]> {
+    thread_local! {
+        static PIPED: std::cell::RefCell<Option<Piped>> = const { std::cell::RefCell::new(None) };
+    }
+    PIPED.with_borrow_mut(|piped| {
+        let p = piped.get_or_insert_with(|| {
+            let (btx, buffers) = std::sync::mpsc::channel();
+            let (htx, hashes) = std::sync::mpsc::channel();
+            let queue = blake3::Queue::pieces(blake3::Mode::Hash, Back(btx, htx));
+            Piped { queue, buffers, hashes, free: (0..IN_FLIGHT).map(|_| vec![0; PIECE]).collect() }
+        });
+        let result = loop {
+            let mut buffer = match p.free.pop() {
+                Some(b) => b,
+                None => p.buffers.recv().expect("the queue hands every buffer back"),
+            };
+            buffer.resize(PIECE, 0);
+            let len = match fill(reader, &mut buffer) {
+                Ok(len) => len,
+                Err(e) => break Err(e),
+            };
+            buffer.truncate(len);
+            p.queue.submit(buffer);
+            if len < PIECE {
+                break Ok(());
+            }
+        };
+        p.queue.finish();
+        let hash = p.hashes.recv().expect("the queue hands back each message's hash");
+        while p.free.len() < IN_FLIGHT {
+            p.free.push(p.buffers.recv().expect("the queue hands every buffer back"));
+        }
+        result.map(|()| *hash.as_bytes())
+    })
+}
+
+fn hash_path(args: &Args, path: &Path) -> anyhow::Result<Out> {
+    let piped = !args.keyed() && args.inner.derive_key.is_none() && args.len() == blake3::OUT_LEN as u64 && args.seek() == 0 && !args.raw();
+    if piped && path != Path::new("-") {
+        let mut file = File::open(path)?;
+        #[cfg(unix)]
+        if let Some(map) = mapped_if_cached(&file) {
+            let mut hasher = args.base_hasher.clone();
+            hasher.update_multithreaded(&map);
+            return Ok(Out::Xof(hasher.finalize_xof()));
+        }
+        return Ok(Out::Hash(through_queue(&mut file)?));
+    }
     let mut hasher = args.base_hasher.clone();
     if path == Path::new("-") {
         if args.keyed() {
@@ -184,7 +274,7 @@ fn hash_path(args: &Args, path: &Path) -> anyhow::Result<blake3::OutputReader> {
     }
     let mut output_reader = hasher.finalize_xof();
     output_reader.set_position(args.seek());
-    Ok(output_reader)
+    Ok(Out::Xof(output_reader))
 }
 
 /// `file` mapped, when it is at least MAP_LEN long and in the page cache
@@ -288,7 +378,7 @@ fn update_from(hasher: &mut blake3::Hasher, mut reader: impl Read + Send) -> io:
     })
 }
 
-fn write_hex_output(mut output: blake3::OutputReader, args: &Args) -> anyhow::Result<()> {
+fn write_hex_output(mut output: Out, args: &Args) -> anyhow::Result<()> {
     // Encoding multiples of the 64 bytes is most efficient.
     // TODO: This computes each output block twice when the --seek argument isn't a multiple of 64.
     // We'll refactor all of this soon anyway, once SIMD optimizations are available for the XOF.
@@ -304,7 +394,8 @@ fn write_hex_output(mut output: blake3::OutputReader, args: &Args) -> anyhow::Re
     Ok(())
 }
 
-fn write_raw_output(output: blake3::OutputReader, args: &Args) -> anyhow::Result<()> {
+fn write_raw_output(output: Out, args: &Args) -> anyhow::Result<()> {
+    let Out::Xof(output) = output else { unreachable!("raw output takes the extended output") };
     let mut output = output.take(args.len());
     let stdout = std::io::stdout();
     let mut handler = stdout.lock();
