@@ -32,13 +32,33 @@ const GROUP_CHUNKS: u64 = (GROUP_LEN / CHUNK_LEN) as u64;
 /// assert!(verify_range_with(Mode::Hash, &hash, input.len() as u64, &outboard, 2, range));
 /// ```
 pub fn outboard_with(mode: Mode, input: &[u8]) -> (Hash, Vec<u8>) {
+    outboard(mode, input, false)
+}
+
+/// [`outboard_with`] over several threads, with the same result: from
+/// 512 KiB the groups hash on the calling thread and this crate's worker
+/// threads at once, under the rules of
+/// [`hash_multithreaded`](crate::hash_multithreaded); a shorter message on
+/// the calling thread alone. The parent nodes above the groups (one for
+/// each 16 KiB) are computed on the calling thread.
+///
+/// ```
+/// use blake3_servil::Mode;
+/// let input = vec![9u8; 3 << 20];
+/// assert_eq!(blake3_servil::outboard_multithreaded_with(Mode::Hash, &input), blake3_servil::outboard_with(Mode::Hash, &input));
+/// ```
+pub fn outboard_multithreaded_with(mode: Mode, input: &[u8]) -> (Hash, Vec<u8>) {
+    outboard(mode, input, true)
+}
+
+fn outboard(mode: Mode, input: &[u8], pooled: bool) -> (Hash, Vec<u8>) {
     let chunks = chunks_of(input.len() as u64);
     if chunks <= GROUP_CHUNKS {
         return (crate::hash_with(mode, input), Vec::new());
     }
     let (key, flags) = mode.key_and_flags();
     let platform = Platform::detect();
-    let cvs = group_cvs(input, 0, &key, flags, platform);
+    let cvs = if pooled { crate::lanes::group_cvs(input, &key, flags) } else { group_cvs(input, 0, &key, flags, platform) };
     let mut out = Vec::with_capacity(64 * (cvs.len() - 1));
     let (left, right) = node(&cvs, chunks, &key, flags, platform, &mut out);
     (crate::parent_node_output(&left, &right, &key, flags, platform).root_hash(), out)
@@ -122,11 +142,19 @@ fn subtree(cvs: &[CVBytes], size: u64, key: &CVWords, flags: u8, platform: Platf
 const BATCH_GROUPS: usize = 64;
 
 /// The chaining value, as a non-root subtree, of each group of `input`, the
-/// message's bytes from group `first` on. Full groups go in batches through
-/// the many-inputs kernels, back to back; a last, shorter group alone.
+/// message's bytes from group `first` on.
 fn group_cvs(input: &[u8], first_group: u64, key: &CVWords, flags: u8, platform: Platform) -> Vec<CVBytes> {
+    let mut cvs = vec![[0u8; 32]; input.len().div_ceil(GROUP_LEN).max(1)];
+    group_cvs_into(input, first_group, key, flags, platform, &mut cvs);
+    cvs
+}
+
+/// [`group_cvs`] into `cvs`, one per group. Full groups go in batches
+/// through the many-inputs kernels, back to back; a last, shorter group
+/// alone.
+pub(crate) fn group_cvs_into(input: &[u8], first_group: u64, key: &CVWords, flags: u8, platform: Platform, cvs: &mut [CVBytes]) {
     let full = input.len() / GROUP_LEN;
-    let mut cvs = Vec::with_capacity(full + 1);
+    let mut done = 0;
     let per_batch = BATCH_GROUPS * GROUP_CHUNKS as usize;
     let mut level = vec![0u8; per_batch * 32];
     let mut next = vec![0u8; per_batch / 2 * 32];
@@ -145,13 +173,15 @@ fn group_cvs(input: &[u8], first_group: u64, key: &CVWords, flags: u8, platform:
             values /= 2;
             level[..values * 32].copy_from_slice(&next[..values * 32]);
         }
-        cvs.extend(level[..n * 32].chunks_exact(32).map(|c| <CVBytes>::try_from(c).unwrap()));
+        for c in level[..n * 32].chunks_exact(32) {
+            cvs[done].copy_from_slice(c);
+            done += 1;
+        }
         first += n;
     }
-    if input.len() > full * GROUP_LEN {
-        cvs.push(group_cv(&input[full * GROUP_LEN..], (first_group + full as u64) * GROUP_CHUNKS, key, flags));
+    if input.len() > full * GROUP_LEN || input.is_empty() {
+        cvs[done] = group_cv(&input[full * GROUP_LEN..], (first_group + full as u64) * GROUP_CHUNKS, key, flags);
     }
-    cvs
 }
 
 /// A group's chaining value as a non-root subtree at chunk `start`.
@@ -197,6 +227,7 @@ mod test {
                 let message = &input[..len];
                 let (hash, outboard) = outboard_with(mode, message);
                 assert_eq!(hash, crate::hash_with(mode, message), "len {len}");
+                assert_eq!((hash, outboard.clone()), outboard_multithreaded_with(mode, message), "multithreaded, len {len}");
                 let groups = groups_of(chunks_of(len as u64));
                 assert_eq!(outboard.len() as u64, 64 * (groups - 1));
                 let range = |a: u64, b: u64| &message[a as usize * GROUP_LEN..(b as usize * GROUP_LEN).min(len)];

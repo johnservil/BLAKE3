@@ -268,6 +268,24 @@ fn hash_many_over_pool(input: &[u8], message_len: usize, key: &crate::CVWords, f
     pool.run_job(work, pieces.len(), 0, pool_platform());
 }
 
+/// The chaining value of each 16 KiB group of `input` (crate::outboard),
+/// over the machine's threads: below MIN_SPLIT_LEN on this thread.
+pub(crate) fn group_cvs(input: &[u8], key: &crate::CVWords, flags: u8) -> Vec<ChainingValue> {
+    let g = crate::outboard::GROUP_LEN;
+    let mut cvs = vec![[0u8; 32]; input.len().div_ceil(g).max(1)];
+    let pool = pool();
+    let callers = pool.callers.fetch_add(1, Ordering::SeqCst) + 1;
+    let _caller = Caller(&pool.callers);
+    if input.len() < MIN_SPLIT_LEN || callers >= pool.cpus {
+        crate::outboard::group_cvs_into(input, 0, key, flags, Platform::detect(), &mut cvs);
+        return cvs;
+    }
+    let pieces = cut_messages(cvs.len(), g, pool.cpus);
+    let work = Work::Groups { input, pieces: &pieces, key: *key, flags, cvs: cvs.as_mut_ptr() };
+    pool.run_job(work, pieces.len(), 0, pool_platform());
+    cvs
+}
+
 /// Cut `count` messages in slots of `message_len` bytes into ranges for `threads`
 /// threads, in order: each range holds about [`next_piece_len`] of the
 /// bytes that remain, at least one message, so ranges shrink toward the
@@ -326,6 +344,15 @@ enum Work<'a> {
         counter: u64,
         flags: u8,
     },
+    /// Ranges of a message's 16 KiB groups (`offset` and `len` count
+    /// groups); one chaining value each (crate::outboard).
+    Groups {
+        input: &'a [u8],
+        pieces: &'a [Piece],
+        key: crate::CVWords,
+        flags: u8,
+        cvs: *mut ChainingValue,
+    },
     /// Ranges of a batch of messages of one length, each in its slot of
     /// whole blocks in `input` (`offset` and `len` count messages); one
     /// digest each.
@@ -374,6 +401,14 @@ impl Job<'_> {
                 let counter = counter + (piece.offset / CHUNK_LEN) as u64;
                 let cv = crate::hash_all_at_once::<crate::join::SerialJoin>(bytes, key, counter, *flags, platform).chaining_value();
                 unsafe { *cvs.add(index) = cv };
+            }
+            Work::Groups { input, pieces, key, flags, cvs } => {
+                let piece = pieces[index];
+                let g = crate::outboard::GROUP_LEN;
+                let bytes = &input[piece.offset * g..((piece.offset + piece.len) * g).min(input.len())];
+                // Sound: this range of chaining values belongs to piece `index` alone.
+                let out = unsafe { core::slice::from_raw_parts_mut(cvs.add(piece.offset), piece.len) };
+                crate::outboard::group_cvs_into(bytes, piece.offset as u64, key, *flags, platform, out);
             }
             Work::Messages { input, message_len, key, flags, pieces, outputs } => {
                 let piece = pieces[index];

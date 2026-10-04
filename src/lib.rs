@@ -207,7 +207,7 @@ pub use each::hash_each_with;
 #[cfg(feature = "std")]
 mod outboard;
 #[cfg(feature = "std")]
-pub use outboard::{outboard_with, verify_range_with, GROUP_LEN};
+pub use outboard::{outboard_multithreaded_with, outboard_with, verify_range_with, GROUP_LEN};
 
 #[doc(hidden)]
 #[deprecated(since = "1.8.0", note = "use the hazmat module instead")]
