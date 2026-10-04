@@ -8,6 +8,128 @@ behind them, the decisions with their dates, the open questions (each
 marked **Q**), and how the benchmark measures each call. bench-hashes'
 `FROZEN.md` turns it into measurements.
 
+## Use cases, the APIs they need, and the measurements to settle them (October 3, 2026)
+
+Zooko's plan: catalogue the programs that hash, and the APIs, kept and
+considered; then build the benchmarks (and the tests) that settle every
+question below, before designing any API or the mechanisms they might
+share. Fear of the implementation's complexity exploding is answered by
+measurements and tests, not by guesses.
+
+### What programs hash, and how
+
+| Program | What it hashes | How the data comes |
+|---|---|---|
+| b3sum, a backup of one large file, a container layer | one message, MB to TB | read or downloaded as it goes |
+| `find -print0 \| xargs -0 b3sum`, `git add .` | many files, mostly KB, a few large | on disk, all available |
+| `for F in ...; do b3sum $F; done` | one small file per process | a new process each time |
+| Zero-knowledge proofs (Remco: 2^20 messages of 256 B), Merkle tree layers (64 B nodes) | many messages of one length | in memory |
+| A server receiving uploads; Iroh and QUIC transfers; BitTorrent | many messages at once, KB to GB | arriving interleaved, in packets |
+| TLS, WireGuard, HMAC per packet, signatures | one small message | in memory, latency-bound |
+| Content-addressed stores naming a collection: Snix castore, Casita, Bazel REv2/REv3 (every input of every action), Nix (store paths as NARs), git (objects: blobs, trees, commits) | thousands to millions of items, mostly small, every length; each item's hash is its name, used to look it up, to refer to it (a directory lists its entries' hashes), and to check it | available at once (a tree being added, a pack being indexed), or one after another from a decompressor |
+| Hugging Face Buckets (Xet), Epic's Lore, Peergos | large files cut into content-defined chunks (Xet: about 64 KiB), a tree over the chunks' hashes | chunks one after another |
+| Roc bundles, Nixtamal, Subresource Integrity | one download or bundle, verified | at network or decompression speed |
+| Iroh-blobs, Bao; Nix range reads (`narOffset`); SRI as it could be | verification before processing (CVE-2024-45593: a cache in the download path reached vulnerable code before the final hash check), and fetching one range of a file with its proof | a stream or a range, with the tree's inner chaining values |
+
+Users and possible users today: NixOS/nix (issue 11999), Nixtamal, Snix,
+Roc, Hugging Face Buckets, Epic Games Lore, BDASL, Peergos, Casita;
+Subresource Integrity, Laut, Gradient, git (libra-tools git-internal),
+Bazel REv2/REv3. Many single streams arrive at network or decompression
+speed, below one core's hashing rate (about 4-6 GB/s on the M4 Max), where
+a faster hash saves CPU time and energy rather than waiting.
+
+### APIs kept, and the use case that pays for each
+
+- `hash`, `keyed_hash`, `derive_key`, `hash_with(mode, ...)`: one message
+  in memory on the caller's thread; nearly every program, and the fastest
+  path for one small message.
+- `Hasher` (`update`, `finalize`, `finalize_xof`, `update_reader`, keyed
+  and derive-key forms): data in pieces; a `Hasher` per upload on a
+  server; long outputs.
+- `hash_multithreaded`: one large message in memory (about 6x `hash` at
+  8 MiB on the M4 Max).
+- `hash_many`, `hash_many_multithreaded`: many messages of one length
+  (about 5x a loop of `hash` at 64 B).
+- `hazmat`: subtrees at an offset and their merging, the base of Bao.
+- `initialize`, `initialize_multithreaded`, `kernel_report`, `Mode`.
+- **Questioned**: `Hasher::update_multithreaded`. Without lingering it
+  helps only pieces of 512 KiB and more, the stream's use case done less
+  well; if the stream lands, it likely goes (Simplicity, a second
+  solution), and b3sum's read path moves to the stream.
+- **Leaving**: the `Queue`, in its three shapes; the stream replaces it.
+
+### APIs considered, and why
+
+1. **Verified streaming (Bao, Iroh-blobs)**: build a message's outboard
+   (the tree's inner chaining values) at full speed, and verify a stream
+   or a range against it as it arrives. The capability that sets BLAKE3
+   apart; the `bao` and `bao-tree` crates offer it, one subtree at a time,
+   with neither many cores nor the widest SIMD.
+2. **A collection of messages of different lengths, hashed together**:
+   a list of messages in, a hash per message out, 16 small messages side
+   by side in the SIMD lanes (as `hash_many` does for one length, about
+   5x), and over the pool's threads. For the content-addressed stores,
+   git, Bazel, and Nix: a small message leaves most of the 16 lanes idle.
+3. **The stream** (the plan of "Decided October 3, 2026", below): one to
+   three long messages arriving faster than one core hashes; 1.33x the
+   next-best way with one stream, 1.10x with two, level at four, 19%
+   slower at sixteen (probe/owned-buffer, Mac job 1196, on battery).
+   Heavy in complexity, so weighed again as measurements come; it may
+   also pay in b3sum's own reads and in building a Bao outboard (its
+   segment results are most of one).
+
+All three hash many independent pieces in SIMD lanes and over the pool,
+and keep each piece's chaining value (16-chunk groups, whole small
+messages, 64 KiB segments): one mechanism might serve them all, a reason
+to design them together once the measurements below are in hand.
+
+### The measurements that settle them
+
+Each with the question it answers. Every cell charges the program's
+write and the use of each hash (decisions 1 and 5 below). Each API's
+implementation comes with the fork's tests against fixed answers
+(`QUALITY.md`).
+
+1. **b3sum's read paths** (`bench-hashes b3sum`, as it is: files from
+   4 KiB to 1 GiB and a tree of 1000 files, warm and cold; each variant a
+   fork branch built by `tools/b3sum-contenders.sh`): today's (a mapped
+   file through `hash_multithreaded`, otherwise 4 MiB reads through
+   `update_multithreaded`); reads into the stream's space; reads into
+   buffers handed to `Queue::pieces`; on Linux, io_uring reads into the
+   stream's space; one thread reading and calling `update`; official
+   b3sum. Settles whether the stream pays in b3sum, warm and cold, and
+   whether io_uring adds to it. With it, **one process per file** (the
+   `for` loop): 1000 files of 16 KiB, a b3sum process each, start to
+   exit; settles whether the start-up (the self-test, the pool) costs
+   more than the hashing.
+2. **A collection of items of different lengths**: a real collection's
+   sizes, in a fixed order (the objects of a git repository at a fixed
+   commit, the sizes listed in the code), in memory, each hashed once
+   and its hash stored in its slot; every contender's one-shot call per
+   item on one thread, and the same over the program's threads. Settles
+   what a varied-length batch call could win, against `hash_many` at one
+   length as the bound.
+3. **Bao**: build the outboard of a 1 GiB message in memory; verify a
+   1 GiB stream against it as it arrives in 16 KiB and 64 KiB pieces;
+   verify one 1 MiB range. Contenders: the `bao` and `bao-tree` crates,
+   later the fork's own; `hash_multithreaded` on the same 1 GiB as the
+   bound for building. Settles how far today's crates are from what the
+   hash allows.
+4. **Many messages at once, pieces gathered**: the existing cell, plus
+   BLAKE3 servil with each message's pieces gathered into 16 KiB before
+   each `update`. Settles the "16 KiB per update" obligation for a
+   `Hasher` per message.
+5. **Batches of 256 B messages, up to 2^20**: beside the 64 B batches.
+   Settles whether `hash_many` serves zero-knowledge proofs' messages as
+   it does Merkle nodes.
+6. **Several long streams at once**: 1, 2, 4, and 16 writer threads in one
+   program, each writing and hashing 16 MiB messages; contenders: each
+   message written whole then `hash_multithreaded`, a `Hasher` per writer,
+   later the stream. Settles where the stream stops paying.
+
+Order: 1 first (the stream's main question, on a tool that exists),
+then 2 and 3 (the two new capabilities), then 4 to 6.
+
 ## Decided October 3, 2026, to build next (Zooko)
 
 1. **Every cell charges the program's write**: each byte is written into
