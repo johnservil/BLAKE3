@@ -1306,6 +1306,15 @@ item out when it lands or is rejected.
 
 ### Speed
 
+- **b3sum's read paths on native Linux** (needs a Linux computer, not a VM
+  guest; Zooko, October 3, 2026): repeat measurement 1 of
+  docs/api-design.md (the probe/b3sum-* branches, `bench-hashes b3sum`),
+  and add io_uring to both today's double-buffered reader and the stream.
+  The stream stays until then (on the Mac, jobs 1197-1198, today's reader
+  thread beat it). If today's double buffering still wins on both, move it
+  into the crate so other programs get it without writing it:
+  `Hasher::update_reader`, which reads a reader on one thread today, is
+  its natural home.
 - The queue redesigned (October 3, 2026, under discussion with Zooko):
   the calling thread hashes what no worker has taken when it needs room,
   workers woken by backlog and sleeping when none waits, no delivery
