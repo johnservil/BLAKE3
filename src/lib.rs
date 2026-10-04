@@ -187,6 +187,8 @@
 extern crate std;
 
 #[cfg(test)]
+mod each;
+pub use each::hash_each_with;
 mod test;
 
 #[doc(hidden)]
