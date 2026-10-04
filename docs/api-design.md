@@ -118,6 +118,12 @@ implementation comes with the fork's tests against fixed answers
    hashing. One process per file: 1.40 ms a file today, against official
    b3sum's 1.58, the same as on one thread: the start-up is the process's,
    not the crate's.
+   *Libra* (git-internal's main user; bench-hashes apps/libra-bench, Mac
+   job 1202, October 4, 2026): in Libra's own benchmark the hash is a small
+   part of every scenario (SHA-1 and BLAKE3 level, the fork's kernels level);
+   hashing in place saves 7% in `fsck` and 12% in `add`, by the copies it
+   removes; its time goes to thread handoffs (about 106 context switches per
+   file added, 330 per object checked).
 2. **A collection of items of different lengths**: a real collection's
    sizes, in a fixed order (the objects of a git repository at a fixed
    commit, the sizes listed in the code), in memory, each hashed once
