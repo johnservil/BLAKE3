@@ -30,7 +30,6 @@ import os
 import re
 import shutil
 import subprocess
-import time
 import sys
 import tempfile
 from pathlib import Path
@@ -185,10 +184,6 @@ def require_sme2_kernel(exe):
                            "point CC at a compiler that assembles SME2 (CC=clang-19 in the VM)")
 
 
-# Seconds between the builds and the first run (compare).
-SETTLE_SECONDS = 10
-
-
 def compare(old_rev, new):
     """Compare the fork at `old_rev` with `new` (a commit, or None for the
     working tree): bench-hashes regress. Returns its exit code."""
@@ -196,11 +191,6 @@ def compare(old_rev, new):
     new_exe = side_bench("new", working_tree_commit() if new is None else new)
     name = "the working tree" if new is None else new
     print(f"perf_regress: {name} against {old_rev}", file=sys.stderr, flush=True)
-    # The machine settles after the builds before the first run: on the Mac,
-    # six checks in a row (jobs 1251-1263, October 5, 2026) found one
-    # half-second window of one run with about 3 CPUs of other programs,
-    # right after the two builds, and gave no verdict.
-    time.sleep(SETTLE_SECONDS)
     return subprocess.run([new_exe, "regress", old, new_exe], env=ENV).returncode
 
 
