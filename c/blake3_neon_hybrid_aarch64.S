@@ -181,6 +181,32 @@
 .endm
 
 // Same, with the input's running pointer in register p.
+// Scalar half-G with the message word's offset from a table: byte i of
+// the round's row at t (register m's number, as SGA's).
+.macro SGA_T a, b, c, d, m, p, t, i
+    ldrb w\m, [\t, #\i]
+    ldr w\m, [\p, x\m]
+    add \a, \a, w\m
+    add \a, \a, \b
+    eor \d, \d, \a
+    ror \d, \d, #16
+    add \c, \c, \d
+    eor \b, \b, \c
+    ror \b, \b, #12
+.endm
+
+.macro SGB_T a, b, c, d, m, p, t, i
+    ldrb w\m, [\t, #\i]
+    ldr w\m, [\p, x\m]
+    add \a, \a, w\m
+    add \a, \a, \b
+    eor \d, \d, \a
+    ror \d, \d, #8
+    add \c, \c, \d
+    eor \b, \b, \c
+    ror \b, \b, #7
+.endm
+
 .macro SGA_R a, b, c, d, m, p, mx
     ldr \m, [\p, #\mx]
     add \a, \a, \m
@@ -3719,6 +3745,7 @@ blake3_hybrid_c1:
         stp x21, x22, [sp, #16]
         stp x23, x24, [sp, #32]
         stp x25, x26, [sp, #48]
+        stp x27, x28, [sp, #64]
         str x5, [sp, #176]
         cmp x1, #1
         csel x24, x6, x0, eq
@@ -3738,6 +3765,7 @@ blake3_hybrid_c1:
         mov w5, #64
         cmp x1, #1
         csel w0, w0, w5, eq
+        adr x27, blake3_hybrid_k1_schedule_end
 blake3_hybrid_k1_loop:
         mov w14, #58983
         movk w14, #27145, lsl #16
@@ -3751,118 +3779,27 @@ blake3_hybrid_k1_loop:
         lsr x20, x3, #32
         mov w21, w0
         mov w22, w2
-        SGA_R w6, w10, w14, w19, w23, x24, 0
-        SGA_R w7, w11, w15, w20, w23, x24, 8
-        SGA_R w8, w12, w16, w21, w23, x24, 16
-        SGA_R w9, w13, w17, w22, w23, x24, 24
-        SGB_R w6, w10, w14, w19, w23, x24, 4
-        SGB_R w7, w11, w15, w20, w23, x24, 12
-        SGB_R w8, w12, w16, w21, w23, x24, 20
-        SGB_R w9, w13, w17, w22, w23, x24, 28
-        SGA_R w6, w11, w16, w22, w23, x24, 32
-        SGA_R w7, w12, w17, w19, w23, x24, 40
-        SGA_R w8, w13, w14, w20, w23, x24, 48
-        SGA_R w9, w10, w15, w21, w23, x24, 56
-        SGB_R w6, w11, w16, w22, w23, x24, 36
-        SGB_R w7, w12, w17, w19, w23, x24, 44
-        SGB_R w8, w13, w14, w20, w23, x24, 52
-        SGB_R w9, w10, w15, w21, w23, x24, 60
-        SGA_R w6, w10, w14, w19, w23, x24, 8
-        SGA_R w7, w11, w15, w20, w23, x24, 12
-        SGA_R w8, w12, w16, w21, w23, x24, 28
-        SGA_R w9, w13, w17, w22, w23, x24, 16
-        SGB_R w6, w10, w14, w19, w23, x24, 24
-        SGB_R w7, w11, w15, w20, w23, x24, 40
-        SGB_R w8, w12, w16, w21, w23, x24, 0
-        SGB_R w9, w13, w17, w22, w23, x24, 52
-        SGA_R w6, w11, w16, w22, w23, x24, 4
-        SGA_R w7, w12, w17, w19, w23, x24, 48
-        SGA_R w8, w13, w14, w20, w23, x24, 36
-        SGA_R w9, w10, w15, w21, w23, x24, 60
-        SGB_R w6, w11, w16, w22, w23, x24, 44
-        SGB_R w7, w12, w17, w19, w23, x24, 20
-        SGB_R w8, w13, w14, w20, w23, x24, 56
-        SGB_R w9, w10, w15, w21, w23, x24, 32
-        SGA_R w6, w10, w14, w19, w23, x24, 12
-        SGA_R w7, w11, w15, w20, w23, x24, 40
-        SGA_R w8, w12, w16, w21, w23, x24, 52
-        SGA_R w9, w13, w17, w22, w23, x24, 28
-        SGB_R w6, w10, w14, w19, w23, x24, 16
-        SGB_R w7, w11, w15, w20, w23, x24, 48
-        SGB_R w8, w12, w16, w21, w23, x24, 8
-        SGB_R w9, w13, w17, w22, w23, x24, 56
-        SGA_R w6, w11, w16, w22, w23, x24, 24
-        SGA_R w7, w12, w17, w19, w23, x24, 36
-        SGA_R w8, w13, w14, w20, w23, x24, 44
-        SGA_R w9, w10, w15, w21, w23, x24, 32
-        SGB_R w6, w11, w16, w22, w23, x24, 20
-        SGB_R w7, w12, w17, w19, w23, x24, 0
-        SGB_R w8, w13, w14, w20, w23, x24, 60
-        SGB_R w9, w10, w15, w21, w23, x24, 4
-        SGA_R w6, w10, w14, w19, w23, x24, 40
-        SGA_R w7, w11, w15, w20, w23, x24, 48
-        SGA_R w8, w12, w16, w21, w23, x24, 56
-        SGA_R w9, w13, w17, w22, w23, x24, 52
-        SGB_R w6, w10, w14, w19, w23, x24, 28
-        SGB_R w7, w11, w15, w20, w23, x24, 36
-        SGB_R w8, w12, w16, w21, w23, x24, 12
-        SGB_R w9, w13, w17, w22, w23, x24, 60
-        SGA_R w6, w11, w16, w22, w23, x24, 16
-        SGA_R w7, w12, w17, w19, w23, x24, 44
-        SGA_R w8, w13, w14, w20, w23, x24, 20
-        SGA_R w9, w10, w15, w21, w23, x24, 4
-        SGB_R w6, w11, w16, w22, w23, x24, 0
-        SGB_R w7, w12, w17, w19, w23, x24, 8
-        SGB_R w8, w13, w14, w20, w23, x24, 32
-        SGB_R w9, w10, w15, w21, w23, x24, 24
-        SGA_R w6, w10, w14, w19, w23, x24, 48
-        SGA_R w7, w11, w15, w20, w23, x24, 36
-        SGA_R w8, w12, w16, w21, w23, x24, 60
-        SGA_R w9, w13, w17, w22, w23, x24, 56
-        SGB_R w6, w10, w14, w19, w23, x24, 52
-        SGB_R w7, w11, w15, w20, w23, x24, 44
-        SGB_R w8, w12, w16, w21, w23, x24, 40
-        SGB_R w9, w13, w17, w22, w23, x24, 32
-        SGA_R w6, w11, w16, w22, w23, x24, 28
-        SGA_R w7, w12, w17, w19, w23, x24, 20
-        SGA_R w8, w13, w14, w20, w23, x24, 0
-        SGA_R w9, w10, w15, w21, w23, x24, 24
-        SGB_R w6, w11, w16, w22, w23, x24, 8
-        SGB_R w7, w12, w17, w19, w23, x24, 12
-        SGB_R w8, w13, w14, w20, w23, x24, 4
-        SGB_R w9, w10, w15, w21, w23, x24, 16
-        SGA_R w6, w10, w14, w19, w23, x24, 36
-        SGA_R w7, w11, w15, w20, w23, x24, 44
-        SGA_R w8, w12, w16, w21, w23, x24, 32
-        SGA_R w9, w13, w17, w22, w23, x24, 60
-        SGB_R w6, w10, w14, w19, w23, x24, 56
-        SGB_R w7, w11, w15, w20, w23, x24, 20
-        SGB_R w8, w12, w16, w21, w23, x24, 48
-        SGB_R w9, w13, w17, w22, w23, x24, 4
-        SGA_R w6, w11, w16, w22, w23, x24, 52
-        SGA_R w7, w12, w17, w19, w23, x24, 0
-        SGA_R w8, w13, w14, w20, w23, x24, 8
-        SGA_R w9, w10, w15, w21, w23, x24, 16
-        SGB_R w6, w11, w16, w22, w23, x24, 12
-        SGB_R w7, w12, w17, w19, w23, x24, 40
-        SGB_R w8, w13, w14, w20, w23, x24, 24
-        SGB_R w9, w10, w15, w21, w23, x24, 28
-        SGA_R w6, w10, w14, w19, w23, x24, 44
-        SGA_R w7, w11, w15, w20, w23, x24, 20
-        SGA_R w8, w12, w16, w21, w23, x24, 4
-        SGA_R w9, w13, w17, w22, w23, x24, 32
-        SGB_R w6, w10, w14, w19, w23, x24, 60
-        SGB_R w7, w11, w15, w20, w23, x24, 0
-        SGB_R w8, w12, w16, w21, w23, x24, 36
-        SGB_R w9, w13, w17, w22, w23, x24, 24
-        SGA_R w6, w11, w16, w22, w23, x24, 56
-        SGA_R w7, w12, w17, w19, w23, x24, 8
-        SGA_R w8, w13, w14, w20, w23, x24, 12
-        SGA_R w9, w10, w15, w21, w23, x24, 28
-        SGB_R w6, w11, w16, w22, w23, x24, 40
-        SGB_R w7, w12, w17, w19, w23, x24, 48
-        SGB_R w8, w13, w14, w20, w23, x24, 16
-        SGB_R w9, w10, w15, w21, w23, x24, 52
+        adr x26, blake3_hybrid_k1_schedule
+blake3_hybrid_k1_round:
+        SGA_T w6, w10, w14, w19, 23, x24, x26, 0
+        SGA_T w7, w11, w15, w20, 23, x24, x26, 2
+        SGA_T w8, w12, w16, w21, 23, x24, x26, 4
+        SGA_T w9, w13, w17, w22, 23, x24, x26, 6
+        SGB_T w6, w10, w14, w19, 23, x24, x26, 1
+        SGB_T w7, w11, w15, w20, 23, x24, x26, 3
+        SGB_T w8, w12, w16, w21, 23, x24, x26, 5
+        SGB_T w9, w13, w17, w22, 23, x24, x26, 7
+        SGA_T w6, w11, w16, w22, 23, x24, x26, 8
+        SGA_T w7, w12, w17, w19, 23, x24, x26, 10
+        SGA_T w8, w13, w14, w20, 23, x24, x26, 12
+        SGA_T w9, w10, w15, w21, 23, x24, x26, 14
+        SGB_T w6, w11, w16, w22, 23, x24, x26, 9
+        SGB_T w7, w12, w17, w19, 23, x24, x26, 11
+        SGB_T w8, w13, w14, w20, 23, x24, x26, 13
+        SGB_T w9, w10, w15, w21, 23, x24, x26, 15
+        add x26, x26, #16
+        cmp x26, x27
+        b.ne blake3_hybrid_k1_round
         eor w6, w6, w14
         eor w7, w7, w15
         eor w8, w8, w16
@@ -3894,8 +3831,18 @@ blake3_hybrid_k1_loop:
         ldp x21, x22, [sp, #16]
         ldp x23, x24, [sp, #32]
         ldp x25, x26, [sp, #48]
+        ldp x27, x28, [sp, #64]
         add sp, sp, #1088
         ret
+blake3_hybrid_k1_schedule:
+        .byte 0, 4, 8, 12, 16, 20, 24, 28, 32, 36, 40, 44, 48, 52, 56, 60
+        .byte 8, 24, 12, 40, 28, 0, 16, 52, 4, 44, 48, 20, 36, 56, 60, 32
+        .byte 12, 16, 40, 48, 52, 8, 28, 56, 24, 20, 36, 0, 44, 60, 32, 4
+        .byte 40, 28, 48, 36, 56, 12, 52, 60, 16, 0, 44, 8, 20, 32, 4, 24
+        .byte 48, 52, 36, 44, 60, 40, 56, 32, 28, 8, 20, 12, 0, 4, 24, 16
+        .byte 36, 56, 44, 20, 32, 48, 60, 4, 52, 12, 0, 40, 8, 24, 16, 28
+        .byte 44, 60, 20, 0, 4, 36, 32, 24, 56, 40, 8, 48, 12, 16, 28, 52
+blake3_hybrid_k1_schedule_end:
 _blake3_hybrid_k1_end:
 blake3_hybrid_k1_end:
 

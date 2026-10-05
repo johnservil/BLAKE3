@@ -151,6 +151,19 @@ class Scalar:
                 out += self.half_g(half, *q, sched[base + k + half])
         return out
 
+    def half_step_table(self, quads, base, table):
+        """half_step with each message word's offset from the round's row of
+        the schedule table at `table` (byte base + k + half), for a kernel
+        whose rounds are a loop."""
+        assert self.preg and not self.spill_d
+        out = []
+        for half in (0, 1):
+            for (ai, bi, ci, di), k in zip(quads, range(0, 8, 2)):
+                a, b, c, d = self.r(ai), self.r(bi), self.r(ci), self.r(di)
+                name = "SGA_T" if half == 0 else "SGB_T"
+                out.append(f"{name} {a}, {b}, {c}, {d}, {self.mtemp[1:]}, {self.preg}, {table}, {base + k + half}")
+        return out
+
     def prologue(self, ctr=None):
         """Key into the a/b rows. The chunk's counter goes to the frame, or
         stays in register `ctr` when the kernel keeps it there."""
@@ -472,6 +485,32 @@ MACROS = r"""
 .endm
 
 // Same, with the input's running pointer in register p.
+// Scalar half-G with the message word's offset from a table: byte i of
+// the round's row at t (register m's number, as SGA's).
+.macro SGA_T a, b, c, d, m, p, t, i
+    ldrb w\m, [\t, #\i]
+    ldr w\m, [\p, x\m]
+    add \a, \a, w\m
+    add \a, \a, \b
+    eor \d, \d, \a
+    ror \d, \d, #16
+    add \c, \c, \d
+    eor \b, \b, \c
+    ror \b, \b, #12
+.endm
+
+.macro SGB_T a, b, c, d, m, p, t, i
+    ldrb w\m, [\t, #\i]
+    ldr w\m, [\p, x\m]
+    add \a, \a, w\m
+    add \a, \a, \b
+    eor \d, \d, \a
+    ror \d, \d, #8
+    add \c, \c, \d
+    eor \b, \b, \c
+    ror \b, \b, #7
+.endm
+
 .macro SGA_R a, b, c, d, m, p, mx
     ldr \m, [\p, #\mx]
     add \a, \a, \m
@@ -717,7 +756,10 @@ def lean_kernel(name, sc, last):
     assert not sc.spill_d
     cname = name.replace("_k1", "_c1")
     GLOBALS.extend([cname, f"_{cname}"])
-    x_pairs, _ = callee_saved([sc], [], extra=[last])
+    # Rolled: one round in a loop, each word's offset from a table of the
+    # schedule (x26 its row, x27 its end), so a call after a pause fetches
+    # a fraction of the code.
+    x_pairs, _ = callee_saved([sc], [], extra=[last] + (["x27"] if ROLLED_K1 else []))
     L = []
     e = L.append
     e(f"{name}:")
@@ -737,11 +779,22 @@ def lean_kernel(name, sc, last):
     L += sc.prologue(ctr="x3")
     L += block_flags("w2", "w4", "w5", first=True)
     L += block_len("w0", "w4", "w5")
+    if ROLLED_K1:
+        e(f"adr x27, {name}_schedule_end")
     e(f"{name}_loop:")
     L += sc.block_start("w2", "w0", ctr="x3")
-    for r in range(7):
+    if ROLLED_K1:
+        e(f"adr x26, {name}_schedule")
+        e(f"{name}_round:")
         for quads, base in ((COLS, 0), (DIAGS, 8)):
-            L += sc.half_step(quads, SCHEDULE[r], base)
+            L += sc.half_step_table(quads, base, "x26")
+        e("add x26, x26, #16")
+        e("cmp x26, x27")
+        e(f"b.ne {name}_round")
+    else:
+        for r in range(7):
+            for quads, base in ((COLS, 0), (DIAGS, 8)):
+                L += sc.half_step(quads, SCHEDULE[r], base)
     L += sc.block_end()
     # Advance: to the next contiguous block, or to the last block when one
     # remains. This and the next block's flags and length below are off the
@@ -759,7 +812,16 @@ def lean_kernel(name, sc, last):
         e(f"ldp x{lo}, x{hi}, [sp, #{F_X19 + 8 * (lo - 19)}]")
     e(f"add sp, sp, #{FRAME}")
     e("ret")
+    if ROLLED_K1:
+        e(f"{name}_schedule:")
+        for row in SCHEDULE:
+            e(".byte " + ", ".join(str(4 * w) for w in row))
+        e(f"{name}_schedule_end:")
     return L
+
+
+# The one-chunk kernel's rounds as a loop (lean_kernel).
+ROLLED_K1 = True
 
 
 def kernel(name, scalars, units, partial=False):
