@@ -1449,7 +1449,9 @@ round-by-round report.
   share each level's call. Then one SME2 entry for all the groups: the
   chunk kernel's entry `hash16_chunks_at` takes a counter per group (flags
   bit 48, the table's cursor in the body's stack frame). 0.306 -> 0.286
-  -> 0.250 ns/B on the Mac (jobs 1255-1258, 1276-1279).
+  -> 0.250 ns/B on the Mac (jobs 1255-1258, 1276-1279). The SME2 entry
+  point (3% for 37 lines of assembly, a mode bit, and an 80-byte frame)
+  kept by Zooko's decision, October 5, 2026.
 - **Collections over the pool**: `Work::Each`, ranges of items of about a
   thread's share of the bytes through `hash_each_with`'s code; items of
   512 KiB or more through `hash_multithreaded`. Mac: 0.229 -> 0.029 ns/B
