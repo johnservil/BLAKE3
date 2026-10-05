@@ -1,6 +1,6 @@
-//! probe/b3sum-record-014: `bench-hashes b3sum` on the Mac (the runner's
-//! example job) for bench-hashes 0.14.0's record: official b3sum 1.8.2
-//! against the fork's b3sum at servil 31f5a25, from bench-hashes 7722f10; the
+//! probe/b3sum-record-015: `bench-hashes b3sum` on the Mac (the runner's
+//! example job) for bench-hashes 0.15.0's record: official b3sum 1.8.2
+//! against the fork's b3sum at servil 5454196, from bench-hashes 3476488; the
 //! files in the runner's home, the record in the job's results folder.
 
 use std::process::Command;
@@ -19,8 +19,8 @@ fn main() {
     let bench = fork.join("record-bench");
     let _ = std::fs::remove_dir_all(&bench);
     run(Command::new("git").args(["clone", "-q", "https://github.com/johnservil/bench-hashes"]).arg(&bench));
-    run(Command::new("git").current_dir(&bench).args(["checkout", "-q", "7722f1096d836c27b5213f0ff7949d384c328d4e"]));
-    let line = run(Command::new("sh").arg(bench.join("tools/b3sum-contenders.sh")).arg(fork).arg(home.join("b3sum-contenders")).arg("31f5a25"));
+    run(Command::new("git").current_dir(&bench).args(["checkout", "-q", "3476488a5b041edc1432cb155803dc00461ac7df"]));
+    let line = run(Command::new("sh").arg(bench.join("tools/b3sum-contenders.sh")).arg(fork).arg(home.join("b3sum-contenders")).arg("5454196"));
     let pick = |prefix: &str| line.split_whitespace().find(|w| w.starts_with(prefix)).unwrap().split_once('=').unwrap().1.to_owned();
     let target = home.join("record-bench-target");
     run(Command::new("cargo").current_dir(&bench).args(["build", "--release", "--locked"]).env("CARGO_TARGET_DIR", &target));
