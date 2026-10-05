@@ -1554,6 +1554,10 @@ round-by-round report.
   it ran 76% slower (64 B 0.672 -> 1.186 ns/B, 256 B +82%, batches of 16
   +37%; jobs 1378-1383, mains): the delivery thread's own pace is the
   queue's there.
+- **Two scalar chunks for two-chunk messages, tried and dropped**
+  (October 6, 2026, VM): k2 as two scalars (d rows spilled) instead of the
+  NEON pair: hash 2 KiB 919 -> 1291 ns. The spills sit on the chain; the
+  pair stays.
 - **Tried and dropped**: a single 16 KiB group on the NEON hybrids instead
   of SME2 (no change: `Sme2Turn::take(_, false)` keeps the platform); a
   10 s wait between the gate's builds and its runs (the gate's busy window
