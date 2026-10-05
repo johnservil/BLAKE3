@@ -1306,6 +1306,15 @@ item out when it lands or is rejected.
 
 ### Speed
 
+- **A cheaper rolled loop for the one-chunk kernel** (October 6, 2026):
+  rolling k1's seven rounds (081ffcd, 1.0 KB against 3.9) made `hash` of
+  a chunk or less a quarter to a third faster now and then, and 2-4%
+  slower nonstop (Zooko accepted it). The loop adds an offset load per
+  message word, about 12% more instructions per round on a chain that
+  already runs about 6 per cycle: one load of a word's offset shared by
+  both halves, two words' offsets from one load, or a round body that
+  permutes the message words in registers, may win the nonstop percent
+  back.
 - **The queue's long messages** (October 5, 2026): from 1 MiB the queue
   is slower than waiting for each call (64 MiB: 0.058 ns/B against
   hash_multithreaded's 0.046, Mac job 1213), where the stream prototype
