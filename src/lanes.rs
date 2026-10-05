@@ -1184,7 +1184,7 @@ impl Tasks {
         if pool.sme2 && self.sme2_sleeps.load(Ordering::SeqCst) && *self.sme2_asleep.lock().unwrap() {
             self.sme2_wake.notify_one();
         }
-        pool.wake_for(in_flight.saturating_sub(usize::from(pool.sme2)));
+        pool.wake_for(in_flight.div_ceil(2).saturating_sub(usize::from(pool.sme2)));
     }
 
     /// Make room in the list for `more` tasks: a queue makes room for the
