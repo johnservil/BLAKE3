@@ -1544,6 +1544,16 @@ round-by-round report.
   those still owed: hash_multithreaded 1-4 MiB 9% slower (1 MiB 87 -> 95
   us), 16 MiB 6% faster. A woken worker arrives 15-45 us after its wake,
   so a second chain of wakes helps less than the caller's extra wake costs.
+- **The delivery thread hashing tasks of one-block messages, tried and
+  dropped** (October 6, 2026, probe/own-tasks): on the VM a worker's wake
+  per task of 64 is most of Queue::submit's 60 ns for a 64-byte message,
+  and with closed tasks of messages of a block or less hashed by the
+  delivery thread (no wake) pipelined 64 B ran 16% faster there (the
+  others level once the delivery thread read a counter instead of taking
+  the state's lock to look for them). On the Mac, where a wake is cheap,
+  it ran 76% slower (64 B 0.672 -> 1.186 ns/B, 256 B +82%, batches of 16
+  +37%; jobs 1378-1383, mains): the delivery thread's own pace is the
+  queue's there.
 - **Tried and dropped**: a single 16 KiB group on the NEON hybrids instead
   of SME2 (no change: `Sme2Turn::take(_, false)` keeps the platform); a
   10 s wait between the gate's builds and its runs (the gate's busy window
