@@ -309,7 +309,14 @@ impl<I> State<I> {
     fn close_open(&mut self, waited: bool) -> Option<Task> {
         // Small batches fill a task up to a task's bytes (short messages
         // fill all 64 places: 4 KiB messages measured 10-30% slower at 16).
-        let full = self.open.as_ref().is_some_and(|open| open.members == crate::lanes::MEMBERS || (open.batch.is_some() && open.len >= crate::lanes::TASK_LEN));
+        // Messages longer than a block hash one at a time: a task of them
+        // stops at a quarter of a task's bytes, so they spread over more
+        // threads.
+        let full = self.open.as_ref().is_some_and(|open| {
+            open.members == crate::lanes::MEMBERS
+                || (open.batch.is_some() && open.len >= crate::lanes::TASK_LEN)
+                || (open.batch.is_none() && open.len > open.members * crate::BLOCK_LEN && open.len >= crate::lanes::TASK_LEN / 4)
+        });
         if full || waited { self.open.take() } else { None }
     }
 }

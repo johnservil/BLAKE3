@@ -1184,7 +1184,12 @@ impl Tasks {
         if pool.sme2 && self.sme2_sleeps.load(Ordering::SeqCst) && *self.sme2_asleep.lock().unwrap() {
             self.sme2_wake.notify_one();
         }
-        pool.wake_for(in_flight.saturating_sub(usize::from(pool.sme2)));
+        // Half as many workers awake as tasks in flight: each drains two
+        // back to back where it would sleep and be woken between them (a
+        // woken worker arrives 15-45 us after its wake, which its waker
+        // pays a system call for). Mac jobs 1385-1396: the queue's 64 B to
+        // 64 MiB messages and batches 15-45% faster, 1 KiB 20% slower.
+        pool.wake_for(in_flight.div_ceil(2).saturating_sub(usize::from(pool.sme2)));
     }
 
     /// Make room in the list for `more` tasks: a queue makes room for the
