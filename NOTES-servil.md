@@ -1558,6 +1558,14 @@ round-by-round report.
   (October 6, 2026, VM): k2 as two scalars (d rows spilled) instead of the
   NEON pair: hash 2 KiB 919 -> 1291 ns. The spills sit on the chain; the
   pair stays.
+- **Several SME2 units, tried and dropped** (October 6, 2026,
+  probe/sme2-workers, Mac job 1384, mains): the M4 Max has an SME unit per
+  cluster (two P, one E). With the first K pool workers on SME2 (K = 0-3,
+  a process each), hash_multithreaded 64 MiB 0.0221 -> 0.0227 / 0.0237 /
+  0.0245 ns/B, 4 MiB 6% faster, a batch of 1M messages 7% faster at K=3;
+  K=0 again at the end read 0.026 (the machine warmer). With every core
+  busy the chip's power sets the pace, and more units add heat, not
+  throughput.
 - **Tried and dropped**: a single 16 KiB group on the NEON hybrids instead
   of SME2 (no change: `Sme2Turn::take(_, false)` keeps the platform); a
   10 s wait between the gate's builds and its runs (the gate's busy window
