@@ -1449,6 +1449,7 @@ mod guard_pages {
 /// update and update_multithreaded mixed, finalize midway and after more
 /// input, and subtrees at input offsets (hazmat), against one-shot hashes.
 #[test]
+#[cfg(feature = "std")]
 fn test_hasher_gathers() {
     use crate::hazmat::HasherExt;
     let mut input = vec![0u8; 300_000];

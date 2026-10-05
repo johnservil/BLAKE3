@@ -936,7 +936,7 @@ mod test {
         }
     }
     use crate::platform::Platform;
-    use crate::{BLOCK_LEN, CHUNK_LEN, Hasher};
+    use crate::{BLOCK_LEN, CHUNK_LEN};
     use std::sync::atomic::AtomicUsize;
 
     /// Pieces planned into whole subtrees, hashed as tasks, and replayed
