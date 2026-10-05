@@ -248,6 +248,30 @@ pub unsafe fn hash_messages<const N: usize>(lanes: &[&[u8; N]], key: &CVWords, f
     assert_eq!(lanes_returned, 16, "SME2 streaming vector length changed under us");
 }
 
+#[cfg(feature = "std")]
+/// Groups of sixteen whole chunks, each at its own first counter: group g
+/// is `chunks[16 g..16 g + 16]`, chunk i of it at `counters[g] + i`, its
+/// sixteen chaining values to `out[512 g..]`. One kernel call, so one
+/// entry into streaming mode. Unsafe because the CPU must have SME2 with
+/// 512-bit streaming vectors.
+pub unsafe fn hash_groups_at(chunks: &[&[u8; CHUNK_LEN]], counters: &[u64], key: &CVWords, flags: u8, flags_start: u8, flags_end: u8, out: &mut [u8]) {
+    assert!(chunks.len() == GROUP * counters.len() && out.len() == chunks.len() * OUT_LEN, "sixteen chunks and their values for each counter");
+    if counters.is_empty() {
+        return;
+    }
+    let lanes = unsafe {
+        ffi::blake3_sme2_hash16_chunks_at_512(
+            chunks.as_ptr() as *const *const u8,
+            key.as_ptr(),
+            counters.as_ptr(),
+            flags as u32 | (flags_start as u32) << 8 | (flags_end as u32) << 16,
+            out.as_mut_ptr(),
+            counters.len() as u64,
+        )
+    };
+    assert_eq!(lanes, 16, "SME2 streaming vector length changed under us");
+}
+
 /// Chunks per message that [`hash_chunked_messages`] takes: 2 to 15. From
 /// sixteen, one message fills an SME2 group by itself.
 pub const MESSAGE_CHUNKS: core::ops::RangeInclusive<usize> = 2..=15;
@@ -574,6 +598,17 @@ pub unsafe fn xof_many(cv: &CVWords, block: &[u8; crate::BLOCK_LEN], block_len: 
 
 pub mod ffi {
     unsafe extern "C" {
+        #[cfg(feature = "std")]
+        /// `blake3_sme2_hash16_chunks_512` with group g's first counter
+        /// `counters[g]`: separate messages' groups of sixteen chunks.
+        pub fn blake3_sme2_hash16_chunks_at_512(
+            inputs: *const *const u8,
+            key: *const u32,
+            counters: *const u64,
+            flags: u32,
+            out: *mut u8,
+            groups: u64,
+        ) -> u64;
         /// Sixteen extended-output blocks per group (see xof_many).
         pub fn blake3_sme2_xof16_512(cv: *const u32, block: *const u8, counter: u64, flags_len: u64, out: *mut u8, groups: u64) -> u64;
         /// Where c/blake3_sme2_aarch64.S's code ends.

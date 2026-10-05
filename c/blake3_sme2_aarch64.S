@@ -43,6 +43,20 @@
  *                  kernel's padded last group: its spare lanes' values
  *                  are never written)
  *
+ * Chunk kernel with a counter for each group (separate messages' groups
+ * of sixteen chunks, as Hasher::update_each holds them):
+ *
+ * uint64_t blake3_sme2_hash16_chunks_at_512(
+ *     const uint8_t *const *inputs,
+ *     const uint32_t key[8],
+ *     const uint64_t *counters,
+ *     uint32_t flags,
+ *     uint8_t *out,
+ *     uint64_t groups);
+ *
+ * Group g's chunks get counters counters[g] + lane. flags as the chunk
+ * kernel's; it sets bit 48, the table's mark.
+ *
  * Return value:
  *     streaming vector length in 32-bit lanes;
  *     must equal 16 for work to be performed.
@@ -87,6 +101,8 @@
 
 .global _blake3_sme2_hash16_chunks_512
 .global blake3_sme2_hash16_chunks_512
+.global _blake3_sme2_hash16_chunks_at_512
+.global blake3_sme2_hash16_chunks_at_512
 .global _blake3_sme2_hash16_messages_512
 .global blake3_sme2_hash16_messages_512
 .global _blake3_sme2_hash16_parents_512
@@ -455,6 +471,15 @@ blake3_sme2_hash16_chunks_512:
     b       .Lchunks_body
 
 .p2align 4
+_blake3_sme2_hash16_chunks_at_512:
+blake3_sme2_hash16_chunks_at_512:
+    mov     x6, #15
+    mov     x17, #1
+    mov     w3, w3
+    orr     x3, x3, #(1 << 48)
+    b       .Lchunks_body
+
+.p2align 4
 _blake3_sme2_hash16_messages_512:
 blake3_sme2_hash16_messages_512:
     sub     x6, x6, #1
@@ -462,13 +487,15 @@ blake3_sme2_hash16_messages_512:
 
 .Lchunks_body:
     /*
-     * AAPCS64 preserves the low 64 bits of v8-v15.
+     * AAPCS64 preserves the low 64 bits of v8-v15. [sp, #64]: the counter
+     * table's next entry (bit 48 of the flags).
      */
-    sub     sp, sp, #64
+    sub     sp, sp, #80
     stp     d8,  d9,  [sp, #0]
     stp     d10, d11, [sp, #16]
     stp     d12, d13, [sp, #32]
     stp     d14, d15, [sp, #48]
+    str     x2, [sp, #64]
 
     smstart sm
     smstart za
@@ -541,6 +568,15 @@ blake3_sme2_hash16_messages_512:
     cbz     x5, .Lsuccess
 
 .Lgroup_loop:
+    /*
+     * With a counter table, this group's first counter from it.
+     */
+    tbz     x3, #48, .Lcounter_ready
+    ldr     x8, [sp, #64]
+    ldr     x2, [x8], #8
+    str     x8, [sp, #64]
+.Lcounter_ready:
+
     /*
      * Initialize eight chaining-value vectors from the key.
      */
@@ -708,7 +744,7 @@ blake3_sme2_hash16_messages_512:
     ldp     d10, d11, [sp, #16]
     ldp     d12, d13, [sp, #32]
     ldp     d14, d15, [sp, #48]
-    add     sp, sp, #64
+    add     sp, sp, #80
     ret
 
 /*
