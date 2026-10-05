@@ -1487,6 +1487,25 @@ round-by-round report.
   after other work 10-25% slower and nonstop batches of 16 14% slower (a
   path it did not touch: the layout), and 4 messages still behind
   official; reverted (jobs 1310-1319).
+- **A simpler queue, tried and dropped** (October 6, 2026,
+  probe/engine): one engine thread taking each queue's pending
+  submissions in rounds (up to 512 KiB or 256 items), hashing a round as
+  one pool job of parts (whole short messages, subtrees, batch ranges),
+  then delivering in order: queue.rs 988 -> 662 lines and lanes.rs's task
+  list and SME2 thread gone (-516 lines in all), and every test passing,
+  the warm queue's zero allocations included. But pipelined cells ran
+  1.5-2.6x slower on the Mac (jobs 1359-1362; 16 KiB 11% faster): between
+  rounds the pool's workers sleep, and each round's job wakes them in a
+  chain (VM probe: 68 us to hash 8 x 64 KiB, most of it on the calling
+  thread). Handing each submission's work to the pool at once, as the
+  queue does, keeps the workers fed while the program keeps buffers in
+  flight: that is what its complexity buys.
+- **What SME2 buys, measured** (October 6, 2026, probe/sme2-worth, Mac
+  jobs 1355-1358, nonstop): one thread 1.5-1.7x (hash 64 KiB-64 MiB 0.25
+  -> 0.15-0.17 ns/B), batches 1.9x (hash_many 18.2 -> 9.4 ns a message),
+  outboards 1.5x, a Hasher in 64 KiB pieces 1.2x; hash_multithreaded on
+  every core level (0.022 ns/B at 64 MiB). Its share of the pool pays
+  where few threads share the work (probe/sme2-thread, job 187).
 - **Tried and dropped**: a single 16 KiB group on the NEON hybrids instead
   of SME2 (no change: `Sme2Turn::take(_, false)` keeps the platform); a
   10 s wait between the gate's builds and its runs (the gate's busy window
