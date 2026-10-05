@@ -886,19 +886,19 @@ pub(crate) struct PlanState {
 /// The whole subtrees that [`Hasher::update`] would hash from `state` on
 /// `piece` in parts of at most [`lanes::TASK_LEN`] (any split of the input
 /// gives the same digest; the parts spread a long input over threads),
-/// appended to `tasks` in order (each computed as [`lanes::Task`] says),
+/// appended to `parts` in order (each hashed as [`lanes::Part`] says),
 /// and `state` moved past the piece: what [`Hasher::update_with_results`]
 /// takes back. The bytes around them (a partial chunk's fill, a part's last
 /// chunk) stay for the replay. The stream starts at chunk zero.
 #[cfg(feature = "std")]
-pub(crate) fn plan_subtrees(state: &mut PlanState, piece: &[u8], tasks: &mut Vec<lanes::Task>) {
+pub(crate) fn plan_subtrees(state: &mut PlanState, piece: &[u8], parts: &mut Vec<lanes::Part>) {
     for part in piece.chunks(lanes::TASK_LEN) {
-        plan_part(state, part, tasks);
+        plan_part(state, part, parts);
     }
 }
 
 #[cfg(feature = "std")]
-fn plan_part(state: &mut PlanState, piece: &[u8], tasks: &mut Vec<lanes::Task>) {
+fn plan_part(state: &mut PlanState, piece: &[u8], tasks: &mut Vec<lanes::Part>) {
     let mut offset = 0;
     if state.partial > 0 {
         offset = cmp::min(CHUNK_LEN - state.partial, piece.len());
@@ -910,7 +910,7 @@ fn plan_part(state: &mut PlanState, piece: &[u8], tasks: &mut Vec<lanes::Task>) 
     }
     while piece.len() - offset > CHUNK_LEN {
         let len = next_subtree_len(state.counter, piece.len() - offset);
-        tasks.push(lanes::Task::of(&piece[offset..offset + len], state.counter));
+        tasks.push(lanes::Part::of(&piece[offset..offset + len], state.counter));
         state.counter += (len / CHUNK_LEN) as u64;
         offset += len;
     }
@@ -2636,7 +2636,7 @@ impl HasherCore {
 
     /// [`update`](Hasher::update) with every whole subtree's result taken
     /// from `results`, in the order [`plan_subtrees`] gave them (in the same
-    /// parts), as [`lanes::Task`] computes them.
+    /// parts), as [`lanes::Part`] computes them.
     #[cfg(feature = "std")]
     pub(crate) fn update_with_results<'a>(&mut self, input: &[u8], results: &mut impl Iterator<Item = &'a [u8; BLOCK_LEN]>) {
         for part in input.chunks(lanes::TASK_LEN) {

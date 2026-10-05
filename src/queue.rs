@@ -3,47 +3,38 @@
 //!
 //! # How it runs
 //!
-//! One mechanism: `submit` turns a submission into tasks on the caller's
-//! thread and returns; the pool's threads hash the tasks; one delivery
-//! thread hands the results back in order.
+//! One mechanism: one engine thread for every queue in the process takes
+//! a queue's pending submissions a round at a time, hashes the round with
+//! the pool, and delivers it in order.
 //!
-//! - **Submit.** The submission takes a slot (slots live in blocks that
-//!   never move and are recycled: no allocation after warm-up) and is
-//!   linked at the tail of the queue's chain of entries, in submission
-//!   order. Its tasks are the whole subtrees `Hasher::update` would hash
-//!   in it, in parts of at most `lanes::TASK_LEN` (`plan_subtrees`: a
-//!   piece's chunk counters follow from its offset in the message; a
-//!   message is a stream of one piece). Messages and `Queue::fixed`
-//!   batches shorter than a task (`MEMBER_BELOW`) go several to a task
-//!   instead (`lanes::Member`), handed over when it is full or when
-//!   the delivery thread waits on it. Tasks go onto the pool's task list
-//!   (`lanes::TASKS`), which wakes a thread per task in flight.
-//! - **Hash.** The SME2 thread and the workers pop tasks; each writes its
-//!   result into its entry and counts it down. The SME2 thread hashes
-//!   subtrees on SME2 and gathered tasks on NEON; the workers on NEON.
-//! - **Deliver.** The delivery thread follows each queue's chain from the
-//!   last entry it delivered, takes each entry once its count is zero,
-//!   replays `Hasher::update` with its results (and for a message
-//!   finalizes), and calls the handler. Entries without tasks it hashes
-//!   itself: pieces shorter than `TASK_MIN` (their bytes join the message
-//!   in order), and everything in a pool with no thread to take tasks
-//!   (one CPU to the process, no SME2), which the delivery thread hashes
-//!   alone. The submitters and the delivery thread
-//!   share no lock on these paths: delivered slots go back through
-//!   `returned`, and the queue's hold passes by a store-then-recheck
-//!   handshake (`Inner::activate`, the end of `deliver_with`). The
-//!   delivery thread polls while any entry is in flight, and sleeps when
-//!   none is; the pool's threads sleep as soon as no task waits. Nothing
-//!   runs for work that may come (AGENTS.md, "Serve real programs").
+//! - **Submit.** The submission joins its queue's pending list, in order;
+//!   a queue that had none is handed to the engine. Nothing else: no
+//!   hashing, no wake of a worker.
+//! - **A round.** The engine takes the queue's oldest pending submissions,
+//!   up to ROUND_BYTES or ROUND_ITEMS (so the program refills the rest of
+//!   what it keeps in flight while the round hashes), and cuts them into
+//!   parts (`lanes::Part`): a message under TASK_MIN whole, a longer one
+//!   or a piece into the subtrees `Hasher::update` would hash
+//!   (`plan_subtrees`), a batch into ranges of its messages. One pool job
+//!   hashes the round's parts (`lanes::hash_parts`: one-block messages side
+//!   by side, ranges of about a thread's share over the pool's threads, a
+//!   small round on the engine thread alone).
+//! - **Deliver.** The engine replays `Hasher::update` with each message's
+//!   or piece's results (for a message, then finalizes) and calls the
+//!   handler, in submission order. A queue with more pending goes to the
+//!   back of the engine's list, so queues take turns.
 //!
-//! The pool's workers never run user code; the delivery thread does, in
-//! the handler calls.
+//! The engine sleeps when no queue has pending submissions; the pool's
+//! threads sleep between jobs. Nothing runs for work that may come
+//! (AGENTS.md, "Serve real programs"). A round reuses its lists, so a warm
+//! queue allocates nothing. The pool's workers never run user code; the
+//! engine does, in the handler calls.
 
-use crate::lanes::{OwnLine, TASKS, Task};
+use crate::lanes::Part;
 use crate::{CVWords, Hash, Mode, OUT_LEN};
 use std::any::Any;
+use std::collections::VecDeque;
 use std::marker::PhantomData;
-use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
 /// The handler of a [`Queue::messages`]: one message per buffer, of any
@@ -166,187 +157,43 @@ pub struct Queue<H, S = shape::Messages> {
     shape: PhantomData<fn() -> (H, S)>,
 }
 
-/// One queue's state, shared by its handle and the delivery thread.
-///
-/// The submitters and the delivery thread share no lock on their common
-/// paths (each lock's line would move between their cores on every
-/// submission: about 120 ns of a 64-byte message's 200 on the VM). Entries
-/// in flight form a chain in submission order: a submitter links each new
-/// slot after the last one (`State::tail`); the delivery thread follows the
-/// links from the last slot it delivered (`head`, kept until the next is
-/// delivered, so a submitter always has a slot to link after). Delivered
-/// slots go back through `returned`, a batch per delivery round, and the
-/// submitters take the whole batch when their own free slots run out.
+/// A queue's state, shared by its handle and the engine.
 struct Inner<H, I, S> {
-    /// The submitters' side. It, `returned`, and the delivery thread's own
-    /// fields each on lines of their own: the submitters take the one lock
-    /// and the delivery thread the other for every message.
-    state: OwnLine<Mutex<State<I>>>,
-    /// Slots delivered since the submitters last took them.
-    returned: OwnLine<Mutex<Slots<I>>>,
-    /// What the delivery thread alone touches.
-    handling: OwnLine<Mutex<Handling<H>>>,
-    /// The delivery thread's own: the slot it delivered last.
-    head: AtomicPtr<Slot<I>>,
-    /// The delivery thread's own: the unfinished count of the entry its
-    /// last look stopped at, which it polls alone.
-    waiting: AtomicPtr<AtomicUsize>,
-    /// The delivery thread's own: how many rounds it has polled `waiting`.
-    polls: AtomicUsize,
-    /// Whether the delivery thread holds this queue (entries in flight).
-    active: OwnLine<AtomicBool>,
+    /// The submissions waiting for a round, in order, and whether the
+    /// engine holds the queue (it has pending submissions or a round).
+    pending: Mutex<(VecDeque<I>, bool)>,
+    /// What the engine alone touches, during a round.
+    work: Mutex<Work<H, I>>,
     key: CVWords,
     flags: u8,
-    /// Whether the pool's threads hash this queue's entries (as tasks):
-    /// when the pool has a thread to take them; otherwise the delivery
-    /// thread hashes each entry.
-    tasks: bool,
-    /// The fixed-length queue's message length.
+    /// A [`Queue::fixed`]'s messages' length.
     message_len: usize,
     shape: PhantomData<fn() -> S>,
 }
 
-/*
- * A queue's storage is allocated once and recycled, as io_uring's rings
- * are: submissions in flight occupy slots, which live in blocks that never
- * move (so tasks and the chain may point into them) and are handed back
- * after delivery; a block is added only when more submissions are in
- * flight than ever before, and the lists below keep their capacity. So a
- * program cycling a fixed set of buffers makes the queue allocate nothing
- * once as many of its submissions have waited undelivered at once as ever
- * will: at most every buffer and one more. How many wait depends on how
- * far the delivery thread trails the program, so the last blocks may come
- * well after the first round (bench-hashes' producer met one in about one
- * run of ten).
- */
-struct State<I> {
-    /// The slots' blocks, each SLOT_BLOCK slots (from Box::into_raw; freed
-    /// on drop).
-    blocks: Vec<*mut [Slot<I>; SLOT_BLOCK]>,
-    /// The slots free (room for every slot, as `returned` has).
-    free: Slots<I>,
-    /// The last slot in the chain.
-    tail: *mut Slot<I>,
-    /// Room to plan a submission's tasks in.
-    tasks: Vec<Task>,
-    /// The most tasks a submission has had: every slot's results make room
-    /// for as many when handed out, so no slot grows later than another.
-    most: usize,
-    /// Where planning stands: past every piece submitted (the hasher
-    /// stands past the delivered ones).
-    plan: crate::PlanState,
-    /// Short messages gathered into one task, not yet handed to the pool.
-    open: Option<Task>,    /// Whether this queue hands tasks to the pool, and the room it made in
-    /// the pool's task list for them (lanes::Tasks::make_room).
-    tasks_room: Option<usize>,
-}
-
-/// Slots, by address.
-struct Slots<I>(Vec<*mut Slot<I>>);
-
-// Sound: the blocks and slots are the queue's own, reached through its
-// locks or, for a slot in flight, by the one thread that holds it (below).
-unsafe impl<I: Send> Send for State<I> {}
-unsafe impl<I: Send> Send for Slots<I> {}
-
-const SLOT_BLOCK: usize = 16;
-
-/// A submission in flight: its item, its tasks' results (none: hashed at
-/// delivery), how many of its tasks are unfinished, and the next entry.
-/// The results keep their capacity from one submission to the next.
-struct Slot<I> {
-    item: Option<I>,
+/// A round's lists, kept from round to round (no allocation once warm),
+/// the handler, and a [`Queue::pieces`]'s message so far.
+struct Work<H, I> {
+    handling: H,
+    round: Vec<I>,
+    parts: Vec<Part>,
     results: Vec<[u8; crate::BLOCK_LEN]>,
-    left: AtomicUsize,
-    /// Whether `results` holds the message's digest (a short message
-    /// hashed with others), not its subtrees' results.
-    digest: bool,
-    /// The entry submitted after this one, once linked.
-    next: AtomicPtr<Slot<I>>,
-}
-
-impl<I> State<I> {
-    /// A new block's slots, added to `free`, and room for every slot in
-    /// `free` and `returned`.
-    fn add_block(&mut self, returned: &mut Slots<I>) {
-        let most = self.most.max(1);
-        let block = Box::into_raw(Box::new(std::array::from_fn(|_| Slot { item: None, results: Vec::with_capacity(most), left: AtomicUsize::new(0), digest: false, next: AtomicPtr::new(core::ptr::null_mut()) })));
-        self.blocks.push(block);
-        if let Some(room) = &mut self.tasks_room {
-            TASKS.make_room(SLOT_BLOCK * most);
-            *room += SLOT_BLOCK * most;
-        }
-        let total = self.blocks.len() * SLOT_BLOCK;
-        self.free.0.reserve(total - self.free.0.len());
-        returned.0.reserve(total - returned.0.len());
-        // Sound: a fresh block, SLOT_BLOCK slots.
-        self.free.0.extend((0..SLOT_BLOCK).rev().map(|k| unsafe { (block as *mut Slot<I>).add(k) }));
-    }
-
-    /// A free slot: from the free list, else every returned one, else a new
-    /// block's. It is the caller's until linked.
-    fn take_slot(&mut self, returned: &Mutex<Slots<I>>) -> *mut Slot<I> {
-        if self.free.0.is_empty() {
-            let mut returned = crate::lanes::lock_polling(returned);
-            // Both lists keep room for every slot.
-            std::mem::swap(&mut self.free, &mut *returned);
-            // The longest returned first: its lines have had the longest to
-            // leave the delivery thread's cache.
-            self.free.0.reverse();
-            if self.free.0.is_empty() {
-                self.add_block(&mut returned);
-            }
-        }
-        let slot = self.free.0.pop().unwrap();
-        // Sound: a free slot is untouched by any other thread.
-        unsafe { &(*slot).next }.store(core::ptr::null_mut(), Ordering::Relaxed);
-        slot
-    }
-
-    /// The open batch of short messages, to hand to the pool (after the
-    /// state's lock is released) when it is full or (with `waited`) when
-    /// the delivery thread waits on it; otherwise it goes on filling.
-    fn close_open(&mut self, waited: bool) -> Option<Task> {
-        // Small batches fill a task up to a task's bytes (short messages
-        // fill all 64 places: 4 KiB messages measured 10-30% slower at 16).
-        let full = self.open.as_ref().is_some_and(|open| open.members == crate::lanes::MEMBERS || (open.batch.is_some() && open.len >= crate::lanes::TASK_LEN));
-        if full || waited { self.open.take() } else { None }
-    }
-}
-
-impl<I> State<I> {
-    /// Link `slot`, filled, after the chain's last slot. A raw pointer: once
-    /// linked, the slot is the delivery thread's to read, and a `&mut`
-    /// argument would claim it until this call returns.
-    fn link(&mut self, slot: *mut Slot<I>) {
-        // Sound: the tail is linked (or the first, delivered slot), and the
-        // delivery thread hands it back only after this link. Only its
-        // `next` is touched, through the field alone: the delivery thread
-        // may be taking the slot's item meanwhile, and a reference to the
-        // whole slot would race with that (Miri: undefined behaviour).
-        unsafe { &(*self.tail).next }.store(slot, Ordering::SeqCst);
-        self.tail = slot;
-    }
-}
-
-impl<I> Drop for State<I> {
-    fn drop(&mut self) {
-        DELIVERY.give_room();
-        if let Some(room) = self.tasks_room {
-            TASKS.give_room(room);
-        }
-        for &block in &self.blocks {
-            // Sound: from Box::into_raw, dropped once, with nothing in flight
-            // (the delivery thread holds the queue until its last delivery).
-            drop(unsafe { Box::from_raw(block) });
-        }
-    }
-}
-
-struct Handling<H> {
-    handler: H,
+    /// For each item of the round, its parts' range in `parts`.
+    spans: Vec<(usize, usize)>,
+    plan: crate::PlanState,
     hasher: crate::HasherCore,
 }
+
+/// A round takes submissions until they hold this many bytes, or ROUND_ITEMS
+/// of them: about the shortest input the pool pays for, and well under what
+/// a program keeps in flight to cover the round trip, so the program
+/// refills while the round hashes.
+const ROUND_BYTES: usize = crate::lanes::MIN_SPLIT_LEN;
+const ROUND_ITEMS: usize = 256;
+
+/// The shortest message or piece hashed as subtrees of its own: a shorter
+/// message is one part; a shorter piece joins the message at delivery.
+const TASK_MIN: usize = crate::SME2_SIZED_LEN;
 
 /// A queue of pieces' submissions.
 enum PieceItem<B> {
@@ -354,304 +201,274 @@ enum PieceItem<B> {
     Finish,
 }
 
-/// The shortest piece hashed as tasks of its own: shorter pieces are
-/// hashed at delivery (a piece's bytes join the message in order).
-const TASK_MIN: usize = crate::SME2_SIZED_LEN;
+/// What the engine runs for a queue: one round, and whether it has more
+/// pending.
+trait Round: Send + Sync {
+    fn round(&self) -> bool;
+}
 
-/// The shortest message, or batch of fixed-length messages, hashed as
-/// tasks of its own (a task's bytes): shorter ones go several to a task.
-/// A task of its own costs a short submission its fixed costs (on the Mac
-/// a batch of 16 64-byte messages 68 ns per message, twice hashing it at
-/// delivery, and one of 64 messages shared 36-50; 16 KiB messages 0.229
-/// ns/B on the VM, against 0.118 sharing tasks).
-const MEMBER_BELOW: usize = crate::lanes::TASK_LEN;
+/// The engine's queues with pending submissions, in turn, whether it
+/// sleeps, and the room its list keeps (one for every queue alive: no
+/// allocation in flight).
+struct Engine {
+    queues: Mutex<(VecDeque<Arc<dyn Round>>, bool, usize)>,
+    wake: Condvar,
+}
+
+static ENGINE: Engine = Engine { queues: Mutex::new((VecDeque::new(), false, 0)), wake: Condvar::new() };
+
+impl Engine {
+    /// Hand `queue`, which has just gained pending submissions, to the
+    /// engine; start the engine with the first.
+    fn hold(&self, queue: Arc<dyn Round>) {
+        start_delivery();
+        let mut queues = crate::lanes::lock_polling(&self.queues);
+        queues.0.push_back(queue);
+        if queues.1 {
+            self.wake.notify_one();
+        }
+    }
+
+    /// Room for one more queue in the engine's list.
+    fn make_room(&self) {
+        let mut queues = crate::lanes::lock_polling(&self.queues);
+        queues.2 += 1;
+        let (room, held) = (queues.2, queues.0.len());
+        queues.0.reserve(room.saturating_sub(held));
+    }
+
+    /// Run rounds, one queue at a time in turn, until none has pending
+    /// submissions; then sleep. A panic in a handler aborts the process
+    /// (handler rule 4); so does one in the hashing, a bug.
+    fn run(&self) {
+        loop {
+            let queue = {
+                let mut queues = crate::lanes::lock_polling(&self.queues);
+                loop {
+                    if let Some(queue) = queues.0.pop_front() {
+                        break queue;
+                    }
+                    queues.1 = true;
+                    queues = self.wake.wait(queues).unwrap();
+                    queues.1 = false;
+                }
+            };
+            let more = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| queue.round())).unwrap_or_else(|_| std::process::abort());
+            if more {
+                crate::lanes::lock_polling(&self.queues).0.push_back(queue);
+            }
+        }
+    }
+}
+
+/// Start the engine thread, once per process: from
+/// `initialize_multithreaded`, or else at a queue's first submission.
+pub(crate) fn start_delivery() {
+    static STARTED: std::sync::Once = std::sync::Once::new();
+    STARTED.call_once(|| {
+        crate::lanes::prepare(&ENGINE.queues, &ENGINE.wake);
+        // Return once the thread runs, as the pool's threads do: its start
+        // allocates too (std's stack-overflow handler), which a warm queue
+        // must not meet later.
+        static RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        std::thread::Builder::new()
+            .name("blake3-servil-queue".into())
+            .spawn(|| {
+                RUNNING.store(true, std::sync::atomic::Ordering::SeqCst);
+                ENGINE.run()
+            })
+            .expect("the queue's engine thread starts");
+        while !RUNNING.load(std::sync::atomic::Ordering::SeqCst) {
+            std::thread::yield_now();
+        }
+    });
+}
 
 impl<H: Send + 'static, S: 'static> Queue<H, S> {
     fn new<I: Send + 'static>(mode: Mode, handler: H, message_len: usize) -> Self
     where
-        Inner<H, I, S>: Deliver,
+        Inner<H, I, S>: Round,
     {
         let (key, flags) = mode.key_and_flags();
-        let tasks = crate::lanes::takes_tasks();
-        let mut returned = Slots(Vec::new());
-        let mut state = State { blocks: Vec::new(), free: Slots(Vec::new()), tail: core::ptr::null_mut(), tasks: Vec::new(), most: 0, plan: Default::default(), open: None, tasks_room: tasks.then_some(0) };
-        state.add_block(&mut returned);
-        DELIVERY.make_room();
-        // The chain starts at a slot delivered already.
-        let first = state.free.0.pop().unwrap();
-        state.tail = first;
-        let inner = Inner::<H, I, S> {
-            state: OwnLine(Mutex::new(state)),
-            returned: OwnLine(Mutex::new(returned)),
-            handling: OwnLine(Mutex::new(Handling { handler, hasher: crate::HasherCore::new_internal(&key, flags) })),
-            head: AtomicPtr::new(first),
-            waiting: AtomicPtr::new(core::ptr::null_mut()),
-            polls: AtomicUsize::new(0),
-            active: OwnLine(AtomicBool::new(false)),
-            key,
-            flags,
-            tasks,
-            message_len,
-            shape: PhantomData,
-        };
+        ENGINE.make_room();
+        let work = Work { handling: handler, round: Vec::with_capacity(ROUND_ITEMS), parts: Vec::new(), results: Vec::new(), spans: Vec::with_capacity(ROUND_ITEMS), plan: Default::default(), hasher: crate::HasherCore::new_internal(&key, flags) };
+        let inner: Inner<H, I, S> = Inner { pending: Mutex::new((VecDeque::new(), false)), work: Mutex::new(work), key, flags, message_len, shape: PhantomData };
+        crate::lanes::prepare(&inner.pending, &ENGINE.wake);
         Queue { inner: Arc::new(inner), shape: PhantomData }
     }
 
-    /// The queue's state as its concrete type (a type comparison), and
-    /// its owner, which the delivery thread holds while entries are in
-    /// flight (cloned only then: a clone per submission would bounce the
-    /// count's line between the submitter and the delivery thread).
-    fn inner<I: Send + 'static>(&self) -> (&Inner<H, I, S>, &Arc<dyn Any + Send + Sync>) {
-        (self.inner.downcast_ref().unwrap_or_else(|| unreachable!("a queue's state has its shape's type")), &self.inner)
+    fn inner<I: Send + 'static>(&self) -> &Inner<H, I, S> {
+        self.inner.downcast_ref().unwrap_or_else(|| unreachable!("a queue's state has its shape's type"))
+    }
+
+    /// Put `item` in flight: on its queue's pending list, the queue handed
+    /// to the engine if it had none.
+    fn push<I: Send + 'static>(&self, item: I)
+    where
+        Inner<H, I, S>: Round,
+    {
+        let inner = self.inner::<I>();
+        let mut pending = crate::lanes::lock_polling(&inner.pending);
+        pending.0.push_back(item);
+        if !pending.1 {
+            pending.1 = true;
+            drop(pending);
+            let held: Arc<Inner<H, I, S>> = self.inner.clone().downcast().unwrap_or_else(|_| unreachable!("a queue's state has its shape's type"));
+            ENGINE.hold(held);
+        }
     }
 }
 
-impl<H: Send + 'static, I: Send + 'static, S: 'static> Inner<H, I, S>
-where
-    Inner<H, I, S>: Deliver,
-{
-    /// Put `item` in flight, with tasks for `plan` to cut from it (it
-    /// appends their inputs and chunk counters to `tasks`, and returns
-    /// whether they are the entry's work or the entry is hashed at delivery).
-    fn submit(&self, owner: &Arc<dyn Any + Send + Sync>, item: I, plan: impl FnOnce(&mut I, &mut crate::PlanState, &mut Vec<Task>) -> bool) {
-        let mut guard = crate::lanes::lock_polling(&self.state);
-        let state = &mut *guard;
-        let slot = state.take_slot(&self.returned);
-        // Sound: a free slot is this thread's until linked.
-        let slot = unsafe { &mut *slot };
-        let item = slot.item.insert(item);
-        slot.results.clear();
-        slot.digest = false;
-        let mut tasks = std::mem::take(&mut state.tasks);
-        let planned = plan(item, &mut state.plan, &mut tasks);
-        if tasks.len() > state.most {
-            if let Some(room) = &mut state.tasks_room {
-                // Every slot may hold a submission of this many tasks.
-                let more = state.blocks.len() * SLOT_BLOCK * (tasks.len() - state.most.max(1).min(tasks.len()));
-                TASKS.make_room(more);
-                *room += more;
-            }
-            state.most = tasks.len();
-            // Every free slot makes room now, the ones in flight when next
-            // handed out (below): growth follows the program's submissions,
-            // not which slot timing hands out.
-            let returned = crate::lanes::lock_polling(&self.returned);
-            for &free in state.free.0.iter().chain(&returned.0) {
-                // Sound: a free slot is untouched by any task.
-                unsafe { &mut *free }.results.reserve(state.most);
-            }
+impl<H, I, S> Inner<H, I, S> {
+    /// Move the next round's submissions into `round` (`len` gives each
+    /// one's bytes); returns whether more stay pending. With none left,
+    /// the queue goes back to the submitters (the next one hands it over).
+    fn take(&self, round: &mut Vec<I>, len: impl Fn(&I) -> usize) -> bool {
+        let mut pending = crate::lanes::lock_polling(&self.pending);
+        let mut bytes = 0;
+        while bytes < ROUND_BYTES && round.len() < ROUND_ITEMS {
+            let Some(item) = pending.0.pop_front() else { break };
+            bytes += len(&item);
+            round.push(item);
         }
-        slot.results.reserve(state.most);
-        if planned && !tasks.is_empty() {
-            slot.results.resize(tasks.len(), [0; crate::BLOCK_LEN]);
-            slot.left.store(tasks.len(), Ordering::Relaxed);
-            let (out, left) = (slot.results.as_mut_ptr(), &slot.left as *const AtomicUsize);
-            TASKS.push(tasks.drain(..).enumerate().map(|(index, task)| Task {
-                key: self.key,
-                flags: self.flags,
-                // Sound: the slot's block and results stay in place until
-                // its delivery, after `left` reaches zero.
-                out: task.out.is_null().then(|| unsafe { out.add(index) } as *mut u8).unwrap_or(task.out),
-                left,
-                ..task
-            }));
+        let more = !pending.0.is_empty();
+        if !more {
+            pending.1 = false;
         }
-        tasks.clear();
-        state.tasks = tasks;
-        state.link(slot as *mut Slot<I>);
-        drop(guard);
-        self.activate(owner);
-    }
-
-    /// Put a short message (with `batch`, a small batch of messages of
-    /// that length) in flight as a member of the queue's open task: `member`
-    /// gives its bytes and, for a batch, its digest space, from the item,
-    /// which stays in its slot.
-    fn submit_member(&self, owner: &Arc<dyn Any + Send + Sync>, item: I, batch: Option<usize>, member: impl FnOnce(&mut I) -> (*const u8, usize, Option<*mut u8>)) {
-        let mut guard = crate::lanes::lock_polling(&self.state);
-        let state = &mut *guard;
-        let slot = state.take_slot(&self.returned);
-        // Sound: a free slot is this thread's until linked.
-        let slot = unsafe { &mut *slot };
-        let (input, len, out) = member(slot.item.insert(item));
-        // A message's digest lands in results[0]; a slot that held one
-        // keeps it (rewriting it would take the line from the worker that
-        // last wrote it).
-        if slot.results.len() != 1 {
-            slot.results.clear();
-            slot.results.resize(1, [0; crate::BLOCK_LEN]);
-        }
-        slot.digest = true;
-        slot.left.store(1, Ordering::Relaxed);
-        let open = state.open.get_or_insert_with(|| Task::members(&self.key, self.flags, batch));
-        // Sound: the slot's block, bytes, and result (or the digest space)
-        // stay in place until its delivery, after `left` reaches zero.
-        open.member[open.members] = crate::lanes::Member { input, len, out: out.unwrap_or(slot.results.as_mut_ptr() as *mut u8), left: &slot.left };
-        open.members += 1;
-        open.len += len;
-        let closed = state.close_open(false);
-        state.link(slot as *mut Slot<I>);
-        drop(guard);
-        if let Some(task) = closed {
-            TASKS.push(core::iter::once(task));
-        }
-        self.activate(owner);
-    }
-
-    /// Have the delivery thread hold this queue, unless it does; after a
-    /// link (see `deliver_with` for the other side of the handshake).
-    fn activate(&self, owner: &Arc<dyn Any + Send + Sync>) {
-        if !self.active.load(Ordering::SeqCst) && !self.active.swap(true, Ordering::SeqCst) {
-            DELIVERY.hold(Self::owned(owner));
-        }
-    }
-
-    /// The queue's state, owned, for the delivery thread to hold.
-    fn owned(owner: &Arc<dyn Any + Send + Sync>) -> Arc<Self> {
-        owner.clone().downcast().unwrap_or_else(|_| unreachable!("a queue's state has its shape's type"))
-    }
-
-    /*
-     * The delivery thread's side: hand back every entry at the front whose
-     * tasks are done (at most DELIVER_AT_ONCE), each through `deliver`,
-     * with no lock the submitters take (the handler may submit to this
-     * queue). Returns whether it delivered any, and whether the queue
-     * still has entries in flight.
-     */
-    fn deliver_with(&self, deliver: impl Fn(&Self, &mut Handling<H>, I, &[[u8; crate::BLOCK_LEN]], bool)) -> (bool, bool) {
-        let waiting = self.waiting.load(Ordering::Relaxed);
-        // Sound: the entry stays linked and in place until this thread
-        // delivers it.
-        if !waiting.is_null() && unsafe { &*waiting }.load(Ordering::Acquire) > 0 {
-            // The entry waited on may be in the open task of short
-            // messages, which a stream fills first: hand it over after a
-            // while (handing each over at once took the submitters' lock
-            // and made tasks of a few, a loop that ran batches of 16 at a
-            // fifth of their speed in some samples).
-            let polls = self.polls.fetch_add(1, Ordering::Relaxed) + 1;
-            if polls == CLOSE_AFTER_POLLS {
-                let closed = crate::lanes::lock_polling(&self.state).close_open(true);
-                if let Some(task) = closed {
-                    TASKS.push(core::iter::once(task));
-                }
-            }
-            return (false, true);
-        }
-        let mut head = self.head.load(Ordering::Relaxed);
-        let mut count = 0;
-        let mut unfinished = core::ptr::null_mut();
-        let mut handling = None;
-        while count < DELIVER_AT_ONCE {
-            // Sound: `head` is this thread's (delivered, not yet handed
-            // back), and a linked slot is in flight until delivered here.
-            let next = unsafe { &(*head).next }.load(Ordering::SeqCst);
-            if next.is_null() {
-                break;
-            }
-            let left = unsafe { &(*next).left };
-            if left.load(Ordering::Acquire) > 0 {
-                unfinished = left as *const AtomicUsize as *mut AtomicUsize;
-                break;
-            }
-            // The slot before it goes back before the handler runs (which
-            // may let the program submit again): the queue's slots then
-            // follow what the program keeps in flight, whatever the threads'
-            // timing. Room for every slot: no allocation.
-            crate::lanes::lock_polling(&self.returned).0.push(head);
-            head = next;
-            let handling = handling.get_or_insert_with(|| self.handling.lock().expect("no lock is poisoned"));
-            // Sound: its tasks are finished; it is this thread's now.
-            let item = unsafe { (*next).item.take() }.expect("a slot in flight holds its item");
-            deliver(self, handling, item, unsafe { &(*next).results }, unsafe { (*next).digest });
-            count += 1;
-        }
-        drop(handling);
-        self.head.store(head, Ordering::Relaxed);
-        self.waiting.store(unfinished, Ordering::Relaxed);
-        self.polls.store(0, Ordering::Relaxed);
-        if !unfinished.is_null() {
-            return (count > 0, true);
-        }
-        if count == DELIVER_AT_ONCE {
-            return (true, true);
-        }
-        // Nothing linked after `head`: let the queue go, unless a submitter
-        // linked meanwhile. A submitter links, then sets `active`; this
-        // thread clears `active`, then looks for a link (all SeqCst): either
-        // it sees the link, or the submitter sees `active` clear and hands
-        // the queue over again.
-        self.active.store(false, Ordering::SeqCst);
-        let linked = !unsafe { &(*head).next }.load(Ordering::SeqCst).is_null();
-        // Relinked and still ours to hold, or handed over again (let this
-        // copy go).
-        let in_flight = linked && !self.active.swap(true, Ordering::SeqCst);
-        (count > 0, in_flight)
+        more
     }
 }
 
-/// How many rounds the delivery thread waits on an entry before handing
-/// over the open task of short messages, which may hold it: about a
-/// microsecond (a round is a look at every queue and a pause).
-const CLOSE_AFTER_POLLS: usize = 16;
-
-/// The most entries of one queue delivered between two looks at its state.
-const DELIVER_AT_ONCE: usize = 64;
-
-/// What the delivery thread runs for a queue in flight.
-trait Deliver: Send + Sync + 'static {
-    /// Deliver what is done: (whether any was, whether entries remain).
-    fn deliver(&self) -> (bool, bool);
-}
-
-impl<H: MessageHandler> Deliver for Inner<H, H::Buffer, shape::Messages> {
-    fn deliver(&self) -> (bool, bool) {
-        self.deliver_with(|queue, handling, buffer, results, digest| {
-            let hash = if digest {
-                Hash(results[0][..OUT_LEN].try_into().unwrap())
-            } else if results.is_empty() {
-                crate::hash_serial(buffer.as_ref(), &queue.key, queue.flags)
+impl<H: MessageHandler> Round for Inner<H, H::Buffer, shape::Messages> {
+    fn round(&self) -> bool {
+        let mut work = crate::lanes::lock_polling(&self.work);
+        let Work { handling, round, parts, results, spans, .. } = &mut *work;
+        let more = self.take(round, |b| b.as_ref().len());
+        // A short message is one part, its digest; a longer one the
+        // subtrees Hasher::update hashes, replayed below.
+        parts.clear();
+        spans.clear();
+        make_room(parts, results, round.iter().map(|b| b.as_ref().len()));
+        for buffer in round.iter() {
+            let bytes = buffer.as_ref();
+            let start = parts.len();
+            if bytes.len() < TASK_MIN {
+                parts.push(Part { root: true, ..Part::of(bytes, 0) });
             } else {
-                // A message is a stream of one piece.
-                let mut hasher = crate::HasherCore::new_internal(&queue.key, queue.flags);
-                hasher.update_with_results(buffer.as_ref(), &mut results.iter());
+                crate::plan_subtrees(&mut Default::default(), bytes, parts);
+            }
+            spans.push((start, parts.len()));
+        }
+        hash_round(parts, results, &self.key, self.flags);
+        for (buffer, &(start, end)) in round.drain(..).zip(spans.iter()) {
+            let hash = if end == start + 1 && parts[start].root {
+                Hash(results[start][..OUT_LEN].try_into().unwrap())
+            } else {
+                let mut hasher = crate::HasherCore::new_internal(&self.key, self.flags);
+                hasher.update_with_results(buffer.as_ref(), &mut results[start..end].iter());
                 hasher.final_output().root_hash()
             };
-            handling.handler.hashed(buffer, hash);
-        })
+            handling.hashed(buffer, hash);
+        }
+        more
     }
 }
 
-impl<H: PieceHandler> Deliver for Inner<H, PieceItem<H::Buffer>, shape::Pieces> {
-    fn deliver(&self) -> (bool, bool) {
-        self.deliver_with(|_, handling, item, results, _| match item {
-            PieceItem::Piece(piece) => {
-                if results.is_empty() {
-                    handling.hasher.update(piece.as_ref());
-                } else {
-                    handling.hasher.update_with_results(piece.as_ref(), &mut results.iter());
+impl<H: PieceHandler> Round for Inner<H, PieceItem<H::Buffer>, shape::Pieces> {
+    fn round(&self) -> bool {
+        let mut work = crate::lanes::lock_polling(&self.work);
+        let Work { handling, round, parts, results, spans, plan, hasher } = &mut *work;
+        let more = self.take(round, |item| match item {
+            PieceItem::Piece(piece) => piece.as_ref().len(),
+            PieceItem::Finish => 0,
+        });
+        parts.clear();
+        spans.clear();
+        make_room(parts, results, round.iter().map(|item| match item {
+            PieceItem::Piece(piece) => piece.as_ref().len(),
+            PieceItem::Finish => 0,
+        }));
+        for item in round.iter() {
+            let start = parts.len();
+            match item {
+                PieceItem::Piece(piece) => {
+                    // The plan follows every piece; a short one's subtrees
+                    // are its replay's (it joins the message there).
+                    crate::plan_subtrees(plan, piece.as_ref(), parts);
+                    if piece.as_ref().len() < TASK_MIN {
+                        parts.truncate(start);
+                    }
                 }
-                handling.handler.piece_done(piece);
+                PieceItem::Finish => *plan = Default::default(),
             }
-            PieceItem::Finish => {
-                let hash = handling.hasher.final_output().root_hash();
-                handling.hasher.reset();
-                handling.handler.finished(hash);
+            spans.push((start, parts.len()));
+        }
+        hash_round(parts, results, &self.key, self.flags);
+        for (item, &(start, end)) in round.drain(..).zip(spans.iter()) {
+            match item {
+                PieceItem::Piece(piece) => {
+                    if start == end {
+                        hasher.update(piece.as_ref());
+                    } else {
+                        hasher.update_with_results(piece.as_ref(), &mut results[start..end].iter());
+                    }
+                    handling.piece_done(piece);
+                }
+                PieceItem::Finish => {
+                    let hash = hasher.final_output().root_hash();
+                    hasher.reset();
+                    handling.finished(hash);
+                }
             }
-        })
+        }
+        more
     }
 }
 
-impl<H: FixedHandler> Deliver for Inner<H, (H::Buffer, H::Digests), shape::Fixed> {
-    fn deliver(&self) -> (bool, bool) {
-        self.deliver_with(|queue, handling, (buffer, mut digests), results, hashed| {
-            // A small batch was hashed as a member of a task (`hashed`), a
-            // larger one as tasks of its own (results); any other here.
-            if results.is_empty() && !hashed {
-                crate::hash_many_serial(buffer.as_ref(), queue.message_len, &queue.key, queue.flags, digests.as_mut());
+impl<H: FixedHandler> Round for Inner<H, (H::Buffer, H::Digests), shape::Fixed> {
+    fn round(&self) -> bool {
+        let mut work = crate::lanes::lock_polling(&self.work);
+        let Work { handling, round, parts, results, .. } = &mut *work;
+        let more = self.take(round, |(buffer, _)| buffer.as_ref().len());
+        make_room(parts, results, round.iter().map(|(buffer, _)| buffer.as_ref().len()));
+        // Each batch in ranges of about a task's bytes, their digests
+        // straight into the program's space.
+        let slot = crate::many::slot_len(self.message_len);
+        let per_part = (crate::lanes::TASK_LEN / slot).max(1);
+        parts.clear();
+        for (buffer, digests) in round.iter_mut() {
+            let out = digests.as_mut().as_mut_ptr();
+            for (index, range) in buffer.as_ref().chunks(per_part * slot).enumerate() {
+                // Sound: `per_part` digests per range, within the space.
+                parts.push(Part { batch: Some(self.message_len), out: unsafe { out.add(index * per_part) } as *mut u8, ..Part::of(range, 0) });
             }
-            handling.handler.hashed(buffer, digests);
-        })
+        }
+        crate::lanes::hash_parts(parts, &self.key, self.flags);
+        for (buffer, digests) in round.drain(..) {
+            handling.hashed(buffer, digests);
+        }
+        more
     }
+}
+
+/// Room in `parts` and `results` for the most parts submissions of these
+/// lengths can cut into, whatever their alignment (a part of up to
+/// TASK_LEN cuts into at most 16 subtrees), so a program that cycles the
+/// same lengths meets every list's size during warm-up.
+fn make_room(parts: &mut Vec<Part>, results: &mut Vec<[u8; crate::BLOCK_LEN]>, lens: impl Iterator<Item = usize>) {
+    let most: usize = lens.map(|len| 16 * (len.div_ceil(crate::lanes::TASK_LEN) + 1)).sum();
+    parts.reserve(most.saturating_sub(parts.len()));
+    results.reserve(most.saturating_sub(results.len()));
+}
+
+/// Hash a round's `parts`, each part's result to its place in `results`.
+fn hash_round(parts: &mut [Part], results: &mut Vec<[u8; crate::BLOCK_LEN]>, key: &CVWords, flags: u8) {
+    results.clear();
+    results.resize(parts.len(), [0; crate::BLOCK_LEN]);
+    for (part, result) in parts.iter_mut().zip(results.iter_mut()) {
+        part.out = result.as_mut_ptr();
+    }
+    crate::lanes::hash_parts(parts, key, flags);
 }
 
 impl<H: MessageHandler> Queue<H, shape::Messages> {
@@ -663,18 +480,7 @@ impl<H: MessageHandler> Queue<H, shape::Messages> {
 
     /// Hash `buffer`'s bytes as one message; returns at once.
     pub fn submit(&self, buffer: H::Buffer) {
-        let (inner, owner) = self.inner::<H::Buffer>();
-        let tasks = inner.tasks;
-        if tasks && buffer.as_ref().len() < MEMBER_BELOW {
-            return inner.submit_member(owner, buffer, None, |buffer| (buffer.as_ref().as_ptr(), buffer.as_ref().len(), None));
-        }
-        inner.submit(owner, buffer, |buffer, _, out| {
-            let bytes = buffer.as_ref();
-            tasks && bytes.len() >= MEMBER_BELOW && {
-                crate::plan_subtrees(&mut Default::default(), bytes, out);
-                true
-            }
-        });
+        self.push(buffer);
     }
 }
 
@@ -689,24 +495,13 @@ impl<H: PieceHandler> Queue<H, shape::Pieces> {
 
     /// Append `piece`'s bytes to the message; returns at once.
     pub fn submit(&self, piece: H::Buffer) {
-        let (inner, owner) = self.inner::<PieceItem<H::Buffer>>();
-        let tasks = inner.tasks;
-        inner.submit(owner, PieceItem::Piece(piece), |item, plan, out| {
-            let PieceItem::Piece(piece) = item else { unreachable!("a piece") };
-            let bytes = piece.as_ref();
-            crate::plan_subtrees(plan, bytes, out);
-            tasks && bytes.len() >= TASK_MIN
-        });
+        self.push(PieceItem::Piece(piece));
     }
 
     /// End the message: its digest goes to `handler.finished` after every
     /// piece has come back. Returns at once.
     pub fn finish(&self) {
-        let (inner, owner) = self.inner::<PieceItem<H::Buffer>>();
-        inner.submit(owner, PieceItem::Finish, |_, plan, _| {
-            *plan = Default::default();
-            false
-        });
+        self.push(PieceItem::<H::Buffer>::Finish);
     }
 }
 
@@ -724,141 +519,20 @@ impl<H: FixedHandler> Queue<H, shape::Fixed> {
     /// [`hash_many`](crate::hash_many)'s layout (checked here). Returns at
     /// once.
     pub fn submit(&self, buffer: H::Buffer, mut digests: H::Digests) {
-        let (inner, owner) = self.inner::<(H::Buffer, H::Digests)>();
-        let (message_len, tasks) = (inner.message_len, inner.tasks);
+        let message_len = self.inner::<(H::Buffer, H::Digests)>().message_len;
         let slot = crate::many::slot_len(message_len);
         assert_eq!(Some(buffer.as_ref().len()), slot.checked_mul(digests.as_mut().len()), "the buffer holds one slot of whole blocks per digest");
-        let len = buffer.as_ref().len();
-        if tasks && len > 0 && len < MEMBER_BELOW {
-            // Small batches go several to a task, as short messages do.
-            return inner.submit_member(owner, (buffer, digests), Some(message_len), |(buffer, digests)| (buffer.as_ref().as_ptr(), buffer.as_ref().len(), Some(digests.as_mut().as_mut_ptr() as *mut u8)));
-        }
-        inner.submit(owner, (buffer, digests), |(buffer, digests), _, out| {
-            let bytes = buffer.as_ref();
-            // The digests' space is the program's, in the slot with its
-            // buffer, which stays put until delivery.
-            let digests = digests.as_mut().as_mut_ptr();
-            let per_task = (crate::lanes::TASK_LEN / slot).max(1);
-            for (index, range) in bytes.chunks(per_task * slot).enumerate() {
-                let mut task = Task::of(range, 0);
-                task.batch = Some(message_len);
-                // Sound: `per_task` digests per range, within the space.
-                task.out = unsafe { digests.add(index * per_task) } as *mut u8;
-                out.push(task);
-            }
-            // A batch that costs more to hash than a handover to the pool
-            // (about a microsecond) hashes there; a shorter one at delivery.
-            tasks && bytes.len() >= MEMBER_BELOW
-        });
-    }
-}
-
-/// The delivery thread's queues in flight, and whether it sleeps.
-struct Delivery {
-    /// The queues handed over, whether the thread sleeps, and the room
-    /// both lists keep: two for every queue alive, since a queue handed
-    /// over again while the thread lets it go is held twice for a moment
-    /// (`Inner::activate`). Room made when a queue is made: no allocation
-    /// in flight.
-    queues: Mutex<(Vec<Arc<dyn Deliver>>, bool, usize)>,
-    wake: Condvar,
-}
-
-static DELIVERY: Delivery = Delivery { queues: Mutex::new((Vec::new(), false, 0)), wake: Condvar::new() };
-
-/// Start the delivery thread, once per process: from
-/// `initialize_multithreaded`, or else at a queue's first entry in flight.
-/// It sleeps whenever no queue has an entry in flight.
-pub(crate) fn start_delivery() {
-    static STARTED: std::sync::Once = std::sync::Once::new();
-    STARTED.call_once(|| {
-        crate::lanes::prepare(&DELIVERY.queues, &DELIVERY.wake);
-        // Return once the thread runs, as the pool's threads do: its start
-        // allocates too (std's stack-overflow handler), which a warm queue
-        // must not meet later.
-        static RUNNING: AtomicBool = AtomicBool::new(false);
-        std::thread::Builder::new()
-            .name("blake3-servil-queue".into())
-            .spawn(|| {
-                RUNNING.store(true, Ordering::SeqCst);
-                DELIVERY.run()
-            })
-            .expect("the queue's delivery thread starts");
-        while !RUNNING.load(Ordering::SeqCst) {
-            std::thread::yield_now();
-        }
-    });
-}
-
-impl Delivery {
-    /// Give the delivery thread `queue`, which has just put an entry in
-    /// flight; start the thread with the first.
-    fn hold(&self, queue: Arc<dyn Deliver>) {
-        start_delivery();
-        let mut queues = crate::lanes::lock_polling(&self.queues);
-        queues.0.push(queue);
-        if queues.1 {
-            self.wake.notify_one();
-        }
-    }
-
-    /// Room for one more queue (`give_room` gives it back).
-    fn make_room(&self) {
-        let mut queues = crate::lanes::lock_polling(&self.queues);
-        queues.2 += 2;
-        let more = queues.2 - queues.0.len();
-        queues.0.reserve(more);
-    }
-
-    fn give_room(&self) {
-        crate::lanes::lock_polling(&self.queues).2 -= 2;
-    }
-
-    /// Deliver from every queue in flight, in turn; poll while any entry
-    /// waits on its tasks, and sleep while no queue is in flight. A panic in a
-    /// handler aborts the process (handler rule 4); so does one in the
-    /// hashing, a bug.
-    fn run(&self) {
-        let mut polled = std::time::Instant::now();
-        // The queues this round serves, swapped with the held list's (both
-        // keep their capacity: no allocation).
-        let mut queues: Vec<Arc<dyn Deliver>> = Vec::new();
-        loop {
-            {
-                let mut held = crate::lanes::lock_polling(&self.queues);
-                while held.0.is_empty() {
-                    // Nothing in flight: this thread sleeps.
-                    held.1 = true;
-                    held = self.wake.wait(held).unwrap();
-                    held.1 = false;
-                }
-                std::mem::swap(&mut held.0, &mut queues);
-                let room = held.2;
-                held.0.reserve(room);
-            }
-            let mut delivered = false;
-            queues.retain(|queue| {
-                let (any, in_flight) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| queue.deliver())).unwrap_or_else(|_| std::process::abort());
-                delivered |= any;
-                in_flight
-            });
-            let mut held = crate::lanes::lock_polling(&self.queues);
-            held.0.append(&mut queues);
-            if !delivered {
-                crate::lanes::poll_pause(&mut polled);
-            }
-        }
+        self.push((buffer, digests));
     }
 }
 
 #[cfg(test)]
 mod test {
-    use crate::lanes::Task;
 
     /// A few inputs through every shape of queue against
     /// hash(): small enough for Miri (the CI's smoketest runs it), which
-    /// checks the chain's links, the slots' hand-over, and the delivery
-    /// thread's reads for data races.
+    /// checks the hand-over of each round's items to the engine thread
+    /// and back for data races.
     #[test]
     #[cfg_attr(target_family = "wasm", ignore = "a queue needs threads, which this target lacks")]
     fn test_miri_queue_round_trips() {
@@ -970,10 +644,10 @@ mod test {
                         crate::plan_subtrees(&mut plan, piece, &mut tasks);
                     }
                     let mut results = vec![[0u8; BLOCK_LEN]; tasks.len()];
-                    let left = AtomicUsize::new(tasks.len());
-                    for (task, result) in tasks.into_iter().zip(&mut results) {
-                        Task { key, flags: crate::KEYED_HASH, out: result.as_mut_ptr(), left: &left, ..task }.run(Platform::detect());
+                    for (task, result) in tasks.iter_mut().zip(&mut results) {
+                        task.out = result.as_mut_ptr();
                     }
+                    crate::lanes::hash_parts(&tasks, &key, crate::KEYED_HASH);
                     let mut replay = results.iter();
                     for piece in &slices {
                         want.update(piece);
