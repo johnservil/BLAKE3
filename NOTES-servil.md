@@ -1460,6 +1460,24 @@ round-by-round report.
 - **Queue::messages shares tasks below 64 KiB**: a 16 KiB message was a
   task of its own (the pieces' 16 KiB threshold); now messages share the
   batches' threshold, a task's bytes. Pipelined 16 KiB 0.148 -> 0.111.
+- **Pipelined 64-byte messages, where BLAKE3 official leads** (VM solo,
+  Mac with two programs): probes (scratch, VM) put `Queue::submit` of a
+  64-byte message at 60 ns on the submitting thread, against `hash()`'s
+  46, and the queue's delivery at the same rate. Not the cost: the slots
+  (64 short messages sharing one slot: level, and it broke the order of a
+  long message submitted between them), the wake of a worker per task of
+  64 (running the task on the submitter: level), the orderings of the link
+  (a few ns), the returned list's lock per slot (level). Longer pauses
+  between the delivery thread's empty polls cut `submit` to 49 ns in the
+  probe but cost the benchmark's short cells up to 40% and stalled 16 KiB
+  messages (their open task closes after 16 polls, so a longer pause
+  closes it later); with the close timed (1 us) instead of counted, no
+  pause length gained (3 runs a side, VM). Open.
+- **Small batches one message at a time after a pause** (hash's one-chunk
+  path for up to 8, then 4): after a pause 1-4 messages 20-30% faster, but
+  after other work 10-25% slower and nonstop batches of 16 14% slower (a
+  path it did not touch: the layout), and 4 messages still behind
+  official; reverted (jobs 1310-1319).
 - **Tried and dropped**: a single 16 KiB group on the NEON hybrids instead
   of SME2 (no change: `Sme2Turn::take(_, false)` keeps the platform); a
   10 s wait between the gate's builds and its runs (the gate's busy window
