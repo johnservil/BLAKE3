@@ -1312,9 +1312,11 @@ item out when it lands or is rejected.
   slower nonstop (Zooko accepted it). The loop adds an offset load per
   message word, about 12% more instructions per round on a chain that
   already runs about 6 per cycle: one load of a word's offset shared by
-  both halves, two words' offsets from one load, or a round body that
-  permutes the message words in registers, may win the nonstop percent
-  back.
+  both halves, or two words' offsets from one load, may win the nonstop
+  percent back. Tried (VM): the block in v0-v3, each word moved from its
+  lane (`mov w, v.s[l]`) and the order permuted a round at a time with
+  four `tbl` (936 bytes): slower than the table (64 B 49.7-50.5 ns
+  against 46.8; unrolled 45.9), the lane moves costlier than loads.
 - **The queue's long messages** (October 5, 2026): from 1 MiB the queue
   is slower than waiting for each call (64 MiB: 0.058 ns/B against
   hash_multithreaded's 0.046, Mac job 1213), where the stream prototype
