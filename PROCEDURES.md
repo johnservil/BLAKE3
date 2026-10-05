@@ -34,7 +34,7 @@ Work happens on `candidate/<topic>` branches (`candidate/p-e-classification`, `c
 A candidate reaches `servil` only when all of these hold, and never without the performance check:
 
 1. It is a fast-forward of `servil`'s current tip, so what was measured is exactly what lands. When `servil` has moved, rebase and check again.
-2. Every test suite passes, judged by each suite's exit status (a failing test binary prints no `test result` line, so a list of result lines can hide it): the fork's default, `no_sme2`, and `pure` builds, the integration tests, the official vectors, b3sum's, and the benchmark's own tests.
+2. Every test suite passes, judged by each suite's exit status (a failing test binary prints no `test result` line, so a list of result lines can hide it): the fork's default, `no_sme2`, and `pure` builds, the integration tests, the official vectors, b3sum's, and the benchmark's own tests. The fork's GitHub CI passes on the candidate's tip: it builds every target with warnings as errors, which the local suites and the Mac's test job do not (an unused import reached `servil` 1352c21 that way, October 5, 2026).
 3. `pypy3 tools/perf_regress.py compare servil candidate/<topic>` reports no regression on the VM.
 4. The same comparison reports no regression natively on the Mac.
 
