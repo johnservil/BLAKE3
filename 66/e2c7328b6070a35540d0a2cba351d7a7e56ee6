@@ -1,0 +1,2 @@
+Promoted to servil (October 5, 2026, from candidate/no-linger, 83069ad..66e2c73): Verifier, a whole message verified as it arrives in iroh-blobs' wire format (a new API; no existing call's code changes).
+Mac: test job 1223 passed; perf_regress job 1224 found no cell slower (mains, 74%).
