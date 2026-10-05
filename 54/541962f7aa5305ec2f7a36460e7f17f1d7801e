@@ -1,0 +1,2 @@
+Promoted to servil (October 5, 2026, from candidate/no-linger, 66e2c73..5454196): Hasher::update_each, update_each_multithreaded, finalize_each, and hash_each_multithreaded_with, each in its simplest form (loops over existing calls); new APIs only, no existing call's code changed.
+Mac: test job 1225 passed; perf_regress jobs 1226 and 1227 gave no verdict (other programs busy, mains 85%); promoted on the reasoning that the gate's cells run unchanged code. The previous promotion's gate (job 1224) found no cell slower.
