@@ -687,7 +687,7 @@ fn partial_covers(n: usize) -> bool {
 /// faster and its E-cores faster (1300 B: P level, E -14%; 2000 B: P -32%,
 /// E -36%); at two blocks (1100 B) P-cores paid 14%.
 pub fn partial_pays(n: usize, len: usize) -> bool {
-    partial_covers(n) && (n > 1 || len > 4 * BLOCK_LEN)
+    false && partial_covers(n) && (n > 1 || len > 4 * BLOCK_LEN)
 }
 
 /// The chaining values of `chunks` (whole, at `counter` on) and of
