@@ -319,6 +319,17 @@ class Pair(Unit):
             return [f"PG_SPILL {a}, {b}, {c}, {d[1:]}, {m}, {self.msg + 16 * mx}, {self.msg + 16 * my}, {F_DSPILL + 16 * (di - 12)}"]
         return [f"PG {a}, {b}, {c}, {d}, {m}, {self.msg + 16 * mx}, {self.msg + 16 * my}"]
 
+    def half_step_table(self, quads, base, table, otemp, msgbase):
+        """half_step with each message word's index from the round's row of
+        the schedule table (bytes base + k, base + k + 1), the words in this
+        unit's message area at `msgbase`: a rolled kernel's rounds."""
+        assert not self.msg_regs and not self.spill_d
+        out = []
+        for (ai, bi, ci, di), k in zip(quads, range(0, 8, 2)):
+            a, b, c, d = self.v(ai), self.v(bi), self.v(ci), self.v(di)
+            out.append(f"PG_T {a}, {b}, {c}, {d}, {self.mtemp[1:]}, {table}, {base + k}, {base + k + 1}, {otemp[1:]}, {msgbase}")
+        return out
+
     def prologue(self):
         # Counters of the two chunks, each duplicated within its 64-bit lane.
         sa, sb = self.slots
@@ -485,11 +496,11 @@ MACROS = r"""
 .endm
 
 // Same, with the input's running pointer in register p.
-// Scalar half-G with the message word's offset from a table: byte i of
+// Scalar half-G with the message word's index from a table: byte i of
 // the round's row at t (register m's number, as SGA's).
 .macro SGA_T a, b, c, d, m, p, t, i
     ldrb w\m, [\t, #\i]
-    ldr w\m, [\p, x\m]
+    ldr w\m, [\p, x\m, lsl #2]
     add \a, \a, w\m
     add \a, \a, \b
     eor \d, \d, \a
@@ -501,7 +512,7 @@ MACROS = r"""
 
 .macro SGB_T a, b, c, d, m, p, t, i
     ldrb w\m, [\t, #\i]
-    ldr w\m, [\p, x\m]
+    ldr w\m, [\p, x\m, lsl #2]
     add \a, \a, w\m
     add \a, \a, \b
     eor \d, \d, \a
@@ -587,6 +598,25 @@ MACROS = r"""
     add \c\().4s, \c\().4s, \d\().4s
     xar \b\().2d, \b\().2d, \c\().2d, #12
     add \a\().4s, \a\().4s, \my\().4s
+    add \a\().4s, \a\().4s, \b\().4s
+    xar \d\().2d, \d\().2d, \a\().2d, #8
+    add \c\().4s, \c\().4s, \d\().4s
+    xar \b\().2d, \b\().2d, \c\().2d, #7
+.endm
+
+// Pair G with its message words' indices from a table: bytes ix and iy
+// of the round's row at t, the words at base + 16 x index; o an x temp.
+.macro PG_T a, b, c, d, m, t, ix, iy, o, base
+    ldrb w\o, [\t, #\ix]
+    ldr q\m, [\base, x\o, lsl #4]
+    add \a\().4s, \a\().4s, v\m\().4s
+    add \a\().4s, \a\().4s, \b\().4s
+    xar \d\().2d, \d\().2d, \a\().2d, #16
+    add \c\().4s, \c\().4s, \d\().4s
+    xar \b\().2d, \b\().2d, \c\().2d, #12
+    ldrb w\o, [\t, #\iy]
+    ldr q\m, [\base, x\o, lsl #4]
+    add \a\().4s, \a\().4s, v\m\().4s
     add \a\().4s, \a\().4s, \b\().4s
     xar \d\().2d, \d\().2d, \a\().2d, #8
     add \c\().4s, \c\().4s, \d\().4s
@@ -698,9 +728,8 @@ def callee_saved(scalars, units, extra=()):
     registers above its own, which is fourteen fewer stores and loads on
     the one-block calls that compress_in_place makes."""
     highest = 18
-    for sc in scalars:
-        for reg in sc.state + [sc.mtemp, sc.dtemp or "w0", sc.preg or "x0"] + list(extra):
-            highest = max(highest, int(reg[1:]))
+    for reg in [r for sc in scalars for r in sc.state + [sc.mtemp, sc.dtemp or "w0", sc.preg or "x0"]] + list(extra):
+        highest = max(highest, int(reg[1:]))
     count = highest - 18
     count += count % 2
     x_pairs = [(19 + i, 20 + i) for i in range(0, count, 2)]
@@ -815,7 +844,7 @@ def lean_kernel(name, sc, last):
     if ROLLED_K1:
         e(f"{name}_schedule:")
         for row in SCHEDULE:
-            e(".byte " + ", ".join(str(4 * w) for w in row))
+            e(".byte " + ", ".join(str(w) for w in row))
         e(f"{name}_schedule_end:")
     return L
 
@@ -833,9 +862,17 @@ def kernel(name, scalars, units, partial=False):
     if not units and len(scalars) == 1:
         assert not partial
         return lean_kernel(name, scalars[0], last="x25")
+    # Rolled: kernels of one pair and at most one scalar (whose d row is in
+    # registers) run their rounds as a loop over the schedule table (x26
+    # its row, x27 its end, x28 the pair's message area, x25 a temp), the
+    # pair's messages on the stack.
+    rolled = ROLLED_SMALL and len(units) == 1 and isinstance(units[0], Pair) and len(scalars) <= 1 and all(not sc.spill_d and sc.preg for sc in scalars)
+    if rolled and units[0].msg_regs:
+        u = units[0]
+        units = [Pair(u.index, u.slots, u.state, False, u.mtemp, u.dtemp, ctr_step=u.ctr_step)]
     n_inputs = len(scalars) + sum(len(u.slots) for u in units)
     assert n_inputs <= MAX_INPUTS
-    x_pairs, d_pairs = callee_saved(scalars, units)
+    x_pairs, d_pairs = callee_saved(scalars, units, extra=["x28"] if rolled else ())
     L = []
     e = L.append
     e(f"{name}:")
@@ -903,6 +940,10 @@ def kernel(name, scalars, units, partial=False):
             e(f"ldr x0, [x0, #{8 * i}]")
     rem = "x5" if x1_is_pointer else "x1"
     part = scalars[-1] if partial else None
+    if rolled:
+        assert not x1_is_pointer and all(sc.preg not in ("x25", "x26", "x27", "x28") for sc in scalars)
+        e(f"adr x27, {name}_schedule_end")
+        e(f"add x28, sp, #{units[0].msg}")
 
     def body(label, lanes):
         """One block for the scalar lanes `lanes` and every unit, from the
@@ -971,7 +1012,17 @@ def kernel(name, scalars, units, partial=False):
                 e("mov w5, #64")
                 e("csel w3, w4, w5, eq")
             L.extend(sc.block_start("w2", "w3"))
-        for r in range(7):
+        if rolled:
+            e("adr x26, " + f"{name}_schedule")
+            e(f"{label}_round:")
+            for quads, base in ((COLS, 0), (DIAGS, 8)):
+                lists = [sc.half_step_table(quads, base, "x26") for sc in lanes]
+                lists.append(units[0].half_step_table(quads, base, "x26", "x25", "x28"))
+                L.extend(interleave(lists))
+            e("add x26, x26, #16")
+            e("cmp x26, x27")
+            e(f"b.ne {label}_round")
+        for r in range(0 if rolled else 7):
             for quads, base in ((COLS, 0), (DIAGS, 8)):
                 lists = [sc.half_step(quads, SCHEDULE[r], base) for sc in lanes]
                 vec = []
@@ -1033,7 +1084,16 @@ def kernel(name, scalars, units, partial=False):
         e(f"ldp d{lo}, d{hi}, [sp, #{F_D8 + 8 * (lo - 8)}]")
     e(f"add sp, sp, #{FRAME}")
     e("ret")
+    if rolled:
+        e(f"{name}_schedule:")
+        for row in SCHEDULE:
+            e(".byte " + ", ".join(str(w) for w in row))
+        e(f"{name}_schedule_end:")
     return L
+
+
+# The small hybrid kernels' rounds as a loop (kernel): one pair, at most one scalar.
+ROLLED_SMALL = True
 
 
 def build():
