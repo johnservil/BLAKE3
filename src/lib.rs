@@ -2120,13 +2120,16 @@ impl Hasher {
 
     /// `update`'s gathering: an update of STAGE_LEN or more from a 16 KiB
     /// boundary of the message (or an empty stage) goes to the core whole;
-    /// shorter ones gather in the stage until it reaches the next boundary,
+    /// shorter ones gather in the stage until it reaches the next boundary
+    /// (but a fresh hasher's first chunk goes to the core),
     /// and the stage goes to the core as one update, its chunks side by
     /// side in the lanes.
     fn gather<J: join::Join>(&mut self, mut input: &[u8], pooled: bool) -> &mut Self {
         self.core.assert_room(self.count(), input.len());
         while !input.is_empty() {
-            if self.staged == 0 && input.len() >= STAGE_LEN {
+            // Whole groups, and a fresh hasher's first chunk (which hashes
+            // serially either way), skip the stage.
+            if self.staged == 0 && (input.len() >= STAGE_LEN || self.core.count() + input.len() as u64 <= CHUNK_LEN as u64) {
                 self.core.update_with_join::<J>(input, pooled);
                 return self;
             }
@@ -2212,7 +2215,9 @@ impl Hasher {
     /// arriving in network-sized pieces hashes nearly as fast as one in
     /// whole buffers. A caller that can cheaply hand over whole multiples
     /// of 16 KiB from a 16 KiB boundary of the message (by reading into
-    /// larger buffers, say) saves the copy. See also
+    /// larger buffers, say) saves the copy. A whole message of 1 to 16 KiB
+    /// in one update pays the copy, about 5% on an Apple M4; [`hash`] takes
+    /// none. See also
     /// [`update_reader`](#method.update_reader).
     pub fn update(&mut self, input: &[u8]) -> &mut Self {
         // A fresh hasher's first update is a one-shot call's work (a
