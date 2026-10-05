@@ -31,6 +31,16 @@ pub(crate) fn slot_len(len: usize) -> usize {
     len.next_multiple_of(BLOCK_LEN).max(BLOCK_LEN)
 }
 
+/// hash_many's contract on its input: `count` slots of whole blocks for
+/// messages of `len` bytes, each slot's bytes past its message zero
+/// (checked in debug builds).
+#[inline]
+pub(crate) fn assert_slots(input: &[u8], len: usize, count: usize) {
+    let slot = slot_len(len);
+    assert_eq!(Some(input.len()), slot.checked_mul(count), "input holds one slot of whole blocks per output");
+    debug_assert!(len % BLOCK_LEN == 0 || input.chunks_exact(slot).all(|s| s[len..].iter().all(|&b| b == 0)), "every slot's bytes past its message are zero");
+}
+
 /// `outputs[i] = hash(input[i * slot..][..len])` for every message, with
 /// `slot = slot_len(len)`, in the mode of `key` and `flags` (IV and 0 for
 /// plain hashing), on `platform`: messages of up to a chunk go to
@@ -42,15 +52,14 @@ pub(crate) fn hash_many_on(input: &[u8], len: usize, key: &CVWords, flags: u8, o
     // One-block messages first, on the path they took before slots (a
     // shared entry cost 64 B x 3 7% in the regression check).
     if len == BLOCK_LEN && outputs.len() >= 2 {
-        assert_eq!(Some(input.len()), BLOCK_LEN.checked_mul(outputs.len()), "input holds one slot of whole blocks per output");
+        assert_slots(input, len, outputs.len());
         for (messages, digests) in input.chunks(BLOCK_LEN * TABLE).zip(outputs.chunks_mut(TABLE)) {
             hash_run::<{ BLOCK_LEN }>(messages, key, flags, digests, platform);
         }
         return;
     }
     let slot = slot_len(len);
-    assert_eq!(Some(input.len()), slot.checked_mul(outputs.len()), "input holds one slot of whole blocks per output");
-    debug_assert!(len % BLOCK_LEN == 0 || input.chunks_exact(slot).all(|s| s[len..].iter().all(|&b| b == 0)), "every slot's bytes past its message are zero");
+    assert_slots(input, len, outputs.len());
     if len == 0 {
         outputs.fill(*crate::hash_serial_on(&[], key, flags, platform).as_bytes());
         return;
@@ -638,6 +647,34 @@ mod test {
                         let mut out = vec![[0u8; OUT_LEN]; count];
                         hash_blocks::<{ 4 * BLOCK_LEN }>(&input, key_words, *flags, &mut out, Platform::neon().unwrap(), false, BLOCK_LEN);
                         assert_eq!(out, want, "the C NEON arrangement, flags {flags}, {count} x {len} B");
+                    }
+                }
+            }
+        }
+    }
+
+    /// Batches of 1 to 9 one-block messages after a pause (the one-at-a-time
+    /// path up to 8, then the kernels), every mode and message length up to
+    /// a block: each digest is hash_with's.
+    #[cfg(feature = "std")]
+    #[test]
+    fn test_small_batches_after_a_pause() {
+        let key = [7u8; 32];
+        for mode in [crate::Mode::Hash, crate::Mode::Keyed(&key), crate::Mode::DeriveKey("after a pause")] {
+            for len in [0, 1, 31, 63, 64] {
+                for count in 1..=9 {
+                    let slot = slot_len(len);
+                    let mut input = vec![0u8; slot * count];
+                    for (k, s) in input.chunks_mut(slot).enumerate() {
+                        for (j, b) in s[..len].iter_mut().enumerate() {
+                            *b = (k * 31 + j) as u8;
+                        }
+                    }
+                    std::thread::sleep(std::time::Duration::from_micros(300));
+                    let mut out = vec![[0u8; OUT_LEN]; count];
+                    crate::hash_many_with(mode, &input, len, &mut out);
+                    for (k, digest) in out.iter().enumerate() {
+                        assert_eq!(digest, crate::hash_with(mode, &input[k * slot..][..len]).as_bytes(), "len {len} count {count} message {k}");
                     }
                 }
             }
