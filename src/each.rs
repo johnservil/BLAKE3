@@ -139,10 +139,22 @@ fn hash_held(hashers: &mut [Hasher], held: &[usize]) {
     let per = crate::STAGE_LEN / CHUNK_LEN;
     let chunks = n * per;
     let mut level = vec![0u8; chunks * OUT_LEN];
-    for (k, &i) in alike.iter().enumerate() {
-        let (counter, group) = hashers[i].held_group().expect("a held group");
-        let refs: Vec<&[u8; CHUNK_LEN]> = group.chunks_exact(CHUNK_LEN).map(|c| c.try_into().unwrap()).collect();
-        platform.hash_many(&refs, &key, counter, IncrementCounter::Yes, flags, CHUNK_START, CHUNK_END, &mut level[k * per * OUT_LEN..(k + 1) * per * OUT_LEN]);
+    let refs: Vec<&[u8; CHUNK_LEN]> = alike.iter().flat_map(|&i| hashers[i].held_group().expect("a held group").1.chunks_exact(CHUNK_LEN)).map(|c| c.try_into().unwrap()).collect();
+    let counters: Vec<u64> = alike.iter().map(|&i| hashers[i].held_group().unwrap().0).collect();
+    // On SME2, every group in one kernel call, each at its own counter;
+    // elsewhere a call per group.
+    #[cfg(blake3_sme2)]
+    let on_sme2 = matches!(platform, Platform::SME2);
+    #[cfg(not(blake3_sme2))]
+    let on_sme2 = false;
+    if on_sme2 {
+        // Sound: the turn's platform is SME2 only where detect() found it.
+        #[cfg(blake3_sme2)]
+        unsafe { crate::sme2::hash_groups_at(&refs, &counters, &key, flags, CHUNK_START, CHUNK_END, &mut level) };
+    } else {
+        for (k, &counter) in counters.iter().enumerate() {
+            platform.hash_many(&refs[k * per..(k + 1) * per], &key, counter, IncrementCounter::Yes, flags, CHUNK_START, CHUNK_END, &mut level[k * per * OUT_LEN..(k + 1) * per * OUT_LEN]);
+        }
     }
     // Three levels of parents to each group's two halves, then a fourth to
     // its own value.
