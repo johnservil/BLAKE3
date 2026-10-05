@@ -262,7 +262,9 @@ jobs:
         targets: wasm32-wasip1
     - name: install Wasmtime
       run: |
-        curl https://wasmtime.dev/install.sh -sSf | bash
+        # A pinned version: the installer's lookup of the latest one failed
+        # (October 6, 2026: "Installing latest version of Wasmtime ({)").
+        curl https://wasmtime.dev/install.sh -sSf | bash -s -- --version v34.0.2
         echo PATH: $PATH
         mkdir -p ~/.local/bin
         ln -s ~/.wasmtime/bin/wasmtime ~/.local/bin/wasmtime
