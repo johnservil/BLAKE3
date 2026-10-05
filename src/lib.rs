@@ -1520,7 +1520,7 @@ const PREFETCH_BATCH_BELOW: usize = 64;
 /// time after a pause, through hash's one-chunk kernel: its code is small,
 /// and every short hash call keeps it warm.
 #[cfg(all(blake3_neon_hybrid, feature = "std"))]
-const ONE_AT_A_TIME_UPTO: usize = 8;
+const ONE_AT_A_TIME_UPTO: usize = 4;
 
 /// After a pause (code_may_be_cold), a batch of one-block messages: up to
 /// ONE_AT_A_TIME_UPTO hashed here, one message at a time (true: done);
