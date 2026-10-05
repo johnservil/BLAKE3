@@ -268,6 +268,36 @@ fn hash_many_over_pool(input: &[u8], message_len: usize, key: &crate::CVWords, f
     pool.run_job(work, pieces.len(), 0, pool_platform());
 }
 
+/// [`crate::hash_each_multithreaded_with`]'s pool job: `items`, every one
+/// under MIN_SPLIT_LEN, cut into ranges of about [`next_piece_len`] of the
+/// bytes that remain.
+pub(crate) fn hash_each(key: &crate::CVWords, flags: u8, items: &[&[u8]], out: &mut [[u8; crate::OUT_LEN]]) {
+    let pool = pool();
+    let callers = pool.callers.fetch_add(1, Ordering::SeqCst) + 1;
+    let _caller = Caller(&pool.callers);
+    assert!(items.iter().all(|i| i.len() < MIN_SPLIT_LEN), "items under MIN_SPLIT_LEN");
+    let mut remaining: usize = items.iter().map(|i| i.len()).sum();
+    if callers >= pool.cpus {
+        let platform = Platform::detect();
+        return crate::each::hash_each_on(key, flags, items, out, platform, &|item| crate::hash_serial_on(item, key, flags, platform));
+    }
+    let mut pieces = Vec::with_capacity(64);
+    let mut start = 0;
+    while start < items.len() {
+        let want = next_piece_len(remaining, pool.cpus);
+        let (mut end, mut bytes) = (start, 0);
+        while end < items.len() && (bytes < want || end == start) {
+            bytes += items[end].len();
+            end += 1;
+        }
+        remaining -= bytes;
+        pieces.push(Piece { offset: start, len: end - start });
+        start = end;
+    }
+    let work = Work::Each { items, key: *key, flags, pieces: &pieces, outputs: out.as_mut_ptr() };
+    pool.run_job(work, pieces.len(), 0, pool_platform());
+}
+
 /// The chaining value of each 16 KiB group of `input` (crate::outboard),
 /// over the machine's threads: below MIN_SPLIT_LEN on this thread.
 pub(crate) fn group_cvs(input: &[u8], key: &crate::CVWords, flags: u8) -> Vec<ChainingValue> {
@@ -364,6 +394,15 @@ enum Work<'a> {
         pieces: &'a [Piece],
         outputs: *mut [u8; crate::OUT_LEN],
     },
+    /// Ranges of a collection's items (`offset` and `len` count items),
+    /// each under MIN_SPLIT_LEN; one digest each.
+    Each {
+        items: &'a [&'a [u8]],
+        key: crate::CVWords,
+        flags: u8,
+        pieces: &'a [Piece],
+        outputs: *mut [u8; crate::OUT_LEN],
+    },
 }
 
 /// An atomic counter on its own cache line: `cursor` and `active` are
@@ -417,6 +456,13 @@ impl Job<'_> {
                 // Sound: this range of outputs belongs to piece `index` alone.
                 let digests = unsafe { core::slice::from_raw_parts_mut(outputs.add(piece.offset), piece.len) };
                 crate::many::hash_many_on(messages, *message_len, key, *flags, digests, platform);
+            }
+            Work::Each { items, key, flags, pieces, outputs } => {
+                let piece = pieces[index];
+                // Sound: this range of outputs belongs to piece `index` alone.
+                let digests = unsafe { core::slice::from_raw_parts_mut(outputs.add(piece.offset), piece.len) };
+                let range = &items[piece.offset..][..piece.len];
+                crate::each::hash_each_on(key, *flags, range, digests, platform, &|item| crate::hash_serial_on(item, key, *flags, platform));
             }
         }
     }
