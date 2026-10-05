@@ -22,7 +22,7 @@ fn is_no_neon() -> bool {
 }
 
 fn is_no_sme2() -> bool {
-    defined("CARGO_FEATURE_NO_SME2")
+    true // probe/no-sme2: measure the fork without SME2
 }
 
 fn is_wasm32_simd() -> bool {
