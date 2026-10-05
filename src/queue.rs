@@ -13,9 +13,9 @@
 //!   order. Its tasks are the whole subtrees `Hasher::update` would hash
 //!   in it, in parts of at most `lanes::TASK_LEN` (`plan_subtrees`: a
 //!   piece's chunk counters follow from its offset in the message; a
-//!   message is a stream of one piece). Messages shorter than `TASK_MIN`,
-//!   and `Queue::fixed` batches under `BATCH_TASK_MIN`, go several to a
-//!   task instead (`lanes::Member`), handed over when it is full or when
+//!   message is a stream of one piece). Messages and `Queue::fixed`
+//!   batches shorter than a task (`MEMBER_BELOW`) go several to a task
+//!   instead (`lanes::Member`), handed over when it is full or when
 //!   the delivery thread waits on it. Tasks go onto the pool's task list
 //!   (`lanes::TASKS`), which wakes a thread per task in flight.
 //! - **Hash.** The SME2 thread and the workers pop tasks; each writes its
@@ -354,16 +354,17 @@ enum PieceItem<B> {
     Finish,
 }
 
-/// The shortest message or piece hashed as tasks of its own: shorter
-/// messages go several to a task (`lanes::MEMBERS`), shorter pieces are
+/// The shortest piece hashed as tasks of its own: shorter pieces are
 /// hashed at delivery (a piece's bytes join the message in order).
 const TASK_MIN: usize = crate::SME2_SIZED_LEN;
 
-/// The shortest batch of fixed-length messages hashed as tasks of its own
-/// (a task's bytes): shorter ones go several to a task (on the Mac a task
-/// of its own cost a batch of 16 64-byte messages 68 ns per message, twice
-/// hashing it at delivery, and one of 64 messages shared 36-50).
-const BATCH_TASK_MIN: usize = crate::lanes::TASK_LEN;
+/// The shortest message, or batch of fixed-length messages, hashed as
+/// tasks of its own (a task's bytes): shorter ones go several to a task.
+/// A task of its own costs a short submission its fixed costs (on the Mac
+/// a batch of 16 64-byte messages 68 ns per message, twice hashing it at
+/// delivery, and one of 64 messages shared 36-50; 16 KiB messages 0.229
+/// ns/B on the VM, against 0.118 sharing tasks).
+const MEMBER_BELOW: usize = crate::lanes::TASK_LEN;
 
 impl<H: Send + 'static, S: 'static> Queue<H, S> {
     fn new<I: Send + 'static>(mode: Mode, handler: H, message_len: usize) -> Self
@@ -664,12 +665,12 @@ impl<H: MessageHandler> Queue<H, shape::Messages> {
     pub fn submit(&self, buffer: H::Buffer) {
         let (inner, owner) = self.inner::<H::Buffer>();
         let tasks = inner.tasks;
-        if tasks && buffer.as_ref().len() < TASK_MIN {
+        if tasks && buffer.as_ref().len() < MEMBER_BELOW {
             return inner.submit_member(owner, buffer, None, |buffer| (buffer.as_ref().as_ptr(), buffer.as_ref().len(), None));
         }
         inner.submit(owner, buffer, |buffer, _, out| {
             let bytes = buffer.as_ref();
-            tasks && bytes.len() >= TASK_MIN && {
+            tasks && bytes.len() >= MEMBER_BELOW && {
                 crate::plan_subtrees(&mut Default::default(), bytes, out);
                 true
             }
@@ -728,7 +729,7 @@ impl<H: FixedHandler> Queue<H, shape::Fixed> {
         let slot = crate::many::slot_len(message_len);
         assert_eq!(Some(buffer.as_ref().len()), slot.checked_mul(digests.as_mut().len()), "the buffer holds one slot of whole blocks per digest");
         let len = buffer.as_ref().len();
-        if tasks && len > 0 && len < BATCH_TASK_MIN {
+        if tasks && len > 0 && len < MEMBER_BELOW {
             // Small batches go several to a task, as short messages do.
             return inner.submit_member(owner, (buffer, digests), Some(message_len), |(buffer, digests)| (buffer.as_ref().as_ptr(), buffer.as_ref().len(), Some(digests.as_mut().as_mut_ptr() as *mut u8)));
         }
@@ -747,7 +748,7 @@ impl<H: FixedHandler> Queue<H, shape::Fixed> {
             }
             // A batch that costs more to hash than a handover to the pool
             // (about a microsecond) hashes there; a shorter one at delivery.
-            tasks && bytes.len() >= BATCH_TASK_MIN
+            tasks && bytes.len() >= MEMBER_BELOW
         });
     }
 }
