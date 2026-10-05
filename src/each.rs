@@ -48,9 +48,7 @@ impl Hasher {
     /// assert_eq!((&out[0], &out[1]), (blake3_servil::hash(b"abc").as_bytes(), blake3_servil::hash(b"xyz").as_bytes()));
     /// ```
     pub fn update_each(hashers: &mut [Hasher], pieces: &[(usize, &[u8])]) {
-        for &(i, bytes) in pieces {
-            hashers[i].update(bytes);
-        }
+        update_turn::<crate::join::SerialJoin>(hashers, pieces, false);
     }
 
     /// [`update_each`](Hasher::update_each) allowed this crate's worker
@@ -58,10 +56,9 @@ impl Hasher {
     /// [`update_multithreaded`](Hasher::update_multithreaded): the same
     /// states, and never slower than [`update_each`](Hasher::update_each).
     /// Requires each `i < hashers.len()`.
+    #[cfg(feature = "std")]
     pub fn update_each_multithreaded(hashers: &mut [Hasher], pieces: &[(usize, &[u8])]) {
-        for &(i, bytes) in pieces {
-            hashers[i].update_multithreaded(bytes);
-        }
+        update_turn::<crate::join::SerialJoin>(hashers, pieces, true);
     }
 
     /// The hash of each message `which` names: `out[k]` is
@@ -73,6 +70,91 @@ impl Hasher {
             *out = *hashers[i].finalize().as_bytes();
         }
     }
+}
+
+/// A turn of pieces for many hashers: each piece gathered into its
+/// hasher's stage, and every stage that fills a whole group held, its
+/// hasher's later pieces waiting, until the turn's held groups hash
+/// together: their chunks back to back, a group per call with nothing in
+/// between (the SME unit stays in its fast state), then each level of
+/// their parents in one call. Then the waiting pieces, the same way, until
+/// none is left.
+fn update_turn<J: crate::join::Join>(hashers: &mut [Hasher], pieces: &[(usize, &[u8])], pooled: bool) {
+    let mut turn: Vec<(usize, &[u8])> = pieces.to_vec();
+    let mut waiting: Vec<(usize, &[u8])> = Vec::new();
+    let mut held: Vec<usize> = Vec::new();
+    while !turn.is_empty() {
+        for &(i, bytes) in &turn {
+            if held.contains(&i) {
+                waiting.push((i, bytes));
+                continue;
+            }
+            let rest = hashers[i].gather_part::<J>(bytes, pooled, true);
+            if hashers[i].held_group().is_some() {
+                held.push(i);
+                if !rest.is_empty() {
+                    waiting.push((i, rest));
+                }
+            }
+        }
+        hash_held(hashers, &held);
+        held.clear();
+        core::mem::swap(&mut turn, &mut waiting);
+        waiting.clear();
+    }
+}
+
+/// Hash the whole groups `held` names, one in each of those hashers'
+/// stages, together where they share a key and flags, and pass each
+/// group's subtree to its hasher's core.
+#[cfg(feature = "std")]
+fn hash_held(hashers: &mut [Hasher], held: &[usize]) {
+    use crate::{BLOCK_LEN, PARENT};
+    let Some(&first) = held.first() else { return };
+    let (key, flags) = (hashers[first].core.key, hashers[first].core.chunk_state.flags);
+    let (alike, others): (Vec<usize>, Vec<usize>) = held.iter().partition(|&&i| hashers[i].core.key == key && hashers[i].core.chunk_state.flags == flags);
+    let turn = crate::platform::Sme2Turn::take(hashers[first].core.chunk_state.platform, true);
+    let platform = turn.platform();
+    let n = alike.len();
+    let per = crate::STAGE_LEN / CHUNK_LEN;
+    let chunks = n * per;
+    let mut level = vec![0u8; chunks * OUT_LEN];
+    for (k, &i) in alike.iter().enumerate() {
+        let (counter, group) = hashers[i].held_group().expect("a held group");
+        let refs: Vec<&[u8; CHUNK_LEN]> = group.chunks_exact(CHUNK_LEN).map(|c| c.try_into().unwrap()).collect();
+        platform.hash_many(&refs, &key, counter, IncrementCounter::Yes, flags, CHUNK_START, CHUNK_END, &mut level[k * per * OUT_LEN..(k + 1) * per * OUT_LEN]);
+    }
+    // Three levels of parents to each group's two halves, then a fourth to
+    // its own value.
+    let mut values = chunks;
+    let mut next = vec![0u8; chunks / 2 * OUT_LEN];
+    let mut halves = vec![0u8; 2 * n * OUT_LEN];
+    for depth in 0..4 {
+        if depth == 3 {
+            halves.copy_from_slice(&level[..2 * n * OUT_LEN]);
+        }
+        let blocks: Vec<&[u8; BLOCK_LEN]> = level[..values * OUT_LEN].chunks_exact(BLOCK_LEN).map(|b| b.try_into().unwrap()).collect();
+        platform.hash_many(&blocks, &key, 0, IncrementCounter::No, flags | PARENT, 0, 0, &mut next[..values / 2 * OUT_LEN]);
+        values /= 2;
+        level[..values * OUT_LEN].copy_from_slice(&next[..values * OUT_LEN]);
+    }
+    drop(turn);
+    for (k, &i) in alike.iter().enumerate() {
+        let (counter, _) = hashers[i].held_group().unwrap();
+        let mut result = [0u8; BLOCK_LEN];
+        if counter == 0 {
+            result.copy_from_slice(&halves[k * BLOCK_LEN..(k + 1) * BLOCK_LEN]);
+        } else {
+            result[..OUT_LEN].copy_from_slice(&level[k * OUT_LEN..(k + 1) * OUT_LEN]);
+        }
+        hashers[i].take_held(&result);
+    }
+    hash_held(hashers, &others);
+}
+
+#[cfg(not(feature = "std"))]
+fn hash_held(_: &mut [Hasher], held: &[usize]) {
+    assert!(held.is_empty(), "nothing held without std");
 }
 
 /// Messages of this many chunks or more fill the lanes alone.
@@ -183,12 +265,14 @@ mod test {
         let lens = [0, 1, 63, 64, 1023, 1024, 1025, 2048, 4470, 8191, 16384, 16385, 65536, 100_000, 300_000];
         let piece_lens = [1, 1448, 4096, 1448, 16384, 31, 65536];
         for multithreaded in [false, true] {
-            let mut hashers: Vec<Hasher> = lens.iter().map(|_| Hasher::new()).collect();
+            let key = [5u8; 32];
+            // Every third hasher keyed: a turn's held groups in two kinds.
+            let mut hashers: Vec<Hasher> = (0..lens.len()).map(|i| if i % 3 == 1 { Hasher::new_keyed(&key) } else { Hasher::new() }).collect();
             let mut done = vec![0usize; lens.len()];
             let mut k = 0;
             while done.iter().zip(&lens).any(|(d, l)| d < l) {
                 let mut pieces: Vec<(usize, &[u8])> = Vec::new();
-                for _ in 0..7 {
+                for _ in 0..23 {
                     let i = k % lens.len();
                     let n = piece_lens[k % piece_lens.len()].min(lens[i] - done[i]);
                     pieces.push((i, &input[done[i]..done[i] + n]));
@@ -205,7 +289,8 @@ mod test {
             let mut out = vec![[0u8; OUT_LEN]; lens.len()];
             Hasher::finalize_each(&hashers, &which, &mut out);
             for (k, &i) in which.iter().enumerate() {
-                assert_eq!(&out[k], crate::hash(&input[..lens[i]]).as_bytes(), "len {} multithreaded {multithreaded}", lens[i]);
+                let want = if i % 3 == 1 { crate::keyed_hash(&key, &input[..lens[i]]) } else { crate::hash(&input[..lens[i]]) };
+                assert_eq!(&out[k], want.as_bytes(), "len {} multithreaded {multithreaded}", lens[i]);
             }
         }
     }

@@ -2124,14 +2124,23 @@ impl Hasher {
     /// (but a fresh hasher's first chunk goes to the core),
     /// and the stage goes to the core as one update, its chunks side by
     /// side in the lanes.
-    fn gather<J: join::Join>(&mut self, mut input: &[u8], pooled: bool) -> &mut Self {
+    fn gather<J: join::Join>(&mut self, input: &[u8], pooled: bool) -> &mut Self {
+        self.gather_part::<J>(input, pooled, false);
+        self
+    }
+
+    /// [`gather`](Hasher::gather), but with `hold`, a stage that fills a
+    /// whole group (from offset zero) is kept for the caller to hash with
+    /// others' (`held_group`), and the rest of `input`
+    /// returned; else nothing is left.
+    fn gather_part<'a, J: join::Join>(&mut self, mut input: &'a [u8], pooled: bool, hold: bool) -> &'a [u8] {
         self.core.assert_room(self.count(), input.len());
         while !input.is_empty() {
             // Whole groups, and a fresh hasher's first chunk (which hashes
             // serially either way), skip the stage.
             if self.staged == 0 && (input.len() >= STAGE_LEN || self.core.count() + input.len() as u64 <= CHUNK_LEN as u64) {
                 self.core.update_with_join::<J>(input, pooled);
-                return self;
+                return &[];
             }
             let at = (self.core.initial_chunk_counter * CHUNK_LEN as u64 + self.count()) % STAGE_LEN as u64;
             let to_boundary = STAGE_LEN - at as usize;
@@ -2139,7 +2148,10 @@ impl Hasher {
             self.stage(&input[..take]);
             input = &input[take..];
             if take < to_boundary {
-                return self;
+                return &[];
+            }
+            if hold && self.held_group().is_some() {
+                return input;
             }
             let staged = core::mem::replace(&mut self.staged, 0);
             // Sound: the first `staged` bytes were written; the core reads
@@ -2147,7 +2159,31 @@ impl Hasher {
             let bytes = unsafe { core::slice::from_raw_parts(self.stage.as_ptr() as *const u8, staged) };
             self.core.update_with_join::<J>(bytes, pooled);
         }
-        self
+        &[]
+    }
+
+    /// A whole group in the stage, from offset zero: its first chunk's
+    /// counter and its bytes.
+    #[cfg(feature = "std")]
+    fn held_group(&self) -> Option<(u64, &[u8; STAGE_LEN])> {
+        (self.staged == STAGE_LEN && self.core.initial_chunk_counter == 0)
+            .then(|| (self.core.count() / CHUNK_LEN as u64, self.staged_bytes().try_into().unwrap()))
+    }
+
+    #[cfg(not(feature = "std"))]
+    fn held_group(&self) -> Option<(u64, &[u8; STAGE_LEN])> {
+        None
+    }
+
+    /// The held group's subtree, as [`HasherCore::update_with_results`]
+    /// takes it (its two halves' values at chunk zero, else its own), into
+    /// the core; the stage empty again.
+    #[cfg(feature = "std")]
+    fn take_held(&mut self, result: &[u8; BLOCK_LEN]) {
+        let staged = core::mem::replace(&mut self.staged, 0);
+        // Sound: as in gather_part.
+        let bytes = unsafe { core::slice::from_raw_parts(self.stage.as_ptr() as *const u8, staged) };
+        self.core.update_with_results(bytes, &mut core::iter::once(result));
     }
 
     /// The root's output: the core's, after the stage's bytes.
