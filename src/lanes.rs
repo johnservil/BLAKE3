@@ -279,7 +279,7 @@ pub(crate) fn hash_each(key: &crate::CVWords, flags: u8, items: &[&[u8]], out: &
     let mut remaining: usize = items.iter().map(|i| i.len()).sum();
     if callers >= pool.cpus {
         let platform = Platform::detect();
-        return crate::each::hash_each_on(key, flags, items, out, platform, &|item| crate::hash_serial_on(item, key, flags, platform));
+        return crate::each::hash_each_on(key, flags, items, out, platform, |item| crate::hash_serial_on(item, key, flags, platform));
     }
     let mut pieces = Vec::with_capacity(64);
     let mut start = 0;
@@ -462,7 +462,7 @@ impl Job<'_> {
                 // Sound: this range of outputs belongs to piece `index` alone.
                 let digests = unsafe { core::slice::from_raw_parts_mut(outputs.add(piece.offset), piece.len) };
                 let range = &items[piece.offset..][..piece.len];
-                crate::each::hash_each_on(key, *flags, range, digests, platform, &|item| crate::hash_serial_on(item, key, *flags, platform));
+                crate::each::hash_each_on(key, *flags, range, digests, platform, |item| crate::hash_serial_on(item, key, *flags, platform));
             }
         }
     }

@@ -38,7 +38,7 @@ pub fn hash_each_multithreaded_with(mode: Mode, items: &[&[u8]], out: &mut [[u8;
     // stand-in, its digest written after).
     let small: Vec<&[u8]> = items.iter().map(|&i| if alone(i) { &[][..] } else { i }).collect();
     if small.iter().map(|i| i.len()).sum::<usize>() < crate::lanes::MIN_SPLIT_LEN {
-        hash_each_on(&key, flags, &small, out, Platform::detect(), &|item| crate::hash_with(mode, item));
+        hash_each_on(&key, flags, &small, out, Platform::detect(), |item| crate::hash_with(mode, item));
     } else {
         crate::lanes::hash_each(&key, flags, &small, out);
     }
@@ -199,13 +199,13 @@ const ALONE_CHUNKS: usize = 16;
 pub fn hash_each_with(mode: Mode, items: &[&[u8]], out: &mut [[u8; OUT_LEN]]) {
     assert_eq!(items.len(), out.len(), "one digest per item");
     let (key, flags) = mode.key_and_flags();
-    hash_each_on(&key, flags, items, out, Platform::detect(), &|item| crate::hash_with(mode, item));
+    hash_each_on(&key, flags, items, out, Platform::detect(), |item| crate::hash_with(mode, item));
 }
 
 /// [`hash_each_with`] in the mode of `key` and `flags`, the lanes on
 /// `platform`, each message that fills the lanes alone (or is a chunk or
 /// less) through `alone`.
-pub(crate) fn hash_each_on(key: &CVWords, flags: u8, items: &[&[u8]], out: &mut [[u8; OUT_LEN]], platform: Platform, alone: &dyn Fn(&[u8]) -> Hash) {
+pub(crate) fn hash_each_on(key: &CVWords, flags: u8, items: &[&[u8]], out: &mut [[u8; OUT_LEN]], platform: Platform, alone: impl Fn(&[u8]) -> Hash) {
     let key = *key;
     // The messages whose full chunks share the lanes: each one's index, and
     // where its chunk values start in `cvs`.
