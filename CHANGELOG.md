@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- A `Hasher` gathers updates shorter than 16 KiB until the message's next
+  16 KiB boundary, and hashes them 16 chunks side by side: a message that
+  arrives in network-sized pieces hashes nearly as fast as one in whole
+  buffers. A `Hasher` is now about 18 KiB.
+- `Hasher::update_each` takes a turn's pieces for many hashers in one call;
+  the whole groups it gathers from different messages hash together. On
+  an Apple M4 Max a server's 256 uploads in 1448-byte pieces hash at 0.25
+  ns/B, against 0.51 one `update` per piece and SHA-256's 0.31.
+- `hash_each_multithreaded_with` hashes a collection over this crate's
+  threads: a repository's objects 7.8 times faster than on one thread.
+- `Queue::messages`: messages shorter than 64 KiB share tasks, as batches
+  do (pipelined 16 KiB messages a quarter faster).
 - `hash_each_with(mode, items, out)` hashes a collection of messages of any
   lengths in one call, short ones side by side in the SIMD lanes: on an
   Apple M4 Max a repository's objects or a store's files under 16 KiB take

@@ -1421,6 +1421,53 @@ item out when it lands or is rejected.
 - Devon's BLAKE3#1 (x86 two-chunk batching), once he trims it; judge it
   by the frozen benchmark.
 
+## The optimisation pass behind bench-hashes 0.15.0 (October 5, 2026)
+
+Zooko froze the benchmark (0.15.0) so that the maps before and after the
+pass come from one benchmark; the API the pass works behind went in first,
+each call in its simplest form (`Verifier`, `update_each`,
+`finalize_each`, `hash_each_multithreaded_with`). Mac numbers are A/Bs of
+the benchmark's cells, old new new old; bench-hashes NEXT-STEPS has the
+round-by-round report.
+
+- **The Hasher's stage** (Zooko's choice, the Hasher's job): `Hasher` is a
+  `HasherCore` (the tree's state) and a 16 KiB stage. An update of 16 KiB
+  or more with nothing staged, and a fresh hasher's first chunk, go to the
+  core; shorter ones gather until the message's next 16 KiB boundary.
+  Many messages at once 0.519 -> 0.306 ns/B (jobs 1246-1249). Cost: a
+  whole message in one update, 64 B +7% (4 ns), 1.5-15 KiB +4-5% (the
+  copy; probe/one-update, jobs 1242-1245); the docs say so.
+- **The Verifier's batches**: a piece's whole nodes are checked together,
+  their groups hashed in one batch. Alone over a 64 MiB encoding (VM):
+  64 KiB pieces 0.25 -> 0.237 ns/B, 1 MiB pieces 0.178 (building: 0.174).
+  What stays at 64 KiB is SME2's cost per small batch between other work:
+  batches of 16 groups cost building itself 0.202 against 64 groups'
+  0.174; the NEON hybrids instead cost more (0.263).
+- **Lanes across messages without a new kernel loop**: `update_each`
+  holds each stage that fills a whole group and hashes the turn's groups
+  together; parents carry no counter, so groups of different messages
+  share each level's call. Then one SME2 entry for all the groups: the
+  chunk kernel's entry `hash16_chunks_at` takes a counter per group (flags
+  bit 48, the table's cursor in the body's stack frame). 0.306 -> 0.286
+  -> 0.250 ns/B on the Mac (jobs 1255-1258, 1276-1279).
+- **Collections over the pool**: `Work::Each`, ranges of items of about a
+  thread's share of the bytes through `hash_each_with`'s code; items of
+  512 KiB or more through `hash_multithreaded`. Mac: 0.229 -> 0.029 ns/B
+  (git objects), 0.218 -> 0.039 (Nix files). Through `&dyn Fn` the lone
+  items' call cost servil st's shared cells 4-7%; generic, level.
+- **Queue::messages shares tasks below 64 KiB**: a 16 KiB message was a
+  task of its own (the pieces' 16 KiB threshold); now messages share the
+  batches' threshold, a task's bytes. Pipelined 16 KiB 0.148 -> 0.111.
+- **Tried and dropped**: a single 16 KiB group on the NEON hybrids instead
+  of SME2 (no change: `Sme2Turn::take(_, false)` keeps the platform); a
+  10 s wait between the gate's builds and its runs (the gate's busy window
+  stayed, jobs 1264).
+- **Open**: the Mac gate has given no verdict since jobs 1260 (one busy
+  half-second window per check, 1-4 CPUs of other programs, the cause
+  outside the builds, the VM, and the runner); CI builds with warnings as
+  errors and the Mac's test job does not, so an unused import reached
+  servil 1352c21 (fixed on the candidate, a9ae1d5).
+
 ## Benchmark/API alignment and the memory-working gap (September 30, 2026)
 
 Zooko's September 28 evening table is now encoded in the benchmark's
