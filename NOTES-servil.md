@@ -1539,6 +1539,11 @@ round-by-round report.
   1236, 1940. So 280-900 ns is the call's own kernels' code (k4 10 KB, k8
   12 KB: about 16 bytes of code a nanosecond), and 100-200 ns the shared
   state.
+- **Two wakers, tried and dropped** (October 6, 2026, VM): the caller
+  waking two sleepers instead of one, each woken worker waking half of
+  those still owed: hash_multithreaded 1-4 MiB 9% slower (1 MiB 87 -> 95
+  us), 16 MiB 6% faster. A woken worker arrives 15-45 us after its wake,
+  so a second chain of wakes helps less than the caller's extra wake costs.
 - **Tried and dropped**: a single 16 KiB group on the NEON hybrids instead
   of SME2 (no change: `Sme2Turn::take(_, false)` keeps the platform); a
   10 s wait between the gate's builds and its runs (the gate's busy window
