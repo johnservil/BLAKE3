@@ -1513,6 +1513,16 @@ round-by-round report.
   6000 B 1736 -> 2214, 7935 B 2050 -> 2550; 17 KB and up level), after a
   pause 8-38%, after other work level. They earn their place, though they
   are over half the generated NEON code.
+- **The one-pair kernels rolled, tried and dropped** (October 6, 2026,
+  probe/rolled-small): k2, k3, p2, p3, q1 and q2 with one round in a loop
+  over a table of word indices (the pair's messages on the stack): 2-3x
+  smaller (k2 2.9 -> 1.3 KB, q2 9.3 -> 2.9). Nonstop (VM) 2-3 KiB +4-5%,
+  batches of 2-6 one-block messages +10-18% (the stack round trip of the
+  pair's message words, a large share of a one-block call); after other
+  work and after idling no clear gain (Mac jobs 1371-1376, three pairs:
+  -10% to +16% either way): at these lengths the kernels' code is not
+  what a cold call waits for. (The rolled one-chunk kernel did pay: its
+  call is one chain.)
 - **Tried and dropped**: a single 16 KiB group on the NEON hybrids instead
   of SME2 (no change: `Sme2Turn::take(_, false)` keeps the platform); a
   10 s wait between the gate's builds and its runs (the gate's busy window
