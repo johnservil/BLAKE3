@@ -1520,7 +1520,7 @@ const PREFETCH_BATCH_BELOW: usize = 64;
 /// alone after a pause (neon_hybrid::hash_pairs): its code is a fraction of
 /// the plans' for 3 to 16, and after a pause the code comes from memory.
 #[cfg(all(blake3_neon_hybrid, feature = "std"))]
-const PAIRS_AFTER_PAUSE_UPTO: usize = 8;
+const PAIRS_AFTER_PAUSE_UPTO: usize = 16;
 
 /// After a pause (code_may_be_cold), a batch of `count` one-block
 /// messages: 2 to PAIRS_AFTER_PAUSE_UPTO hashed here on the pair kernel
@@ -1544,7 +1544,7 @@ fn batch_after_pause(input: &[u8], message_len: usize, key: &CVWords, flags: u8,
     if !neon_hybrid::sha3_detected() {
         return false;
     }
-    if message_len == 0 || !(2..=PAIRS_AFTER_PAUSE_UPTO).contains(&count) {
+    if message_len == 0 || !(1..=PAIRS_AFTER_PAUSE_UPTO).contains(&count) {
         neon_hybrid::prefetch_message_code(count);
         return false;
     }
