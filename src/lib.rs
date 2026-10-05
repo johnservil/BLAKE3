@@ -68,7 +68,12 @@
 //!
 //! - **A collection of messages of different lengths** (a tree's files, a
 //!   repository's objects), all in memory: [`hash_each_with`] hashes them
-//!   in one call, short ones side by side in the SIMD lanes.
+//!   in one call, short ones side by side in the SIMD lanes
+//!   ([`hash_each_multithreaded_with`] with this crate's threads allowed).
+//! - **Many messages in progress at once** (a server's uploads, each with
+//!   its own [`Hasher`]): [`Hasher::update_each`] takes a turn's pieces for
+//!   all of them in one call, and [`Hasher::finalize_each`] the hashes of
+//!   those that ended.
 //! - **Verified streaming and range reads** (Bao, iroh-blobs): [`outboard_with`]
 //!   hashes a message and lists its tree's parent nodes above 16 KiB groups,
 //!   and [`verify_range_with`] checks any range of it against the hash;
@@ -205,7 +210,7 @@ mod test;
 #[cfg(feature = "std")]
 mod each;
 #[cfg(feature = "std")]
-pub use each::hash_each_with;
+pub use each::{hash_each_multithreaded_with, hash_each_with};
 #[cfg(feature = "std")]
 mod outboard;
 #[cfg(feature = "std")]

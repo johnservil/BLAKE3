@@ -9,7 +9,71 @@
 //! then merge into its root as BLAKE3's tree places them.
 
 use crate::platform::Platform;
-use crate::{CVBytes, CVWords, ChunkState, Hash, IncrementCounter, Mode, CHUNK_END, CHUNK_LEN, CHUNK_START, OUT_LEN};
+use crate::{CVBytes, CVWords, ChunkState, Hash, Hasher, IncrementCounter, Mode, CHUNK_END, CHUNK_LEN, CHUNK_START, OUT_LEN};
+
+/// [`hash_each_with`] allowed this crate's worker threads, under the rules
+/// of [`hash_multithreaded`](crate::hash_multithreaded): the same digests,
+/// and never slower than [`hash_each_with`]. Today it hashes on the calling
+/// thread, as [`hash_each_with`] does. Requires `out.len() == items.len()`.
+///
+/// ```
+/// use blake3_servil::Mode;
+/// let items: Vec<Vec<u8>> = (0..100).map(|i| vec![i as u8; 1000 * i]).collect();
+/// let slices: Vec<&[u8]> = items.iter().map(|m| m.as_slice()).collect();
+/// let (mut a, mut b) = (vec![[0u8; 32]; 100], vec![[0u8; 32]; 100]);
+/// blake3_servil::hash_each_multithreaded_with(Mode::Hash, &slices, &mut a);
+/// blake3_servil::hash_each_with(Mode::Hash, &slices, &mut b);
+/// assert_eq!(a, b);
+/// ```
+pub fn hash_each_multithreaded_with(mode: Mode, items: &[&[u8]], out: &mut [[u8; OUT_LEN]]) {
+    hash_each_with(mode, items, out)
+}
+
+/// Many messages in progress at once, a server's uploads, each with its own
+/// [`Hasher`]: these calls take a whole turn of them, so their bytes can
+/// share the SIMD lanes.
+impl Hasher {
+    /// Feeds each piece to its hasher: `(i, bytes)` is
+    /// `hashers[i].update(bytes)`, and a hasher's pieces go in their order
+    /// in `pieces`. One call for all the pieces a program has in hand (a
+    /// turn of its event loop) runs at least as fast as one
+    /// [`update`](Hasher::update) each. Requires each `i < hashers.len()`.
+    ///
+    /// ```
+    /// use blake3_servil::Hasher;
+    /// let mut hashers = vec![Hasher::new(), Hasher::new()];
+    /// Hasher::update_each(&mut hashers, &[(0, b"ab"), (1, b"xyz"), (0, b"c")]);
+    /// let mut out = [[0u8; 32]; 2];
+    /// Hasher::finalize_each(&hashers, &[0, 1], &mut out);
+    /// assert_eq!((&out[0], &out[1]), (blake3_servil::hash(b"abc").as_bytes(), blake3_servil::hash(b"xyz").as_bytes()));
+    /// ```
+    pub fn update_each(hashers: &mut [Hasher], pieces: &[(usize, &[u8])]) {
+        for &(i, bytes) in pieces {
+            hashers[i].update(bytes);
+        }
+    }
+
+    /// [`update_each`](Hasher::update_each) allowed this crate's worker
+    /// threads, under the rules of
+    /// [`update_multithreaded`](Hasher::update_multithreaded): the same
+    /// states, and never slower than [`update_each`](Hasher::update_each).
+    /// Requires each `i < hashers.len()`.
+    pub fn update_each_multithreaded(hashers: &mut [Hasher], pieces: &[(usize, &[u8])]) {
+        for &(i, bytes) in pieces {
+            hashers[i].update_multithreaded(bytes);
+        }
+    }
+
+    /// The hash of each message `which` names: `out[k]` is
+    /// `hashers[which[k]].finalize()`. Requires `out.len() == which.len()`
+    /// and each index `< hashers.len()`.
+    pub fn finalize_each(hashers: &[Hasher], which: &[usize], out: &mut [[u8; OUT_LEN]]) {
+        assert_eq!(which.len(), out.len(), "one digest per message named");
+        for (&i, out) in which.iter().zip(out) {
+            *out = *hashers[i].finalize().as_bytes();
+        }
+    }
+}
 
 /// Messages of this many chunks or more fill the lanes alone.
 const ALONE_CHUNKS: usize = 16;
@@ -108,6 +172,43 @@ fn left_len(n: usize) -> usize {
 #[cfg(test)]
 mod test {
     use super::*;
+
+    /// Many hashers fed in turns of interleaved pieces of many lengths:
+    /// update_each, its multithreaded twin, and finalize_each give every
+    /// message the hash one Hasher per message gives.
+    #[test]
+    fn test_update_each() {
+        let mut input = vec![0u8; 1 << 20];
+        crate::test::paint_test_input(&mut input);
+        let lens = [0, 1, 63, 64, 1023, 1024, 1025, 2048, 4470, 8191, 16384, 16385, 65536, 100_000, 300_000];
+        let piece_lens = [1, 1448, 4096, 1448, 16384, 31, 65536];
+        for multithreaded in [false, true] {
+            let mut hashers: Vec<Hasher> = lens.iter().map(|_| Hasher::new()).collect();
+            let mut done = vec![0usize; lens.len()];
+            let mut k = 0;
+            while done.iter().zip(&lens).any(|(d, l)| d < l) {
+                let mut pieces: Vec<(usize, &[u8])> = Vec::new();
+                for _ in 0..7 {
+                    let i = k % lens.len();
+                    let n = piece_lens[k % piece_lens.len()].min(lens[i] - done[i]);
+                    pieces.push((i, &input[done[i]..done[i] + n]));
+                    done[i] += n;
+                    k += 1;
+                }
+                if multithreaded {
+                    Hasher::update_each_multithreaded(&mut hashers, &pieces);
+                } else {
+                    Hasher::update_each(&mut hashers, &pieces);
+                }
+            }
+            let which: Vec<usize> = (0..lens.len()).rev().collect();
+            let mut out = vec![[0u8; OUT_LEN]; lens.len()];
+            Hasher::finalize_each(&hashers, &which, &mut out);
+            for (k, &i) in which.iter().enumerate() {
+                assert_eq!(&out[k], crate::hash(&input[..lens[i]]).as_bytes(), "len {} multithreaded {multithreaded}", lens[i]);
+            }
+        }
+    }
 
     /// Every length around chunk and lane boundaries, in every mode, mixed in
     /// one call, against `hash_with` on each.

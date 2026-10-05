@@ -107,6 +107,30 @@ a faster hash saves CPU time and energy rather than waiting.
    is measured (NOTES-servil.md, Future work); a prototype, not in the
    crate.
 
+4. **The API frozen for the optimisation pass** (Zooko, October 5, 2026:
+   "add the lanes across messages before freezing the API, so that we can
+   experiment with optimizations without thawing it"). Each new call
+   lands first in its simplest correct form, so the benchmark (0.15.0)
+   calls exactly what the optimisations will speed up:
+   - `Verifier` (Zooko's "14. Yes"): a whole message verified as it
+     arrives in iroh-blobs' wire format, in pieces of any length.
+   - `Hasher::update_each(hashers, pieces)`, its twin
+     `update_each_multithreaded`, and `Hasher::finalize_each(hashers,
+     which, out)`: many messages in progress, a turn's pieces in one call,
+     so different messages' bytes can share the lanes. Today they loop
+     over `update`, `update_multithreaded`, and `finalize`.
+   - `hash_each_multithreaded_with`: the multithreaded twin of
+     `hash_each_with`. Zooko's reading of the two servil contenders: a
+     program chooses one thread (it has no threads, or one thread per
+     workload) or allows many, and each contender makes the fastest call
+     under its choice; a multithreaded call is never slower than the
+     single-threaded one on the same task. Today it hashes on the calling
+     thread.
+   - The Hasher gathers each message's pieces into whole 16 KiB itself
+     (Zooko, October 5); no new call, and the docs of `update` tell
+     callers who can cheaply batch that whole 16 KiB from a 16 KiB
+     boundary skip the copy.
+
 The two added APIs share the batched group hashing of `outboard.rs`
 (`group_cvs_into`); `hash_each_with` lanes its own chunks. A stream, if it
 lands, would hash its segments the same way.
@@ -119,7 +143,8 @@ whole 16 KiB from a 16 KiB boundary of the message (probe/gather-16k, Mac
 job 1215, the benchmark's schedule, the copy charged): 0.283 ns/B, and 0.251
 gathering 64 KiB, against 0.484 updating per piece (VM alike: 0.297, 0.268,
 0.472). Updates of 16 KiB or more off that boundary gain a tenth (0.424).
-Two ways to the cell, either a decision of Zooko's:
+Two ways to the cell; Zooko chose the Hasher's (October 5, 2026), with a
+note in the docs for callers who can cheaply batch:
 - **The caller's job** (his contract idea of October 3): `Hasher::update`'s
   docs say it is fastest given whole multiples of 16 KiB from a 16 KiB
   boundary, and the benchmark's servil contenders gather so in this cell

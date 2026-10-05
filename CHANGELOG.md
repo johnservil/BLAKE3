@@ -11,6 +11,11 @@
   the parent nodes above its 16 KiB groups (the layout iroh-blobs stores),
   and `verify_range_with` checks any range of whole groups against the
   hash as it arrives. Building an outboard costs about what hashing costs.
+- Many messages in progress at once: `Hasher::update_each` and
+  `Hasher::update_each_multithreaded` feed a turn's pieces to their
+  hashers in one call, and `Hasher::finalize_each` gives the hashes of
+  those that ended. `hash_each_multithreaded_with` is `hash_each_with`
+  with this crate's threads allowed.
 - `Verifier` checks a whole message as it arrives in iroh-blobs' wire
   format (bao-tree's pre-order encoding with 16 KiB blocks), in pieces of
   any length, and gives back each group once it is checked.
