@@ -1523,6 +1523,20 @@ round-by-round report.
   -10% to +16% either way): at these lengths the kernels' code is not
   what a cold call waits for. (The rolled one-chunk kernel did pay: its
   call is one chain.)
+- **Rotations folded into eor, tried and dropped** (October 6, 2026,
+  VM): ror(d ^ a, n) = ror(d, n) ^ ror(a, n), and `eor d, rd, a, ror #n`
+  takes the second term in one instruction, with ror(d, n) computed off
+  the chain: four dependent operations a half-G instead of six, at the
+  same instruction count. The scalar kernel ran 5% slower (64 B 47.0 ->
+  49.7 ns, 1 KiB 747 -> 788): on this core an eor with a rotated operand
+  takes two cycles, so the chain is as long as before.
+- **Where a cold call of 2-8 KiB waits** (October 6, 2026,
+  probe/cold-split2, Mac job 1377, mains): with the crate's shared state
+  warmed (a 64-byte hash in the untimed preparation) 2 KiB 1312 -> 1227
+  ns, 4 KiB 1970 -> 1815, 8 KiB 3037 -> 2827; with everything warm 949,
+  1236, 1940. So 280-900 ns is the call's own kernels' code (k4 10 KB, k8
+  12 KB: about 16 bytes of code a nanosecond), and 100-200 ns the shared
+  state.
 - **Tried and dropped**: a single 16 KiB group on the NEON hybrids instead
   of SME2 (no change: `Sme2Turn::take(_, false)` keeps the platform); a
   10 s wait between the gate's builds and its runs (the gate's busy window
