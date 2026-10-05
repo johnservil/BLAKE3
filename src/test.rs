@@ -829,7 +829,7 @@ fn test_zeroize() {
     hash.zeroize();
     assert_eq!(hash.0, [0u8; 32]);
 
-    let mut hasher = crate::Hasher {
+    let mut hasher = crate::HasherCore {
         chunk_state: crate::ChunkState {
             cv: [42; 8],
             chunk_counter: 42,
@@ -1443,4 +1443,45 @@ mod guard_pages {
             }
         }
     }
+}
+
+/// The Hasher's stage: pieces of many lengths across 16 KiB boundaries,
+/// update and update_multithreaded mixed, finalize midway and after more
+/// input, and subtrees at input offsets (hazmat), against one-shot hashes.
+#[test]
+fn test_hasher_gathers() {
+    use crate::hazmat::HasherExt;
+    let mut input = vec![0u8; 300_000];
+    paint_test_input(&mut input);
+    let pieces = [1, 1448, 4096, 1448, 16384, 31, 16383, 65536, 16385, 7, 1000];
+    for start in 0..pieces.len() {
+        let mut hasher = crate::Hasher::new();
+        let mut done = 0;
+        let mut k = start;
+        while done < input.len() {
+            let n = pieces[k % pieces.len()].min(input.len() - done);
+            if k % 3 == 0 {
+                hasher.update_multithreaded(&input[done..done + n]);
+            } else {
+                hasher.update(&input[done..done + n]);
+            }
+            done += n;
+            k += 1;
+            if k % 5 == 0 {
+                assert_eq!(hasher.finalize(), crate::hash(&input[..done]), "after {done} bytes");
+                assert_eq!(hasher.count(), done as u64);
+            }
+        }
+        assert_eq!(hasher.finalize(), crate::hash(&input), "pieces from {start}");
+    }
+    // A subtree of 64 chunks at offset 64 KiB, in small pieces, against one update.
+    let sub = &input[..64 * CHUNK_LEN];
+    let mut whole = crate::Hasher::new();
+    whole.set_input_offset(64 * CHUNK_LEN as u64).update(sub);
+    let mut pieced = crate::Hasher::new();
+    pieced.set_input_offset(64 * CHUNK_LEN as u64);
+    for piece in sub.chunks(1448) {
+        pieced.update(piece);
+    }
+    assert_eq!(pieced.finalize_non_root(), whole.finalize_non_root());
 }

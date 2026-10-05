@@ -10,7 +10,7 @@
 //! 16 KiB blocks, as iroh-blobs stores it.
 
 use crate::platform::Platform;
-use crate::{CVBytes, CVWords, Hash, Hasher, IncrementCounter, Mode, CHUNK_END, CHUNK_LEN, CHUNK_START, PARENT};
+use crate::{CVBytes, CVWords, Hash, IncrementCounter, Mode, CHUNK_END, CHUNK_LEN, CHUNK_START, PARENT};
 
 /// The length of a group: 16 chunks, 16 KiB.
 pub const GROUP_LEN: usize = 16 * CHUNK_LEN;
@@ -327,11 +327,10 @@ pub(crate) fn group_cvs_into(input: &[u8], first_group: u64, key: &CVWords, flag
 
 /// A group's chaining value as a non-root subtree at chunk `start`.
 fn group_cv(group: &[u8], start: u64, key: &CVWords, flags: u8) -> CVBytes {
-    use crate::hazmat::HasherExt;
-    let mut hasher = Hasher::new_internal(key, flags);
-    hasher.set_input_offset(start * CHUNK_LEN as u64);
-    hasher.update(group);
-    hasher.finalize_non_root()
+    let mut core = crate::HasherCore::new_internal(key, flags);
+    core.set_input_offset(start * CHUNK_LEN as u64);
+    core.update(group);
+    core.final_output().chaining_value()
 }
 
 /// Chunks in a message of `len` bytes (one for the empty message).

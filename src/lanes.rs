@@ -1343,7 +1343,7 @@ mod test {
                         .iter()
                         .map(|p| {
                             let mut hasher = Hasher::new();
-                            hasher.set_platform(platform);
+                            hasher.core.set_platform(platform);
                             hasher.set_input_offset(p.offset as u64);
                             hasher.update(&input[p.offset..][..p.len]);
                             hasher.finalize_non_root()

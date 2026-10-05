@@ -40,7 +40,7 @@
 //! the handler calls.
 
 use crate::lanes::{OwnLine, TASKS, Task};
-use crate::{CVWords, Hash, Hasher, Mode, OUT_LEN};
+use crate::{CVWords, Hash, Mode, OUT_LEN};
 use std::any::Any;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
@@ -345,7 +345,7 @@ impl<I> Drop for State<I> {
 
 struct Handling<H> {
     handler: H,
-    hasher: Hasher,
+    hasher: crate::HasherCore,
 }
 
 /// A queue of pieces' submissions.
@@ -382,7 +382,7 @@ impl<H: Send + 'static, S: 'static> Queue<H, S> {
         let inner = Inner::<H, I, S> {
             state: OwnLine(Mutex::new(state)),
             returned: OwnLine(Mutex::new(returned)),
-            handling: OwnLine(Mutex::new(Handling { handler, hasher: Hasher::new_internal(&key, flags) })),
+            handling: OwnLine(Mutex::new(Handling { handler, hasher: crate::HasherCore::new_internal(&key, flags) })),
             head: AtomicPtr::new(first),
             waiting: AtomicPtr::new(core::ptr::null_mut()),
             polls: AtomicUsize::new(0),
@@ -611,9 +611,9 @@ impl<H: MessageHandler> Deliver for Inner<H, H::Buffer, shape::Messages> {
                 crate::hash_serial(buffer.as_ref(), &queue.key, queue.flags)
             } else {
                 // A message is a stream of one piece.
-                let mut hasher = Hasher::new_internal(&queue.key, queue.flags);
+                let mut hasher = crate::HasherCore::new_internal(&queue.key, queue.flags);
                 hasher.update_with_results(buffer.as_ref(), &mut results.iter());
-                hasher.finalize()
+                hasher.final_output().root_hash()
             };
             handling.handler.hashed(buffer, hash);
         })
@@ -632,7 +632,7 @@ impl<H: PieceHandler> Deliver for Inner<H, PieceItem<H::Buffer>, shape::Pieces> 
                 handling.handler.piece_done(piece);
             }
             PieceItem::Finish => {
-                let hash = handling.hasher.finalize();
+                let hash = handling.hasher.final_output().root_hash();
                 handling.hasher.reset();
                 handling.handler.finished(hash);
             }
@@ -951,7 +951,7 @@ mod test {
         for start in [0, 500, CHUNK_LEN, 3 * CHUNK_LEN] {
             for (step, batch) in [(1usize, 1usize), (3, 2), (5, 3), (7, 4), (11, 6)] {
                 let pieces: Vec<usize> = (0..12).map(|i| lens[(i * step + start) % lens.len()]).collect();
-                let mut want = Hasher::new_internal(&key, crate::KEYED_HASH);
+                let mut want = crate::HasherCore::new_internal(&key, crate::KEYED_HASH);
                 let mut got = want.clone();
                 want.update(&input[..start]);
                 got.update(&input[..start]);
@@ -979,7 +979,7 @@ mod test {
                         got.update_with_results(piece, &mut replay);
                     }
                     assert!(replay.as_slice().is_empty(), "every result replayed");
-                    assert_eq!(got.finalize(), want.finalize(), "start {start}, pieces {pieces:?}, batches of {batch}, after {offset} bytes");
+                    assert_eq!(got.final_output().root_hash(), want.final_output().root_hash(), "start {start}, pieces {pieces:?}, batches of {batch}, after {offset} bytes");
                 }
             }
         }

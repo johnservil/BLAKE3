@@ -104,6 +104,8 @@
 //!
 //! # Memory
 //!
+//! - **A [`Hasher`] is about 18 KiB**, 16 KiB of it for the short updates
+//!   it gathers ([`Hasher::update`]); box it where that matters.
 //! - **Single-threaded calls allocate nothing**: [`hash`], [`keyed_hash`],
 //!   [`derive_key`], [`hash_with`], [`hash_many`], [`hash_many_with`],
 //!   [`Hasher::update`] and [`Hasher::finalize`], and [`OutputReader`].
@@ -2071,6 +2073,21 @@ fn parent_node_output(
 /// ```
 #[derive(Clone)]
 pub struct Hasher {
+    core: HasherCore,
+    /// The message's bytes from its last 16 KiB boundary, gathered while
+    /// they arrive in shorter updates: the first `staged`.
+    staged: usize,
+    stage: [core::mem::MaybeUninit<u8>; STAGE_LEN],
+}
+
+/// The bytes a Hasher gathers before they hash side by side: 16 chunks,
+/// the widest kernels' lanes.
+const STAGE_LEN: usize = 16 * CHUNK_LEN;
+
+/// The tree's state behind a [`Hasher`]: its chunk, and the chaining values
+/// of its finished subtrees.
+#[derive(Clone)]
+pub(crate) struct HasherCore {
     key: CVWords,
     chunk_state: ChunkState,
     initial_chunk_counter: u64,
@@ -2083,7 +2100,369 @@ pub struct Hasher {
 }
 
 impl Hasher {
-    fn new_internal(key: &CVWords, flags: u8) -> Self {
+    fn from_core(core: HasherCore) -> Self {
+        Self { core, staged: 0, stage: [core::mem::MaybeUninit::uninit(); STAGE_LEN] }
+    }
+
+    /// The bytes gathered in the stage.
+    fn staged_bytes(&self) -> &[u8] {
+        // Sound: the first `staged` bytes of the stage were written (gather).
+        unsafe { core::slice::from_raw_parts(self.stage.as_ptr() as *const u8, self.staged) }
+    }
+
+    /// Copy `bytes` into the stage after what it holds.
+    fn stage(&mut self, bytes: &[u8]) {
+        // Sound: MaybeUninit<u8> has u8's layout, and the bytes fit (gather).
+        let room = unsafe { core::slice::from_raw_parts_mut(self.stage.as_mut_ptr().add(self.staged) as *mut u8, bytes.len()) };
+        room.copy_from_slice(bytes);
+        self.staged += bytes.len();
+    }
+
+    /// `update`'s gathering: an update of STAGE_LEN or more from a 16 KiB
+    /// boundary of the message (or an empty stage) goes to the core whole;
+    /// shorter ones gather in the stage until it reaches the next boundary,
+    /// and the stage goes to the core as one update, its chunks side by
+    /// side in the lanes.
+    fn gather<J: join::Join>(&mut self, mut input: &[u8], pooled: bool) -> &mut Self {
+        self.core.assert_room(self.count(), input.len());
+        while !input.is_empty() {
+            if self.staged == 0 && input.len() >= STAGE_LEN {
+                self.core.update_with_join::<J>(input, pooled);
+                return self;
+            }
+            let at = (self.core.initial_chunk_counter * CHUNK_LEN as u64 + self.count()) % STAGE_LEN as u64;
+            let to_boundary = STAGE_LEN - at as usize;
+            let take = cmp::min(to_boundary, input.len());
+            self.stage(&input[..take]);
+            input = &input[take..];
+            if take < to_boundary {
+                return self;
+            }
+            let staged = core::mem::replace(&mut self.staged, 0);
+            // Sound: the first `staged` bytes were written; the core reads
+            // them before the stage is written again.
+            let bytes = unsafe { core::slice::from_raw_parts(self.stage.as_ptr() as *const u8, staged) };
+            self.core.update_with_join::<J>(bytes, pooled);
+        }
+        self
+    }
+
+    /// The root's output: the core's, after the stage's bytes.
+    fn final_output(&self) -> Output {
+        if self.staged == 0 {
+            return self.core.final_output();
+        }
+        let mut core = self.core.clone();
+        core.update(self.staged_bytes());
+        core.final_output()
+    }
+
+    /// A fresh hasher on `platform`'s kernels (for measurement; hidden).
+    #[cfg(feature = "std")]
+    #[doc(hidden)]
+    pub fn new_with_platform(platform: Platform) -> Self {
+        let mut hasher = Self::new();
+        hasher.core.set_platform(platform);
+        hasher
+    }
+
+    /// Construct a new `Hasher` for the regular hash function.
+    pub fn new() -> Self {
+        Self::from_core(HasherCore::new_internal(IV, 0))
+    }
+
+    /// Construct a new `Hasher` for the keyed hash function. See
+    /// [`keyed_hash`].
+    ///
+    /// [`keyed_hash`]: fn.keyed_hash.html
+    pub fn new_keyed(key: &[u8; KEY_LEN]) -> Self {
+        let key_words = platform::words_from_le_bytes_32(key);
+        Self::from_core(HasherCore::new_internal(&key_words, KEYED_HASH))
+    }
+
+    /// Construct a new `Hasher` for the key derivation function. See
+    /// [`derive_key`]. The context string should be hardcoded, globally
+    /// unique, and application-specific.
+    ///
+    /// [`derive_key`]: fn.derive_key.html
+    pub fn new_derive_key(context: &str) -> Self {
+        let context_key = hazmat::hash_derive_key_context(context);
+        let context_key_words = platform::words_from_le_bytes_32(&context_key);
+        Self::from_core(HasherCore::new_internal(&context_key_words, DERIVE_KEY_MATERIAL))
+    }
+
+    /// Reset the `Hasher` to its initial state.
+    ///
+    /// This is functionally the same as overwriting the `Hasher` with a new
+    /// one, using the same key or context string if any.
+    pub fn reset(&mut self) -> &mut Self {
+        self.core.reset();
+        self.staged = 0;
+        self
+    }
+
+    /// Add input bytes to the hash state. You can call this any number of times.
+    ///
+    /// This method is always single-threaded. For multithreading support, see
+    /// [`update_multithreaded`](#method.update_multithreaded).
+    ///
+    /// Updates shorter than 16 KiB are gathered in the `Hasher` (it holds
+    /// 16 KiB for them) until they reach the message's next 16 KiB
+    /// boundary, and then hash together, 16 chunks side by side: a message
+    /// arriving in network-sized pieces hashes nearly as fast as one in
+    /// whole buffers. A caller that can cheaply hand over whole multiples
+    /// of 16 KiB from a 16 KiB boundary of the message (by reading into
+    /// larger buffers, say) saves the copy. See also
+    /// [`update_reader`](#method.update_reader).
+    pub fn update(&mut self, input: &[u8]) -> &mut Self {
+        // A fresh hasher's first update is a one-shot call's work (a
+        // Hasher per message, the digest traits): it prefetches its code
+        // after a pause, as hash() does.
+        #[cfg(all(blake3_neon_hybrid, feature = "std"))]
+        if self.count() == 0 && (CHUNK_LEN + 1..PREFETCH_BELOW).contains(&input.len()) {
+            prefetch_after_pause(input.len(), self.core.chunk_state.platform, true);
+        }
+        self.gather::<join::SerialJoin>(input, false)
+    }
+
+    /// [`update`](Hasher::update) over several threads, with the same
+    /// result: the whole subtrees of 512 KiB and more in `input` are cut
+    /// into pieces that the calling thread and this crate's worker threads
+    /// hash at once, under the rules of [`hash_multithreaded`]; shorter
+    /// updates run on the calling thread, as [`update`](Hasher::update).
+    /// Never slower than `update` on the same input, and one `Hasher` may
+    /// mix the two. A long message read in pieces hashes fastest through a
+    /// [`Queue::pieces`], which hashes each piece while your thread reads
+    /// the next.
+    ///
+    /// ```
+    /// let input = vec![7u8; 3 << 20];
+    /// let mut hasher = blake3_servil::Hasher::new();
+    /// for piece in input.chunks(64 * 1024) {
+    ///     hasher.update_multithreaded(piece);
+    /// }
+    /// assert_eq!(hasher.finalize(), blake3_servil::hash(&input));
+    /// ```
+    #[cfg(feature = "std")]
+    pub fn update_multithreaded(&mut self, input: &[u8]) -> &mut Self {
+        self.gather::<join::SerialJoin>(input, true)
+    }
+
+    /// Finalize the hash state and return the [`Hash`](struct.Hash.html) of
+    /// the input.
+    ///
+    /// This method is idempotent. Calling it twice will give the same result.
+    /// You can also add more input and finalize again.
+    pub fn finalize(&self) -> Hash {
+        assert_eq!(
+            self.core.initial_chunk_counter, 0,
+            "set_input_offset must be used with finalize_non_root",
+        );
+        self.final_output().root_hash()
+    }
+
+    /// Finalize the hash state and return an [`OutputReader`], which can
+    /// supply any number of output bytes.
+    ///
+    /// This method is idempotent. Calling it twice will give the same result.
+    /// You can also add more input and finalize again.
+    ///
+    /// [`OutputReader`]: struct.OutputReader.html
+    pub fn finalize_xof(&self) -> OutputReader {
+        assert_eq!(
+            self.core.initial_chunk_counter, 0,
+            "set_input_offset must be used with finalize_non_root",
+        );
+        OutputReader::new(self.final_output())
+    }
+
+    /// Return the total number of bytes hashed so far.
+    ///
+    /// [`hazmat::HasherExt::set_input_offset`] does not affect this value. This only counts bytes
+    /// passed to [`update`](Hasher::update).
+    pub fn count(&self) -> u64 {
+        self.core.count() + self.staged as u64
+    }
+
+    /// As [`update`](Hasher::update), but reading from a
+    /// [`std::io::Read`](https://doc.rust-lang.org/std/io/trait.Read.html) implementation.
+    ///
+    /// [`Hasher`] implements
+    /// [`std::io::Write`](https://doc.rust-lang.org/std/io/trait.Write.html), so it's possible to
+    /// use [`std::io::copy`](https://doc.rust-lang.org/std/io/fn.copy.html) to update a [`Hasher`]
+    /// from any reader. Unfortunately, this standard approach can limit performance, because
+    /// `copy` currently uses an internal 8 KiB buffer that isn't big enough to take advantage of
+    /// all SIMD instruction sets. (In particular, [AVX-512](https://en.wikipedia.org/wiki/AVX-512)
+    /// needs a 16 KiB buffer.) `update_reader` avoids this performance problem and is slightly
+    /// more convenient.
+    ///
+    /// The internal buffer size this method uses may change at any time, and it may be different
+    /// for different targets. The only guarantee is that it will be large enough for all of this
+    /// crate's SIMD implementations on the current platform.
+    ///
+    /// The most common implementer of
+    /// [`std::io::Read`](https://doc.rust-lang.org/std/io/trait.Read.html) might be
+    /// [`std::fs::File`](https://doc.rust-lang.org/std/fs/struct.File.html), but note that memory
+    /// mapping can be faster than this method for hashing large files. See
+    /// [`update_mmap`](Hasher::update_mmap) and [`update_mmap_rayon`](Hasher::update_mmap_rayon),
+    /// which require the `mmap` and (for the latter) `rayon` Cargo features.
+    ///
+    /// This method requires the `std` Cargo feature, which is enabled by default.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use std::fs::File;
+    /// # use std::io;
+    /// # fn main() -> io::Result<()> {
+    /// // Hash standard input.
+    /// let mut hasher = blake3_servil::Hasher::new();
+    /// hasher.update_reader(std::io::stdin().lock())?;
+    /// println!("{}", hasher.finalize());
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[cfg(feature = "std")]
+    pub fn update_reader(&mut self, reader: impl std::io::Read) -> std::io::Result<&mut Self> {
+        io::copy_wide(reader, self)?;
+        Ok(self)
+    }
+
+    /// As [`update`](Hasher::update), but using Rayon-based multithreading
+    /// internally.
+    ///
+    /// This method is gated by the `rayon` Cargo feature, which is disabled by
+    /// default but enabled on [docs.rs](https://docs.rs).
+    ///
+    /// To get any performance benefit from multithreading, the input buffer
+    /// needs to be large. As a rule of thumb on x86_64, `update_rayon` is
+    /// _slower_ than `update` for inputs under 128 KiB. That threshold varies
+    /// quite a lot across different processors, and it's important to benchmark
+    /// your specific use case. See also the performance warning associated with
+    /// [`update_mmap_rayon`](Hasher::update_mmap_rayon).
+    ///
+    /// If you already have a large buffer in memory, and you want to hash it
+    /// with multiple threads, this method is a good option. However, reading a
+    /// file into memory just to call this method can be a performance mistake,
+    /// both because it requires lots of memory and because single-threaded
+    /// reads can be slow. For hashing whole files, see
+    /// [`update_mmap_rayon`](Hasher::update_mmap_rayon), which is gated by both
+    /// the `rayon` and `mmap` Cargo features.
+    #[cfg(feature = "rayon")]
+    pub fn update_rayon(&mut self, input: &[u8]) -> &mut Self {
+        self.gather::<join::RayonJoin>(input, false)
+    }
+
+    /// As [`update`](Hasher::update), but reading the contents of a file using memory mapping.
+    ///
+    /// Not all files can be memory mapped, and memory mapping small files can be slower than
+    /// reading them the usual way. In those cases, this method will fall back to standard file IO.
+    /// The heuristic for whether to use memory mapping is currently very simple (file size >=
+    /// 16 KiB), and it might change at any time.
+    ///
+    /// Like [`update`](Hasher::update), this method is single-threaded. In this author's
+    /// experience, memory mapping improves single-threaded performance by ~10% for large files
+    /// that are already in cache. This probably varies between platforms, and as always it's a
+    /// good idea to benchmark your own use case. In comparison, the multithreaded
+    /// [`update_mmap_rayon`](Hasher::update_mmap_rayon) method can have a much larger impact on
+    /// performance.
+    ///
+    /// There's a correctness reason that this method takes
+    /// [`Path`](https://doc.rust-lang.org/stable/std/path/struct.Path.html) instead of
+    /// [`File`](https://doc.rust-lang.org/std/fs/struct.File.html): reading from a memory-mapped
+    /// file ignores the seek position of the original file handle (it neither respects the current
+    /// position nor updates the position). This difference in behavior would've caused
+    /// `update_mmap` and [`update_reader`](Hasher::update_reader) to give different answers and
+    /// have different side effects in some cases. Taking a
+    /// [`Path`](https://doc.rust-lang.org/stable/std/path/struct.Path.html) avoids this problem by
+    /// making it clear that a new [`File`](https://doc.rust-lang.org/std/fs/struct.File.html) is
+    /// opened internally.
+    ///
+    /// This method requires the `mmap` Cargo feature, which is disabled by default but enabled on
+    /// [docs.rs](https://docs.rs).
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use std::io;
+    /// # use std::path::Path;
+    /// # fn main() -> io::Result<()> {
+    /// let path = Path::new("file.dat");
+    /// let mut hasher = blake3_servil::Hasher::new();
+    /// hasher.update_mmap(path)?;
+    /// println!("{}", hasher.finalize());
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[cfg(feature = "mmap")]
+    pub fn update_mmap(&mut self, path: impl AsRef<std::path::Path>) -> std::io::Result<&mut Self> {
+        let mut file = std::fs::File::open(path.as_ref())?;
+        if let Some(mmap) = io::maybe_mmap_file(&mut file)? {
+            self.update(&mmap);
+        } else {
+            io::copy_wide(&file, self)?;
+        }
+        Ok(self)
+    }
+
+    /// As [`update_rayon`](Hasher::update_rayon), but reading the contents of a file using
+    /// memory mapping. This is the default behavior of `b3sum`.
+    ///
+    /// For large files that are likely to be in cache, this can be much faster than
+    /// single-threaded hashing. When benchmarks report that BLAKE3 is 10x or 20x faster than other
+    /// cryptographic hashes, this is usually what they're measuring. However...
+    ///
+    /// **Performance Warning:** There are cases where multithreading hurts performance. The worst
+    /// case is [a large file on a spinning disk](https://github.com/BLAKE3-team/BLAKE3/issues/31),
+    /// where simultaneous reads from multiple threads can cause "thrashing" (i.e. the disk spends
+    /// more time seeking around than reading data). Windows tends to be somewhat worse about this,
+    /// in part because it's less likely than Linux to keep very large files in cache. More
+    /// generally, if your CPU cores are already busy, then multithreading will add overhead
+    /// without improving performance. If your code runs in different environments that you don't
+    /// control and can't measure, then unfortunately there's no one-size-fits-all answer for
+    /// whether multithreading is a good idea.
+    ///
+    /// The memory mapping behavior of this function is the same as
+    /// [`update_mmap`](Hasher::update_mmap), and the heuristic for when to fall back to standard
+    /// file IO might change at any time.
+    ///
+    /// This method requires both the `mmap` and `rayon` Cargo features, which are disabled by
+    /// default but enabled on [docs.rs](https://docs.rs).
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use std::io;
+    /// # use std::path::Path;
+    /// # fn main() -> io::Result<()> {
+    /// # #[cfg(feature = "rayon")]
+    /// # {
+    /// let path = Path::new("big_file.dat");
+    /// let mut hasher = blake3_servil::Hasher::new();
+    /// hasher.update_mmap_rayon(path)?;
+    /// println!("{}", hasher.finalize());
+    /// # }
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[cfg(feature = "mmap")]
+    #[cfg(feature = "rayon")]
+    pub fn update_mmap_rayon(
+        &mut self,
+        path: impl AsRef<std::path::Path>,
+    ) -> std::io::Result<&mut Self> {
+        let mut file = std::fs::File::open(path.as_ref())?;
+        if let Some(mmap) = io::maybe_mmap_file(&mut file)? {
+            self.update_rayon(&mmap);
+        } else {
+            io::copy_wide(&file, self)?;
+        }
+        Ok(self)
+    }
+}
+
+impl HasherCore {
+    pub(crate) fn new_internal(key: &CVWords, flags: u8) -> Self {
         Self {
             key: *key,
             chunk_state: ChunkState::new(key, 0, flags, Platform::detect()),
@@ -2102,45 +2481,12 @@ impl Hasher {
         self
     }
 
-    /// A fresh hasher on `platform`'s kernels (for measurement; hidden).
-    #[cfg(feature = "std")]
-    #[doc(hidden)]
-    pub fn new_with_platform(platform: Platform) -> Self {
-        let mut hasher = Self::new();
-        hasher.set_platform(platform);
-        hasher
-    }
 
-    /// Construct a new `Hasher` for the regular hash function.
-    pub fn new() -> Self {
-        Self::new_internal(IV, 0)
-    }
 
-    /// Construct a new `Hasher` for the keyed hash function. See
-    /// [`keyed_hash`].
-    ///
-    /// [`keyed_hash`]: fn.keyed_hash.html
-    pub fn new_keyed(key: &[u8; KEY_LEN]) -> Self {
-        let key_words = platform::words_from_le_bytes_32(key);
-        Self::new_internal(&key_words, KEYED_HASH)
-    }
 
-    /// Construct a new `Hasher` for the key derivation function. See
-    /// [`derive_key`]. The context string should be hardcoded, globally
-    /// unique, and application-specific.
-    ///
-    /// [`derive_key`]: fn.derive_key.html
-    pub fn new_derive_key(context: &str) -> Self {
-        let context_key = hazmat::hash_derive_key_context(context);
-        let context_key_words = platform::words_from_le_bytes_32(&context_key);
-        Self::new_internal(&context_key_words, DERIVE_KEY_MATERIAL)
-    }
 
-    /// Reset the `Hasher` to its initial state.
-    ///
-    /// This is functionally the same as overwriting the `Hasher` with a new
-    /// one, using the same key or context string if any.
-    pub fn reset(&mut self) -> &mut Self {
+    /// Back to the empty message, with the same key, flags, and platform.
+    pub(crate) fn reset(&mut self) -> &mut Self {
         self.chunk_state = ChunkState::new(
             &self.key,
             0,
@@ -2220,46 +2566,7 @@ impl Hasher {
         self.cv_stack.push(*new_cv);
     }
 
-    /// Add input bytes to the hash state. You can call this any number of times.
-    ///
-    /// This method is always single-threaded. For multithreading support, see
-    /// [`update_multithreaded`](#method.update_multithreaded).
-    ///
-    /// Note that the degree of SIMD parallelism that `update` can use is limited by the size of
-    /// this input buffer. See [`update_reader`](#method.update_reader).
-    pub fn update(&mut self, input: &[u8]) -> &mut Self {
-        // A fresh hasher's first update is a one-shot call's work (a
-        // Hasher per message, the digest traits): it prefetches its code
-        // after a pause, as hash() does.
-        #[cfg(all(blake3_neon_hybrid, feature = "std"))]
-        if self.count() == 0 && (CHUNK_LEN + 1..PREFETCH_BELOW).contains(&input.len()) {
-            prefetch_after_pause(input.len(), self.chunk_state.platform, true);
-        }
-        self.update_with_join::<join::SerialJoin>(input, false)
-    }
 
-    /// [`update`](Hasher::update) over several threads, with the same
-    /// result: the whole subtrees of 512 KiB and more in `input` are cut
-    /// into pieces that the calling thread and this crate's worker threads
-    /// hash at once, under the rules of [`hash_multithreaded`]; shorter
-    /// updates run on the calling thread, as [`update`](Hasher::update).
-    /// Never slower than `update` on the same input, and one `Hasher` may
-    /// mix the two. A long message read in pieces hashes fastest through a
-    /// [`Queue::pieces`], which hashes each piece while your thread reads
-    /// the next.
-    ///
-    /// ```
-    /// let input = vec![7u8; 3 << 20];
-    /// let mut hasher = blake3_servil::Hasher::new();
-    /// for piece in input.chunks(64 * 1024) {
-    ///     hasher.update_multithreaded(piece);
-    /// }
-    /// assert_eq!(hasher.finalize(), blake3_servil::hash(&input));
-    /// ```
-    #[cfg(feature = "std")]
-    pub fn update_multithreaded(&mut self, input: &[u8]) -> &mut Self {
-        self.update_with_join::<join::SerialJoin>(input, true)
-    }
 
     /// [`update`](Hasher::update) with every whole subtree's result taken
     /// from `results`, in the order [`plan_subtrees`] gave them (in the same
@@ -2306,20 +2613,10 @@ impl Hasher {
 
     /// `update`'s loop; with `pooled`, whole subtrees of
     /// `lanes::MIN_SPLIT_LEN` and more go to the pool.
-    fn update_with_join<J: join::Join>(&mut self, mut input: &[u8], pooled: bool) -> &mut Self {
+    pub(crate) fn update_with_join<J: join::Join>(&mut self, mut input: &[u8], pooled: bool) -> &mut Self {
         #[cfg(not(feature = "std"))]
         let _ = pooled;
-        let input_offset = self.initial_chunk_counter * CHUNK_LEN as u64;
-        if let Some(max) = hazmat::max_subtree_len(input_offset) {
-            let remaining = max - self.count();
-            assert!(
-                input.len() as u64 <= remaining,
-                "the subtree starting at {} contains at most {} bytes (found {})",
-                CHUNK_LEN as u64 * self.initial_chunk_counter,
-                max,
-                input.len(),
-            );
-        }
+        self.assert_room(self.count(), input.len());
         // If we have some partial chunk bytes in the internal chunk_state, we
         // need to finish that chunk first.
         if self.chunk_state.count() > 0 {
@@ -2488,7 +2785,7 @@ impl Hasher {
         self
     }
 
-    fn final_output(&self) -> Output {
+    pub(crate) fn final_output(&self) -> Output {
         // If the current chunk is the only chunk, that makes it the root node
         // also. Convert it directly into an Output. Otherwise, we need to
         // merge subtrees below.
@@ -2542,219 +2839,52 @@ impl Hasher {
         output
     }
 
-    /// Finalize the hash state and return the [`Hash`](struct.Hash.html) of
-    /// the input.
-    ///
-    /// This method is idempotent. Calling it twice will give the same result.
-    /// You can also add more input and finalize again.
-    pub fn finalize(&self) -> Hash {
-        assert_eq!(
-            self.initial_chunk_counter, 0,
-            "set_input_offset must be used with finalize_non_root",
-        );
-        self.final_output().root_hash()
+
+
+
+
+
+
+
+    /// The serial update: whole subtrees now, the last chunk kept.
+    pub(crate) fn update(&mut self, input: &[u8]) -> &mut Self {
+        self.update_with_join::<join::SerialJoin>(input, false)
     }
 
-    /// Finalize the hash state and return an [`OutputReader`], which can
-    /// supply any number of output bytes.
-    ///
-    /// This method is idempotent. Calling it twice will give the same result.
-    /// You can also add more input and finalize again.
-    ///
-    /// [`OutputReader`]: struct.OutputReader.html
-    pub fn finalize_xof(&self) -> OutputReader {
-        assert_eq!(
-            self.initial_chunk_counter, 0,
-            "set_input_offset must be used with finalize_non_root",
-        );
-        OutputReader::new(self.final_output())
+    /// Requires that `len` more bytes after `count` fit the subtree that
+    /// set_input_offset started (hazmat::max_subtree_len).
+    pub(crate) fn assert_room(&self, count: u64, len: usize) {
+        let input_offset = self.initial_chunk_counter * CHUNK_LEN as u64;
+        if let Some(max) = hazmat::max_subtree_len(input_offset) {
+            assert!(
+                len as u64 <= max - count,
+                "the subtree starting at {} contains at most {} bytes (found {})",
+                input_offset,
+                max,
+                count + len as u64,
+            );
+        }
     }
 
-    /// Return the total number of bytes hashed so far.
-    ///
-    /// [`hazmat::HasherExt::set_input_offset`] does not affect this value. This only counts bytes
-    /// passed to [`update`](Hasher::update).
-    pub fn count(&self) -> u64 {
-        // Account for non-zero cases of Hasher::set_input_offset. Note that initial_chunk_counter
-        // is always 0 for callers who don't use the hazmat module.
+    /// Start the subtree at byte `offset` of the message (hazmat's
+    /// set_input_offset, on a fresh core).
+    pub(crate) fn set_input_offset(&mut self, offset: u64) -> &mut Self {
+        assert_eq!(self.count(), 0, "hasher has already accepted input");
+        assert_eq!(
+            offset % CHUNK_LEN as u64,
+            0,
+            "offset ({offset}) must be a chunk boundary (divisible by {CHUNK_LEN})",
+        );
+        let counter = offset / CHUNK_LEN as u64;
+        self.chunk_state.chunk_counter = counter;
+        self.initial_chunk_counter = counter;
+        self
+    }
+
+    /// Bytes so far, counted from the input offset.
+    pub(crate) fn count(&self) -> u64 {
         (self.chunk_state.chunk_counter - self.initial_chunk_counter) * CHUNK_LEN as u64
             + self.chunk_state.count() as u64
-    }
-
-    /// As [`update`](Hasher::update), but reading from a
-    /// [`std::io::Read`](https://doc.rust-lang.org/std/io/trait.Read.html) implementation.
-    ///
-    /// [`Hasher`] implements
-    /// [`std::io::Write`](https://doc.rust-lang.org/std/io/trait.Write.html), so it's possible to
-    /// use [`std::io::copy`](https://doc.rust-lang.org/std/io/fn.copy.html) to update a [`Hasher`]
-    /// from any reader. Unfortunately, this standard approach can limit performance, because
-    /// `copy` currently uses an internal 8 KiB buffer that isn't big enough to take advantage of
-    /// all SIMD instruction sets. (In particular, [AVX-512](https://en.wikipedia.org/wiki/AVX-512)
-    /// needs a 16 KiB buffer.) `update_reader` avoids this performance problem and is slightly
-    /// more convenient.
-    ///
-    /// The internal buffer size this method uses may change at any time, and it may be different
-    /// for different targets. The only guarantee is that it will be large enough for all of this
-    /// crate's SIMD implementations on the current platform.
-    ///
-    /// The most common implementer of
-    /// [`std::io::Read`](https://doc.rust-lang.org/std/io/trait.Read.html) might be
-    /// [`std::fs::File`](https://doc.rust-lang.org/std/fs/struct.File.html), but note that memory
-    /// mapping can be faster than this method for hashing large files. See
-    /// [`update_mmap`](Hasher::update_mmap) and [`update_mmap_rayon`](Hasher::update_mmap_rayon),
-    /// which require the `mmap` and (for the latter) `rayon` Cargo features.
-    ///
-    /// This method requires the `std` Cargo feature, which is enabled by default.
-    ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// # use std::fs::File;
-    /// # use std::io;
-    /// # fn main() -> io::Result<()> {
-    /// // Hash standard input.
-    /// let mut hasher = blake3_servil::Hasher::new();
-    /// hasher.update_reader(std::io::stdin().lock())?;
-    /// println!("{}", hasher.finalize());
-    /// # Ok(())
-    /// # }
-    /// ```
-    #[cfg(feature = "std")]
-    pub fn update_reader(&mut self, reader: impl std::io::Read) -> std::io::Result<&mut Self> {
-        io::copy_wide(reader, self)?;
-        Ok(self)
-    }
-
-    /// As [`update`](Hasher::update), but using Rayon-based multithreading
-    /// internally.
-    ///
-    /// This method is gated by the `rayon` Cargo feature, which is disabled by
-    /// default but enabled on [docs.rs](https://docs.rs).
-    ///
-    /// To get any performance benefit from multithreading, the input buffer
-    /// needs to be large. As a rule of thumb on x86_64, `update_rayon` is
-    /// _slower_ than `update` for inputs under 128 KiB. That threshold varies
-    /// quite a lot across different processors, and it's important to benchmark
-    /// your specific use case. See also the performance warning associated with
-    /// [`update_mmap_rayon`](Hasher::update_mmap_rayon).
-    ///
-    /// If you already have a large buffer in memory, and you want to hash it
-    /// with multiple threads, this method is a good option. However, reading a
-    /// file into memory just to call this method can be a performance mistake,
-    /// both because it requires lots of memory and because single-threaded
-    /// reads can be slow. For hashing whole files, see
-    /// [`update_mmap_rayon`](Hasher::update_mmap_rayon), which is gated by both
-    /// the `rayon` and `mmap` Cargo features.
-    #[cfg(feature = "rayon")]
-    pub fn update_rayon(&mut self, input: &[u8]) -> &mut Self {
-        self.update_with_join::<join::RayonJoin>(input, false)
-    }
-
-    /// As [`update`](Hasher::update), but reading the contents of a file using memory mapping.
-    ///
-    /// Not all files can be memory mapped, and memory mapping small files can be slower than
-    /// reading them the usual way. In those cases, this method will fall back to standard file IO.
-    /// The heuristic for whether to use memory mapping is currently very simple (file size >=
-    /// 16 KiB), and it might change at any time.
-    ///
-    /// Like [`update`](Hasher::update), this method is single-threaded. In this author's
-    /// experience, memory mapping improves single-threaded performance by ~10% for large files
-    /// that are already in cache. This probably varies between platforms, and as always it's a
-    /// good idea to benchmark your own use case. In comparison, the multithreaded
-    /// [`update_mmap_rayon`](Hasher::update_mmap_rayon) method can have a much larger impact on
-    /// performance.
-    ///
-    /// There's a correctness reason that this method takes
-    /// [`Path`](https://doc.rust-lang.org/stable/std/path/struct.Path.html) instead of
-    /// [`File`](https://doc.rust-lang.org/std/fs/struct.File.html): reading from a memory-mapped
-    /// file ignores the seek position of the original file handle (it neither respects the current
-    /// position nor updates the position). This difference in behavior would've caused
-    /// `update_mmap` and [`update_reader`](Hasher::update_reader) to give different answers and
-    /// have different side effects in some cases. Taking a
-    /// [`Path`](https://doc.rust-lang.org/stable/std/path/struct.Path.html) avoids this problem by
-    /// making it clear that a new [`File`](https://doc.rust-lang.org/std/fs/struct.File.html) is
-    /// opened internally.
-    ///
-    /// This method requires the `mmap` Cargo feature, which is disabled by default but enabled on
-    /// [docs.rs](https://docs.rs).
-    ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// # use std::io;
-    /// # use std::path::Path;
-    /// # fn main() -> io::Result<()> {
-    /// let path = Path::new("file.dat");
-    /// let mut hasher = blake3_servil::Hasher::new();
-    /// hasher.update_mmap(path)?;
-    /// println!("{}", hasher.finalize());
-    /// # Ok(())
-    /// # }
-    /// ```
-    #[cfg(feature = "mmap")]
-    pub fn update_mmap(&mut self, path: impl AsRef<std::path::Path>) -> std::io::Result<&mut Self> {
-        let mut file = std::fs::File::open(path.as_ref())?;
-        if let Some(mmap) = io::maybe_mmap_file(&mut file)? {
-            self.update(&mmap);
-        } else {
-            io::copy_wide(&file, self)?;
-        }
-        Ok(self)
-    }
-
-    /// As [`update_rayon`](Hasher::update_rayon), but reading the contents of a file using
-    /// memory mapping. This is the default behavior of `b3sum`.
-    ///
-    /// For large files that are likely to be in cache, this can be much faster than
-    /// single-threaded hashing. When benchmarks report that BLAKE3 is 10x or 20x faster than other
-    /// cryptographic hashes, this is usually what they're measuring. However...
-    ///
-    /// **Performance Warning:** There are cases where multithreading hurts performance. The worst
-    /// case is [a large file on a spinning disk](https://github.com/BLAKE3-team/BLAKE3/issues/31),
-    /// where simultaneous reads from multiple threads can cause "thrashing" (i.e. the disk spends
-    /// more time seeking around than reading data). Windows tends to be somewhat worse about this,
-    /// in part because it's less likely than Linux to keep very large files in cache. More
-    /// generally, if your CPU cores are already busy, then multithreading will add overhead
-    /// without improving performance. If your code runs in different environments that you don't
-    /// control and can't measure, then unfortunately there's no one-size-fits-all answer for
-    /// whether multithreading is a good idea.
-    ///
-    /// The memory mapping behavior of this function is the same as
-    /// [`update_mmap`](Hasher::update_mmap), and the heuristic for when to fall back to standard
-    /// file IO might change at any time.
-    ///
-    /// This method requires both the `mmap` and `rayon` Cargo features, which are disabled by
-    /// default but enabled on [docs.rs](https://docs.rs).
-    ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// # use std::io;
-    /// # use std::path::Path;
-    /// # fn main() -> io::Result<()> {
-    /// # #[cfg(feature = "rayon")]
-    /// # {
-    /// let path = Path::new("big_file.dat");
-    /// let mut hasher = blake3_servil::Hasher::new();
-    /// hasher.update_mmap_rayon(path)?;
-    /// println!("{}", hasher.finalize());
-    /// # }
-    /// # Ok(())
-    /// # }
-    /// ```
-    #[cfg(feature = "mmap")]
-    #[cfg(feature = "rayon")]
-    pub fn update_mmap_rayon(
-        &mut self,
-        path: impl AsRef<std::path::Path>,
-    ) -> std::io::Result<&mut Self> {
-        let mut file = std::fs::File::open(path.as_ref())?;
-        if let Some(mmap) = io::maybe_mmap_file(&mut file)? {
-            self.update_rayon(&mmap);
-        } else {
-            io::copy_wide(&file, self)?;
-        }
-        Ok(self)
     }
 }
 
@@ -2762,8 +2892,8 @@ impl Hasher {
 impl fmt::Debug for Hasher {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("Hasher")
-            .field("flags", &self.chunk_state.flags)
-            .field("platform", &self.chunk_state.platform)
+            .field("flags", &self.core.chunk_state.flags)
+            .field("platform", &self.core.chunk_state.platform)
             .finish()
     }
 }
@@ -2792,6 +2922,15 @@ impl std::io::Write for Hasher {
 
 #[cfg(feature = "zeroize")]
 impl Zeroize for Hasher {
+    fn zeroize(&mut self) {
+        self.core.zeroize();
+        self.stage.fill(core::mem::MaybeUninit::new(0));
+        self.staged = 0;
+    }
+}
+
+#[cfg(feature = "zeroize")]
+impl Zeroize for HasherCore {
     fn zeroize(&mut self) {
         // Destructuring to trigger compile error as a reminder to update this impl.
         let Self {
