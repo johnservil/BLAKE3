@@ -156,34 +156,84 @@ impl Verifier {
         assert!(!self.failed, "a verifier that has found a mismatch is spent");
         assert!(encoded.len() as u64 <= self.remaining, "{} bytes past the encoding's end", encoded.len() as u64 - self.remaining);
         self.remaining -= encoded.len() as u64;
-        let platform = Platform::detect();
         let mut input = encoded;
-        while let Some(&(g0, size, expected)) = self.nodes.last() {
-            let need = if size > GROUP_CHUNKS { 64 } else { (self.len - g0 * GROUP_LEN as u64).min(GROUP_LEN as u64) as usize };
-            // The node's bytes: in place in the piece when it holds them
-            // whole, else gathered across pieces.
-            let mut gathered = core::mem::take(&mut self.gathered);
-            let bytes: &[u8] = if gathered.is_empty() && input.len() >= need {
-                let (bytes, rest) = input.split_at(need);
-                input = rest;
-                bytes
-            } else {
-                let take = (need - gathered.len()).min(input.len());
-                gathered.extend_from_slice(&input[..take]);
-                input = &input[take..];
-                if gathered.len() < need {
-                    self.gathered = gathered;
-                    return true;
+        while let Some(&node) = self.nodes.last() {
+            let need = self.need(node);
+            if self.gathered.is_empty() && input.len() >= need {
+                // Every node the piece holds whole, checked together.
+                let mut nodes = Vec::new();
+                while let Some(&node) = self.nodes.last() {
+                    let need = self.need(node);
+                    if input.len() < need {
+                        break;
+                    }
+                    let (bytes, rest) = input.split_at(need);
+                    input = rest;
+                    self.take(node, bytes, &mut nodes);
                 }
-                &gathered
-            };
-            self.nodes.pop();
+                if !self.check(&nodes, &mut verified) {
+                    return false;
+                }
+                continue;
+            }
+            // A node arriving across pieces, gathered, then checked alone.
+            let mut gathered = core::mem::take(&mut self.gathered);
+            let take = (need - gathered.len()).min(input.len());
+            gathered.extend_from_slice(&input[..take]);
+            input = &input[take..];
+            if gathered.len() < need {
+                self.gathered = gathered;
+                return true;
+            }
+            let mut nodes = Vec::new();
+            self.take(node, &gathered, &mut nodes);
+            let ok = self.check(&nodes, &mut verified);
+            gathered.clear();
+            self.gathered = gathered;
+            if !ok {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// The bytes the node `(g0, size, _)` arrives as: a parent's two
+    /// chaining values, or its group.
+    fn need(&self, (g0, size, _): (u64, u64, Option<CVBytes>)) -> usize {
+        if size > GROUP_CHUNKS { 64 } else { (self.len - g0 * GROUP_LEN as u64).min(GROUP_LEN as u64) as usize }
+    }
+
+    /// Take the next node, its `bytes` in hand: off the list of nodes to
+    /// receive (a parent's children onto it, from its bytes), onto `out`
+    /// to check.
+    fn take<'a>(&mut self, node: (u64, u64, Option<CVBytes>), bytes: &'a [u8], out: &mut Vec<((u64, u64, Option<CVBytes>), &'a [u8])>) {
+        let (g0, size, _) = node;
+        self.nodes.pop();
+        if size > GROUP_CHUNKS {
+            let split = left_chunks(size);
+            self.nodes.push((g0 + split / GROUP_CHUNKS, size - split, Some(bytes[32..].try_into().unwrap())));
+            self.nodes.push((g0, split, Some(bytes[..32].try_into().unwrap())));
+        }
+        out.push((node, bytes));
+    }
+
+    /// Check `nodes`, in the encoding's order, each against the value it
+    /// must have: the groups' chaining values hashed first, together (they
+    /// are consecutive groups of the message), then each node in turn, each
+    /// group given to `verified` once it and every node before it pass.
+    /// False, and the verifier spent, at the first that does not.
+    fn check(&mut self, nodes: &[((u64, u64, Option<CVBytes>), &[u8])], verified: &mut impl FnMut(&[u8])) -> bool {
+        let platform = Platform::detect();
+        let groups: Vec<&[u8]> = nodes.iter().filter(|((_, size, expected), _)| *size <= GROUP_CHUNKS && expected.is_some()).map(|(_, b)| *b).collect();
+        let mut cvs = vec![[0u8; 32]; groups.len()];
+        if let Some(&((g0, _, _), _)) = nodes.iter().find(|((_, size, expected), _)| *size <= GROUP_CHUNKS && expected.is_some()) {
+            groups_cvs_into(&groups, g0, &self.key, self.flags, platform, &mut cvs);
+        }
+        let mut cvs = cvs.iter();
+        for &((_, size, expected), bytes) in nodes {
             let ok = if size > GROUP_CHUNKS {
                 let (left, right): (CVBytes, CVBytes) = (bytes[..32].try_into().unwrap(), bytes[32..].try_into().unwrap());
                 let parent = crate::parent_node_output(&left, &right, &self.key, self.flags, platform);
-                let split = left_chunks(size);
-                self.nodes.push((g0 + split / GROUP_CHUNKS, size - split, Some(right)));
-                self.nodes.push((g0, split, Some(left)));
                 match expected {
                     None => parent.root_hash() == self.mode_hash,
                     Some(cv) => parent.chaining_value() == cv,
@@ -191,15 +241,13 @@ impl Verifier {
             } else {
                 let ok = match expected {
                     None => crate::hash_serial(bytes, &self.key, self.flags) == self.mode_hash,
-                    Some(cv) => group_cv(bytes, g0 * GROUP_CHUNKS, &self.key, self.flags) == cv,
+                    Some(cv) => *cvs.next().unwrap() == cv,
                 };
                 if ok {
                     verified(bytes);
                 }
                 ok
             };
-            gathered.clear();
-            self.gathered = gathered;
             if !ok {
                 self.failed = true;
                 return false;
@@ -290,13 +338,22 @@ fn group_cvs(input: &[u8], first_group: u64, key: &CVWords, flags: u8, platform:
     cvs
 }
 
-/// [`group_cvs`] into `cvs`, one per group. Full groups go in batches
-/// through the many-inputs kernels, back to back; a last, shorter group
-/// alone.
+/// [`group_cvs`] into `cvs`, one per group.
 pub(crate) fn group_cvs_into(input: &[u8], first_group: u64, key: &CVWords, flags: u8, platform: Platform, cvs: &mut [CVBytes]) {
-    let full = input.len() / GROUP_LEN;
+    let groups: Vec<&[u8]> = if input.is_empty() { vec![input] } else { input.chunks(GROUP_LEN).collect() };
+    groups_cvs_into(&groups, first_group, key, flags, platform, cvs);
+}
+
+/// The chaining value, as a non-root subtree, of each of `groups`, the
+/// message's groups from `first_group` on, in order: each whole but the
+/// last. Whole groups go in batches through the many-inputs kernels, back
+/// to back, their chunks from wherever each group lies; a last, shorter
+/// group alone.
+fn groups_cvs_into(groups: &[&[u8]], first_group: u64, key: &CVWords, flags: u8, platform: Platform, cvs: &mut [CVBytes]) {
+    let full = groups.iter().take_while(|g| g.len() == GROUP_LEN).count();
+    assert!(full + 1 >= groups.len(), "whole groups but the last");
     let mut done = 0;
-    let per_batch = BATCH_GROUPS * GROUP_CHUNKS as usize;
+    let per_batch = BATCH_GROUPS.min(full) * GROUP_CHUNKS as usize;
     let mut level = vec![0u8; per_batch * 32];
     let mut next = vec![0u8; per_batch / 2 * 32];
     let mut chunk_refs: Vec<&[u8; CHUNK_LEN]> = Vec::with_capacity(per_batch);
@@ -304,7 +361,7 @@ pub(crate) fn group_cvs_into(input: &[u8], first_group: u64, key: &CVWords, flag
     while first < full {
         let n = BATCH_GROUPS.min(full - first);
         chunk_refs.clear();
-        chunk_refs.extend(input[first * GROUP_LEN..(first + n) * GROUP_LEN].chunks_exact(CHUNK_LEN).map(|c| <&[u8; CHUNK_LEN]>::try_from(c).unwrap()));
+        chunk_refs.extend(groups[first..first + n].iter().flat_map(|g| g.chunks_exact(CHUNK_LEN)).map(|c| <&[u8; CHUNK_LEN]>::try_from(c).unwrap()));
         let mut values = chunk_refs.len();
         platform.hash_many(&chunk_refs, key, (first_group + first as u64) * GROUP_CHUNKS, IncrementCounter::Yes, flags, CHUNK_START, CHUNK_END, &mut level[..values * 32]);
         // Four levels of parents: a group's 16 chunk values down to one.
@@ -320,8 +377,8 @@ pub(crate) fn group_cvs_into(input: &[u8], first_group: u64, key: &CVWords, flag
         }
         first += n;
     }
-    if input.len() > full * GROUP_LEN || input.is_empty() {
-        cvs[done] = group_cv(&input[full * GROUP_LEN..], (first_group + full as u64) * GROUP_CHUNKS, key, flags);
+    if full < groups.len() {
+        cvs[done] = group_cv(groups[full], (first_group + full as u64) * GROUP_CHUNKS, key, flags);
     }
 }
 
