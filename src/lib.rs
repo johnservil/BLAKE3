@@ -71,8 +71,9 @@
 //!   in one call, short ones side by side in the SIMD lanes.
 //! - **Verified streaming and range reads** (Bao, iroh-blobs): [`outboard_with`]
 //!   hashes a message and lists its tree's parent nodes above 16 KiB groups,
-//!   and [`verify_range_with`] checks any range of it, as it arrives, against
-//!   the hash.
+//!   and [`verify_range_with`] checks any range of it against the hash;
+//!   a [`Verifier`] checks a whole message as it arrives in iroh-blobs'
+//!   encoding.
 //! - **Keyed hashing and key derivation** run at plain hashing's speed in
 //!   every call: [`keyed_hash`], [`derive_key`], and a [`Mode`] for every
 //!   other one: each one-shot call's `_with` form ([`hash_with`],
@@ -106,7 +107,8 @@
 //!   of 2 to 15 chunks, each freed when it returns. [`outboard_with`]
 //!   returns the outboard it allocates (64 bytes for each 16 KiB), and
 //!   [`verify_range_with`] allocates 32 bytes for each group of its range,
-//!   freed when it returns.
+//!   freed when it returns. A [`Verifier`] keeps up to 16 KiB, for a group
+//!   that arrives in pieces, and 48 bytes for each level of the tree.
 //! - **Multithreaded calls** allocate nothing below 512 KiB, where they
 //!   hash on the calling thread. Above it they keep a list of the pieces
 //!   they hand out, freed when they return: 48 bytes for each 128 KiB of
@@ -207,7 +209,10 @@ pub use each::hash_each_with;
 #[cfg(feature = "std")]
 mod outboard;
 #[cfg(feature = "std")]
-pub use outboard::{outboard_multithreaded_with, outboard_with, verify_range_with, GROUP_LEN};
+pub use outboard::{outboard_multithreaded_with, outboard_with, verify_range_with, Verifier, GROUP_LEN};
+#[cfg(feature = "std")]
+#[doc(hidden)]
+pub use outboard::test_encoding;
 
 #[doc(hidden)]
 #[deprecated(since = "1.8.0", note = "use the hazmat module instead")]

@@ -11,6 +11,9 @@
   the parent nodes above its 16 KiB groups (the layout iroh-blobs stores),
   and `verify_range_with` checks any range of whole groups against the
   hash as it arrives. Building an outboard costs about what hashing costs.
+- `Verifier` checks a whole message as it arrives in iroh-blobs' wire
+  format (bao-tree's pre-order encoding with 16 KiB blocks), in pieces of
+  any length, and gives back each group once it is checked.
 - `b3sum` hashes on this crate's own worker threads instead of Rayon's.
   A file of 512 KiB or more already in the page cache is mapped and
   hashed in place; any other input, standard input included, is read

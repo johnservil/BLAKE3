@@ -90,6 +90,147 @@ pub fn verify_range_with(mode: Mode, hash: &Hash, len: u64, outboard: &[u8], fir
     check(outboard, 0, 0, chunks, None, &range, &cvs, hash, &key, flags, platform)
 }
 
+/// A message received as its encoding, verified as it arrives: the
+/// message's groups and parent nodes in pre-order (a node's 64 bytes, then
+/// its left subtree, then its right; a group's bytes at each leaf), as
+/// bao-tree's `encode_ranges` writes a whole message with 16 KiB blocks,
+/// which is iroh-blobs' wire format. The encoding is
+/// `len + 64 × (groups − 1)` bytes. Each node and group is checked once,
+/// against the hash it must have, so verifying costs about what
+/// [`outboard_with`] costs.
+///
+/// ```
+/// use blake3_servil::{Mode, Verifier};
+/// # let (input, encoding) = (vec![5u8; 50_000], blake3_servil::test_encoding(Mode::Hash, &vec![5u8; 50_000]));
+/// let hash = blake3_servil::hash(&input);
+/// let mut verifier = Verifier::new(Mode::Hash, &hash, input.len() as u64);
+/// let mut received = Vec::new();
+/// for piece in encoding.chunks(1448) {
+///     assert!(verifier.update(piece, |bytes| received.extend_from_slice(bytes)));
+/// }
+/// assert_eq!((verifier.remaining(), received), (0, input));
+/// ```
+pub struct Verifier {
+    key: CVWords,
+    flags: u8,
+    mode_hash: Hash,
+    len: u64,
+    remaining: u64,
+    /// The nodes still to receive, the next last: (first group, chunks, expected value; `None` for the root).
+    nodes: Vec<(u64, u64, Option<CVBytes>)>,
+    /// The bytes of the next node or group, gathered while it arrives in pieces.
+    gathered: Vec<u8>,
+    failed: bool,
+}
+
+impl Verifier {
+    /// A verifier for the message of `len` bytes whose hash in `mode` is `hash`.
+    pub fn new(mode: Mode, hash: &Hash, len: u64) -> Verifier {
+        let (key, flags) = mode.key_and_flags();
+        let chunks = chunks_of(len);
+        Verifier {
+            key,
+            flags,
+            mode_hash: *hash,
+            len,
+            remaining: len + 64 * (groups_of(chunks) - 1),
+            nodes: vec![(0, chunks, None)],
+            gathered: Vec::new(),
+            failed: false,
+        }
+    }
+
+    /// The encoding's bytes still to come.
+    pub fn remaining(&self) -> u64 {
+        self.remaining
+    }
+
+    /// Takes the encoding's next bytes, a piece of any length, and gives
+    /// each group of the message to `verified` once it is checked, in
+    /// order. Returns whether everything received so far is the message's;
+    /// once it returns false the verifier is spent. The message is whole
+    /// and verified when `update` has returned true and `remaining` is 0
+    /// (for the empty message, after one call, with no bytes). Requires at
+    /// most `remaining` bytes, and a verifier that has returned true.
+    pub fn update(&mut self, encoded: &[u8], mut verified: impl FnMut(&[u8])) -> bool {
+        assert!(!self.failed, "a verifier that has found a mismatch is spent");
+        assert!(encoded.len() as u64 <= self.remaining, "{} bytes past the encoding's end", encoded.len() as u64 - self.remaining);
+        self.remaining -= encoded.len() as u64;
+        let platform = Platform::detect();
+        let mut input = encoded;
+        while let Some(&(g0, size, expected)) = self.nodes.last() {
+            let need = if size > GROUP_CHUNKS { 64 } else { (self.len - g0 * GROUP_LEN as u64).min(GROUP_LEN as u64) as usize };
+            // The node's bytes: in place in the piece when it holds them
+            // whole, else gathered across pieces.
+            let mut gathered = core::mem::take(&mut self.gathered);
+            let bytes: &[u8] = if gathered.is_empty() && input.len() >= need {
+                let (bytes, rest) = input.split_at(need);
+                input = rest;
+                bytes
+            } else {
+                let take = (need - gathered.len()).min(input.len());
+                gathered.extend_from_slice(&input[..take]);
+                input = &input[take..];
+                if gathered.len() < need {
+                    self.gathered = gathered;
+                    return true;
+                }
+                &gathered
+            };
+            self.nodes.pop();
+            let ok = if size > GROUP_CHUNKS {
+                let (left, right): (CVBytes, CVBytes) = (bytes[..32].try_into().unwrap(), bytes[32..].try_into().unwrap());
+                let parent = crate::parent_node_output(&left, &right, &self.key, self.flags, platform);
+                let split = left_chunks(size);
+                self.nodes.push((g0 + split / GROUP_CHUNKS, size - split, Some(right)));
+                self.nodes.push((g0, split, Some(left)));
+                match expected {
+                    None => parent.root_hash() == self.mode_hash,
+                    Some(cv) => parent.chaining_value() == cv,
+                }
+            } else {
+                let ok = match expected {
+                    None => crate::hash_serial(bytes, &self.key, self.flags) == self.mode_hash,
+                    Some(cv) => group_cv(bytes, g0 * GROUP_CHUNKS, &self.key, self.flags) == cv,
+                };
+                if ok {
+                    verified(bytes);
+                }
+                ok
+            };
+            gathered.clear();
+            self.gathered = gathered;
+            if !ok {
+                self.failed = true;
+                return false;
+            }
+        }
+        true
+    }
+}
+
+/// A whole message's encoding, as [`Verifier`] reads it: for the docs and
+/// tests.
+#[doc(hidden)]
+pub fn test_encoding(mode: Mode, input: &[u8]) -> Vec<u8> {
+    let (_, outboard) = outboard_with(mode, input);
+    let mut out = Vec::with_capacity(input.len() + outboard.len());
+    let mut parents = outboard.chunks_exact(64);
+    let mut nodes = vec![(0u64, chunks_of(input.len() as u64))];
+    while let Some((g0, size)) = nodes.pop() {
+        if size > GROUP_CHUNKS {
+            out.extend_from_slice(parents.next().unwrap());
+            let split = left_chunks(size);
+            nodes.push((g0 + split / GROUP_CHUNKS, size - split));
+            nodes.push((g0, split));
+        } else {
+            let start = g0 as usize * GROUP_LEN;
+            out.extend_from_slice(&input[start..(start + GROUP_LEN).min(input.len())]);
+        }
+    }
+    out
+}
+
 /// Check the node over groups from `g0`, `size` chunks, its pair at `at` in
 /// the outboard, against its expected chaining value (`None`: the root,
 /// against `hash`), then each child the range reaches; at a group, its
@@ -220,6 +361,53 @@ mod test {
         let mut input = vec![0u8; 33 * GROUP_LEN + 100];
         crate::test::paint_test_input(&mut input);
         assert_eq!(outboard_multithreaded_with(Mode::Hash, &input), outboard_with(Mode::Hash, &input));
+    }
+
+    /// Every message length around group and tree boundaries, every mode,
+    /// pieces of many lengths: the Verifier gives back the message, and
+    /// stops at a changed byte of a group or a parent node, or a wrong hash.
+    #[test]
+    fn test_verifier() {
+        let mut input = vec![0u8; 37 * GROUP_LEN + 5];
+        crate::test::paint_test_input(&mut input);
+        let key = [3u8; 32];
+        let lens = [0, 1, CHUNK_LEN, GROUP_LEN - 1, GROUP_LEN, GROUP_LEN + 1, 2 * GROUP_LEN, 3 * GROUP_LEN - 7, 4 * GROUP_LEN, 5 * GROUP_LEN + CHUNK_LEN, 17 * GROUP_LEN + 1, input.len()];
+        for mode in [Mode::Hash, Mode::Keyed(&key), Mode::DeriveKey("verifier test")] {
+            for &len in &lens {
+                let message = &input[..len];
+                let hash = crate::hash_with(mode, message);
+                let encoding = test_encoding(mode, message);
+                assert_eq!(encoding.len() as u64, Verifier::new(mode, &hash, len as u64).remaining());
+                let run = |encoding: &[u8], hash: &Hash, piece: usize| -> Option<Vec<u8>> {
+                    let mut verifier = Verifier::new(mode, hash, len as u64);
+                    let mut received = Vec::new();
+                    let mut pieces: Vec<&[u8]> = encoding.chunks(piece).collect();
+                    if pieces.is_empty() {
+                        pieces.push(&[]);
+                    }
+                    for p in pieces {
+                        if !verifier.update(p, |b| received.extend_from_slice(b)) {
+                            return None;
+                        }
+                    }
+                    assert_eq!(verifier.remaining(), 0);
+                    Some(received)
+                };
+                for piece in [1, 63, 64, 1448, GROUP_LEN, GROUP_LEN + 64, 1 << 20] {
+                    assert_eq!(run(&encoding, &hash, piece).as_deref(), Some(message), "len {len} pieces of {piece}");
+                }
+                let mut wrong = *hash.as_bytes();
+                wrong[0] ^= 1;
+                assert_eq!(run(&encoding, &Hash::from_bytes(wrong), 1448), None, "len {len}, wrong hash");
+                for at in [0, encoding.len() / 2, encoding.len().saturating_sub(1)] {
+                    if at < encoding.len() {
+                        let mut bad = encoding.clone();
+                        bad[at] ^= 1;
+                        assert_eq!(run(&bad, &hash, 1448), None, "len {len}, byte {at} changed");
+                    }
+                }
+            }
+        }
     }
 
     /// Every message length around group and tree boundaries, every mode:
