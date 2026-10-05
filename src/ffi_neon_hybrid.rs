@@ -780,6 +780,35 @@ pub unsafe fn hash_chunks_with_partial(
     }
 }
 
+#[cfg(feature = "std")]
+/// Separate one-block messages, two at a time on the pair kernel alone
+/// (2.9 KB of code, where the plans for 3 to 16 run up to 17 KB: after a
+/// pause the code comes from memory), the last of an odd count paired with
+/// itself; each message's last block `last_len` bytes (1 to 64, zero past
+/// it). Unsafe because the CPU must have NEON and the SHA-3 extension.
+pub unsafe fn hash_pairs(inputs: &[&[u8; BLOCK_LEN]], key: &CVWords, flags: u8, flags_start: u8, flags_end: u8, last_len: usize, out: &mut [u8]) {
+    assert!(out.len() >= inputs.len() * OUT_LEN && (1..=BLOCK_LEN).contains(&last_len), "a digest per input, a last block of 1 to 64 bytes");
+    let packed = flags as u64 | (flags_start as u64) << 8 | (flags_end as u64) << 16 | (last_len as u64) << 24;
+    let pair = PARENT_KERNELS[2].expect("the pair kernel");
+    let table = inputs.as_ptr() as *const *const u8;
+    let whole = inputs.len() / 2 * 2;
+    for p in (0..whole).step_by(2) {
+        unsafe { pair(table.add(p), 1, key.as_ptr(), 0, packed, out[p * OUT_LEN..].as_mut_ptr()) };
+    }
+    if whole < inputs.len() {
+        let last = [inputs[whole].as_ptr(), inputs[whole].as_ptr()];
+        let mut two = [0u8; 2 * OUT_LEN];
+        unsafe { pair(last.as_ptr(), 1, key.as_ptr(), 0, packed, two.as_mut_ptr()) };
+        out[whole * OUT_LEN..(whole + 1) * OUT_LEN].copy_from_slice(&two[..OUT_LEN]);
+    }
+}
+
+#[cfg(feature = "std")]
+/// Prefetch the pair kernel's code ([`hash_pairs`]).
+pub fn prefetch_pair_code() {
+    crate::platform::prefetch_code(parent_code(2));
+}
+
 /// Run the kernels of `plan` over `inputs`.
 unsafe fn run_plan(
     plan: &[usize],
