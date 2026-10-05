@@ -191,6 +191,9 @@ struct Inner<H, I, S> {
     /// The delivery thread's own: the unfinished count of the entry its
     /// last look stopped at, which it polls alone.
     waiting: AtomicPtr<AtomicUsize>,
+    /// How many tasks wait in `State::own`, read by the delivery thread
+    /// without the state's lock (it polls; the submitters hold the lock).
+    own: AtomicUsize,
     /// The delivery thread's own: how many rounds it has polled `waiting`.
     polls: AtomicUsize,
     /// Whether the delivery thread holds this queue (entries in flight).
@@ -236,7 +239,15 @@ struct State<I> {
     /// stands past the delivered ones).
     plan: crate::PlanState,
     /// Short messages gathered into one task, not yet handed to the pool.
-    open: Option<Task>,    /// Whether this queue hands tasks to the pool, and the room it made in
+    open: Option<Task>,
+    /// Closed tasks of messages of a block or less, which the delivery
+    /// thread hashes itself before it delivers: 64 of them take about 4 ns
+    /// each on the many-inputs kernels, where a worker's wake costs its
+    /// waker about 4 us (VM probe, October 6, 2026: Queue::submit of a
+    /// 64-byte message 60 ns, most of it the wake per task of 64). Room for
+    /// one per slot, made with the slots: no allocation in flight.
+    own: Vec<Task>,
+    /// Whether this queue hands tasks to the pool, and the room it made in
     /// the pool's task list for them (lanes::Tasks::make_room).
     tasks_room: Option<usize>,
 }
@@ -279,6 +290,7 @@ impl<I> State<I> {
         let total = self.blocks.len() * SLOT_BLOCK;
         self.free.0.reserve(total - self.free.0.len());
         returned.0.reserve(total - returned.0.len());
+        self.own.reserve(total - self.own.len());
         // Sound: a fresh block, SLOT_BLOCK slots.
         self.free.0.extend((0..SLOT_BLOCK).rev().map(|k| unsafe { (block as *mut Slot<I>).add(k) }));
     }
@@ -306,11 +318,22 @@ impl<I> State<I> {
     /// The open batch of short messages, to hand to the pool (after the
     /// state's lock is released) when it is full or (with `waited`) when
     /// the delivery thread waits on it; otherwise it goes on filling.
-    fn close_open(&mut self, waited: bool) -> Option<Task> {
+    fn close_open(&mut self, waited: bool, own: &AtomicUsize) -> Option<Task> {
         // Small batches fill a task up to a task's bytes (short messages
         // fill all 64 places: 4 KiB messages measured 10-30% slower at 16).
         let full = self.open.as_ref().is_some_and(|open| open.members == crate::lanes::MEMBERS || (open.batch.is_some() && open.len >= crate::lanes::TASK_LEN));
-        if full || waited { self.open.take() } else { None }
+        if !(full || waited) {
+            return None;
+        }
+        let task = self.open.take()?;
+        // Messages of a block or less, side by side on the many-inputs
+        // kernels: cheaper on the delivery thread than a worker's wake.
+        if task.batch.is_none() && task.len <= task.members * crate::BLOCK_LEN {
+            self.own.push(task);
+            own.fetch_add(1, Ordering::Release);
+            return None;
+        }
+        Some(task)
     }
 }
 
@@ -366,6 +389,8 @@ const TASK_MIN: usize = crate::SME2_SIZED_LEN;
 /// ns/B on the VM, against 0.118 sharing tasks).
 const MEMBER_BELOW: usize = crate::lanes::TASK_LEN;
 
+
+
 impl<H: Send + 'static, S: 'static> Queue<H, S> {
     fn new<I: Send + 'static>(mode: Mode, handler: H, message_len: usize) -> Self
     where
@@ -374,7 +399,7 @@ impl<H: Send + 'static, S: 'static> Queue<H, S> {
         let (key, flags) = mode.key_and_flags();
         let tasks = crate::lanes::takes_tasks();
         let mut returned = Slots(Vec::new());
-        let mut state = State { blocks: Vec::new(), free: Slots(Vec::new()), tail: core::ptr::null_mut(), tasks: Vec::new(), most: 0, plan: Default::default(), open: None, tasks_room: tasks.then_some(0) };
+        let mut state = State { blocks: Vec::new(), free: Slots(Vec::new()), tail: core::ptr::null_mut(), tasks: Vec::new(), most: 0, plan: Default::default(), open: None, own: Vec::new(), tasks_room: tasks.then_some(0) };
         state.add_block(&mut returned);
         DELIVERY.make_room();
         // The chain starts at a slot delivered already.
@@ -386,6 +411,7 @@ impl<H: Send + 'static, S: 'static> Queue<H, S> {
             handling: OwnLine(Mutex::new(Handling { handler, hasher: crate::HasherCore::new_internal(&key, flags) })),
             head: AtomicPtr::new(first),
             waiting: AtomicPtr::new(core::ptr::null_mut()),
+            own: AtomicUsize::new(0),
             polls: AtomicUsize::new(0),
             active: OwnLine(AtomicBool::new(false)),
             key,
@@ -489,13 +515,23 @@ where
         open.member[open.members] = crate::lanes::Member { input, len, out: out.unwrap_or(slot.results.as_mut_ptr() as *mut u8), left: &slot.left };
         open.members += 1;
         open.len += len;
-        let closed = state.close_open(false);
+        let closed = state.close_open(false, &self.own);
         state.link(slot as *mut Slot<I>);
         drop(guard);
         if let Some(task) = closed {
             TASKS.push(core::iter::once(task));
         }
         self.activate(owner);
+    }
+
+    /// The delivery thread's side: hash the closed tasks that are its own
+    /// (`State::own`), one at a time, each taken under the state's lock.
+    fn hash_own(&self) {
+        while self.own.load(Ordering::Acquire) > 0 {
+            let Some(task) = crate::lanes::lock_polling(&self.state).own.pop() else { return };
+            self.own.fetch_sub(1, Ordering::Relaxed);
+            task.run(crate::lanes::pool_platform());
+        }
     }
 
     /// Have the delivery thread hold this queue, unless it does; after a
@@ -519,6 +555,7 @@ where
      * still has entries in flight.
      */
     fn deliver_with(&self, deliver: impl Fn(&Self, &mut Handling<H>, I, &[[u8; crate::BLOCK_LEN]], bool)) -> (bool, bool) {
+        self.hash_own();
         let waiting = self.waiting.load(Ordering::Relaxed);
         // Sound: the entry stays linked and in place until this thread
         // delivers it.
@@ -530,10 +567,11 @@ where
             // fifth of their speed in some samples).
             let polls = self.polls.fetch_add(1, Ordering::Relaxed) + 1;
             if polls == CLOSE_AFTER_POLLS {
-                let closed = crate::lanes::lock_polling(&self.state).close_open(true);
+                let closed = crate::lanes::lock_polling(&self.state).close_open(true, &self.own);
                 if let Some(task) = closed {
                     TASKS.push(core::iter::once(task));
                 }
+                self.hash_own();
             }
             return (false, true);
         }

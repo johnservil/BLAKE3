@@ -471,7 +471,7 @@ impl Job<'_> {
 /// The platform every piece runs on (see the module docs, "Kernels"): on
 /// an SME2 CPU the NEON hybrids, which no other core slows down; elsewhere
 /// the detected one.
-fn pool_platform() -> Platform {
+pub(crate) fn pool_platform() -> Platform {
     #[cfg(blake3_sme2)]
     if matches!(Platform::detect(), Platform::SME2) {
         return Platform::NEON;
