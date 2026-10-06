@@ -1389,8 +1389,6 @@ item out when it lands or is rejected.
 
 ### For Zooko
 
-- Lingering's 50 us bound: about eight cores poll between updates for
-  2.4x the speed of `update` (long messages in 64 KiB pieces).
 - The three trades: members-32k, subtrees-32k, linger-4.
 - Whether the docs keep the promise that hash_multithreaded runs no
   slower than hash (untested since the benchmark's servil-only checks
