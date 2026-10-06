@@ -6,8 +6,8 @@
   its speed: a table of which call fits which data, and each call's speed
   on an Apple M4 Max.
 - b3sum hashes several files at once on several threads, printing their
-  lines in order: a tree of files read from storage hashes about twice as
-  fast (Linux VM, 100 files).
+  lines in order: a tree of 1000 files hashes 1.6-3.4x as fast on an
+  Apple M4 Max (read from storage: 16 KiB files 5.90 -> 1.72 ns/B).
 - The startup self-test runs in every build, `no_std` ones included
   (they skipped it): a build or CPU that computes wrong digests stops
   with a panic naming the code path, and threads hashing meanwhile stop

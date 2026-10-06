@@ -2111,8 +2111,10 @@ its inputs on `available_parallelism` threads (an atomic index hands each
 the next), printing lines in order (92f6ceb). VM, `--quick`, 100 files:
 cold 1000 x 16 KiB 6.98 -> 2.97 ms, cold mixed tree 8.71 -> 3.92 ms;
 warm cells level (their files' syscalls are fast, and process start
-dominates); single files level. The Mac's numbers come with the 0.16.0
-records.
+dominates); single files level. The Mac (0.16.1's record, job 1434,
+against 0.15.3's, 1000 files each): 1000 x 16 KiB warm 1.17 -> 0.75
+ns/B, cold 5.90 -> 1.72; the mixed tree of 74 MiB warm 0.318 -> 0.150,
+cold 1.28 -> 0.376; single files level.
 
 ## b3sum, measured: tools/b3sum-bench (October 2, 2026, jobs 1136-1137)
 
