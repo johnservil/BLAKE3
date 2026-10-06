@@ -2038,6 +2038,35 @@ place (a fixed array of 64 pieces on the stack would make the
 multithreaded calls allocation-free too), and a test per claim (the
 counting allocator of tests/queue_no_alloc.rs).
 
+## How much of a cold one-shot call is its code (October 6, 2026, jobs 1426-1427)
+
+probe/cold-code-share times `hash` after the benchmark's busy gap two
+ways, rounds alternating: as the benchmark meets it, and with the code
+warm (the untimed preparation first hashes another buffer of the same
+length). Mac, battery, ns a call (cycles agree: stalls, the clock the
+same):
+
+| length | servil cold | servil code warm | ring cold | ring code warm |
+|---|---|---|---|---|
+| 1 KiB | 851 | 712 | 438 | 343 |
+| 2 KiB | 1286 | 927 | 734 | 646 |
+| 3 KiB | 1517 | 999 | 1040 | 958 |
+| 4 KiB | 1928 | 1283 | 1330 | 1252 |
+| 8 KiB | 2875 | 1905 | 2572 | 2433 |
+| 16 KiB | 4431 | 3753 | 4968 | 4833 |
+
+A cold 2-8 KiB call spends a third of its time on its code (it touches
+10 KB at 2 KiB, 24 KB at 4 KiB: the unrolled kernels and 5-7 KB of Rust
+glue, gdb's count); SHA-256's small code costs it 6-14%. With all of it
+recovered, servil would lead from about 4 KiB (8 KiB: 1905 against 2572)
+and still trail at 1-3 KiB, where ring's SHA-256 instructions hash a
+chunk's 16 blocks faster than BLAKE3's chain of compressions (warm 1 KiB:
+343 against 712): intrinsic. The lever left, worth up to a third of the
+2-8 KiB calls after other work: a compact path for calls after a pause
+(the stamp `prefetch_after_pause` reads already says which), a rolled
+four-lane kernel of a kilobyte or two and little glue, replacing the
+prefetch rather than adding to it.
+
 ## b3sum: several files at once; which API it calls (October 6, 2026)
 
 Zooko asked whether b3sum could be faster through another API, a stream
