@@ -507,8 +507,60 @@ fn parse_check_line(mut line: &str) -> anyhow::Result<ParsedCheckLine> {
     })
 }
 
-fn hash_one_input(path: &Path, args: &Args) -> anyhow::Result<()> {
-    let output = hash_path(args, path)?;
+/// Hash every input and print each line in the inputs' order; how many
+/// failed. Errors are printed to stderr and the rest go on (`b3sum *`
+/// meets directories), and the exit status counts them. Several inputs
+/// hash on several threads at once: a tree of small files costs mostly
+/// opening and reading each, which one thread does one at a time.
+fn hash_inputs(args: &Args) -> u64 {
+    let paths = &args.file_args;
+    let threads = std::thread::available_parallelism().map_or(1, |n| n.get()).min(paths.len());
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    std::thread::scope(|scope| {
+        for _ in 1..threads {
+            let (next, done_tx) = (&next, done_tx.clone());
+            scope.spawn(move || hash_some(args, next, |i, output| done_tx.send((i, output)).is_ok()));
+        }
+        drop(done_tx);
+        // This thread hashes too, and prints whatever is next in order.
+        let mut failed = 0u64;
+        let mut printed = 0;
+        let mut waiting = std::collections::BTreeMap::new();
+        let mut print = |i: usize, output: anyhow::Result<blake3::OutputReader>, printed: &mut usize| {
+            if let Err(e) = output.and_then(|output| print_output(output, &paths[i], args)) {
+                failed = failed.saturating_add(1);
+                eprintln!("{}: {}: {}", NAME, paths[i].to_string_lossy(), e);
+            }
+            *printed += 1;
+        };
+        let mut take = |i: usize, output| {
+            waiting.insert(i, output);
+            while let Some(output) = waiting.remove(&printed) {
+                print(printed, output, &mut printed);
+            }
+            true
+        };
+        hash_some(args, &next, &mut take);
+        for (i, output) in done_rx {
+            take(i, output);
+        }
+        failed
+    })
+}
+
+/// Hash the inputs whose turn `next` gives, one after another, giving each
+/// result to `done` (which returns false once nobody listens).
+fn hash_some(args: &Args, next: &std::sync::atomic::AtomicUsize, mut done: impl FnMut(usize, anyhow::Result<blake3::OutputReader>) -> bool) {
+    loop {
+        let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if i >= args.file_args.len() || !done(i, hash_path(args, &args.file_args[i])) {
+            return;
+        }
+    }
+}
+
+fn print_output(output: blake3::OutputReader, path: &Path, args: &Args) -> anyhow::Result<()> {
     if args.raw() {
         write_raw_output(output, args)?;
         return Ok(());
@@ -620,20 +672,12 @@ fn main() -> anyhow::Result<()> {
     }
     let mut files_failed = 0u64;
     // Note that file_args automatically includes `-` if nothing is given.
-    for path in &args.file_args {
-        if args.check() {
+    if args.check() {
+        for path in &args.file_args {
             check_one_checkfile(path, &args, &mut files_failed)?;
-        } else {
-            // Errors encountered in hashing are tolerated and printed to
-            // stderr. This allows e.g. `b3sum *` to print errors for
-            // non-files and keep going. However, if we encounter any
-            // errors we'll still return non-zero at the end.
-            let result = hash_one_input(path, &args);
-            if let Err(e) = result {
-                files_failed = files_failed.saturating_add(1);
-                eprintln!("{}: {}: {}", NAME, path.to_string_lossy(), e);
-            }
         }
+    } else {
+        files_failed = hash_inputs(&args);
     }
     if args.check() && files_failed > 0 {
         eprintln!(
