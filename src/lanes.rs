@@ -1393,8 +1393,7 @@ mod test {
                     let mut cvs: Vec<ChainingValue> = pieces
                         .iter()
                         .map(|p| {
-                            let mut hasher = Hasher::new();
-                            hasher.core.set_platform(platform);
+                            let mut hasher = Hasher::from_core(crate::HasherCore::new_from(crate::IV, 0, platform));
                             hasher.set_input_offset(p.offset as u64);
                             hasher.update(&input[p.offset..][..p.len]);
                             hasher.finalize_non_root()

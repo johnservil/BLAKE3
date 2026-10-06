@@ -2193,15 +2193,6 @@ impl Hasher {
         core.final_output()
     }
 
-    /// A fresh hasher on `platform`'s kernels (for measurement; hidden).
-    #[cfg(feature = "std")]
-    #[doc(hidden)]
-    pub fn new_with_platform(platform: Platform) -> Self {
-        let mut hasher = Self::new();
-        hasher.core.set_platform(platform);
-        hasher
-    }
-
     /// Construct a new `Hasher` for the regular hash function.
     pub fn new() -> Self {
         Self::from_core(HasherCore::new_internal(IV, 0))
@@ -2506,15 +2497,6 @@ impl HasherCore {
         }
     }
 
-    /// Hash with `platform`'s kernels instead of the detected ones. Only
-    /// for a fresh hasher: the chunk state's platform is the one every
-    /// compression from here on uses.
-    #[cfg(feature = "std")]
-    pub(crate) fn set_platform(&mut self, platform: Platform) -> &mut Self {
-        assert!(self.cv_stack.is_empty() && self.chunk_state.count() == 0, "set_platform on a fresh hasher");
-        self.chunk_state.platform = platform;
-        self
-    }
 
 
 
