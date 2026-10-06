@@ -258,8 +258,6 @@ mod join;
 #[cfg(feature = "std")]
 mod lanes;
 mod many;
-#[cfg(all(blake3_neon_hybrid, feature = "std"))]
-mod compact;
 #[cfg(feature = "std")]
 mod queue;
 #[cfg(feature = "std")]
@@ -1431,9 +1429,7 @@ fn hash_serial_from(platform: Platform, input: &[u8], key: &CVWords, flags: u8) 
     // after other work fetches every line of it from DRAM).
     #[cfg(all(blake3_neon_hybrid, feature = "std"))]
     if (CHUNK_LEN + 1..PREFETCH_BELOW).contains(&input.len()) {
-        if let Some(hash) = after_pause(input, key, flags, turn.platform()) {
-            return hash;
-        }
+        prefetch_after_pause(input.len(), turn.platform(), false);
     }
     hash_serial_on(input, key, flags, turn.platform())
 }
@@ -1447,39 +1443,21 @@ fn hash_serial_from(platform: Platform, input: &[u8], key: &CVWords, flags: u8) 
 #[cfg(all(blake3_neon_hybrid, feature = "std"))]
 const PREFETCH_BELOW: usize = 64 * 1024;
 
-/// A one-shot call of `input` after a pause (code_may_be_cold), whose
-/// code other work may have taken from the caches: below 16 KiB it is
-/// hashed here on the compact path (Some), whose code is a fraction of the
-/// unrolled kernels'; longer, its kernels' code is prefetched and it is
-/// hashed as usual (None).
+/// After a pause (code_may_be_cold), prefetch the kernels hashing `len`
+/// bytes runs: a one-shot call's (prefetch_kernels), or with `fresh_hasher`
+/// a fresh Hasher's first update's (prefetch_update_kernels).
 #[cfg(all(blake3_neon_hybrid, feature = "std"))]
 // Cold for layout: the path of a chunk or less falls through past its
 // call, on the lines it had before the call existed.
 #[cold]
 #[inline(never)]
-fn after_pause(input: &[u8], key: &CVWords, flags: u8, platform: Platform) -> Option<Hash> {
-    if !code_may_be_cold() {
-        return None;
-    }
-    #[cfg(blake3_sme2)]
-    let neon = matches!(platform, Platform::NEON | Platform::SME2);
-    #[cfg(not(blake3_sme2))]
-    let neon = matches!(platform, Platform::NEON);
-    if neon && input.len() < compact::COMPACT_BELOW {
-        return Some(compact::hash(input, key, flags));
-    }
-    prefetch_kernels(input.len(), platform);
-    None
-}
-
-/// After a pause (code_may_be_cold), prefetch the kernels a fresh
-/// Hasher's first update of `len` bytes runs.
-#[cfg(all(blake3_neon_hybrid, feature = "std"))]
-#[cold]
-#[inline(never)]
-fn prefetch_update_after_pause(len: usize, platform: Platform) {
+fn prefetch_after_pause(len: usize, platform: Platform, fresh_hasher: bool) {
     if code_may_be_cold() {
-        prefetch_update_kernels(len, platform);
+        if fresh_hasher {
+            prefetch_update_kernels(len, platform);
+        } else {
+            prefetch_kernels(len, platform);
+        }
     }
 }
 
@@ -2265,7 +2243,7 @@ impl Hasher {
         // after a pause, as hash() does.
         #[cfg(all(blake3_neon_hybrid, feature = "std"))]
         if self.count() == 0 && (CHUNK_LEN + 1..PREFETCH_BELOW).contains(&input.len()) {
-            prefetch_update_after_pause(input.len(), self.core.chunk_state.platform);
+            prefetch_after_pause(input.len(), self.core.chunk_state.platform, true);
         }
         self.gather::<join::SerialJoin>(input, false)
     }

@@ -56,9 +56,6 @@ pub(crate) enum Case {
     /// `out` bytes of extended output from hashing `len` bytes, read
     /// from output position `skip`.
     Xof { len: usize, skip: u64, out: usize },
-    /// hash() of `len` bytes on the compact path, which calls after a
-    /// pause take (hash() itself where the build has none).
-    Compact { len: usize },
 }
 
 use Case::*;
@@ -114,7 +111,6 @@ pub(crate) const CASES: &[(Case, &str)] = &[
     (Incremental { len: 2 * KIB, piece: 63 }, "a Hasher fed less than a block at a time"),
     (Xof { len: 100, skip: 37, out: 300 }, "extended output of several blocks, from an unaligned position"),
     (Xof { len: 1500, skip: 64, out: 1100 }, "extended output of sixteen blocks and more (the SME2 extended-output kernel)"),
-    (Compact { len: 7 * KIB + 100 }, "the compact path after a pause: whole chunks, a partial one, an odd level"),
 ];
 
 /// The largest input any case reads, offset included.
@@ -166,7 +162,7 @@ pub(crate) fn chain(
             Hash { offset, len } => (offset, len, 1),
             Many { len, count, .. } => (0, len, count),
             ChunkValues { chunks } => (0, chunks * crate::CHUNK_LEN, 1),
-            Keyed { len } | Derive { len } | Incremental { len, .. } | Xof { len, .. } | Compact { len } => (0, len, 1),
+            Keyed { len } | Derive { len } | Incremental { len, .. } | Xof { len, .. } => (0, len, 1),
         };
         let n = len.min(32);
         for message in 0..count {
@@ -182,7 +178,7 @@ pub(crate) fn chain(
 /// Each case's fold, from the reference implementation (the unit test
 /// `self_test_matches_the_reference` checks them, and prints this table
 /// when it differs).
-const EXPECTED: [u64; 41] = [
+const EXPECTED: [u64; 40] = [
     0x90e4e563714f7c48,
     0x80003c83df0cf1a6,
     0xf4ffcff9e99d31ba,
@@ -223,7 +219,6 @@ const EXPECTED: [u64; 41] = [
     0x0eaabf3bcc0790e7,
     0x7bf131603d28d0e7,
     0xa7e6fd013dbeb762,
-    0xbbacdca594227d28,
 ];
 
 /// A case's outputs from this build, into `out`, through the entry points'
@@ -245,13 +240,6 @@ pub(crate) fn outputs(platform: Platform, case: Case, input: &[u8], previous: &[
         }
         Incremental { len, piece } => digest(incremental(platform, &input[..len], piece)),
         Xof { len, skip, out: n } => xof(platform, &input[..len], skip, &mut out[..n]),
-        Compact { len } => {
-            #[cfg(all(blake3_neon_hybrid, feature = "std"))]
-            let hash = crate::compact::hash(&input[..len], crate::IV, 0);
-            #[cfg(not(all(blake3_neon_hybrid, feature = "std")))]
-            let hash = crate::hash_serial_from(platform, &input[..len], crate::IV, 0);
-            digest(hash)
-        }
     }
 }
 
@@ -454,7 +442,7 @@ mod test {
             }
             Keyed { len } => digest(reference_impl::Hasher::new_keyed(previous), &input[..len], 0, 32),
             Derive { len } => digest(reference_impl::Hasher::new_derive_key(CONTEXT), &input[..len], 0, 32),
-            Incremental { len, .. } | Compact { len } => digest(reference_impl::Hasher::new(), &input[..len], 0, 32),
+            Incremental { len, .. } => digest(reference_impl::Hasher::new(), &input[..len], 0, 32),
             Xof { len, skip, out } => digest(reference_impl::Hasher::new(), &input[..len], skip as usize, out),
         }
     }
