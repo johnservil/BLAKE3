@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Calls made now and then, after other work or a pause, run faster: a
+  message of a chunk or less hashes on a one-chunk kernel a quarter of
+  the size (64 bytes about a third faster after other work on an Apple M4
+  Max, 2-4% slower nonstop), and a batch of up to 8 one-block messages on
+  the smallest batch kernel (4 messages after a pause 340 -> 161 ns each).
+- A `Queue` keeps fewer workers awake and feeds each of them more: its
+  long messages, 64-byte messages, and batches hash 15-45% faster (1 KiB
+  messages 20% slower).
 - A `Hasher` gathers updates shorter than 16 KiB until the message's next
   16 KiB boundary, and hashes them 16 chunks side by side: a message that
   arrives in network-sized pieces hashes nearly as fast as one in whole
