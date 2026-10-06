@@ -14,17 +14,11 @@ users yet: you would be the first. Use it at your own risk.
 
 This is my fork of BLAKE3, for faster hashing on 64-bit Arm, and above all on Apple M4-class
 chips; on other CPUs it runs upstream's code. It computes the same digests as the official
-crate, and adds:
-
-- `hash_multithreaded`, which spreads one large input (512 KiB or more) over every core;
-- `hash_many`, which hashes a batch of equal-length messages (Merkle-tree leaves and nodes,
-  for example) in one call;
-- `Hasher::update_multithreaded`, which hashes a message arriving in pieces over every core,
-  keeping the cores ready between pieces that come in swift succession;
-- `Queue`, which hashes a stream of inputs behind your program: you hand it your buffers and
-  move on, and each comes back hashed through a handler you write;
-- a `_with` form of each one-shot call (`hash_with`, `hash_multithreaded_with`, `hash_many_with`,
-  `hash_many_multithreaded_with`), which takes the mode: plain, keyed, or key derivation.
+crate, and adds calls for the ways programs hash: one large message over every core
+(`hash_multithreaded`), batches and collections of messages (`hash_many`, `hash_each_with`),
+many messages arriving at once (`Hasher::update_each`), a stream of buffers hashed on other
+threads while your program reads the next (`Queue`), and verified streaming in iroh-blobs'
+format (`outboard_with`, `Verifier`).
 
 To use it, add
 
@@ -33,8 +27,9 @@ To use it, add
 blake3-servil = { git = "https://github.com/johnservil/BLAKE3", branch = "servil" }
 ```
 
-and call `blake3_servil::hash` as you would `blake3::hash`. The crate documentation's "For
-best performance" section says how to reach full speed.
+and call `blake3_servil::hash` as you would `blake3::hash`. The
+[crate documentation](https://johnservil.github.io/BLAKE3/blake3_servil/) opens with a table
+of which call fits your data.
 [bench-hashes](https://github.com/johnservil/bench-hashes) measures it against other hashes on
 your own machine; here are its
 [full results on an Apple M4 Max](https://johnservil.github.io/bench-hashes/benchmark-results/AppleM4Max.darwin25/bench-hashes.map.html).
