@@ -105,7 +105,9 @@ fn update_turn<J: crate::join::Join>(hashers: &mut [Hasher], pieces: &[(usize, &
     let mut held: Vec<usize> = Vec::new();
     while !turn.is_empty() {
         for &(i, bytes) in &turn {
-            if held.contains(&i) {
+            // A hasher holding a group takes no more until the turn's
+            // groups are hashed: its pieces wait, in order.
+            if hashers[i].held_group().is_some() {
                 waiting.push((i, bytes));
                 continue;
             }
