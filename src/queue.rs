@@ -315,7 +315,7 @@ impl<I> State<I> {
         let full = self.open.as_ref().is_some_and(|open| {
             open.members == crate::lanes::MEMBERS
                 || (open.batch.is_some() && open.len >= crate::lanes::TASK_LEN)
-                || (open.batch.is_none() && open.len > open.members * crate::BLOCK_LEN && open.len >= crate::lanes::TASK_LEN / 4)
+                || (open.batch.is_none() && open.len > open.members * crate::BLOCK_LEN && open.len >= crate::lanes::TASK_LEN / 16)
         });
         if full || waited { self.open.take() } else { None }
     }
