@@ -1396,6 +1396,10 @@ item out when it lands or is rejected.
 
 ### Slowdowns to explain (open, AGENTS: "we own every slowdown")
 
+- The queue's wakes halved (a5e0351) slowed two of its cells: pipelined
+  1 KiB messages +20%, and two programs' 4 KiB +26-29% (0.15.3's records).
+  Fewer workers awake serve those sizes worse; find which part of a task's
+  life they wait on, and whether a size-aware wake keeps both gains.
 - The queue's shares swing per run (256 B messages, batches of 16, 1 KiB):
   set at process start, perhaps thread placement.
 - The queue's cells slow the next cell (about 2% on the VM); a lingering
