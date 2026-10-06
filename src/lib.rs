@@ -126,7 +126,8 @@
 //! - **A [`Queue`]** allocates when it is made, and as the buffers you keep
 //!   in flight first reach a new number; once it has met your most in
 //!   flight, it allocates nothing.
-//! - **Once per process**: the startup self-test's inputs (freed after it),
+//! - **Once per process**: the startup self-test's buffers, about 45 KiB
+//!   of the calling thread's stack while it runs (it allocates nothing),
 //!   and the threads: a worker per CPU beyond the first, the queue's
 //!   delivery thread, each with the standard library's stack. They come
 //!   at the first call that needs them, or all at once, at start-up, when
@@ -142,10 +143,12 @@
 //! result with the reference implementation's. A difference means this
 //! build or this CPU computes wrong digests, and stops the program with a
 //! panic naming the code path. The check takes 0.1 to 0.2 ms once per
-//! process (Apple M4 Max, and a Linux VM on it); [`initialize`] (or
+//! process (Apple M4 Max, and a Linux VM on it), in every build, with or
+//! without the `std` feature; [`initialize`] (or
 //! [`initialize_multithreaded`]) runs it at start-up, and otherwise the
-//! first call does. Builds without the
-//! `std` feature skip it.
+//! first call does. Other threads that hash meanwhile wait for it, and
+//! stop with it if it fails. Without `std`, the panic goes to the
+//! program's panic handler, which aborts or halts.
 //!
 //! # Cargo Features
 //!
@@ -291,7 +294,7 @@ mod self_test;
 
 /// The startup self-test's own time, for probes: it runs again (it has
 /// already passed once in this process). Hidden, unstable.
-#[cfg(all(feature = "std", not(miri)))]
+#[cfg(not(miri))]
 #[doc(hidden)]
 pub fn __self_test_run_again() {
     self_test::run_again();
@@ -1372,7 +1375,6 @@ pub fn hash_multithreaded(input: &[u8]) -> Hash {
 /// let hash = blake3_servil::hash(b"foo");
 /// # assert_eq!(hash, blake3_servil::Hasher::new().update(b"foo").finalize());
 /// ```
-#[cfg(feature = "std")]
 pub fn initialize() {
     self_test::ensure();
 }
@@ -1461,7 +1463,14 @@ pub fn hash_multithreaded_with(mode: Mode, input: &[u8]) -> Hash {
 /// through here.
 #[inline]
 fn hash_serial(input: &[u8], key: &CVWords, flags: u8) -> Hash {
-    let turn = platform::Sme2Turn::take(Platform::detect(), input.len() >= SME2_SIZED_LEN);
+    hash_serial_from(Platform::detect(), input, key, flags)
+}
+
+/// [`hash_serial`] from `platform`: the startup self-test's way in, which
+/// has not run `Platform::detect`'s check (it is that check).
+#[inline]
+fn hash_serial_from(platform: Platform, input: &[u8], key: &CVWords, flags: u8) -> Hash {
+    let turn = platform::Sme2Turn::take(platform, input.len() >= SME2_SIZED_LEN);
     // One comparison on the path of a chunk or less: everything else is
     // out of line, so that path's code stays as small as it was (a call
     // after other work fetches every line of it from DRAM).
@@ -1681,7 +1690,14 @@ pub fn hash_many(input: &[u8], message_len: usize, out: &mut [[u8; OUT_LEN]]) {
 /// [`hash_many`] in the mode of `key` and `flags`, on the calling thread.
 #[inline]
 pub(crate) fn hash_many_serial(input: &[u8], message_len: usize, key: &CVWords, flags: u8, out: &mut [[u8; OUT_LEN]]) {
-    let turn = platform::Sme2Turn::take(Platform::detect(), many::sme2_sized(message_len, out.len()));
+    hash_many_serial_from(Platform::detect(), input, message_len, key, flags, out);
+}
+
+/// [`hash_many_serial`] from `platform` (the self-test's way in, as
+/// [`hash_serial_from`]).
+#[inline]
+fn hash_many_serial_from(platform: Platform, input: &[u8], message_len: usize, key: &CVWords, flags: u8, out: &mut [[u8; OUT_LEN]]) {
+    let turn = platform::Sme2Turn::take(platform, many::sme2_sized(message_len, out.len()));
     // A small batch of one-block messages after a pause fetches its kernels'
     // code in parallel (as hash_serial does): its time is mostly that code.
     #[cfg(all(blake3_neon_hybrid, feature = "std"))]
@@ -2532,9 +2548,15 @@ impl Hasher {
 
 impl HasherCore {
     pub(crate) fn new_internal(key: &CVWords, flags: u8) -> Self {
+        Self::new_from(key, flags, Platform::detect())
+    }
+
+    /// [`HasherCore::new_internal`] on `platform` (the self-test's way in,
+    /// as [`hash_serial_from`]).
+    pub(crate) fn new_from(key: &CVWords, flags: u8, platform: Platform) -> Self {
         Self {
             key: *key,
-            chunk_state: ChunkState::new(key, 0, flags, Platform::detect()),
+            chunk_state: ChunkState::new(key, 0, flags, platform),
             initial_chunk_counter: 0,
             cv_stack: ArrayVec::new(),
         }

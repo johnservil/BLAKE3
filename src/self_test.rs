@@ -18,13 +18,17 @@
 //! that differs names the failing path: the cases before it agreed.
 //!
 //! Platform::detect(), which every entry point calls, runs it through
-//! `ensure`. The test calls the public entry points, so it re-enters
-//! detect(): a thread-local flag lets its own calls through, and other
-//! threads wait for it (std::sync::Once). Builds without std, and Miri,
-//! skip it.
+//! `ensure`, in every build (std or not); other threads wait for it,
+//! spinning (once per process, for 0.1 to 0.2 ms). The cases call the
+//! entry points' bodies from the undetected platform (`hash_serial_from`
+//! and its like), just past detect(), so the test never re-enters its own
+//! check. It allocates nothing: its buffers (about 44 KiB) live on the
+//! calling thread's stack while it runs. Miri skips it (too slow there).
 
-// Without std, and under Miri, nothing runs the cases.
-#![cfg_attr(any(not(feature = "std"), miri), allow(dead_code))]
+// Under Miri nothing runs the cases.
+#![cfg_attr(miri, allow(dead_code))]
+
+use crate::platform::Platform;
 
 /// One case: an input shape and the entry point that hashes it. Every
 /// case reads its input from the start of the shared buffer, `offset`
@@ -112,6 +116,16 @@ pub(crate) const CASES: &[(Case, &str)] = &[
 /// The largest input any case reads, offset included.
 pub(crate) const INPUT_LEN: usize = 32 * KIB + 8;
 
+/// The most output any case writes (the second extended output's).
+pub(crate) const OUTPUT_LEN: usize = 1100;
+
+/// The largest batch a Many case lays out, offset included (ten one-chunk
+/// messages).
+const BATCH_LEN: usize = 10 * KIB;
+
+/// The most messages a Many case holds.
+const BATCH_COUNT: usize = 21;
+
 /// Fill `input` with the starting bytes: little-endian words i * 0x9E3779B97F4A7C15.
 pub(crate) fn fill(input: &mut [u8]) {
     for (i, word) in input.chunks_mut(8).enumerate() {
@@ -133,15 +147,15 @@ pub(crate) fn fold(bytes: &[u8]) -> u64 {
 /// previous case's output (zeros before the first) overwrite the start of
 /// its input (of every message, in a batch), as much as it reads, and are
 /// the key a keyed case takes; so every output depends on every earlier
-/// one. `outputs` hashes one case; `check` sees each case's fold as it
-/// comes.
-#[cfg(feature = "std")]
+/// one. `outputs` hashes one case into its buffer and returns how many
+/// bytes it wrote; `check` sees each case's fold as it comes.
 pub(crate) fn chain(
-    mut outputs: impl FnMut(Case, &[u8], &[u8; 32]) -> std::vec::Vec<u8>,
+    mut outputs: impl FnMut(Case, &[u8], &[u8; 32], &mut [u8]) -> usize,
     mut check: impl FnMut(usize, u64),
 ) {
-    let mut input = std::vec![0u8; INPUT_LEN];
+    let mut input = [0u8; INPUT_LEN];
     fill(&mut input);
+    let mut out = [0u8; OUTPUT_LEN];
     let mut previous = [0u8; 32];
     for (index, &(case, _)) in CASES.iter().enumerate() {
         let (start, len, count) = match case {
@@ -154,8 +168,9 @@ pub(crate) fn chain(
         for message in 0..count {
             input[start + message * len..][..n].copy_from_slice(&previous[..n]);
         }
-        let output = outputs(case, &input, &previous);
-        check(index, fold(&output));
+        let written = outputs(case, &input, &previous, &mut out);
+        let output = &out[..written];
+        check(index, fold(output));
         previous.copy_from_slice(&output[..32]);
     }
 }
@@ -206,153 +221,193 @@ const EXPECTED: [u64; 40] = [
     0xa7e6fd013dbeb762,
 ];
 
-/// A case's outputs from this build, through the public entry points.
-#[cfg(feature = "std")]
-pub(crate) fn outputs(case: Case, input: &[u8], previous: &[u8; 32]) -> std::vec::Vec<u8> {
-    use std::vec;
+/// A case's outputs from this build, into `out`, through the entry points'
+/// bodies from `platform`; returns their length.
+pub(crate) fn outputs(platform: Platform, case: Case, input: &[u8], previous: &[u8; 32], out: &mut [u8]) -> usize {
+    let words = |key: &[u8; 32]| crate::platform::words_from_le_bytes_32(key);
+    let mut digest = |hash: crate::Hash| {
+        out[..32].copy_from_slice(hash.as_bytes());
+        32
+    };
     match case {
-        Hash { offset, len } => crate::hash(&input[offset..][..len]).as_bytes().to_vec(),
-        Many { offset, len, count } => {
-            let slot = crate::many::slot_len(len);
-            let mut buffer = vec![0u8; offset + slot * count];
-            let messages = &mut buffer[offset..];
-            for (i, message) in messages.chunks_mut(slot).enumerate() {
-                message[..len].copy_from_slice(&input[i * len..][..len]);
-            }
-            let mut digests = vec![[0u8; crate::OUT_LEN]; count];
-            crate::hash_many(messages, len, &mut digests);
-            digests.concat()
+        Hash { offset, len } => digest(crate::hash_serial_from(platform, &input[offset..][..len], crate::IV, 0)),
+        Many { offset, len, count } => many(platform, &input[..len * count], offset, len, &mut out[..count * crate::OUT_LEN]),
+        ChunkValues { chunks } => chunk_values(platform, &input[..chunks * crate::CHUNK_LEN], previous, out),
+        Keyed { len } => digest(crate::hash_serial_from(platform, &input[..len], &words(previous), crate::KEYED_HASH)),
+        Derive { len } => {
+            let context = crate::hash_serial_from(platform, CONTEXT.as_bytes(), crate::IV, crate::DERIVE_KEY_CONTEXT);
+            digest(crate::hash_serial_from(platform, &input[..len], &words(context.as_bytes()), crate::DERIVE_KEY_MATERIAL))
         }
-        ChunkValues { chunks } => chunk_values(&input[..chunks * crate::CHUNK_LEN], previous),
-        Keyed { len } => crate::keyed_hash(previous, &input[..len]).as_bytes().to_vec(),
-        Derive { len } => crate::derive_key(CONTEXT, &input[..len]).to_vec(),
-        Incremental { len, piece } => {
-            let mut hasher = crate::Hasher::new();
-            for part in input[..len].chunks(piece) {
-                hasher.update(part);
-            }
-            hasher.finalize().as_bytes().to_vec()
-        }
-        Xof { len, skip, out } => {
-            let mut bytes = vec![0u8; out];
-            let mut reader = crate::Hasher::new().update(&input[..len]).finalize_xof();
-            reader.set_position(skip);
-            reader.fill(&mut bytes);
-            bytes
-        }
+        Incremental { len, piece } => digest(incremental(platform, &input[..len], piece)),
+        Xof { len, skip, out: n } => xof(platform, &input[..len], skip, &mut out[..n]),
     }
+}
+
+/// A Hasher on `platform` fed `input` in pieces of `piece` bytes (out of
+/// line, as `xof` and `many`: their buffers take the stack only in turn).
+#[inline(never)]
+fn incremental(platform: Platform, input: &[u8], piece: usize) -> crate::Hash {
+    let mut hasher = crate::Hasher::from_core(crate::HasherCore::new_from(crate::IV, 0, platform));
+    for part in input.chunks(piece) {
+        hasher.update(part);
+    }
+    hasher.finalize()
+}
+
+/// Extended output of `input` from position `skip`, into `out`.
+#[inline(never)]
+fn xof(platform: Platform, input: &[u8], skip: u64, out: &mut [u8]) -> usize {
+    let mut hasher = crate::Hasher::from_core(crate::HasherCore::new_from(crate::IV, 0, platform));
+    let mut reader = hasher.update(input).finalize_xof();
+    reader.set_position(skip);
+    reader.fill(out);
+    out.len()
+}
+
+/// hash_many() of `messages`, `len` bytes each, laid out in slots `offset`
+/// bytes into a buffer of its own; the digests in `out`.
+#[inline(never)]
+fn many(platform: Platform, messages: &[u8], offset: usize, len: usize, out: &mut [u8]) -> usize {
+    let slot = crate::many::slot_len(len);
+    let count = out.len() / crate::OUT_LEN;
+    let mut buffer = [0u8; BATCH_LEN];
+    let batch = &mut buffer[offset..][..slot * count];
+    for (message, bytes) in batch.chunks_mut(slot).zip(messages.chunks(len.max(1))) {
+        message[..len].copy_from_slice(&bytes[..len]);
+    }
+    let mut digests = [[0u8; crate::OUT_LEN]; BATCH_COUNT];
+    crate::hash_many_serial_from(platform, batch, len, crate::IV, 0, &mut digests[..count]);
+    for (to, digest) in out.chunks_mut(crate::OUT_LEN).zip(&digests) {
+        to.copy_from_slice(digest);
+    }
+    out.len()
 }
 
 /// The chaining values of the whole chunks in `input`, at counter 1 on,
-/// keyed by `key` (see Case::ChunkValues).
-#[cfg(feature = "std")]
-fn chunk_values(input: &[u8], key: &[u8; 32]) -> std::vec::Vec<u8> {
+/// keyed by `key` (see Case::ChunkValues), into `out`.
+fn chunk_values(platform: Platform, input: &[u8], key: &[u8; 32], out: &mut [u8]) -> usize {
     let key = crate::platform::words_from_le_bytes_32(key);
-    let chunks: std::vec::Vec<&[u8; crate::CHUNK_LEN]> =
-        input.chunks_exact(crate::CHUNK_LEN).map(|c| c.try_into().expect("whole chunks")).collect();
-    let out = std::vec![0u8; chunks.len() * crate::OUT_LEN];
+    let mut chunks = arrayvec::ArrayVec::<&[u8; crate::CHUNK_LEN], 18>::new();
+    chunks.extend(input.chunks_exact(crate::CHUNK_LEN).map(|c| c.try_into().expect("whole chunks")));
+    let out = &mut out[..chunks.len() * crate::OUT_LEN];
     #[cfg(blake3_sme2)]
     if chunks.len() % crate::sme2::HYBRID_GROUP == 0 {
-        let mut out = out;
-        let turn = crate::platform::Sme2Turn::take(crate::platform::Platform::detect_unchecked(), true);
-        if !matches!(turn.platform(), crate::platform::Platform::SME2) {
-            return platform_chunk_values(&chunks, &key, out);
+        let turn = crate::platform::Sme2Turn::take(platform, true);
+        if matches!(turn.platform(), Platform::SME2) {
+            let flags = crate::KEYED_HASH as u32 | (crate::CHUNK_START as u32) << 8 | (crate::CHUNK_END as u32) << 16;
+            // Sound: SME2 was detected, and the table holds 18 chunk pointers per group.
+            let lanes = unsafe {
+                crate::sme2::ffi::blake3_sme2x2_hash_chunks_512(
+                    chunks.as_ptr() as *const *const u8,
+                    key.as_ptr(),
+                    1,
+                    flags,
+                    out.as_mut_ptr(),
+                    (chunks.len() / crate::sme2::HYBRID_GROUP) as u64,
+                )
+            };
+            assert_eq!(lanes, 16, "SME2 streaming vector length changed under us");
+            return out.len();
         }
-        let flags = crate::KEYED_HASH as u32 | (crate::CHUNK_START as u32) << 8 | (crate::CHUNK_END as u32) << 16;
-        // Sound: SME2 was detected, and the table holds 18 chunk pointers per group.
-        let lanes = unsafe {
-            crate::sme2::ffi::blake3_sme2x2_hash_chunks_512(
-                chunks.as_ptr() as *const *const u8,
-                key.as_ptr(),
-                1,
-                flags,
-                out.as_mut_ptr(),
-                (chunks.len() / crate::sme2::HYBRID_GROUP) as u64,
-            )
-        };
-        assert_eq!(lanes, 16, "SME2 streaming vector length changed under us");
-        return out;
     }
-    platform_chunk_values(&chunks, &key, out)
-}
-
-/// [`chunk_values`] through the platform's own chunk kernels.
-#[cfg(feature = "std")]
-fn platform_chunk_values(chunks: &[&[u8; crate::CHUNK_LEN]], key: &crate::CVWords, mut out: std::vec::Vec<u8>) -> std::vec::Vec<u8> {
-    crate::platform::Platform::detect_unchecked().hash_many(
-        chunks,
-        key,
+    platform.hash_many(
+        &chunks,
+        &key,
         1,
         crate::IncrementCounter::Yes,
         crate::KEYED_HASH,
         crate::CHUNK_START,
         crate::CHUNK_END,
-        &mut out,
+        out,
     );
-    out
+    out.len()
 }
 
 /// Run every case and panic on the first that differs from the reference.
-#[cfg(feature = "std")]
 fn run() {
-    chain(outputs, |index, folded| {
-        assert!(
-            folded == EXPECTED[index],
-            "blake3-servil startup self-test failed: case {index}, {} (platform {}): this build or this CPU \
-             computes wrong BLAKE3 digests on that path",
-            CASES[index].1,
-            crate::platform::Platform::detect_unchecked().name(),
-        );
-    });
+    let platform = Platform::detect_unchecked();
+    chain(
+        |case, input, previous, out| outputs(platform, case, input, previous, out),
+        |index, folded| {
+            assert!(
+                folded == EXPECTED[index],
+                "blake3-servil startup self-test failed: case {index}, {} (platform {}): this build or this CPU \
+                 computes wrong BLAKE3 digests on that path",
+                CASES[index].1,
+                platform.name(),
+            );
+        },
+    );
 }
 
-#[cfg(all(feature = "std", not(miri)))]
-std::thread_local! {
-    static RUNNING: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
-}
-
-#[cfg(all(feature = "std", not(miri)))]
-static PASSED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+/// The self-test's progress in this process.
+const UNTESTED: u8 = 0;
+const RUNNING: u8 = 1;
+const PASSED: u8 = 2;
+const FAILED: u8 = 3;
+static STATE: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(UNTESTED);
 
 /// Run the self-test unless it has passed: once per process, the first
 /// caller running it and any other waiting. It publishes no data, so a
 /// relaxed load suffices on the fast path.
 #[inline]
 pub(crate) fn ensure() {
-    #[cfg(all(feature = "std", not(miri)))]
-    if !PASSED.load(core::sync::atomic::Ordering::Relaxed) {
+    #[cfg(not(miri))]
+    if STATE.load(core::sync::atomic::Ordering::Relaxed) != PASSED {
         ensure_slow();
     }
 }
 
-#[cfg(all(feature = "std", not(miri)))]
+#[cfg(not(miri))]
 #[cold]
 #[inline(never)]
 fn ensure_slow() {
-    if RUNNING.with(|running| running.get()) {
-        return; // the self-test's own calls
-    }
-    static ONCE: std::sync::Once = std::sync::Once::new();
-    ONCE.call_once(|| {
-        RUNNING.with(|running| running.set(true));
+    use core::sync::atomic::Ordering::Relaxed;
+    if STATE.compare_exchange(UNTESTED, RUNNING, Relaxed, Relaxed).is_ok() {
+        /// A failure (the panic below, or one inside a kernel) leaves
+        /// FAILED, so that the waiting threads stop too.
+        struct Failed;
+        impl Drop for Failed {
+            fn drop(&mut self) {
+                STATE.store(FAILED, Relaxed);
+            }
+        }
+        let failed = Failed;
         run();
-        RUNNING.with(|running| running.set(false));
-        PASSED.store(true, core::sync::atomic::Ordering::Relaxed);
-    });
+        core::mem::forget(failed);
+        STATE.store(PASSED, Relaxed);
+        return;
+    }
+    loop {
+        match STATE.load(Relaxed) {
+            PASSED => return,
+            FAILED => panic!("blake3-servil startup self-test failed on another thread: this build or this CPU computes wrong BLAKE3 digests"),
+            _ => core::hint::spin_loop(),
+        }
+    }
 }
 
 /// The self-test's own time, for probes: run it again (it has passed).
-#[cfg(all(feature = "std", not(miri)))]
+#[cfg(not(miri))]
 pub(crate) fn run_again() {
     ensure();
-    RUNNING.with(|running| running.set(true));
     run();
-    RUNNING.with(|running| running.set(false));
 }
 
 #[cfg(all(test, feature = "std"))]
 mod test {
     use super::*;
+
+    /// `outputs` as `chain` takes it: the bytes written into its buffer.
+    fn into(
+        mut outputs: impl FnMut(Case, &[u8], &[u8; 32]) -> std::vec::Vec<u8>,
+    ) -> impl FnMut(Case, &[u8], &[u8; 32], &mut [u8]) -> usize {
+        move |case, input, previous, out| {
+            let output = outputs(case, input, previous);
+            out[..output.len()].copy_from_slice(&output);
+            output.len()
+        }
+    }
 
     /// A case's outputs from the reference implementation.
     fn reference(case: Case, input: &[u8], previous: &[u8; 32]) -> std::vec::Vec<u8> {
@@ -398,7 +453,7 @@ mod test {
     #[test]
     fn self_test_matches_the_reference() {
         let mut folds = std::vec::Vec::new();
-        chain(reference, |_, folded| folds.push(folded));
+        chain(into(reference), |_, folded| folds.push(folded));
         let table: std::string::String = folds.iter().map(|f| std::format!("    0x{f:016x},\n")).collect();
         assert!(folds == EXPECTED, "EXPECTED differs from the reference implementation; its table:\n{table}");
     }
@@ -407,7 +462,8 @@ mod test {
     /// run, which already passed for this test process, found).
     #[test]
     fn self_test_passes() {
-        chain(outputs, |index, folded| assert_eq!(folded, EXPECTED[index], "case {index}, {}", CASES[index].1));
+        let platform = Platform::detect();
+        chain(|case, input, previous, out| outputs(platform, case, input, previous, out), |index, folded| assert_eq!(folded, EXPECTED[index], "case {index}, {}", CASES[index].1));
     }
 
     /// Chaining carries a difference forward: a wrong first output changes
@@ -415,17 +471,17 @@ mod test {
     #[test]
     fn self_test_chain_carries_a_fault_forward() {
         let mut good = std::vec::Vec::new();
-        chain(reference, |_, folded| good.push(folded));
+        chain(into(reference), |_, folded| good.push(folded));
         let mut faulty = std::vec::Vec::new();
         let mut first = true;
         chain(
-            |case, input, previous| {
+            into(|case, input, previous| {
                 let mut output = reference(case, input, previous);
                 if std::mem::take(&mut first) {
                     output[31] ^= 1;
                 }
                 output
-            },
+            }),
             |_, folded| faulty.push(folded),
         );
         let same: std::vec::Vec<usize> = (0..good.len()).filter(|&i| good[i] == faulty[i]).collect();

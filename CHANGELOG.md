@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- The startup self-test runs in every build, `no_std` ones included
+  (they skipped it): a build or CPU that computes wrong digests stops
+  with a panic naming the code path, and threads hashing meanwhile stop
+  too. It allocates nothing now (about 45 KiB of stack while it runs),
+  and `initialize` is available without `std`.
 - Calls made now and then, after other work or a pause, run faster: a
   message of a chunk or less hashes on a one-chunk kernel a quarter of
   the size (64 bytes about a third faster after other work on an Apple M4
