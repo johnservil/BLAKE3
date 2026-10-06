@@ -332,6 +332,44 @@ mod test {
         }
     }
 
+    /// Hashers of subtrees at input offsets (hazmat) in update_each's turns,
+    /// beside hashers of whole messages: they hold no groups, and each
+    /// gives the chaining value one update of its subtree gives.
+    #[test]
+    fn test_update_each_at_offsets() {
+        use crate::hazmat::HasherExt;
+        let mut input = vec![0u8; 1 << 20];
+        crate::test::paint_test_input(&mut input);
+        // (offset, length): subtrees within what their offsets allow.
+        let subtrees = [(64 * CHUNK_LEN, 64 * CHUNK_LEN), (16 * CHUNK_LEN, 16 * CHUNK_LEN), (CHUNK_LEN, CHUNK_LEN), (128 * CHUNK_LEN, 100_000)];
+        let whole = [70_000usize, 300_000];
+        let mut hashers: Vec<Hasher> = subtrees.iter().map(|&(offset, _)| { let mut h = Hasher::new(); h.set_input_offset(offset as u64); h }).collect();
+        hashers.extend(whole.iter().map(|_| Hasher::new()));
+        let lens: Vec<usize> = subtrees.iter().map(|&(_, len)| len).chain(whole).collect();
+        let mut done = vec![0usize; lens.len()];
+        let pieces = [1448usize, 31, 16384, 4096, 1];
+        let mut k = 0;
+        while done.iter().zip(&lens).any(|(d, l)| d < l) {
+            let mut turn: Vec<(usize, &[u8])> = Vec::new();
+            for _ in 0..9 {
+                let i = k % lens.len();
+                let n = pieces[k % pieces.len()].min(lens[i] - done[i]);
+                turn.push((i, &input[done[i]..done[i] + n]));
+                done[i] += n;
+                k += 1;
+            }
+            Hasher::update_each(&mut hashers, &turn);
+        }
+        for (i, &(offset, len)) in subtrees.iter().enumerate() {
+            let mut one = Hasher::new();
+            one.set_input_offset(offset as u64).update(&input[..len]);
+            assert_eq!(hashers[i].finalize_non_root(), one.finalize_non_root(), "subtree at {offset}, {len} bytes");
+        }
+        for (j, &len) in whole.iter().enumerate() {
+            assert_eq!(hashers[subtrees.len() + j].finalize(), crate::hash(&input[..len]), "whole message of {len} bytes");
+        }
+    }
+
     /// Many hashers fed in turns of interleaved pieces of many lengths:
     /// update_each, its multithreaded twin, and finalize_each give every
     /// message the hash one Hasher per message gives.
