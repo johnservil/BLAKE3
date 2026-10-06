@@ -11,14 +11,9 @@
 use crate::platform::Platform;
 use crate::{CVBytes, CVWords, ChunkState, Hash, Hasher, IncrementCounter, Mode, CHUNK_END, CHUNK_LEN, CHUNK_START, OUT_LEN};
 
-/// [`hash_each_with`] over several threads, with the same digests: from
-/// 512 KiB in all, the items are cut into ranges of about a thread's share
-/// of their bytes, which the calling thread and this crate's worker
-/// threads hash at once, under the rules of
-/// [`hash_multithreaded`](crate::hash_multithreaded); an item of 512 KiB
-/// or more as `hash_multithreaded` hashes it, and a smaller collection on
-/// the calling thread alone. Allocates what [`hash_each_with`] does, and
-/// 16 bytes for each item and 24 for each range, freed when it returns.
+/// [`hash_each_with`], using other CPU cores where that is faster: the
+/// same hashes, never slower. Collections of 512 KiB and more in all use
+/// them, as [`hash_multithreaded`](crate::hash_multithreaded) does.
 /// Requires `out.len() == items.len()`.
 ///
 /// ```
@@ -50,14 +45,15 @@ pub fn hash_each_multithreaded_with(mode: Mode, items: &[&[u8]], out: &mut [[u8;
     }
 }
 
-/// Many messages in progress at once, a server's uploads, each with its own
-/// [`Hasher`]: these calls take a whole turn of them, so their bytes can
-/// share the SIMD lanes.
+/// Many messages arriving at once, such as a server's uploads, each with
+/// its own [`Hasher`]: one call takes the pieces that have arrived for all
+/// of them, which hash faster together than one [`update`](Hasher::update)
+/// each.
 impl Hasher {
-    /// Feeds each piece to its hasher: `(i, bytes)` is
-    /// `hashers[i].update(bytes)`, and a hasher's pieces go in their order
-    /// in `pieces`. One call for all the pieces a program has in hand (a
-    /// turn of its event loop) runs at least as fast as one
+    /// Feed each piece to its hasher: `(i, bytes)` does
+    /// `hashers[i].update(bytes)`, each hasher's pieces in their order in
+    /// `pieces`. Call it once with all the pieces your program has in hand
+    /// (one turn of its event loop): never slower than one
     /// [`update`](Hasher::update) each. Requires each `i < hashers.len()`.
     ///
     /// ```
@@ -72,10 +68,9 @@ impl Hasher {
         update_turn::<crate::join::SerialJoin>(hashers, pieces, false);
     }
 
-    /// [`update_each`](Hasher::update_each) allowed this crate's worker
-    /// threads, under the rules of
-    /// [`update_multithreaded`](Hasher::update_multithreaded): the same
-    /// states, and never slower than [`update_each`](Hasher::update_each).
+    /// [`update_each`](Hasher::update_each), using other CPU cores where
+    /// that is faster (pieces of 512 KiB and more): the same result, never
+    /// slower.
     /// Requires each `i < hashers.len()`.
     #[cfg(feature = "std")]
     pub fn update_each_multithreaded(hashers: &mut [Hasher], pieces: &[(usize, &[u8])]) {
@@ -195,13 +190,11 @@ fn hash_held(_: &mut [Hasher], held: &[usize]) {
 /// Messages of this many chunks or more fill the lanes alone.
 const ALONE_CHUNKS: usize = 16;
 
-/// Each message's hash in `mode`: `out[i]` is
-/// [`hash_with`](crate::hash_with)`(mode, items[i])`, for messages of any
-/// lengths. Short messages hash side by side in the SIMD lanes, so a
-/// collection of small items (a tree's files, a repository's objects) hashes
-/// in less time than one call per item. Requires `out.len() == items.len()`.
-/// Allocates 32 bytes for each chunk of the messages from 2 to 15 chunks
-/// long, freed when it returns.
+/// The hash of each message, of any lengths, on the calling thread:
+/// `out[i]` is [`hash_with`](crate::hash_with)`(mode, items[i])`. Short
+/// messages hash together, so a collection of small items (a directory's
+/// files, a repository's objects) takes less time than one call each.
+/// Requires `out.len() == items.len()`.
 ///
 /// ```
 /// use blake3_servil::Mode;

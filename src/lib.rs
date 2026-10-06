@@ -32,80 +32,52 @@
 //!
 //! # Which call to use
 //!
-//! For one message in memory, call [`hash_multithreaded`]: below 512 KiB
-//! it hashes on the calling thread at [`hash`]'s speed, and from there on
-//! other cores too (8 MiB: about 6x [`hash`]'s speed on an Apple M4 Max).
-//! Four questions find the fastest call for every other program:
+//! | Your data | Call |
+//! |---|---|
+//! | One message in memory | [`hash_multithreaded`] |
+//! | One message arriving in pieces | [`Hasher::update`] |
+//! | Many messages of one length, in one buffer | [`hash_many_multithreaded`] |
+//! | Many messages of different lengths, in memory | [`hash_each_multithreaded_with`] |
+//! | Many messages arriving at once (a server's uploads) | [`Hasher::update_each`] |
+//! | A stream of buffers your program can hand over | a [`Queue`] |
+//! | A message read in verified ranges (Bao, iroh-blobs) | [`outboard_with`], [`verify_range_with`], [`Verifier`] |
 //!
-//! 1. **Can your program use several threads?** If not, the first column
-//!    below is yours.
-//! 2. **What shape is your data?** One message in one buffer; one message
-//!    arriving in pieces; or a batch: many messages of one length, side by
-//!    side in one buffer. Short messages hash fastest as a batch (1024
-//!    messages of 64 bytes: about 5x a loop of [`hash`]).
-//! 3. **Does your thread keep up with its data?** When the next data
-//!    arrives, has your thread finished with the last, its own work to
-//!    read or make it included? An upload over a 100 MB/s network keeps
-//!    up (a 64 KiB piece arrives every 650 µs and hashes in 13 µs); a file
-//!    read from the page cache falls behind (a 64 KiB piece reads in a few
-//!    µs). If you cannot tell, answer yes.
-//! 4. **If it falls behind, whose buffer does the data land in?** If the
-//!    buffer is yours to hand over, a [`Queue`] hashes it on other threads
-//!    while your thread gets the next: the most hashed per second, each
-//!    input back after a handover. If it is lent to you only until your
-//!    call returns, a multithreaded call hashes it, and your thread and
-//!    the hashing take turns.
+//! Each call returns once its hash is done, and uses other CPU cores
+//! where that is faster (the forms without `multithreaded` stay on the
+//! calling thread). A [`Queue`] is different: your program hands it a
+//! buffer and goes on to read or make the next one while other threads
+//! hash it; the buffer comes back with its hash a little later. Choose it
+//! when reading or making the data keeps your thread busy, such as files
+//! read from memory or a fast disk: it hashes the most bytes per second.
 //!
-//! | Data | One thread | Keeps up | Falls behind, buffer yours | Falls behind, buffer lent |
-//! |---|---|---|---|---|
-//! | One buffer | [`hash`] | [`hash_multithreaded`] | [`Queue::messages`] | [`hash_multithreaded`] |
-//! | In pieces | [`Hasher::update`] | [`Hasher::update`] | [`Queue::pieces`] | [`Hasher::update_multithreaded`] |
-//! | A batch | [`hash_many`] | [`hash_many_multithreaded`] | [`Queue::fixed`] | [`hash_many_multithreaded`] |
+//! Short messages hash fastest together: 1024 messages of 64 bytes in one
+//! [`hash_many`] call take about a fifth of the time of 1024 [`hash`]
+//! calls.
 //!
-//! The queue is built for throughput; every other call is built for ease
-//! of use and the lowest latency for one input. Each call's own
-//! documentation gives its speed and its rules. Beside them:
+//! **Keyed hashing and key derivation** run at the plain hash's speed:
+//! [`keyed_hash`], [`derive_key`], and for every other call a [`Mode`],
+//! taken by its `_with` form ([`hash_with`], [`hash_many_with`], ...),
+//! by [`Hasher::new_keyed`] and [`Hasher::new_derive_key`], and by a
+//! [`Queue`].
 //!
-//! - **A collection of messages of different lengths** (a tree's files, a
-//!   repository's objects), all in memory: [`hash_each_with`] hashes them
-//!   in one call, short ones side by side in the SIMD lanes
-//!   ([`hash_each_multithreaded_with`] with this crate's threads allowed).
-//! - **Many messages in progress at once** (a server's uploads, each with
-//!   its own [`Hasher`]): [`Hasher::update_each`] takes a turn's pieces for
-//!   all of them in one call, and [`Hasher::finalize_each`] the hashes of
-//!   those that ended.
-//! - **Verified streaming and range reads** (Bao, iroh-blobs): [`outboard_with`]
-//!   hashes a message and lists its tree's parent nodes above 16 KiB groups,
-//!   and [`verify_range_with`] checks any range of it against the hash;
-//!   a [`Verifier`] checks a whole message as it arrives in iroh-blobs'
-//!   encoding.
-//! - **Keyed hashing and key derivation** run at plain hashing's speed in
-//!   every call: [`keyed_hash`], [`derive_key`], and a [`Mode`] for every
-//!   other one: each one-shot call's `_with` form ([`hash_with`],
-//!   [`hash_multithreaded_with`], [`hash_many_with`],
-//!   [`hash_many_multithreaded_with`]), [`Hasher::new_keyed`] and
-//!   [`Hasher::new_derive_key`], and each queue.
-//! - **Make the calls from one thread.** The multithreaded calls spread
-//!   the work themselves. On Apple M4 and later, several threads hashing
-//!   at once share one SME unit: one runs at full speed and the others
-//!   slower.
-//! - **Call [`initialize_multithreaded`] at start-up** (or [`initialize`]
-//!   for single-threaded calls), to keep the startup self-test (below) and
-//!   the worker threads' start off the first call.
-//! - **Idle time slows the next hash, on the machine's side.** After half
-//!   a millisecond or more without work, an M4 Max runs a core's next
-//!   85 µs or so of work at about a third of its clock (hashing 64 KiB:
-//!   41 µs instead of 13.5), and for longer after 100 ms. A program that
-//!   hashes now and then meets this whatever it calls; spinning instead of
-//!   sleeping lowers the clock too.
+//! **Hashing now and then** (rather than nonstop) is slower per byte on
+//! every hash function, since its code and data must come back into the
+//! CPU's caches and a resting core runs slower at first: hashing 64 KiB
+//! after a pause takes about three times as long as nonstop on an Apple M4
+//! Max. Calling [`initialize_multithreaded`] (or [`initialize`]) at
+//! start-up keeps the one-time costs (the self-test and the threads'
+//! start) off the first call.
 //!
-//! [`kernel_report`] says which code paths run at each input length on
-//! this machine.
+//! **Apple M4 and later** have one matrix unit that this crate uses for
+//! inputs of 16 KiB and more; when several threads of a program hash such
+//! inputs at the same moment, one runs at full speed and the others at
+//! about two thirds of it. The multithreaded calls share the work among
+//! the cores themselves, so a program gets the most from one thread making
+//! them.
 //!
 //! # Memory
 //!
-//! - **A [`Hasher`] is about 18 KiB**, 16 KiB of it for the short updates
-//!   it gathers ([`Hasher::update`]); box it where that matters.
+//! - **A [`Hasher`] is about 18 KiB**; box it where that matters.
 //! - **Single-threaded calls allocate nothing**: [`hash`], [`keyed_hash`],
 //!   [`derive_key`], [`hash_with`], [`hash_many`], [`hash_many_with`],
 //!   [`Hasher::update`] and [`Hasher::finalize`], and [`OutputReader`].
@@ -1295,12 +1267,7 @@ fn hash_all_at_once<J: join::Join>(
     }
 }
 
-/// The default hash function.
-///
-/// Built for ease of use (see [Which call to use](crate#which-call-to-use)).
-///
-/// For an incremental version that accepts multiple writes, see [`Hasher::new`],
-/// [`Hasher::update`], and [`Hasher::finalize`]. These two lines are equivalent:
+/// The hash of `input`, on the calling thread.
 ///
 /// ```
 /// let hash = blake3_servil::hash(b"foo");
@@ -1311,64 +1278,55 @@ fn hash_all_at_once<J: join::Join>(
 /// # assert_eq!(hash1, hash2);
 /// ```
 ///
-/// For output sizes other than 32 bytes, see [`Hasher::finalize_xof`] and
+/// Choose it for short inputs, or where your program wants one thread; for
+/// any input in memory, [`hash_multithreaded`] is never slower. For output
+/// sizes other than 32 bytes, see [`Hasher::finalize_xof`] and
 /// [`OutputReader`].
 ///
-/// This function is always single-threaded. For the same hash over several
-/// threads, see [`hash_multithreaded`] (recommended) and [`hash_with`].
+/// **Speed**, nonstop on an Apple M4 Max: about 50 ns for 64 bytes, 0.7 µs
+/// for 1 KiB, 4 GB/s at 16 KiB, and 6 GB/s from 1 MiB. A call after a pause
+/// or after other work takes longer (its code and data have left the
+/// CPU's caches): 64 bytes then take about 0.2 to 0.6 µs. On Apple M4 and
+/// later, threads that hash inputs of 16 KiB or more at the same moment
+/// share one accelerator: one runs at full speed and the others at about
+/// two thirds of it.
 ///
-/// Call [`initialize`] early in the program: the first call of a process
-/// otherwise runs the startup self-test (under 200 µs on an Apple M4 Max)
-/// before it hashes.
-///
-/// On Apple M4 and later, inputs of 16 KiB and more hash fastest when one
-/// thread of the program hashes them at a time: when several threads do at
-/// once, one runs at that speed and the others at about two thirds of it,
-/// the speed every thread keeps however many hash beside it.
+/// The first hash in a process first runs a self-test (see the crate's
+/// documentation), under 0.2 ms; [`initialize`] moves it to start-up.
 pub fn hash(input: &[u8]) -> Hash {
     hash_serial(input, IV, 0)
 }
 
-/// The default hash function over several threads.
-///
-/// Built for ease of use (see [Which call to use](crate#which-call-to-use)):
-/// it uses other cores only where waking them pays on every machine
-/// measured, runs no slower than [`hash`], and leaves nothing running
-/// between calls.
-///
-/// Returns the same [`Hash`](struct@Hash) as [`hash`] for every input. Inputs below
-/// 512 KiB are hashed on the calling thread alone, at [`hash`]'s speed.
-/// The worker threads sleep between calls, so a call wakes them, and
-/// below that length the wake would cost more than the workers give.
-/// Larger inputs are cut into pieces that the calling thread and worker
-/// threads hash at once; this crate starts the workers once per process,
-/// one per CPU beyond the first, and keeps them. When concurrent calls
-/// already occupy the machine's CPUs, a new call hashes on its own thread.
-/// Existing calls can still have workers finishing their pieces.
-///
-/// Call [`initialize_multithreaded`] early in the program: the first call
-/// that leaves the calling thread otherwise starts the worker threads
-/// (under 1 ms on an Apple M4 Max) before it hashes.
-///
-/// Concurrent calls within one process share the workers: they take pieces
-/// from each call in turn, so two callers hashing at once each get about
-/// half the machine. A call never waits on another process; the operating
-/// system's scheduler arbitrates between processes as it does for any
-/// threads.
+/// The hash of `input`, using other CPU cores where that is faster: the same
+/// [`Hash`](struct@Hash) as [`hash`], never slower.
 ///
 /// ```
 /// let hash = blake3_servil::hash_multithreaded(&[0u8; 1 << 20]);
 /// assert_eq!(hash, blake3_servil::hash(&[0u8; 1 << 20]));
 /// ```
+///
+/// The default choice for one message in memory.
+///
+/// **Speed**, on an Apple M4 Max (16 cores): below 512 KiB it hashes on the
+/// calling thread, at [`hash`]'s speed; from 512 KiB it uses the other cores
+/// too: about 12 GB/s at 1 MiB, 20 GB/s at 4 MiB, and 25 GB/s from 16 MiB,
+/// 4 to 6 times [`hash`]. The extra threads wait asleep between calls and
+/// use no CPU then.
+///
+/// **Several callers at once**: calls from several threads of one program
+/// share the cores in turn, each getting a fair part; a call that finds the
+/// cores all busy hashes on its own thread, at [`hash`]'s speed.
+///
+/// The first call that uses other cores starts this crate's threads, under
+/// 1 ms; [`initialize_multithreaded`] moves that to start-up.
 #[cfg(feature = "std")]
 pub fn hash_multithreaded(input: &[u8]) -> Hash {
     lanes::hash(input)
 }
 
-/// Run the startup self-test (see the crate documentation) now, once per
-/// process: under 200 µs on an Apple M4 Max. The first hash of a process
-/// runs it otherwise; call this early to keep that cost off the first
-/// hash. Later calls return at once.
+/// Run the startup self-test now (see the crate's documentation), so that
+/// the first hash does not wait for it: under 0.2 ms, once per process.
+/// Later calls return at once.
 ///
 /// ```
 /// blake3_servil::initialize();
@@ -1379,14 +1337,11 @@ pub fn initialize() {
     self_test::ensure();
 }
 
-/// [`initialize`], and start the threads the multithreaded forms and the
-/// [`Queue`] use, once per process: a worker per CPU beyond the first, and
-/// the queue's delivery thread, under 1 ms on an Apple M4 Max. The first
-/// multithreaded call that leaves the calling thread, or a queue's first
-/// submission, starts them otherwise; call this early to keep that cost
-/// and those allocations off them (see [Memory](crate#memory)). Later
-/// calls return at once. The threads sleep whenever no call has work for
-/// them.
+/// [`initialize`], and start the threads that the multithreaded calls and
+/// [`Queue`] use, so that their first call does not wait for them: under
+/// 1 ms, once per process (and their memory, see [Memory](crate#memory)).
+/// Later calls return at once. The threads wait asleep whenever no call has
+/// work for them.
 ///
 /// ```
 /// blake3_servil::initialize_multithreaded();
@@ -1402,9 +1357,10 @@ pub fn initialize_multithreaded() {
     queue::start_delivery();
 }
 
-/// Which digest a hashing call computes: [`hash`]'s, [`keyed_hash`]'s, or
-/// [`derive_key`]'s. Every form of every shape (one message, a batch, a
-/// [`Queue`]) takes each mode at the same speed.
+/// Which of BLAKE3's three functions a call computes: the plain hash
+/// ([`hash`]), the keyed hash ([`keyed_hash`]), or key derivation
+/// ([`derive_key`]). Every call that takes a mode runs each one at the same
+/// speed.
 #[derive(Clone, Copy)]
 pub enum Mode<'a> {
     /// The default hash function, as [`hash`].
@@ -1427,10 +1383,8 @@ impl Mode<'_> {
     }
 }
 
-/// [`hash`] in any [`Mode`]: the full form behind [`hash`],
-/// [`keyed_hash`], and [`derive_key`], whose digest it returns for the
-/// same mode. Built for ease of use (see [Which call to
-/// use](crate#which-call-to-use)), on the calling thread alone.
+/// [`hash`] in any [`Mode`]: the plain hash, the keyed hash, or key
+/// derivation, at [`hash`]'s speed.
 ///
 /// ```
 /// use blake3_servil::Mode;
@@ -1442,8 +1396,7 @@ pub fn hash_with(mode: Mode, input: &[u8]) -> Hash {
     hash_serial(input, &key, flags)
 }
 
-/// [`hash_multithreaded`] in any [`Mode`]: [`hash_with`]'s digest, under
-/// [`hash_multithreaded`]'s rules.
+/// [`hash_multithreaded`] in any [`Mode`], at its speed.
 ///
 /// ```
 /// use blake3_servil::Mode;
@@ -1647,26 +1600,17 @@ fn hash_serial_on(input: &[u8], key: &CVWords, flags: u8, platform: Platform) ->
     hash_all_at_once::<join::SerialJoin>(input, key, 0, flags, platform).root_hash()
 }
 
-/// Many messages of one length, each starting at a multiple of 64 bytes.
-/// Built for ease of use (see [Which call to use](crate#which-call-to-use)).
+/// The hashes of many messages of one length, laid out in one buffer, on
+/// the calling thread: `out[i]` becomes the [`hash`] of message `i`.
 ///
-/// `out[i]` becomes the [`hash`] of `input[i * stride..][..message_len]`,
-/// where `stride` is `message_len` rounded up to a multiple of 64 (64 for
-/// an empty message). `input` holds exactly `out.len()` strides, and the
-/// bytes between one message's end and the next one's start (and after the
-/// last) are zero: a message whose length is a multiple of 64, the usual
-/// case, needs no padding, and messages sit back to back. A nonzero byte
-/// there changes that message's digest (debug builds check). The shape a
-/// Merkle tree's layers take: leaves of one size, and nodes of two 32-byte
-/// children (`message_len` 64). Messages of up to a chunk (1 KiB) are
-/// hashed several at a time, sixteen per group on SME2, so a batch of them
-/// hashes at a multiple of one [`hash`] call's rate; on Apple M4 and later
-/// so are messages of up to 15 KiB, in batches of about ten or more.
-/// Longer messages cost what [`hash`] costs. On Apple M4 and
-/// later, batches that run on SME2 follow [`hash`]'s rule for large
-/// inputs: when several threads hash them at once, one runs at the full
-/// rate and the others at about half of it. Always single-threaded; see [`hash_many_multithreaded`] for
-/// the same digests over several threads.
+/// Message `i` starts at byte `i * stride` of `input`, where `stride` is
+/// `message_len` rounded up to a multiple of 64 (64 for empty messages), so
+/// messages whose length is a multiple of 64 sit back to back. `input`
+/// holds exactly `out.len()` strides, and the bytes between a message's end
+/// and the next stride are zero (debug builds check; another byte there
+/// changes that message's hash). This is the shape of a Merkle tree's
+/// layer: leaves of one size, or nodes of two 32-byte children
+/// (`message_len` 64).
 ///
 /// ```
 /// let leaves = vec![7u8; 1000 * 256];
@@ -1683,6 +1627,12 @@ fn hash_serial_on(input: &[u8], key: &CVWords, flags: u8, platform: Platform) ->
 /// blake3_servil::hash_many(&records, 100, &mut digests);
 /// assert_eq!(digests[9], *blake3_servil::hash(&[10u8; 100]).as_bytes());
 /// ```
+///
+/// **Speed**: short messages hash several at a time, so a batch beats a
+/// loop of [`hash`]: on an Apple M4 Max, 64-byte messages take about 10 to
+/// 20 ns each in batches of 16 or more, against about 50 for one [`hash`]
+/// each. Messages longer than 15 KiB cost what [`hash`] costs. For the
+/// same hashes over several cores, see [`hash_many_multithreaded`].
 pub fn hash_many(input: &[u8], message_len: usize, out: &mut [[u8; OUT_LEN]]) {
     hash_many_serial(input, message_len, IV, 0, out);
 }
@@ -1707,18 +1657,8 @@ fn hash_many_serial_from(platform: Platform, input: &[u8], message_len: usize, k
     many::hash_many_on(input, message_len, key, flags, out, turn.platform());
 }
 
-/// [`hash_many`] over several threads, recommended over it. Built for ease
-/// of use (see [Which call to use](crate#which-call-to-use)): it uses
-/// other cores only where waking them pays on every machine measured, runs
-/// no slower than [`hash_many`], and leaves nothing running between calls.
-///
-/// Writes the same digests for every batch. Batches under 512 KiB in all are hashed on the calling thread
-/// alone, at [`hash_many`]'s speed. Larger batches are cut into ranges of
-/// messages that the calling thread and this crate's worker threads hash
-/// at once, under the same rules as [`hash_multithreaded`]: the workers
-/// are started once per process, one per CPU beyond the first
-/// ([`initialize_multithreaded`]), concurrent calls share them in turn, and a call
-/// arriving when calls already fill the CPUs hashes on its own thread.
+/// [`hash_many`], using other CPU cores where that is faster: the same
+/// hashes, never slower.
 ///
 /// ```
 /// let leaves = vec![7u8; 4096 * 256];
@@ -1726,15 +1666,17 @@ fn hash_many_serial_from(platform: Platform, input: &[u8], message_len: usize, k
 /// blake3_servil::hash_many_multithreaded(&leaves, 256, &mut hashes);
 /// assert!(hashes.iter().all(|h| h == blake3_servil::hash(&[7u8; 256]).as_bytes()));
 /// ```
+///
+/// **Speed**: below 512 KiB in all it runs on the calling thread, at
+/// [`hash_many`]'s speed; larger batches use the other cores too (on an
+/// Apple M4 Max, 64-byte messages from about 10 down to 3 ns each). It
+/// shares the cores with other callers as [`hash_multithreaded`] does.
 #[cfg(feature = "std")]
 pub fn hash_many_multithreaded(input: &[u8], message_len: usize, out: &mut [[u8; OUT_LEN]]) {
     lanes::hash_many(input, message_len, IV, 0, out);
 }
 
-/// [`hash_many`] in any [`Mode`]: `out[i]` becomes [`hash_with`]'s
-/// digest of message i in `mode`, under [`hash_many`]'s layout, on the
-/// calling thread alone. Built for ease of use (see [Which call to
-/// use](crate#which-call-to-use)).
+/// [`hash_many`] in any [`Mode`], at its speed.
 ///
 /// ```
 /// use blake3_servil::Mode;
@@ -1749,8 +1691,7 @@ pub fn hash_many_with(mode: Mode, input: &[u8], message_len: usize, out: &mut [[
     hash_many_serial(input, message_len, &key, flags, out);
 }
 
-/// [`hash_many_multithreaded`] in any [`Mode`]: [`hash_many_with`]'s
-/// digests, under [`hash_many_multithreaded`]'s rules.
+/// [`hash_many_multithreaded`] in any [`Mode`], at its speed.
 ///
 /// ```
 /// use blake3_servil::Mode;
@@ -1770,6 +1711,7 @@ pub fn hash_many_multithreaded_with(mode: Mode, input: &[u8], message_len: usize
 /// kernel's `from_len`.
 #[cfg(feature = "std")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[doc(hidden)]
 pub struct Kernel {
     /// The smallest input length, in bytes, this kernel handles.
     pub from_len: usize,
@@ -1784,6 +1726,7 @@ pub struct Kernel {
 /// (`"SME2"`, `"NEON"`, `"AVX2"`, ...).
 #[cfg(feature = "std")]
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[doc(hidden)]
 pub struct KernelReport {
     pub platform: &'static str,
     pub kernels: Vec<Kernel>,
@@ -1793,6 +1736,7 @@ pub struct KernelReport {
 /// time from the same detection [`hash`] uses, so a report built from it
 /// describes the measurement it accompanies.
 #[cfg(feature = "std")]
+#[doc(hidden)]
 pub fn kernel_report() -> KernelReport {
     let platform = Platform::detect();
     let mut kernels = Vec::with_capacity(4);
@@ -1858,6 +1802,7 @@ pub fn kernel_report() -> KernelReport {
 /// whole blocks up to 15 KiB; messages of other lengths run
 /// [`kernel_report`]'s kernel for their length, one message per call.
 #[cfg(feature = "std")]
+#[doc(hidden)]
 pub fn kernel_report_many(message_len: usize) -> KernelReport {
     let platform = Platform::detect();
     let blocks = if (1..=CHUNK_LEN).contains(&message_len) { many::slot_len(message_len) / BLOCK_LEN } else { 0 };
@@ -1951,6 +1896,7 @@ pub fn kernel_report_many(message_len: usize) -> KernelReport {
 /// [`kernel_report_many`] plus, from the length at which a call may leave
 /// the calling thread, the split across threads.
 #[cfg(feature = "std")]
+#[doc(hidden)]
 pub fn kernel_report_many_multithreaded(message_len: usize) -> KernelReport {
     let mut report = kernel_report_many(message_len);
     report.kernels.push(Kernel {
@@ -1965,6 +1911,7 @@ pub fn kernel_report_many_multithreaded(message_len: usize) -> KernelReport {
 /// below the length at which a call may leave the calling thread, and from
 /// there the split across threads (its pieces run the kernels below it).
 #[cfg(feature = "std")]
+#[doc(hidden)]
 pub fn kernel_report_multithreaded() -> KernelReport {
     let mut report = kernel_report();
     report.kernels.retain(|kernel| kernel.from_len < lanes::MIN_SPLIT_LEN);
@@ -1999,8 +1946,8 @@ pub fn kernel_report_multithreaded() -> KernelReport {
 ///
 /// For output sizes other than 32 bytes, see [`Hasher::finalize_xof`], and [`OutputReader`].
 ///
-/// This function is always single-threaded. For the same digest over several
-/// threads, see [`hash_with`] with [`Mode::Keyed`].
+/// It runs on the calling thread, at [`hash`]'s speed; for other cores too,
+/// call [`hash_multithreaded_with`] with [`Mode::Keyed`].
 pub fn keyed_hash(key: &[u8; KEY_LEN], input: &[u8]) -> Hash {
     let key_words = platform::words_from_le_bytes_32(key);
     hash_serial(input, &key_words, KEYED_HASH)
@@ -2051,8 +1998,8 @@ pub fn keyed_hash(key: &[u8; KEY_LEN], input: &[u8]) -> Hash {
 ///
 /// For output sizes other than 32 bytes, see [`Hasher::finalize_xof`], and [`OutputReader`].
 ///
-/// This function is always single-threaded. For the same key over several
-/// threads, see [`hash_with`] with [`Mode::DeriveKey`].
+/// It runs on the calling thread, at [`hash`]'s speed; for other cores too,
+/// call [`hash_multithreaded_with`] with [`Mode::DeriveKey`].
 ///
 /// [Argon2]: https://en.wikipedia.org/wiki/Argon2
 pub fn derive_key(context: &str, key_material: &[u8]) -> [u8; OUT_LEN] {
@@ -2081,10 +2028,16 @@ fn parent_node_output(
     }
 }
 
-/// An incremental hash state that can accept any number of writes.
+/// A message's hash, fed in pieces: [`update`](Hasher::update) with each
+/// piece, in order, then [`finalize`](Hasher::finalize). The pieces may be
+/// of any lengths; the hash is the same as [`hash`] of them all at once.
 ///
-/// The `rayon` and `mmap` Cargo features enable additional methods on this
-/// type related to multithreading and memory-mapped IO.
+/// A `Hasher` is about 18 KiB (it holds short pieces until it has 16 KiB
+/// to hash at once); box it where that matters.
+///
+/// The `rayon` and `mmap` Cargo features add methods for multithreading
+/// and memory-mapped files; [`update_multithreaded`](Hasher::update_multithreaded)
+/// needs neither.
 ///
 /// When the `traits-preview` Cargo feature is enabled, this type implements
 /// several commonly used traits from the
@@ -2284,20 +2237,14 @@ impl Hasher {
         self
     }
 
-    /// Add input bytes to the hash state. You can call this any number of times.
+    /// Add the message's next piece, of any length, on the calling thread.
     ///
-    /// This method is always single-threaded. For multithreading support, see
-    /// [`update_multithreaded`](#method.update_multithreaded).
-    ///
-    /// Updates shorter than 16 KiB are gathered in the `Hasher` (it holds
-    /// 16 KiB for them) until they reach the message's next 16 KiB
-    /// boundary, and then hash together, 16 chunks side by side: a message
-    /// arriving in network-sized pieces hashes nearly as fast as one in
-    /// whole buffers. A caller that can cheaply hand over whole multiples
-    /// of 16 KiB from a 16 KiB boundary of the message (by reading into
-    /// larger buffers, say) saves the copy. A whole message of 1 to 16 KiB
-    /// in one update pays the copy, about 5% on an Apple M4; [`hash`] takes
-    /// none. See also
+    /// **Speed**: pieces of any size hash at nearly the speed of whole
+    /// buffers: short pieces are copied into the `Hasher` until it holds
+    /// 16 KiB, which then hash at once. Pieces of 16 KiB and more, starting
+    /// at a multiple of 16 KiB of the message, skip the copy (about 5% of the
+    /// time on an Apple M4). For a whole message in memory, [`hash`] is a
+    /// little faster; for a file or reader, see
     /// [`update_reader`](#method.update_reader).
     pub fn update(&mut self, input: &[u8]) -> &mut Self {
         // A fresh hasher's first update is a one-shot call's work (a
@@ -2310,15 +2257,12 @@ impl Hasher {
         self.gather::<join::SerialJoin>(input, false)
     }
 
-    /// [`update`](Hasher::update) over several threads, with the same
-    /// result: the whole subtrees of 512 KiB and more in `input` are cut
-    /// into pieces that the calling thread and this crate's worker threads
-    /// hash at once, under the rules of [`hash_multithreaded`]; shorter
-    /// updates run on the calling thread, as [`update`](Hasher::update).
-    /// Never slower than `update` on the same input, and one `Hasher` may
-    /// mix the two. A long message read in pieces hashes fastest through a
-    /// [`Queue::pieces`], which hashes each piece while your thread reads
-    /// the next.
+    /// [`update`](Hasher::update), using other CPU cores where that is
+    /// faster: the same result, never slower. Pieces of 512 KiB and more
+    /// use them, as [`hash_multithreaded`] does; shorter ones hash on the
+    /// calling thread. One `Hasher` may mix the two calls. When reading
+    /// the pieces keeps your thread busy, a [`Queue::pieces`] is faster: it
+    /// hashes each piece while your thread reads the next.
     ///
     /// ```
     /// let input = vec![7u8; 3 << 20];

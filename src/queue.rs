@@ -90,52 +90,46 @@ pub mod shape {
     pub struct Fixed;
 }
 
-/// A stream of inputs, hashed behind the program on every thread that
-/// pays. Built for throughput (see [Which call to
-/// use](crate#which-call-to-use)): the most bytes or messages hashed per
-/// second. Each submission comes back after a handover, so
-/// a single input takes longer than [`hash`](crate::hash) takes; for the
-/// lowest latency per input, call the one-shot functions. The queue's
-/// throughput is the hashing's when the program keeps enough in flight to
-/// cover the round trip: a few buffers of 64 KiB and more, or many small
-/// messages (or batches of them, [`Queue::fixed`]).
+/// A stream of buffers, hashed on other threads while your program
+/// prepares the next ones: the most bytes per second this crate hashes.
 ///
-/// The program submits its buffers and moves on; each comes back, hashed,
-/// through a call to the queue's handler, which the program implements.
-/// No bytes are copied, and the buffers in flight are the ones the program
-/// made: a program that cycles a fixed set (fill one, submit it, get it
-/// back in a handler call, fill it again) hashes any amount in that much
-/// memory. A queue takes one shape of input: messages of any length one
-/// per buffer ([`Queue::messages`]), one long message in pieces
-/// ([`Queue::pieces`]), or messages of one length back to back
-/// ([`Queue::fixed`]). Every queue in a process shares one engine, so a
-/// program makes a queue for each stream, on any thread. Buffers that
-/// wait together are hashed together, over several threads where that
-/// pays, so more buffers in flight keep more threads busy.
+/// Your program submits a buffer and goes on at once; a little later the
+/// buffer comes back with its hash, through a call to the queue's
+/// handler, which your program writes. Nothing is copied, so a program
+/// that cycles a few buffers (fill one, submit it, get it back, fill it
+/// again) hashes any amount in that much memory. Choose a queue when
+/// preparing the data keeps your thread busy (reading files from memory
+/// or a fast disk, decompressing): the hashing then costs your thread
+/// almost nothing. Each buffer takes longer to come back than a [`hash`](crate::hash)
+/// call takes, so for one input at a time call the functions instead.
 ///
-/// The rules every handler follows:
+/// **Speed**, on an Apple M4 Max with several buffers in flight: about
+/// 24 GB/s for buffers of 64 KiB and more, and about 30 ns per 64-byte
+/// message. The more buffers in flight, the more cores it keeps busy.
 ///
-/// 1. **Short and never blocking**: every queue's results are delivered
-///    from one thread, so a slow handler delays them all; heavy work
-///    belongs on the program's own threads.
-/// 2. **In order, one at a time**: a queue's handler is called in
-///    submission order, one call at a time.
-/// 3. **Submitting from inside is allowed**: a handler may submit to any
-///    queue, its own included (refill and resubmit), and never waits.
+/// A queue takes one shape of input: whole messages, one per buffer
+/// ([`Queue::messages`]); one long message in pieces ([`Queue::pieces`]);
+/// or many messages of one length in each buffer ([`Queue::fixed`]). Make
+/// one queue for each stream, on any thread; they share this crate's
+/// threads.
+///
+/// Every handler follows these rules:
+///
+/// 1. **Return quickly, never block**: one thread calls every queue's
+///    handlers, so a slow handler delays them all. Hand heavy work to
+///    your own threads.
+/// 2. **Calls come in submission order**, one at a time.
+/// 3. **A handler may submit**, to any queue, its own included.
 /// 4. **A panic in a handler aborts the process.**
-/// 5. **Dropping a queue cancels nothing**: every buffer submitted is
-///    still hashed and comes back through the handler, which lives until
-///    its last call.
+/// 5. **Dropping a queue cancels nothing**: every buffer submitted still
+///    comes back through the handler.
 ///
-/// A queue delivers on a thread of its own, so it needs a target with
-/// threads: on one without them (wasm32-wasip1) the first submission
-/// panics.
+/// A queue needs threads: on a target without them (wasm32-wasip1) the
+/// first submission panics.
 ///
-/// A program that allocates nothing once it runs makes its queue once and
-/// keeps it, and carries what comes back to its own thread in a channel
-/// made with room for every buffer it keeps in flight, such as the
-/// standard library's `sync_channel`, whose ring is allocated when it is
-/// made:
+/// A channel with room for every buffer in flight (the standard library's
+/// `sync_channel`) carries the results back to your thread without
+/// blocking the handler:
 ///
 /// ```
 /// use blake3_servil::{Hash, MessageHandler, Mode, Queue};

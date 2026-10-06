@@ -51,12 +51,13 @@ a faster hash saves CPU time and energy rather than waiting.
 - `hash_many`, `hash_many_multithreaded`: many messages of one length
   (about 5x a loop of `hash` at 64 B).
 - `hazmat`: subtrees at an offset and their merging, the base of Bao.
-- `initialize`, `initialize_multithreaded`, `kernel_report`, `Mode`.
+- `initialize`, `initialize_multithreaded`, `Mode`; `kernel_report`,
+  hidden from the API docs (October 6, 2026), for the benchmark's reports.
 - **Questioned**: `Hasher::update_multithreaded`. Without lingering it
   helps only pieces of 512 KiB and more, the stream's use case done less
   well; if the stream lands, it likely goes (Simplicity, a second
   solution), and b3sum's read path moves to the stream.
-- **Leaving**: the `Queue`, in its three shapes; the stream replaces it.
+- The `Queue`, in its three shapes (kept: item 3 below).
 
 ### APIs added, and the one still considered
 

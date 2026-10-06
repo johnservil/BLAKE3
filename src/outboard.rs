@@ -35,12 +35,9 @@ pub fn outboard_with(mode: Mode, input: &[u8]) -> (Hash, Vec<u8>) {
     outboard(mode, input, false)
 }
 
-/// [`outboard_with`] over several threads, with the same result: from
-/// 512 KiB the groups hash on the calling thread and this crate's worker
-/// threads at once, under the rules of
-/// [`hash_multithreaded`](crate::hash_multithreaded); a shorter message on
-/// the calling thread alone. The parent nodes above the groups (one for
-/// each 16 KiB) are computed on the calling thread.
+/// [`outboard_with`], using other CPU cores where that is faster: the
+/// same result, never slower. Messages of 512 KiB and more use them, as
+/// [`hash_multithreaded`](crate::hash_multithreaded) does.
 ///
 /// ```
 /// use blake3_servil::Mode;
