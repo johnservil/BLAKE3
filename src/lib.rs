@@ -115,7 +115,10 @@
 //!   returns the outboard it allocates (64 bytes for each 16 KiB), and
 //!   [`verify_range_with`] allocates 32 bytes for each group of its range,
 //!   freed when it returns. A [`Verifier`] keeps up to 16 KiB, for a group
-//!   that arrives in pieces, and 48 bytes for each level of the tree.
+//!   that arrives in pieces, and 48 bytes for each level of the tree; each
+//!   [`Verifier::update`] allocates about 100 bytes for each node its piece
+//!   holds, and its groups' working space (about 60 bytes a chunk), freed when it
+//!   returns.
 //! - **Multithreaded calls** allocate nothing below 512 KiB, where they
 //!   hash on the calling thread. Above it they keep a list of the pieces
 //!   they hand out, freed when they return: 48 bytes for each 128 KiB of

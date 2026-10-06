@@ -57,7 +57,10 @@ fn outboard(mode: Mode, input: &[u8], pooled: bool) -> (Hash, Vec<u8>) {
         return (crate::hash_with(mode, input), Vec::new());
     }
     let (key, flags) = mode.key_and_flags();
-    let platform = Platform::detect();
+    // The process's SME2 turn, as every one-thread call takes it (the
+    // pooled path takes its own).
+    let turn = crate::platform::Sme2Turn::take(Platform::detect(), !pooled);
+    let platform = turn.platform();
     let cvs = if pooled { crate::lanes::group_cvs(input, &key, flags) } else { group_cvs(input, 0, &key, flags, platform) };
     let mut out = Vec::with_capacity(64 * (cvs.len() - 1));
     let (left, right) = node(&cvs, chunks, &key, flags, platform, &mut out);
@@ -84,7 +87,8 @@ pub fn verify_range_with(mode: Mode, hash: &Hash, len: u64, outboard: &[u8], fir
         return crate::hash_with(mode, bytes) == *hash;
     }
     let (key, flags) = mode.key_and_flags();
-    let platform = Platform::detect();
+    let turn = crate::platform::Sme2Turn::take(Platform::detect(), true);
+    let platform = turn.platform();
     let cvs = group_cvs(bytes, first, &key, flags, platform);
     let range = first..first + cvs.len() as u64;
     check(outboard, 0, 0, chunks, None, &range, &cvs, hash, &key, flags, platform)
@@ -223,7 +227,8 @@ impl Verifier {
     /// group given to `verified` once it and every node before it pass.
     /// False, and the verifier spent, at the first that does not.
     fn check(&mut self, nodes: &[((u64, u64, Option<CVBytes>), &[u8])], verified: &mut impl FnMut(&[u8])) -> bool {
-        let platform = Platform::detect();
+        let turn = crate::platform::Sme2Turn::take(Platform::detect(), true);
+        let platform = turn.platform();
         let groups: Vec<&[u8]> = nodes.iter().filter(|((_, size, expected), _)| *size <= GROUP_CHUNKS && expected.is_some()).map(|(_, b)| *b).collect();
         let mut cvs = vec![[0u8; 32]; groups.len()];
         if let Some(&((g0, _, _), _)) = nodes.iter().find(|((_, size, expected), _)| *size <= GROUP_CHUNKS && expected.is_some()) {
