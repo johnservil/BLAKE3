@@ -18,7 +18,8 @@ use crate::{CVBytes, CVWords, ChunkState, Hash, Hasher, IncrementCounter, Mode, 
 /// [`hash_multithreaded`](crate::hash_multithreaded); an item of 512 KiB
 /// or more as `hash_multithreaded` hashes it, and a smaller collection on
 /// the calling thread alone. Allocates what [`hash_each_with`] does, and
-/// 16 bytes for each item and 24 for each range, freed when it returns. Requires `out.len() == items.len()`.
+/// 16 bytes for each item and 24 for each range, freed when it returns.
+/// Requires `out.len() == items.len()`.
 ///
 /// ```
 /// use blake3_servil::Mode;
