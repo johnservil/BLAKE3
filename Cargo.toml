@@ -160,6 +160,7 @@ rand = "0.10.0"
 chacha20 = "0.10.0"
 reference_impl = { path = "./reference_impl" }
 clocks = { path = "./clocks" }
+ring = { version = "0.17", default-features = false }
 tempfile = "3.8.0"
 serde_json = "1.0.107"
 ciborium = "0.2.2"
