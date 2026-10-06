@@ -2036,6 +2036,27 @@ place (a fixed array of 64 pieces on the stack would make the
 multithreaded calls allocation-free too), and a test per claim (the
 counting allocator of tests/queue_no_alloc.rs).
 
+## b3sum: several files at once; which API it calls (October 6, 2026)
+
+Zooko asked whether b3sum could be faster through another API, a stream
+whose reads land in a buffer BLAKE3 owns. b3sum maps a cached file of
+512 KiB or more and hashes it in place with `update_multithreaded` (no
+copy at all); any other input it reads into two 4 MiB buffers of its own,
+one read on a second thread while the other hashes over the pool. A
+`read` copies the page cache into user memory once, whoever owns the
+buffer, so a BLAKE3-owned buffer would save nothing, and hashing already
+overlaps the reads; a cold file of 1 GiB runs at the storage's speed
+(0.149 ns/B on the Mac, 6.7 GB/s).
+
+What b3sum left on the table was its loop over files: one at a time, so a
+tree of small files waited on each open and read in turn. It now hashes
+its inputs on `available_parallelism` threads (an atomic index hands each
+the next), printing lines in order (92f6ceb). VM, `--quick`, 100 files:
+cold 1000 x 16 KiB 6.98 -> 2.97 ms, cold mixed tree 8.71 -> 3.92 ms;
+warm cells level (their files' syscalls are fast, and process start
+dominates); single files level. The Mac's numbers come with the 0.16.0
+records.
+
 ## b3sum, measured: tools/b3sum-bench (October 2, 2026, jobs 1136-1137)
 
 `tools/b3sum-bench` (its README says how it measures) runs b3sum builds as
