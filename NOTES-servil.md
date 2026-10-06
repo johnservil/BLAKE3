@@ -2067,6 +2067,32 @@ chunk's 16 blocks faster than BLAKE3's chain of compressions (warm 1 KiB:
 four-lane kernel of a kilobyte or two and little glue, replacing the
 prefetch rather than adding to it.
 
+**Built and measured: a rolled four-lane NEON path** (b1a3b67, reverted
+in a982614). Calls after a pause below 16 KiB hashed every chunk,
+parent, and the root on one rolled four-lane NEON kernel (1.3 KB) with
+1.2 KB of glue, correct at every length in every mode. Mac A/B (jobs
+1428-1431, mains, old new new old), servil st after other work: 2 KiB
+x1.27, 3839 B x1.53, 4 KiB x0.97, 7935 B x1.48, 8 KiB x1.21; after idling
+x1.24-2.25. A four-lane NEON BLAKE3 kernel is bound by its chains'
+latency (each of a half-round's four G's is a chain of about 18 vector
+operations): about 1.8 us for 16 blocks at best, against the hybrids'
+1.2 hot, whose integer lanes fill the idle issue slots; so even a
+perfect rolled NEON kernel ties the old cold call at 4 KiB and loses
+where its lanes sit empty (2 KiB) or it needs more passes (partial
+chunks, 8 KiB).
+
+**Where the rest of the cold cost sits** (probe/cold-code-share round
+three, job 1432, mains): the glue warm and the kernels cold (the
+preparation hashes another length, then 120 us of register work so the
+stamp still prefetches), ns a call: 2 KiB 1325 cold, 1098 glue warm, 942
+all warm; 3 KiB 1531, 1464, 1006; 4 KiB 1847, 1776, 1252; 8 KiB 2824,
+2789, 1996. From 3 KiB the cost is the kernels themselves, prefetched or
+not: the kernel starts before its lines arrive. The remedy left, rolled
+hybrid kernels for cold calls beside the unrolled ones, would save most
+of 0.5-0.8 us and give back 10-20% of the compute (rolling's cost in
+earlier measurements): about 10% for a second kernel family to
+generate, test, and self-test. Not built.
+
 ## b3sum: several files at once; which API it calls (October 6, 2026)
 
 Zooko asked whether b3sum could be faster through another API, a stream
