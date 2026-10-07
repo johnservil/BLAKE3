@@ -143,8 +143,8 @@ them: [`tools/verify/README.md`](tools/verify/README.md).
 parents, and extended output, on Apple M4's 512-bit streaming vectors)
 are proved the same way: the matrix unit's ZA tiles, the predicates, and
 the streaming vector instructions are modelled and checked against the
-CPU, and each kernel is proved for one and two groups of sixteen, every
-count of stored values the tests reach, and the message kernel at every
+CPU, and each kernel is proved for one and two groups of sixteen, the last group storing 1, 15,
+or all 16 values, and the message kernel at every
 message length. More groups repeat the same loop; a proof of its
 invariant is still to come.
 
