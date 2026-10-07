@@ -1,15 +1,27 @@
 # Proofs of the assembly kernels
 
-These tools prove the hybrid kernels in `c/blake3_neon_hybrid_aarch64.S`
-equal to BLAKE3's compression function, for every input, key, counter,
-and flags value, at every block count each kernel takes:
+These tools prove every assembly kernel on AArch64 equal to BLAKE3's
+compression function, for every input, key, counter, and flags value:
 
-    python3 tools/verify/prove_hybrid.py [KERNEL...]   # c1, k2-k10, p2-p9, q1-q9 (327 cases, 2 min on 16 cores)
-    python3 tools/verify/cross_check.py                 # the instruction models against the CPU
+    python3 tools/verify/prove_hybrid.py [KERNEL...]   # c/blake3_neon_hybrid_aarch64.S: c1, k2-k10, p2-p9, q1-q9 (327 cases, 2 min on 16 cores)
+    python3 tools/verify/prove_sme2.py [KERNEL...]     # c/blake3_sme2_aarch64.S: chunks, chunks_at, messages, parents, xof (34 cases, 3 min)
+    python3 tools/verify/cross_check.py                 # the NEON and integer models against the CPU
+    python3 tools/verify/cross_check_sme.py             # the streaming SVE and SME2 models against the CPU (needs SME2)
     python3 tools/verify/mutants.py                     # wrong kernels are rejected
 
-They need Python 3 with Z3 (`python3-z3`) and an AArch64 machine with the
-SHA-3 extension; CI runs all three (`kernel_proofs`).
+They need Python 3 with Z3 (`python3-z3`), an AArch64 machine with the
+SHA-3 extension, and Clang and llvm-objdump 17 or later (for SME2). CI
+runs all but the SME2 cross-check, which needs an SME2 CPU (Apple M4, or
+the VM on it).
+
+**Coverage.** The hybrid kernels at every block count they take (1 to
+16; the q kernels' partial chunk at every block count). The SME2 kernels
+at the 512-bit streaming vector length (`cntw` = 16, which they check
+themselves), for one and two groups, the last group storing 1, 15, or
+all 16 values, and the message kernel at every message length of 2 to 16
+blocks with the last block of any length. More groups repeat the loop
+these cases run twice; the proofs do not yet show the loop's state the
+same at each iteration.
 
 ## What a proof shows
 
@@ -39,11 +51,15 @@ inputs, pointers are (region, offset) pairs. The run checks:
 
 ## What it rests on
 
-- **The instruction models**, about 40 forms, each a few lines following
-  the Arm architecture reference manual. `cross_check.py` runs every
-  register-only form the kernels use, with its own immediates, on the CPU
-  and in the model over random states; loads and stores are covered by
-  the region checks. A stronger base would replace the models with Arm's
+- **The instruction models** (`aarch64.py`, `vector.py`, `sme.py`), each
+  a few lines following the Arm architecture reference manual.
+  `cross_check.py` and `cross_check_sme.py` run every register form the
+  kernels use (83 NEON and integer, 73 streaming, ZA moves, slice loads
+  and stores, and predicates among them), with their own immediates, on
+  the CPU and in the model over random states. The SME2 check found one
+  model error: a four-register ZA move rounds its slice base down to a
+  multiple of four (the kernels use aligned bases, so no proof was
+  affected); the model now does too. A stronger base would replace the models with Arm's
   own machine-readable specification (Sail, Isla).
 - **objdump's disassembly** of the assembled object, and the assembler.
 - **The contracts as the harnesses state them**: the input buffers apart
@@ -52,8 +68,13 @@ inputs, pointers are (region, offset) pairs. The run checks:
   q kernels' table layout (`prove_partial`). A caller that breaks them
   is outside the proof; the Rust callers are covered by tests and Kani.
 
-Not proved here: the SME2 kernels (`c/blake3_sme2_aarch64.S`), the C NEON
-kernel, the portable Rust, and the Rust around the kernels.
+Not proved here: the C NEON kernel, the x86 kernels, the portable Rust,
+and the Rust around the kernels.
+
+**Code changed for the proofs.** The SME2 message kernel took the last
+block's length with a branch (0 for 64), so a proof had to fix the
+length; it now computes `((length - 1) & 63) + 1`, three instructions a
+group, and one proof covers every length.
 
 ## Extending
 

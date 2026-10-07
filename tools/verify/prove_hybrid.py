@@ -52,11 +52,11 @@ def same(a, b):
 class Setup:
     """A machine at a kernel's entry: symbolic junk in every register, the
     stack, the return address, and the regions the caller gives."""
-    def __init__(self, obj, entry_name, stop_name, regions):
+    def __init__(self, obj, entry_name, stop_name, regions, start_name=None):
         syms = aarch64.symbols(obj)
         text = aarch64.text_bytes(obj)
         self.entry = syms[entry_name]
-        code = aarch64.disassemble(obj, syms[entry_name], syms[stop_name])
+        code = aarch64.disassemble(obj, syms[start_name or entry_name], syms[stop_name])
         regions = dict(regions)
         regions["text"] = Region("text", max(text) + 1, False, lambda o: BitVecVal(text[o], 8))
         regions["stack"] = Region("stack", STACK, True, None)
@@ -64,7 +64,7 @@ class Setup:
         for i in range(31):
             self.m.x[i] = BitVec(f"x{i}_in", 64)
         for i in range(32):
-            self.m.v[i] = [BitVec(f"v{i}_{l}_in", 32) for l in range(4)]
+            self.m.v[i] = [BitVec(f"v{i}_{l}_in", 32) for l in range(16)]
         self.m.x["sp"] = Ptr("stack", STACK)
         self.m.x[30] = Ptr("return", 0)
 
@@ -261,7 +261,9 @@ def main():
     import multiprocessing
     todo = cases(set(sys.argv[1:]))
     failed = 0
-    with multiprocessing.Pool() as pool:
+    # A fresh process per case: the normal forms' caches keep their terms
+    # alive (canon.py), so a worker that kept them would only grow.
+    with multiprocessing.Pool(min(8, multiprocessing.cpu_count()), maxtasksperchild=1) as pool:
         for (name, _, _), verdict in pool.imap(prove_case, todo):
             print(f"{name}: {verdict}", flush=True)
             failed += verdict.startswith("NOT")

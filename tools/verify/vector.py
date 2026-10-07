@@ -18,12 +18,14 @@ def arrangement(op):
 
 
 def lanes(m, op):
-    return m.v[int(re.match(r"[vqdsb](\d+)", op).group(1))]
+    """The NEON register: the low four lanes of its Z register."""
+    return m.v[int(re.match(r"[vqdsb](\d+)", op).group(1))][:4]
 
 
 def put(m, op, ls):
+    """A NEON write: four lanes, the Z register's bits above them zeroed."""
     assert len(ls) == 4 and all(l.size() == 32 for l in ls)
-    m.v[int(re.match(r"[vqdsb](\d+)", op).group(1))] = list(ls)
+    m.v[int(re.match(r"[vqdsb](\d+)", op).group(1))] = list(ls) + [BitVecVal(0, 32)] * 12
 
 
 def pairs(ls):
@@ -119,7 +121,7 @@ def step(m, pc, mnem, ops):
         return True
     if mnem == "tbl" and da == "16b":
         tables = re.findall(r"v(\d+)\.16b", ops[1])
-        src = [m.v[int(t)] for t in tables]
+        src = [m.v[int(t)][:4] for t in tables]
         idx = lanes(m, ops[2])
         def byte(v, i):
             return Extract(8 * (i % 4) + 7, 8 * (i % 4), v[i // 4])
@@ -162,4 +164,5 @@ def step(m, pc, mnem, ops):
         if wb:
             m.set(wb, new)
         return True
-    return False
+    import sme
+    return sme.step(m, pc, mnem, ops)

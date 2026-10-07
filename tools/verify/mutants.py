@@ -80,13 +80,41 @@ def vector_mutants(code):
     return out
 
 
+def sme_mutants(code):
+    out = []
+    def first(pred):
+        return next((a for a, (m, ops) in sorted(code.items()) if pred(m, ops)), None)
+    def change(addr, mnem, ops, what):
+        if addr is None:
+            return
+        c = dict(code)
+        c[addr] = (mnem, ops)
+        out.append((f"{what} at {addr:#x}", c))
+    a = first(lambda m, o: m == "xar")
+    m, o = code[a]
+    change(a, m, o[:3] + [f"#{aarch64.imm(o[3]) + 1}"], "an xar rotation one bit off")
+    a = first(lambda m, o: m == "add" and o[0].startswith("z") and len(o) == 3)
+    change(a, "eor", [x.replace(".s", ".d") for x in code[a][1]], "a vector add made an eor")
+    a = first(lambda m, o: m == "mov" and "za0v.s[w13" in ", ".join(o))
+    change(a, "mov", [code[a][1][0], code[a][1][1].replace("w13", "w12")], "a transpose reading the wrong slices")
+    a = first(lambda m, o: m == "add" and len(o) == 4 and "/m" in o[1])
+    change(a, "nop", [], "the counter's carry removed")
+    a = first(lambda m, o: m == "st1w" and o[1] == "p2")
+    change(a, "st1w", [code[a][1][0], "p0", code[a][1][2]], "a value stored with all sixteen lanes")
+    a = first(lambda m, o: m == "index")
+    if a is not None:
+        m, o = code[a]
+        change(a, m, o[:2] + ["#2"] if o[2].startswith("#") else o[:2] + ["w2"], "the counters' step changed")
+    return out
+
+
 def main():
     obj = prove_hybrid.assemble()
     real = aarch64.disassemble
     base = real(obj, *[aarch64.symbols(obj)[n] for n in ("blake3_hybrid_c1", "blake3_hybrid_k1_end")])
     failures = 0
     for what, code in mutants(base):
-        aarch64.disassemble = lambda *a, code=code: code
+        aarch64.disassemble = lambda *a, code=code, **k: code
         try:
             prove_hybrid.prove_c1(obj, 3, False)
             print(f"c1 mutant, {what}: PROVED (the proof is vacuous here)")
@@ -99,13 +127,31 @@ def main():
                         ("q3", lambda: prove_hybrid.prove_partial(obj, 3, 3))):
         base = real(obj, syms[f"blake3_hybrid_{name}"], syms[f"blake3_hybrid_{name}_end"])
         for what, code in vector_mutants(base):
-            aarch64.disassemble = lambda *a, code=code: code
+            aarch64.disassemble = lambda *a, code=code, **k: code
             try:
                 prove()
                 print(f"{name} mutant, {what}: PROVED (the proof is vacuous here)")
                 failures += 1
             except (Unproved, KeyError) as e:
                 print(f"{name} mutant, {what}: rejected ({e})")
+    import prove_sme2
+    sobj = prove_sme2.assemble()
+    ssyms = aarch64.symbols(sobj)
+    sbase = real(sobj, ssyms["blake3_sme2_hash16_chunks_512"], ssyms["blake3_sme2_text_end"], llvm=True)
+    for what, code in sme_mutants(sbase):
+        aarch64.disassemble = lambda *a, code=code, **k: code
+        # Both the path that stores every value and the one that stores a few.
+        reasons = []
+        for stored in (0, 3):
+            try:
+                prove_sme2.prove_chunks(sobj, 1, stored, False)
+            except (Unproved, KeyError) as e:
+                reasons.append(f"storing {stored or 16}: {e}")
+        if reasons:
+            print(f"SME2 chunks mutant, {what}: rejected ({reasons[0]})")
+        else:
+            print(f"SME2 chunks mutant, {what}: PROVED (the proof is vacuous here)")
+            failures += 1
     aarch64.disassemble = real
     sys.exit(1 if failures else 0)
 

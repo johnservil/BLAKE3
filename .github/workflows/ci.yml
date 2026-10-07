@@ -371,13 +371,15 @@ jobs:
     runs-on: ubuntu-24.04-arm
     steps:
     - uses: actions/checkout@v4
-    - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends python3-z3
+    - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends python3-z3 clang llvm
     - name: the generated file is the generator's
       run: python3 tools/gen_neon_hybrid.py | cmp - c/blake3_neon_hybrid_aarch64.S
     - name: the instruction models agree with the CPU
       run: python3 tools/verify/cross_check.py
     - name: every hybrid kernel equals BLAKE3's compression
       run: python3 tools/verify/prove_hybrid.py
+    - name: every SME2 kernel equals BLAKE3's compression
+      run: python3 tools/verify/prove_sme2.py
     - name: the proofs reject wrong kernels
       run: python3 tools/verify/mutants.py
 

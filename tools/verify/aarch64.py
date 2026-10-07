@@ -134,14 +134,23 @@ class Machine:
             r.bytes[addr.offset + i] = Extract(8 * i + 7, 8 * i, val)
 
 
-def disassemble(obj, start, stop):
-    """{address: (mnemonic, [operand strings])} for [start, stop) of `obj`,
-    and the section's bytes {address: byte} (data inside the code)."""
-    out = subprocess.run(["objdump", "-d", "--no-show-raw-insn", f"--start-address={start}",
+import shutil
+# A disassembler that decodes SME2 (LLVM 17 and later).
+LLVM_OBJDUMP = next((c for c in ("llvm-objdump-19", "llvm-objdump-18", "llvm-objdump-17", "llvm-objdump",
+                                 "/usr/lib/llvm-19/bin/llvm-objdump", "/usr/lib/llvm-18/bin/llvm-objdump")
+                     if shutil.which(c)), None)
+
+
+def disassemble(obj, start, stop, llvm=False):
+    """{address: (mnemonic, [operand strings])} for [start, stop) of `obj`.
+    GNU objdump for the NEON file; LLVM's (`llvm`) for the SME2 file, whose
+    instructions binutils 2.40 does not decode."""
+    tool = [LLVM_OBJDUMP, "--mattr=+sme2,+sve2,+sve2-sha3"] if llvm else ["objdump"]
+    out = subprocess.run(tool + ["-d", "--no-show-raw-insn", f"--start-address={start}",
                           f"--stop-address={stop}", obj], capture_output=True, text=True, check=True).stdout
     code = {}
     for line in out.splitlines():
-        m = re.match(r"\s+([0-9a-f]+):\t(\S+)\s*(.*)", line)
+        m = re.match(r"\s+([0-9a-f]+):\s*\t(\S+)\s*(.*)", line)
         if not m:
             continue
         addr, mnem, ops = int(m.group(1), 16), m.group(2), m.group(3).split("//")[0].strip()
@@ -405,6 +414,14 @@ def step(m, pc, mnem, ops):
         if mnem == "b" or CONDS[mnem[2:]](*m.nzcv):
             return target
         return None
+    if mnem in ("tbz", "tbnz"):
+        v = m.reg(ops[0])
+        n = imm(ops[1])
+        bit = concrete(Extract(n, n, v)) if not isinstance(v, Ptr) else None
+        if bit is None:
+            raise Unproved("a branch depends on data")
+        target = int(ops[2].split()[0], 16)
+        return target if (bit == 0) == (mnem == "tbz") else None
     if mnem in ("cbz", "cbnz"):
         k = concrete(m.reg(ops[0])) if not isinstance(m.reg(ops[0]), Ptr) else 1
         if k is None:

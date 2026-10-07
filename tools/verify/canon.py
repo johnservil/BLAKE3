@@ -17,6 +17,7 @@ from z3 import (Z3_OP_BADD, Z3_OP_BXOR, Z3_OP_ROTATE_RIGHT, Z3_OP_ROTATE_LEFT, Z
                 Z3_OP_CONCAT, Z3_OP_ZERO_EXT, Z3_OP_EXT_ROTATE_RIGHT, Z3_OP_EXT_ROTATE_LEFT,
                 Z3_OP_UNINTERPRETED, BitVecVal, Solver, unsat, substitute, simplify, is_bv_value)
 import random
+import re
 
 sys.setrecursionlimit(1_000_000)
 
@@ -40,6 +41,25 @@ def intern(t):
         n = _ids[t] = len(_ids)
         _nodes[n] = t
     return n
+
+
+# The parameters' symbols (counters, flags, lengths): a term over them alone
+# is a leaf for the solver, whatever its arithmetic (the counter's halves
+# with their carry). The proofs name every input byte otherwise.
+PARAMS = re.compile(r"(counter|counters|flags|start|end|last_len|plast|lanes|step|junk)\w*$")
+_data = {}         # z3 ast id -> (ast, whether it holds a symbol other than the parameters)
+
+
+def has_data(t):
+    k = t.get_id()
+    r = _data.get(k)
+    if r is None:
+        if t.num_args() == 0:
+            v = t.decl().kind() == Z3_OP_UNINTERPRETED and not PARAMS.match(t.decl().name())
+        else:
+            v = any(has_data(c) for c in t.children())
+        r = _data[k] = (t, v)
+    return r[1]
 
 
 def has_arith(t):
@@ -140,7 +160,7 @@ def canon(t):
 
 
 def _canon(t):
-    if not has_arith(t):
+    if not has_arith(t) or not has_data(t):
         return leaf(t)
     kind = t.decl().kind()
     if kind in (Z3_OP_CONCAT, Z3_OP_EXTRACT, Z3_OP_ZERO_EXT):

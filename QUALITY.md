@@ -10,9 +10,10 @@ BLAKE3 reference implementation and fixed published digests, and every
 process re-checks each assembly kernel against fixed answers before it
 first hashes. The code
 has run under AddressSanitizer, ThreadSanitizer, and Miri, and against
-inaccessible guard pages. Every NEON and integer assembly kernel is
-proved equal to BLAKE3's compression function for every input, and a few
-index calculations are proved with the Kani model checker. No human has yet reviewed it line by line,
+inaccessible guard pages. Every AArch64 assembly kernel (NEON, integer,
+and SME2) is proved equal to BLAKE3's compression function for every
+input, and a few index calculations are proved with the Kani model
+checker. No human has yet reviewed it line by line,
 and nobody has audited it. The [README's warning](README.md) stands.
 
 ## What is new, and so where the risk is
@@ -136,8 +137,16 @@ states, and on the assembler and disassembler. Deliberately wrong kernels
 (a rotation off by one, an add made an xor, a lane shuffle swapped, a
 read past a buffer) are rejected. CI runs the proofs, the cross-check,
 and the wrong kernels on every change. How they work, and how to run
-them: [`tools/verify/README.md`](tools/verify/README.md). The SME2 kernels
-are not yet covered.
+them: [`tools/verify/README.md`](tools/verify/README.md).
+
+**The SME2 kernels** (`c/blake3_sme2_aarch64.S`: chunks, messages,
+parents, and extended output, on Apple M4's 512-bit streaming vectors)
+are proved the same way: the matrix unit's ZA tiles, the predicates, and
+the streaming vector instructions are modelled and checked against the
+CPU, and each kernel is proved for one and two groups of sixteen, every
+count of stored values the tests reach, and the message kernel at every
+message length. More groups repeat the same loop; a proof of its
+invariant is still to come.
 
 We also use [Kani](https://github.com/model-checking/kani), a bounded model
 checker for Rust. For every input, not just sampled ones, it proves:
@@ -296,12 +305,9 @@ names the commit that introduced the code and the one that fixed it, in
   Arm's machine-readable specification (Sail, Isla), or proving the
   kernels in s2n-bignum's HOL Light model of AArch64, would remove that
   part of the trust base.
-- **The SME2 assembly**: we know of no production verification tool that
-  models SME2. Arm's machine-readable architecture specification
-  includes SME, and research tools built on it (Sail, Isla) could in
-  principle check the kernel symbolically. That would be a research
-  project. Until then the kernel rests on the tests: the reference
-  answers, every shape and count, and the guard pages.
+- **The SME2 assembly**: done (above), with our own models of the
+  streaming and ZA instructions checked against the CPU; we know of no
+  production tool that models SME2.
 - **Constant-time behaviour**: not checked. By design the kernels branch
   only on lengths and counts, never on the data. That matters to users
   of the keyed mode, and a tool such as dudect or ctgrind would test it.

@@ -663,13 +663,15 @@ blake3_sme2_hash16_messages_512:
     INITIALIZE_UPPER_STATE w16
     /*
      * The message kernel's last block may be short: bits 40..47 of x3
-     * hold its length, 1 to 63 (0 keeps 64; its bytes past the length
-     * are zero, the caller's promise).
+     * hold its length, 1 to 63, or 0 for 64 (its bytes past the length
+     * are zero, the caller's promise). ((length - 1) & 63) + 1 maps 0 to
+     * 64 without a branch, so one proof covers every length.
      */
     ubfx    x8, x3, #40, #8
-    cbz     x8, .Lfull_last_block
+    sub     w8, w8, #1
+    and     w8, w8, #63
+    add     w8, w8, #1
     dup     z14.s, w8
-.Lfull_last_block:
     READ_MESSAGES
     SEVEN_ROUNDS
     FEED_FORWARD
