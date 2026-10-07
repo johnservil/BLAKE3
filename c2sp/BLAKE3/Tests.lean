@@ -66,6 +66,7 @@ def main (args : List String) : IO Unit := do
   let key := (← IO.ofExcept (vs.getObjValAs? String "key")).toUTF8
   let context := (← IO.ofExcept (vs.getObjValAs? String "context_string")).toUTF8
   let cases ← IO.ofExcept ((← IO.ofExcept (vs.getObjVal? "cases")).getArr?)
+  let mut longest := 0
   for c in cases do
     let n ← IO.ofExcept (c.getObjValAs? Nat "input_len")
     let input : ByteArray := ⟨(Array.range n).map fun i => (i % 251).toUInt8⟩
@@ -74,4 +75,5 @@ def main (args : List String) : IO Unit := do
                        ("derive_key", fun len => derive_key context input len)] do
       let want ← IO.ofExcept (c.getObjValAs? String field)
       check (hex (f (want.length / 2)) == want) s!"test vector {n}, {field}"
-  IO.println s!"Tests.lean: all {cases.size} official test vectors reproduced, hash, keyed_hash, and derive_key, {(131 : Nat)} bytes each"
+      longest := max longest (want.length / 2)
+  IO.println s!"Tests.lean: all {cases.size} official test vectors reproduced, hash, keyed_hash, and derive_key, up to {longest} bytes of output"

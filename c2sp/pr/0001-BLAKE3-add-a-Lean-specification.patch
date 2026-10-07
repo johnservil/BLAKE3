@@ -1,0 +1,1085 @@
+From c0752cd48fecf32c0c3faba3e84a8ac3f6f74466 Mon Sep 17 00:00:00 2001
+From: John Servil <johnservil@users.noreply.github.com>
+Date: Wed, 7 Oct 2026 16:21:45 +0000
+Subject: [PATCH] BLAKE3: add a Lean specification
+
+BLAKE3/Blake3.lean is an executable Lean specification of BLAKE3,
+transcribed from BLAKE3.md: sections 2.2 to 3.3 generated from it by
+generate.py, section 4 transcribed by hand. BLAKE3/check.py checks the
+Lean against the document: the generated text, every value of the
+appendix, the linked test vectors, the theorems of Theorems.lean, and
+every quotation. The appendix points at it.
+---
+ BLAKE3.md                 |   4 +
+ BLAKE3/.gitignore         |   4 +
+ BLAKE3/Blake3.lean        | 313 ++++++++++++++++++++++++++++++++++++++
+ BLAKE3/README.md          |  29 ++++
+ BLAKE3/Tests.lean         |  79 ++++++++++
+ BLAKE3/Theorems.lean      |  44 ++++++
+ BLAKE3/check.py           | 206 +++++++++++++++++++++++++
+ BLAKE3/generate.py        | 282 ++++++++++++++++++++++++++++++++++
+ BLAKE3/lake-manifest.json |   6 +
+ BLAKE3/lakefile.toml      |   8 +
+ BLAKE3/lean-toolchain     |   1 +
+ 11 files changed, 976 insertions(+)
+ create mode 100644 BLAKE3/.gitignore
+ create mode 100644 BLAKE3/Blake3.lean
+ create mode 100644 BLAKE3/README.md
+ create mode 100644 BLAKE3/Tests.lean
+ create mode 100644 BLAKE3/Theorems.lean
+ create mode 100644 BLAKE3/check.py
+ create mode 100644 BLAKE3/generate.py
+ create mode 100644 BLAKE3/lake-manifest.json
+ create mode 100644 BLAKE3/lakefile.toml
+ create mode 100644 BLAKE3/lean-toolchain
+
+diff --git a/BLAKE3.md b/BLAKE3.md
+index 36d5255..3d7278a 100644
+--- a/BLAKE3.md
++++ b/BLAKE3.md
+@@ -531,6 +531,10 @@ We provide execution traces for simple examples of BLAKE3 hashing. More
+ complex test cases can be obtained from the [reference implementation]
+ and its [test vectors].
+ 
++An executable Lean specification transcribed from this document is in
++[`BLAKE3/`](./BLAKE3/). It reproduces every value below and the test
++vectors, and its README says how to check it against this document.
++
+ [reference implementation]: https://github.com/BLAKE3-team/BLAKE3/tree/master/reference_impl
+ [test vectors]: https://github.com/BLAKE3-team/BLAKE3/blob/60ff2eafed63b29ed1622bb6330e640c22c683ff/test_vectors/test_vectors.json
+ 
+diff --git a/BLAKE3/.gitignore b/BLAKE3/.gitignore
+new file mode 100644
+index 0000000..5a12c7a
+--- /dev/null
++++ b/BLAKE3/.gitignore
+@@ -0,0 +1,4 @@
++.lake/
++traces.json
++test_vectors.json
++__pycache__/
+diff --git a/BLAKE3/Blake3.lean b/BLAKE3/Blake3.lean
+new file mode 100644
+index 0000000..7a54109
+--- /dev/null
++++ b/BLAKE3/Blake3.lean
+@@ -0,0 +1,313 @@
++/-! # BLAKE3, as specified in `BLAKE3.md` (c2sp.org/BLAKE3, v1.0.0)
++
++Every definition here corresponds to a section of the specification, under the same name where
++it has one, and carries the relevant spec text above it.
++
++Sections 2.2 to 3.3 (the IV, the permutation, the flags, `G`, and `BLAKE3_COMPRESS`) are generated
++from `BLAKE3.md` by `generate.py`, one rule per pseudocode construct, and `check.py` requires the
++generated text below to equal its output. Section 4 (the tree mode and the three hashing modes) is
++prose in the specification, and is transcribed here by hand; `Theorems.lean` proves the tree divides
++its chunks as section 4.3.2's rules say, and `Tests.lean` reproduces every value in the
++specification's appendix and the official test vectors it links.
++
++The pseudocode is transcribed as follows:
++
++* A word is a `UInt32`, whose `+` is addition mod 2^32 (so `mod 2**32` is implicit) and `^^^` is
++  `^` (xor).
++* `x >>> n` (rotation right by `n` bits) is `rotr x n`.
++* `v[i] := e` is `v := v.set i e`; `v[a..b] := w[c..d]` is one such assignment per index.
++* `t[0]` and `t[1]` are `low t` and `high t`, the counter's low and high 32-bit words.
++* `FOR i = 0 TO n DO` is `for i in List.finRange (n + 1)`, with `lo i` and `hi i` for the indices
++  `i` and `i + 8` of the 16-word array.
++* `PERMUTE(m)` is `m := PERMUTE m`. -/
++
++namespace Blake3
++
++/-- Section 2.1: BLAKE3 works with 32-bit words and arrays thereof. -/
++abbrev Word := UInt32
++
++/-- Section 3.1: `t[0..1]`, a 64-bit counter whose lower-order 32-bit word is `t[0]` and
++higher-order 32-bit word is `t[1]`. -/
++abbrev Counter := UInt64
++
++/-- `t[0]`, the counter's lower-order word. -/
++def low (t : Counter) : Word := t.toUInt32
++
++/-- `t[1]`, the counter's higher-order word. -/
++def high (t : Counter) : Word := (t >>> 32).toUInt32
++
++/-- `x >>> n`: `x` rotated right by `n` bits, for `n` in 1 to 31. -/
++def rotr (x : Word) (n : Nat) : Word :=
++  (x >>> n.toUInt32) ||| (x <<< (32 - n).toUInt32)
++
++/-- Index `i` of the 16-word array, for `i` in 0 to 7. -/
++def lo (i : Fin 8) : Fin 16 := ⟨i.val, by omega⟩
++
++/-- Index `i + 8` of the 16-word array, for `i` in 0 to 7. -/
++def hi (i : Fin 8) : Fin 16 := ⟨i.val + 8, by omega⟩
++
++-- BEGIN GENERATED by generate.py from BLAKE3.md, sections 2.2 to 3.3: edit BLAKE3.md, then run `generate.py --write`.
++
++/-- Section 2.2: the initial value. -/
++def IV : Vector Word 8 :=
++  #v[0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19]
++
++/-- Section 2.3: the message word permutation; position `i` takes word `PERMUTATION[i]`. -/
++def PERMUTATION : Vector (Fin 16) 16 :=
++  #v[2, 6, 3, 10, 7, 0, 4, 13, 1, 11, 12, 5, 9, 14, 15, 8]
++
++/-- Section 2.3: the permuted array consists of `m[PERMUTATION[0]], m[PERMUTATION[1]], ...`. -/
++def PERMUTE (m : Vector Word 16) : Vector Word 16 :=
++  Vector.ofFn fun i => m[PERMUTATION[i]]
++
++/-! Section 2.4: the compression function flags. -/
++def CHUNK_START : Word := 0x01
++def CHUNK_END : Word := 0x02
++def PARENT : Word := 0x04
++def ROOT : Word := 0x08
++def KEYED_HASH : Word := 0x10
++def DERIVE_KEY_CONTEXT : Word := 0x20
++def DERIVE_KEY_MATERIAL : Word := 0x40
++
++/-- Section 3.2: the quarter-round function G. -/
++def G (v : Vector Word 16) (a b c d : Fin 16) (x y : Word) : Vector Word 16 := Id.run do
++  let mut v := v
++  v := v.set a (v[a] + v[b] + x)
++  v := v.set d (rotr (v[d] ^^^ v[a]) 16)
++  v := v.set c (v[c] + v[d])
++  v := v.set b (rotr (v[b] ^^^ v[c]) 12)
++  v := v.set a (v[a] + v[b] + y)
++  v := v.set d (rotr (v[d] ^^^ v[a]) 8)
++  v := v.set c (v[c] + v[d])
++  v := v.set b (rotr (v[b] ^^^ v[c]) 7)
++  return v
++
++/-- Section 3.3: the compression function. -/
++def BLAKE3_COMPRESS (h : Vector Word 8) (m : Vector Word 16) (t : Counter) (len flags : Word) :
++    Vector Word 16 := Id.run do
++  let mut v : Vector Word 16 := Vector.replicate 16 0
++  let mut m := m
++  v := v.set 0 h[0]
++  v := v.set 1 h[1]
++  v := v.set 2 h[2]
++  v := v.set 3 h[3]
++  v := v.set 4 h[4]
++  v := v.set 5 h[5]
++  v := v.set 6 h[6]
++  v := v.set 7 h[7]
++  v := v.set 8 IV[0]
++  v := v.set 9 IV[1]
++  v := v.set 10 IV[2]
++  v := v.set 11 IV[3]
++  v := v.set 12 (low t)
++  v := v.set 13 (high t)
++  v := v.set 14 len
++  v := v.set 15 flags
++  for _ in [0:7] do
++    v := G v 0 4 8 12 m[0] m[1]
++    v := G v 1 5 9 13 m[2] m[3]
++    v := G v 2 6 10 14 m[4] m[5]
++    v := G v 3 7 11 15 m[6] m[7]
++    v := G v 0 5 10 15 m[8] m[9]
++    v := G v 1 6 11 12 m[10] m[11]
++    v := G v 2 7 8 13 m[12] m[13]
++    v := G v 3 4 9 14 m[14] m[15]
++    m := PERMUTE m
++  for i in List.finRange 8 do
++    v := v.set (lo i) (v[lo i] ^^^ v[hi i])
++    v := v.set (hi i) (v[hi i] ^^^ h[i])
++  return v
++
++/-- Section 3.3's statements, with `v` recorded at the end of each round (the appendix's
++`after round` values). -/
++def BLAKE3_COMPRESS_TRACE (h : Vector Word 8) (m : Vector Word 16) (t : Counter) (len flags : Word) :
++    Array (Vector Word 16) := Id.run do
++  let mut v : Vector Word 16 := Vector.replicate 16 0
++  let mut m := m
++  let mut trace : Array (Vector Word 16) := #[]
++  v := v.set 0 h[0]
++  v := v.set 1 h[1]
++  v := v.set 2 h[2]
++  v := v.set 3 h[3]
++  v := v.set 4 h[4]
++  v := v.set 5 h[5]
++  v := v.set 6 h[6]
++  v := v.set 7 h[7]
++  v := v.set 8 IV[0]
++  v := v.set 9 IV[1]
++  v := v.set 10 IV[2]
++  v := v.set 11 IV[3]
++  v := v.set 12 (low t)
++  v := v.set 13 (high t)
++  v := v.set 14 len
++  v := v.set 15 flags
++  for _ in [0:7] do
++    v := G v 0 4 8 12 m[0] m[1]
++    v := G v 1 5 9 13 m[2] m[3]
++    v := G v 2 6 10 14 m[4] m[5]
++    v := G v 3 7 11 15 m[6] m[7]
++    v := G v 0 5 10 15 m[8] m[9]
++    v := G v 1 6 11 12 m[10] m[11]
++    v := G v 2 7 8 13 m[12] m[13]
++    v := G v 3 4 9 14 m[14] m[15]
++    m := PERMUTE m
++    trace := trace.push v
++  return trace
++
++-- END GENERATED
++
++/-! ## Section 4: the tree mode of operation -/
++
++/-- Section 2.1: "Byte streams are interpreted as words in little-endian order, with the least
++significant byte first." The `n` words starting at byte `start` of `b`; bytes past its end are
++zeros (the padding of a short block, section 4.2). -/
++def wordsLE (b : ByteArray) (start n : Nat) : Vector Word n :=
++  Vector.ofFn fun i =>
++    let byte (k : Nat) : Word := (b.get! (start + 4 * i.val + k)).toUInt32 <<< (8 * k).toUInt32
++    byte 0 ||| byte 1 ||| byte 2 ||| byte 3
++
++/-- The bytes of words, least significant byte first (section 2.1). -/
++def bytesLE (ws : List Word) : ByteArray :=
++  ⟨(ws.flatMap fun (w : Word) =>
++    [w.toUInt8, (w >>> 8).toUInt8, (w >>> 16).toUInt8, (w >>> 24).toUInt8]).toArray⟩
++
++/-- The first eight words: "When processing chunks and parent nodes below the root, the output is
++always truncated to the first 8 words, `v[0..7]`." -/
++def first8 (v : Vector Word 16) : Vector Word 8 := Vector.ofFn fun i => v[lo i]
++
++/-- A node of the tree, as the inputs of its last compression (a chunk's last block, a parent's
++only block). Its chaining value is that compression's first eight words; if it is the root, the
++same compression with the `ROOT` flag and the output's counter gives the output (section 4.4). -/
++structure Node where
++  h : Vector Word 8
++  m : Vector Word 16
++  t : Counter
++  len : Word
++  flags : Word
++  deriving Inhabited
++
++/-- The node's 8-word chaining value, below the root. -/
++def Node.cv (n : Node) : Vector Word 8 := first8 (BLAKE3_COMPRESS n.h n.m n.t n.len n.flags)
++
++/-- Section 4.2: "Chunks are divided into 64-byte blocks. If the input byte length is not a multiple
++of 64, the last block is short. The last block is empty if and only if the input is empty. Short or
++empty blocks are padded with zeros (0x00) to be 64 bytes." The number of blocks of a chunk of
++`len` bytes. -/
++def blockCount (len : Nat) : Nat := max 1 ((len + 63) / 64)
++
++/-- Section 4.2: chunk `index` of the input, `chunk` its bytes, `key` the 8-word key (section 4.1)
++and `mode` the mode's flag (`0`, `KEYED_HASH`, `DERIVE_KEY_CONTEXT`, or `DERIVE_KEY_MATERIAL`).
++
++"Each chunk is processed by iterating the compression function (1024/64 = 16 times for a full
++1024-byte chunk) to process the 64-byte blocks, each parsed as 16 32-bit little-endian words.
++
++Compression function input arguments are set as follows:
++
++* `h[0..7]`: For the first block of a chunk, this is the 8-word key defined above. For subsequent
++  blocks, this is the truncated output of the compression of the previous block.
++* `m[0..15]`: This is the block processed by the compression function.
++* `t[0..1]`: The counter `t` for each block is the chunk index, that is, 0 for all blocks in the
++  first chunk, 1 for all blocks in the second chunk, and so on.
++* `len`: This word is the block length, or the number of data bytes in the block, which is 64 for
++  all blocks except possibly the last block of the last chunk.
++* `flags`: This word is set as follows: The first block of each chunk sets the `CHUNK_START` flag,
++  and the last block of each chunk sets the `CHUNK_END` flag. If a chunk contains only one block,
++  that block sets both `CHUNK_START` and `CHUNK_END`. If a chunk is the root of its tree, the last
++  block of that chunk also sets the `ROOT` flag. Multiple flags may thus be set."
++
++The `ROOT` flag of a root chunk's last block is the output's (section 4.4). The mode flags are set
++on every compression of the mode (section 2.4). -/
++def chunkNode (key : Vector Word 8) (mode : Word) (chunk : ByteArray) (index : Nat) : Node := Id.run do
++  let blocks := blockCount chunk.size
++  let t : Counter := index.toUInt64
++  let flagsOf (j : Nat) : Word :=
++    mode ||| (if j = 0 then CHUNK_START else 0) ||| (if j + 1 = blocks then CHUNK_END else 0)
++  let mut h := key
++  for j in [0:blocks - 1] do
++    h := first8 (BLAKE3_COMPRESS h (wordsLE chunk (64 * j) 16) t 64 (flagsOf j))
++  let last := blocks - 1
++  return { h, m := wordsLE chunk (64 * last) 16, t, len := (chunk.size - 64 * last).toUInt32,
++           flags := flagsOf last }
++
++/-- Section 4.3.1: a parent node.
++
++"* `h[0..7]`: This is the 8-word key defined above.
++* `m[0..15]`: This is the 64-byte block consisting of the concatenated 32-byte output of the two
++  child nodes.
++* `t[0..1]`: The counter t is set to zero (0).
++* `len`: The block length is set to 64.
++* `flags`: The `PARENT` flag is set for all parent nodes. [...] The mode flags (`KEYED_HASH`,
++  `DERIVE_KEY_CONTEXT`, `DERIVE_KEY_MATERIAL`) must be set for a parent node when operating in the
++  respective modes." -/
++def parentNode (key : Vector Word 8) (mode : Word) (left right : Vector Word 8) : Node :=
++  { h := key, m := left ++ right, t := 0, len := 64, flags := mode ||| PARENT }
++
++/-- Section 4.3.2: the number of chunks in the left subtree of a tree of `n ≥ 2` chunks, the
++largest power of 2 below `n`. "Left subtrees are full, that is, each left subtree is a complete
++binary tree, with all its chunks at the same depth, and a number of chunks that is a power of 2.
++Left subtrees are big, that is, each left subtree contains a number of chunks greater than or equal
++to the number of chunks in its sibling right subtree." `Theorems.lean` proves this number is the
++one these rules allow. -/
++def leftCount (n : Nat) : Nat := 2 ^ (n - 1).log2
++
++theorem leftCount_pos (n : Nat) : 0 < leftCount n := Nat.two_pow_pos _
++
++theorem leftCount_lt (n : Nat) (h : 2 ≤ n) : leftCount n < n := by
++  have := Nat.log2_self_le (n := n - 1) (by omega)
++  unfold leftCount; omega
++
++/-- Section 4.3.2: the root node of the tree over the chunk nodes `chunks`. "If there is only one
++chunk, that chunk is the root node and only node of the tree. Otherwise, the chunks are assembled
++with parent nodes, each parent node having exactly two children." -/
++def tree (key : Vector Word 8) (mode : Word) (chunks : Array Node) : Node :=
++  go 0 chunks.size
++where
++  /-- The subtree over the `n ≥ 1` chunks from `start`. -/
++  go (start n : Nat) : Node :=
++    if _h : n ≤ 1 then chunks[start]!
++    else
++      let k := leftCount n
++      parentNode key mode (go start k).cv (go (start + k) (n - k)).cv
++  termination_by n
++  decreasing_by
++    · exact leftCount_lt n (by omega)
++    · have := leftCount_pos n; omega
++
++/-- Section 4.4: "BLAKE3, in any of its three modes, can produce outputs of any byte length up to
++2^64 - 1. This is done by repeating the root compression with incrementing values of the counter t.
++The results of these repeated root compressions are then concatenated to form the output, possibly
++truncating the last one." Section 4.3.2: "Output of up to 64 bytes is formed by taking as many
++bytes as required from the final `v[0..15]` of the root's compression function." -/
++def output (root : Node) (outLen : Nat) : ByteArray :=
++  let blocks := (List.range ((outLen + 63) / 64)).map fun i =>
++    (BLAKE3_COMPRESS root.h root.m i.toUInt64 root.len (root.flags ||| ROOT)).toList
++  (bytesLE blocks.flatten).extract 0 outLen
++
++/-- Section 4.2: "BLAKE3's chunk processing divides the BLAKE3 input into 1024-byte chunks [...]. If
++the input byte length is not a multiple of 1024, the last chunk is short. The last chunk is empty if
++and only if the input is empty." Then the tree over them (4.3) and its output (4.4). -/
++def blake3 (key : Vector Word 8) (mode : Word) (input : ByteArray) (outLen : Nat) : ByteArray :=
++  let count := max 1 ((input.size + 1023) / 1024)
++  let chunks := (Array.range count).map fun i =>
++    chunkNode key mode (input.extract (1024 * i) (1024 * (i + 1))) i
++  output (tree key mode chunks) outLen
++
++/-! ## Sections 1.1 and 4.1: the hashing modes -/
++
++/-- Unkeyed hashing (`hash`): "In the unkeyed hashing mode (`hash`), the key is defined to be `IV`." -/
++def hash (input : ByteArray) (outLen : Nat := 32) : ByteArray :=
++  blake3 IV 0 input outLen
++
++/-- Keyed hashing (`keyed_hash`): "the caller provides a 32-byte key parameter, and that parameter
++is split into 8 little-endian words." `key` is 32 bytes; every compression sets `KEYED_HASH`. -/
++def keyed_hash (key : ByteArray) (input : ByteArray) (outLen : Nat := 32) : ByteArray :=
++  blake3 (wordsLE key 0 8) KEYED_HASH input outLen
++
++/-- Key derivation (`derive_key`): "In the first phase (`DERIVE_KEY_CONTEXT`), the key is defined to
++be `IV`, and the message is the context string. In the second phase (`DERIVE_KEY_MATERIAL`), the
++key is the truncated output of the first phase, and the message is the key material." -/
++def derive_key (context : ByteArray) (material : ByteArray) (outLen : Nat := 32) : ByteArray :=
++  let contextKey := blake3 IV DERIVE_KEY_CONTEXT context 32
++  blake3 (wordsLE contextKey 0 8) DERIVE_KEY_MATERIAL material outLen
++
++end Blake3
+diff --git a/BLAKE3/README.md b/BLAKE3/README.md
+new file mode 100644
+index 0000000..05e72dd
+--- /dev/null
++++ b/BLAKE3/README.md
+@@ -0,0 +1,29 @@
++# BLAKE3 in Lean
++
++`Blake3.lean` is an executable Lean specification of BLAKE3, transcribed from the Markdown
++specification, [`BLAKE3.md`](../BLAKE3.md). Sections 2.2 to 3.3 (the constants, `G`, and
++`BLAKE3_COMPRESS`) are generated from the Markdown by `generate.py`, one rule per pseudocode
++construct; section 4 (the tree and the hashing modes) is prose there and is transcribed by hand,
++each definition under the text it implements.
++
++`check.py` checks that the Lean matches the Markdown:
++
++1. the generated section equals `generate.py`'s translation of `BLAKE3.md`, byte for byte;
++2. every value of the appendix's traces (each compression's inputs and output, the state after
++   each round, the hash values) is extracted, checked for consistency with the text, and
++   reproduced by the Lean;
++3. the official test vectors the appendix links are fetched at the commit it names, checked
++   against their SHA-256, and reproduced by the Lean in all three modes;
++4. `Theorems.lean` proves the tree divides its chunks as section 4.3.2's rules say, on Lean's
++   standard axioms alone;
++5. every quotation of `BLAKE3.md` in the Lean's comments is the document's text.
++
++## How to run
++
++Install Lean (see [here](https://lean-lang.org/install/manual/)), the only dependency, and run
++
++    python3 check.py
++
++Or the parts: `lake build` checks the specification and the theorems, and
++`lake env lean --run Tests.lean traces.json test_vectors.json` runs the known-answer tests
++(`check.py` writes `traces.json` and fetches `test_vectors.json`).
+diff --git a/BLAKE3/Tests.lean b/BLAKE3/Tests.lean
+new file mode 100644
+index 0000000..c246945
+--- /dev/null
++++ b/BLAKE3/Tests.lean
+@@ -0,0 +1,79 @@
++import Blake3
++import Lean.Data.Json
++
++/-! Known-answer tests: the specification's appendix and the official test vectors it links.
++
++    lake env lean --run Tests.lean traces.json test_vectors.json
++
++`traces.json` is the appendix's two traces, extracted from `BLAKE3.md` by `check.py`: each
++compression's inputs, its output, and (in the first) the state after each round. `test_vectors.json`
++is the file the appendix links, at the commit it names. -/
++
++open Lean Blake3
++
++def hexByte (b : UInt8) : String :=
++  let d := "0123456789abcdef".toList
++  s!"{d[b.toNat / 16]!}{d[b.toNat % 16]!}"
++
++def hex (b : ByteArray) : String := String.join (b.toList.map hexByte)
++
++def unhex (s : String) : ByteArray := Id.run do
++  let digit (c : Char) : Nat := if c.isDigit then c.toNat - '0'.toNat else c.toNat - 'a'.toNat + 10
++  let cs := s.toList.toArray
++  let mut out := ByteArray.empty
++  for i in [0:cs.size / 2] do
++    out := out.push (16 * digit cs[2 * i]! + digit cs[2 * i + 1]!).toUInt8
++  return out
++
++def vec (n : Nat) (ws : Array Nat) : Vector Word n := Vector.ofFn fun i => (ws[i.val]!).toUInt32
++
++def check (ok : Bool) (what : String) : IO Unit :=
++  unless ok do throw (.userError s!"MISMATCH: {what}")
++
++def getNats (j : Json) (k : String) : IO (Array Nat) := IO.ofExcept do
++  (← (← j.getObjVal? k).getArr?).mapM fun x => x.getNat?
++
++def main (args : List String) : IO Unit := do
++  let [traces, vectors] := args | throw (.userError "usage: Tests.lean traces.json test_vectors.json")
++  -- The appendix.
++  let ts ← IO.ofExcept (Json.parse (← IO.FS.readFile traces))
++  let mut compressions := 0
++  for ex in ← IO.ofExcept ts.getArr? do
++    let title ← IO.ofExcept (ex.getObjValAs? String "title")
++    let len := (← IO.ofExcept (ex.getObjValAs? Nat "len")).toUInt32
++    for c in ← IO.ofExcept ((← IO.ofExcept (ex.getObjVal? "compressions")).getArr?) do
++      let label ← IO.ofExcept (c.getObjValAs? String "label")
++      let h := vec 8 (← getNats c "h"); let m := vec 16 (← getNats c "m")
++      let t ← getNats c "t"
++      let counter : Counter := t[0]!.toUInt64 ||| (t[1]!.toUInt64 <<< 32)
++      let flags := (← IO.ofExcept (c.getObjValAs? Nat "flags")).toUInt32
++      let out := BLAKE3_COMPRESS h m counter len flags
++      let want ← getNats c "out"
++      check ((List.range want.size).all fun i => out.toArray[i]!.toNat == want[i]!) s!"{title}, {label}: the output"
++      let rounds ← IO.ofExcept (((← IO.ofExcept (c.getObjVal? "rounds")).getArr?))
++      let trace := BLAKE3_COMPRESS_TRACE h m counter len flags
++      for r in [0:rounds.size] do
++        let state ← IO.ofExcept ((rounds[r]!.getArr?) >>= (·.mapM (·.getNat?)))
++        check (trace[r]!.toArray.toList.map (·.toNat) == state.toList) s!"{title}, {label}: after round {r}"
++      compressions := compressions + 1
++    let input := unhex (← IO.ofExcept (ex.getObjValAs? String "input_hex"))
++    let key := unhex (← IO.ofExcept (ex.getObjValAs? String "key_hex"))
++    let got := if key.size == 0 then Blake3.hash input else keyed_hash key input
++    check (hex got == (← IO.ofExcept (ex.getObjValAs? String "hash"))) s!"{title}: the hash value"
++  IO.println s!"Tests.lean: the appendix's {compressions} compressions, their round states, and both hash values reproduced"
++  -- The official test vectors.
++  let vs ← IO.ofExcept (Json.parse (← IO.FS.readFile vectors))
++  let key := (← IO.ofExcept (vs.getObjValAs? String "key")).toUTF8
++  let context := (← IO.ofExcept (vs.getObjValAs? String "context_string")).toUTF8
++  let cases ← IO.ofExcept ((← IO.ofExcept (vs.getObjVal? "cases")).getArr?)
++  let mut longest := 0
++  for c in cases do
++    let n ← IO.ofExcept (c.getObjValAs? Nat "input_len")
++    let input : ByteArray := ⟨(Array.range n).map fun i => (i % 251).toUInt8⟩
++    for (field, f) in [("hash", fun (len : Nat) => Blake3.hash input len),
++                       ("keyed_hash", fun len => keyed_hash key input len),
++                       ("derive_key", fun len => derive_key context input len)] do
++      let want ← IO.ofExcept (c.getObjValAs? String field)
++      check (hex (f (want.length / 2)) == want) s!"test vector {n}, {field}"
++      longest := max longest (want.length / 2)
++  IO.println s!"Tests.lean: all {cases.size} official test vectors reproduced, hash, keyed_hash, and derive_key, up to {longest} bytes of output"
+diff --git a/BLAKE3/Theorems.lean b/BLAKE3/Theorems.lean
+new file mode 100644
+index 0000000..475f71e
+--- /dev/null
++++ b/BLAKE3/Theorems.lean
+@@ -0,0 +1,44 @@
++import Blake3
++
++/-! # Properties the specification states, proved of `Blake3.lean`
++
++Section 4.3.2 describes the tree's shape by rules; `Blake3.lean` computes it: the left subtree of
++`n ≥ 2` chunks holds `leftCount n`, the largest power of 2 below `n`. These theorems show that
++number satisfies the rules and is the only one that does, so the definition and the prose agree.
++Lean's kernel checks every proof. -/
++
++namespace Blake3
++
++/-- "Otherwise, the chunks are assembled with parent nodes, each parent node having exactly two
++children": both subtrees of `n ≥ 2` chunks are nonempty. -/
++theorem split_nonempty (n : Nat) (h : 2 ≤ n) : 0 < leftCount n ∧ 0 < n - leftCount n :=
++  ⟨leftCount_pos n, by have := leftCount_lt n h; omega⟩
++
++/-- "Left subtrees are full, that is, each left subtree is a complete binary tree, with all its
++chunks at the same depth, and a number of chunks that is a power of 2." -/
++theorem left_power_of_two (n : Nat) : ∃ k, leftCount n = 2 ^ k := ⟨_, rfl⟩
++
++/-- "Left subtrees are big, that is, each left subtree contains a number of chunks greater than or
++equal to the number of chunks in its sibling right subtree." -/
++theorem left_big (n : Nat) (h : 2 ≤ n) : n - leftCount n ≤ leftCount n := by
++  have := Nat.lt_log2_self (n := n - 1)
++  rw [Nat.pow_succ] at this
++  unfold leftCount; omega
++
++/-- The rules determine the split: a power of 2 below `n` that is at least the rest is
++`leftCount n`. -/
++theorem split_unique (n k : Nat) (h : 2 ≤ n) (hlt : 2 ^ k < n) (hbig : n - 2 ^ k ≤ 2 ^ k) :
++    2 ^ k = leftCount n := by
++  have lo : k ≤ (n - 1).log2 := (Nat.le_log2 (by omega)).2 (by omega)
++  have hi : (n - 1).log2 < k + 1 := (Nat.log2_lt (by omega)).2 (by rw [Nat.pow_succ]; omega)
++  unfold leftCount
++  rw [show (n - 1).log2 = k by omega]
++
++/-- A full subtree stays full: `2^(k+1)` chunks split into two subtrees of `2^k`, so every left
++subtree is complete, "with all its chunks at the same depth". -/
++theorem full_splits_in_half (k : Nat) : leftCount (2 ^ (k + 1)) = 2 ^ k := by
++  have := Nat.two_pow_pos k
++  exact (split_unique (2 ^ (k + 1)) k (by rw [Nat.pow_succ]; omega)
++    (by rw [Nat.pow_succ]; omega) (by rw [Nat.pow_succ]; omega)).symm
++
++end Blake3
+diff --git a/BLAKE3/check.py b/BLAKE3/check.py
+new file mode 100644
+index 0000000..3aeed1d
+--- /dev/null
++++ b/BLAKE3/check.py
+@@ -0,0 +1,206 @@
++"""Check that Blake3.lean matches BLAKE3.md.
++
++    python3 check.py [path/to/BLAKE3.md]     (default: ../BLAKE3.md)
++
++1. Sections 2.2 to 3.3: generate.py's translation of BLAKE3.md equals the
++   generated section of Blake3.lean, byte for byte.
++2. The appendix: every value of its two traces (each compression's inputs and
++   output, the state after each round, the hash values) is extracted, the
++   document's own conventions applied (a block's message, counter, and flags
++   carry over until the trace shows them again; `len` is 64 unless the text
++   says otherwise), and the trace checked for consistency with itself (each
++   block's `h` is the previous output; the messages are the ones the text
++   describes). Lean then reproduces every value (Tests.lean).
++3. The official test vectors the appendix links, fetched at the commit it
++   names and checked against their SHA-256: Lean reproduces every vector's
++   hash, keyed_hash, and derive_key output.
++4. The Lean builds, and every theorem rests on Lean's standard axioms alone.
++5. Every quotation of BLAKE3.md in the Lean files' comments appears in it,
++   each `[...]` marking an omission.
++
++Exits nonzero on the first difference.
++"""
++
++import hashlib
++import json
++import os
++import re
++import subprocess
++import sys
++import urllib.request
++
++HERE = os.path.dirname(os.path.abspath(__file__))
++sys.path.insert(0, HERE)
++import generate
++
++# The vectors the appendix links, by the SHA-256 of the file at that commit
++# (the same file as BLAKE3's repository holds today).
++VECTORS_SHA256 = "dcb91ea8accc77e6d6e632af7cdc1a99a9f3ae78cf648da595c7d064db32f624"
++
++
++def fail(msg):
++    sys.exit(f"check.py: {msg}")
++
++
++def words(text):
++    return [int(w, 16) for w in text.split()]
++
++
++def appendix_traces(md):
++    """The appendix's compressions, in order, with the conventions applied."""
++    app = md[md.index("## Appendix: Test Values"):]
++    examples = re.split(r"\n### ", app)[1:]
++    out = []
++    for ex in examples:
++        title = ex.splitlines()[0].strip()
++        block = re.search(r"```\n(.*?)```", ex, re.S).group(1)
++        entries = re.split(r"\n\s*== COMPRESS: (.*?) ==\n", "\n" + block)
++        hash_value = re.search(r"hash value:\s*\n\s*([0-9a-f]+)", block).group(1)
++        carry = {}
++        comps = []
++        for label, body in zip(entries[1::2], entries[2::2]):
++            body += "\n"      # the split takes the newline before the next entry
++            fields = {}
++            for name, value in re.findall(r"^ (h|m|t|flags|after round \d|compress output):[ \t]*\n((?:[ \t]+[0-9a-f][0-9a-f ]*\n)+)", body, re.M):
++                fields[name] = value
++            c = {"label": label}
++            for k in ("m", "t", "flags"):
++                if k in fields:
++                    carry[k] = fields[k]
++                if label == "PARENT" and k not in fields:
++                    fail(f"the root's trace lacks its {k}")
++            c["h"] = words(fields["h"])
++            c["m"] = words(carry["m"])
++            c["t"] = words(carry["t"])
++            c["flags"] = int(carry["flags"].strip(), 16)
++            c["rounds"] = [words(fields[f"after round {r}"]) for r in range(7) if f"after round {r}" in fields]
++            c["out"] = words(fields["compress output"])
++            comps.append(c)
++        out.append({"title": title, "compressions": comps, "hash": hash_value, "text": ex})
++    return out
++
++
++def check_trace_consistency(traces):
++    """The appendix's own statements, checked of its trace."""
++    one, two = traces
++    if "4-byte message\n\"IETF\"" not in one["text"].replace("  ", " "):
++        fail("the first example's text names a message other than the 4-byte \"IETF\"")
++    msg = b"IETF" + bytes(60)
++    want_m = [int.from_bytes(msg[4 * i:4 * i + 4], "little") for i in range(16)]
++    c0 = one["compressions"][0]
++    if c0["m"] != want_m or c0["t"] != [0, 0]:
++        fail("the first example's block or counter differs from \"IETF\" padded with zeros at counter 0")
++    one["len"] = 4
++    one["input_hex"] = msg[:4].hex()
++    # Second example: chunks of 0xaa and 0xbb, key 0xcc.
++    if "0xaa" not in two["text"] or "0xbb" not in two["text"] or "0xcc" not in two["text"]:
++        fail("the second example's text names bytes other than 0xaa, 0xbb, and the key's 0xcc")
++    comps = two["compressions"]
++    for prev, cur in zip(comps, comps[1:]):
++        if cur["label"].startswith("CHUNK") and not cur["label"].endswith("BLOCK  0") and cur["h"] != prev["out"]:
++            fail(f"the trace's {cur['label']} starts from a value other than the previous block's output")
++    two["len"] = 64
++    two["input_hex"] = (b"\xaa" * 1024 + b"\xbb" * 1024).hex()
++    two["key_hex"] = (b"\xcc" * 32).hex()
++    root = comps[-1]
++    if root["label"] != "PARENT" or root["m"] != comps[15]["out"] + comps[31]["out"]:
++        fail("the root's message differs from the two chunks' chaining values")
++
++
++def vectors(md):
++    """The official test vectors the appendix links, at its pinned commit."""
++    url = re.search(r"\[test vectors\]: (https://github.com/BLAKE3-team/BLAKE3/blob/[0-9a-f]+/test_vectors/test_vectors.json)", md).group(1)
++    raw = url.replace("https://github.com/", "https://raw.githubusercontent.com/").replace("/blob/", "/")
++    path = os.path.join(HERE, "test_vectors.json")
++    if not os.path.exists(path):
++        with urllib.request.urlopen(raw, timeout=60) as r:
++            open(path, "wb").write(r.read())
++    if hashlib.sha256(open(path, "rb").read()).hexdigest() != VECTORS_SHA256:
++        fail(f"{path} differs from the file the appendix links")
++    return path, url
++
++
++def normal(text):
++    """Text as compared: Markdown's list markers and emphasis marks dropped,
++    `<sup>n</sup>` as `^n`, whitespace collapsed."""
++    text = re.sub(r"^\s*\*\s+", "", text, flags=re.M).replace("**", "")
++    return " ".join(re.sub(r"<sup>(\w+)</sup>", r"^\1", text).split())
++
++
++def check_quotations(md):
++    """Each quotation in a comment of the hand-written Lean is the
++    document's text, `[...]` marking each omission."""
++    doc = normal(md)
++    count = 0
++    for name in ("Blake3.lean", "Theorems.lean"):
++        lean = open(os.path.join(HERE, name)).read()
++        if generate.BEGIN in lean:
++            i, j = lean.index(generate.BEGIN), lean.index(generate.END)
++            lean = lean[:i] + lean[j:]
++        for comment in re.findall(r"/-[-!](.*?)-/", lean, re.S):
++            for quote in re.findall(r'"([^"]+)"', comment):
++                for fragment in quote.split("[...]"):
++                    fragment = normal(fragment).strip(" ,.:")
++                    if fragment and fragment not in doc:
++                        fail(f"{name} quotes text BLAKE3.md lacks: {fragment!r}")
++                count += 1
++    return count
++
++
++def lake(*args):
++    return subprocess.run(["lake", *args], cwd=HERE, capture_output=True, text=True)
++
++
++def main():
++    md_path = sys.argv[1] if len(sys.argv) > 1 else os.path.join(HERE, "..", "BLAKE3.md")
++    md = open(md_path).read()
++    # 1. The generated section.
++    try:
++        gen = generate.generate(md)
++    except generate.Refused as e:
++        fail(f"generate.py refused BLAKE3.md: {e}")
++    lean = open(os.path.join(HERE, "Blake3.lean")).read()
++    i, j = lean.index(generate.BEGIN), lean.index(generate.END) + len(generate.END) + 1
++    if lean[i:j] != gen:
++        fail("Blake3.lean's generated section differs from generate.py's translation of BLAKE3.md")
++    print("sections 2.2-3.3: Blake3.lean's generated section is generate.py's translation of BLAKE3.md")
++    # 2. The appendix.
++    traces = appendix_traces(md)
++    check_trace_consistency(traces)
++    n = sum(len(t["compressions"]) for t in traces)
++    print(f"appendix: {n} compressions extracted; the trace is consistent with itself and the text")
++    fields = ("title", "compressions", "hash", "len", "input_hex")
++    json.dump([{k: t[k] for k in fields} | {"key_hex": t.get("key_hex", "")} for t in traces],
++              open(os.path.join(HERE, "traces.json"), "w"), indent=1)
++    # 3. The vectors.
++    vpath, vurl = vectors(md)
++    # 4. Lean: build, the theorems' axioms, then the tests.
++    r = lake("build")
++    if r.returncode:
++        fail("lake build failed:\n" + r.stdout[-3000:] + r.stderr[-2000:])
++    names = [t for f in ("Blake3.lean", "Theorems.lean")
++             for t in re.findall(r"^theorem (\w+)", open(os.path.join(HERE, f)).read(), re.M)]
++    probe = "import Theorems\n" + "".join(f"#print axioms Blake3.{t}\n" for t in names)
++    open(os.path.join(HERE, ".axioms.lean"), "w").write(probe)
++    r = lake("env", "lean", ".axioms.lean")
++    os.remove(os.path.join(HERE, ".axioms.lean"))
++    allowed = {"propext", "Classical.choice", "Quot.sound"}
++    lines = [l for l in r.stdout.splitlines() if "axioms" in l]
++    if len(lines) != len(names):
++        fail(f"#print axioms reported {len(lines)} of {len(names)} theorems:\n" + r.stdout + r.stderr)
++    for t, line in zip(names, lines):
++        listed = re.search(r"depends on axioms: \[(.*)\]", line)
++        used = {a.strip() for a in listed.group(1).split(",")} if listed else set()
++        if not used <= allowed:
++            fail(f"theorem {t} rests on {sorted(used - allowed)}")
++    print(f"theorems: all {len(names)} rest on Lean's standard axioms alone")
++    print(f"quotations: all {check_quotations(md)} in the Lean files' comments are BLAKE3.md's text")
++    r = lake("env", "lean", "--run", "Tests.lean", "traces.json", "test_vectors.json")
++    print(r.stdout, end="")
++    if r.returncode:
++        fail("Tests.lean failed:\n" + r.stderr[-3000:])
++    print(f"check.py: Blake3.lean matches BLAKE3.md (vectors: {vurl})")
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/BLAKE3/generate.py b/BLAKE3/generate.py
+new file mode 100644
+index 0000000..92e48cf
+--- /dev/null
++++ b/BLAKE3/generate.py
+@@ -0,0 +1,282 @@
++"""Generate the formal part of Blake3.lean from BLAKE3.md, deterministically.
++
++BLAKE3.md gives sections 2.2 to 3.3 in fixed forms: the IV and the
++permutation as code blocks of numbers, the flags as a list of `NAME (0xNN)`
++items, and the functions G and BLAKE3_COMPRESS as pseudocode. This script
++parses exactly those forms and translates each pseudocode line, one rule per
++construct (below), into Lean. Anything else in a block it reads stops it
++with an error, so a change to the document either regenerates cleanly or is
++refused. The generated text sits between two markers in Blake3.lean, and
++`check.py` requires it to equal this script's output byte for byte.
++
++    python3 generate.py ../BLAKE3.md            # print the generated section
++    python3 generate.py ../BLAKE3.md --write     # replace it in Blake3.lean
++
++Translation rules (pseudocode -> Lean):
++    v[i] := e                       v := v.set i (e)
++    v[a..b] := w[c..d]              one `v := v.set` per index
++    x mod 2**32                     x  (UInt32 arithmetic is mod 2^32)
++    x ^ y                           x ^^^ y
++    (x) >>> n                       rotr (x) n
++    t[0], t[1]                      low t, high t  (the counter's 32-bit words)
++    v := G( v, a, b, c, d, x, y )   v := G v a b c d x y
++    PERMUTE(m)                      m := PERMUTE m
++    FOR i = 0 TO n DO ... END FOR   for i in List.finRange (n+1) do ...  (a body that uses i,
++                                    whose v[i] and v[i + 8] are v[lo i] and v[hi i])
++                                    for _ in [0:n+1] do ...  (a body that does not)
++    RETURN v                        return v
++"""
++
++import re
++import sys
++
++BEGIN = "-- BEGIN GENERATED by generate.py from BLAKE3.md, sections 2.2 to 3.3: edit BLAKE3.md, then run `generate.py --write`."
++END = "-- END GENERATED"
++
++
++class Refused(Exception):
++    pass
++
++
++def sections(md):
++    """{number: text} for headings `### 2.2.  Title` and the like."""
++    out, cur, buf = {}, None, []
++    for line in md.splitlines():
++        m = re.match(r"#{2,4}\s+(\d+(?:\.\d+)*)\.?\s", line)
++        if m:
++            if cur:
++                out[cur] = "\n".join(buf)
++            cur, buf = m.group(1), []
++        elif cur:
++            buf.append(line)
++    if cur:
++        out[cur] = "\n".join(buf)
++    return out
++
++
++def blocks(text):
++    return re.findall(r"```\n(.*?)```", text, re.S)
++
++
++def iv(sec):
++    (b,) = blocks(sec)
++    words = b.split()
++    if len(words) != 8 or not all(re.fullmatch(r"0x[0-9a-f]{8}", w) for w in words):
++        raise Refused("section 2.2: expected eight 32-bit hex words")
++    return words
++
++
++def permutation(sec):
++    (b,) = blocks(sec)
++    rows = [[int(x) for x in re.findall(r"\d+", line)] for line in b.strip().splitlines()]
++    if len(rows) != 2 or rows[0] != list(range(16)) or sorted(rows[1]) != list(range(16)):
++        raise Refused("section 2.3: expected the indices 0..15 and a permutation of them")
++    return rows[1]
++
++
++def flags(sec):
++    found = re.findall(r"^\* `([A-Z_]+)` \((0x[0-9a-f]{2})\):", sec, re.M)
++    if len(found) != 7:
++        raise Refused("section 2.4: expected seven flags")
++    return found
++
++
++def pseudocode(block):
++    """The statements of a FUNCTION ... END FUNCTION block: its header and
++    its body lines, the `|` gutters and comments removed."""
++    lines = []
++    for raw in block.splitlines():
++        s = raw.strip()
++        if not s:
++            continue
++        s = re.sub(r"^(\|\s*)+", "", s)
++        s = re.sub(r"\s*//.*$", "", s).strip()
++        if s:
++            lines.append(s)
++    if not lines[0].startswith("FUNCTION") or lines[-1] != "END FUNCTION.":
++        raise Refused(f"pseudocode block without FUNCTION ... END FUNCTION.: {lines[0]}")
++    return lines[0], lines[1:-1]
++
++
++def expr(e):
++    """One pseudocode expression in Lean."""
++    e = e.strip()
++    e = re.sub(r"\s*mod 2\*\*32", "", e)
++    e = re.sub(r"t\[0\]", "low t", e)
++    e = re.sub(r"t\[1\]", "high t", e)
++    m = re.fullmatch(r"\((.*)\)\s*>>>\s*(\d+)", e)
++    if m:
++        return f"rotr ({expr(m.group(1))}) {m.group(2)}"
++    if not re.fullmatch(r"[\w\[\]\s+^.()]+", e):
++        raise Refused(f"expression outside the translated forms: {e}")
++    e = re.sub(r"\(\s*", "(", re.sub(r"\s*\)", ")", e))
++    # v's index i ranges over Fin 8 (lo i, hi i in Fin 16); h's is i itself.
++    e = re.sub(r"v\[i \+ 8\]", "v[hi i]", e)
++    e = re.sub(r"v\[i\]", "v[lo i]", e)
++    e = e.replace(" ^ ", " ^^^ ").strip()
++    if e.startswith("(") and e.endswith(")") and balanced(e[1:-1]):
++        e = e[1:-1]
++    return e
++
++
++def balanced(e):
++    depth = 0
++    for ch in e:
++        depth += {"(": 1, ")": -1}.get(ch, 0)
++        if depth < 0:
++            return False
++    return depth == 0
++
++
++def wrap(e):
++    """`e` as one argument: parenthesised unless it is a name or an index."""
++    return e if re.fullmatch(r"[\w.]+(\[[\w ]+\])?", e) else f"({e})"
++
++
++def statement(s, indent):
++    pad = "  " * indent
++    m = re.fullmatch(r"v\[(\d+)\.\.(\d+)\] := (\w+)\[(\d+)\.\.(\d+)\]", s)
++    if m:
++        a, b, src, c, d = m.group(1), int(m.group(2)), m.group(3), int(m.group(4)), int(m.group(5))
++        a = int(a)
++        if b - a != d - c:
++            raise Refused(f"ranges of different lengths: {s}")
++        return [f"{pad}v := v.set {a + k} {src}[{c + k}]" for k in range(b - a + 1)]
++    m = re.fullmatch(r"v\[([\w +]+)\] := (.*)", s)
++    if m:
++        return [f"{pad}v := v.set {lean_index(m.group(1))} {wrap(expr(m.group(2)))}"]
++    m = re.fullmatch(r"v := G\( v, (\d+), (\d+), +(\d+), (\d+), m\[ ?(\d+)\], m\[ ?(\d+)\] \)", s)
++    if m:
++        a, b, c, d, x, y = m.groups()
++        return [f"{pad}v := G v {a} {b} {c} {d} m[{x}] m[{y}]"]
++    if s == "PERMUTE(m)":
++        return [f"{pad}m := PERMUTE m"]
++    m = re.fullmatch(r"RETURN v(\[0\.\.15\])?", s)
++    if m:
++        return [f"{pad}return v"]
++    raise Refused(f"statement outside the translated forms: {s}")
++
++
++def lean_index(i):
++    """An index expression: a number, `i`, or `i + 8` (i ranging over Fin 8)."""
++    i = i.strip()
++    if re.fullmatch(r"\d+", i):
++        return i
++    if i in ("a", "b", "c", "d"):
++        return i
++    if i == "i":
++        return "(lo i)"
++    if re.fullmatch(r"i \+ 8", i):
++        return "(hi i)"
++    raise Refused(f"index outside the translated forms: {i}")
++
++
++def body(lines, indent):
++    out, k = [], 0
++    while k < len(lines):
++        s = lines[k]
++        m = re.fullmatch(r"FOR i = 0 TO (\d+) DO", s)
++        if m:
++            n = int(m.group(1)) + 1
++            depth, j = 1, k + 1
++            while depth:
++                if lines[j].startswith("FOR "):
++                    depth += 1
++                if lines[j].startswith("END FOR"):
++                    depth -= 1
++                j += 1
++            inner = lines[k + 1:j - 1]
++            uses_i = any(re.search(r"\bi\b", x) for x in inner)
++            out.append("  " * indent + (f"for i in List.finRange {n} do" if uses_i else f"for _ in [0:{n}] do"))
++            out += body(inner, indent + 1)
++            k = j
++            continue
++        out += statement(s, indent)
++        k += 1
++    return out
++
++
++def generate(md):
++    sec = sections(md)
++    ivw = iv(sec["2.2"])
++    perm = permutation(sec["2.3"])
++    fl = flags(sec["2.4"])
++    g_block, = [b for b in blocks(sec["3.2"]) if "FUNCTION G" in b]
++    c_block, = [b for b in blocks(sec["3.3"]) if "FUNCTION BLAKE3_COMPRESS" in b]
++    g_head, g_body = pseudocode(g_block)
++    c_head, c_body = pseudocode(c_block)
++    if g_head != "FUNCTION G( v[0..15], a, b, c, d, x, y )":
++        raise Refused(f"G's header changed: {g_head}")
++    if c_head != "FUNCTION BLAKE3_COMPRESS( h[0..7], m[0..15], t, len, flags )":
++        raise Refused(f"BLAKE3_COMPRESS's header changed: {c_head}")
++    out = [BEGIN, ""]
++    out.append("/-- Section 2.2: the initial value. -/")
++    out.append("def IV : Vector Word 8 :=")
++    out.append("  #v[" + ", ".join(ivw) + "]")
++    out.append("")
++    out.append("/-- Section 2.3: the message word permutation; position `i` takes word `PERMUTATION[i]`. -/")
++    out.append("def PERMUTATION : Vector (Fin 16) 16 :=")
++    out.append("  #v[" + ", ".join(str(p) for p in perm) + "]")
++    out.append("")
++    out.append("/-- Section 2.3: the permuted array consists of `m[PERMUTATION[0]], m[PERMUTATION[1]], ...`. -/")
++    out.append("def PERMUTE (m : Vector Word 16) : Vector Word 16 :=")
++    out.append("  Vector.ofFn fun i => m[PERMUTATION[i]]")
++    out.append("")
++    out.append("/-! Section 2.4: the compression function flags. -/")
++    for name, val in fl:
++        out.append(f"def {name} : Word := {val}")
++    out.append("")
++    out.append("/-- Section 3.2: the quarter-round function G. -/")
++    out.append("def G (v : Vector Word 16) (a b c d : Fin 16) (x y : Word) : Vector Word 16 := Id.run do")
++    out.append("  let mut v := v")
++    out += body(g_body, 1)
++    out.append("")
++    out.append("/-- Section 3.3: the compression function. -/")
++    out.append("def BLAKE3_COMPRESS (h : Vector Word 8) (m : Vector Word 16) (t : Counter) (len flags : Word) :")
++    out.append("    Vector Word 16 := Id.run do")
++    out.append("  let mut v : Vector Word 16 := Vector.replicate 16 0")
++    out.append("  let mut m := m")
++    out += body(c_body, 1)
++    out.append("")
++    # The same statements again, recording v at the end of each round (the
++    # appendix's "after round i"): the rounds' loop is the one FOR that calls G.
++    out.append("/-- Section 3.3's statements, with `v` recorded at the end of each round (the appendix's")
++    out.append("`after round` values). -/")
++    out.append("def BLAKE3_COMPRESS_TRACE (h : Vector Word 8) (m : Vector Word 16) (t : Counter) (len flags : Word) :")
++    out.append("    Array (Vector Word 16) := Id.run do")
++    out.append("  let mut v : Vector Word 16 := Vector.replicate 16 0")
++    out.append("  let mut m := m")
++    out.append("  let mut trace : Array (Vector Word 16) := #[]")
++    traced = body(c_body, 1)
++    k = next(i for i, line in enumerate(traced) if line.startswith("  for _ in"))
++    j = next(i for i in range(k + 1, len(traced)) if not traced[i].startswith("    "))
++    traced = traced[:j] + ["    trace := trace.push v"] + traced[j:]
++    traced = [line for line in traced if line.strip() != "return v"]
++    out += traced[:next(i for i in range(j + 1, len(traced)) if traced[i].startswith("  for i in"))]
++    out.append("  return trace")
++    out.append("")
++    out.append(END)
++    return "\n".join(out) + "\n"
++
++
++def splice(lean, generated):
++    i, j = lean.index(BEGIN), lean.index(END) + len(END) + 1
++    return lean[:i] + generated + lean[j:]
++
++
++def main():
++    md = open(sys.argv[1]).read()
++    try:
++        g = generate(md)
++    except Refused as e:
++        sys.exit(f"generate.py refused BLAKE3.md: {e}")
++    if "--write" in sys.argv:
++        path = __file__.replace("generate.py", "Blake3.lean")
++        new = splice(open(path).read(), g)
++        open(path, "w").write(new)
++    else:
++        sys.stdout.write(g)
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/BLAKE3/lake-manifest.json b/BLAKE3/lake-manifest.json
+new file mode 100644
+index 0000000..b7059b7
+--- /dev/null
++++ b/BLAKE3/lake-manifest.json
+@@ -0,0 +1,6 @@
++{"version": "1.2.0",
++ "packagesDir": ".lake/packages",
++ "packages": [],
++ "name": "Blake3",
++ "lakeDir": ".lake",
++ "fixedToolchain": false}
+diff --git a/BLAKE3/lakefile.toml b/BLAKE3/lakefile.toml
+new file mode 100644
+index 0000000..9c037ec
+--- /dev/null
++++ b/BLAKE3/lakefile.toml
+@@ -0,0 +1,8 @@
++name = "Blake3"
++defaultTargets = ["Blake3", "Theorems"]
++
++[[lean_lib]]
++name = "Blake3"
++
++[[lean_lib]]
++name = "Theorems"
+diff --git a/BLAKE3/lean-toolchain b/BLAKE3/lean-toolchain
+new file mode 100644
+index 0000000..ba8ebf2
+--- /dev/null
++++ b/BLAKE3/lean-toolchain
+@@ -0,0 +1 @@
++leanprover/lean4:v4.34.1
+-- 
+2.39.5
+

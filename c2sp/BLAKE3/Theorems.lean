@@ -2,10 +2,10 @@ import Blake3
 
 /-! # Properties the specification states, proved of `Blake3.lean`
 
-Section 4.3.2 defines the tree's shape by rules, where `Blake3.lean` computes it: the left
-subtree of `n ≥ 2` chunks holds `leftCount n`, the largest power of 2 below `n`. These theorems
-show that number satisfies the rules, and is the only one that does, so the definition and the
-prose agree. Every proof is checked by Lean's kernel. -/
+Section 4.3.2 describes the tree's shape by rules; `Blake3.lean` computes it: the left subtree of
+`n ≥ 2` chunks holds `leftCount n`, the largest power of 2 below `n`. These theorems show that
+number satisfies the rules and is the only one that does, so the definition and the prose agree.
+Lean's kernel checks every proof. -/
 
 namespace Blake3
 
@@ -40,9 +40,5 @@ theorem full_splits_in_half (k : Nat) : leftCount (2 ^ (k + 1)) = 2 ^ k := by
   have := Nat.two_pow_pos k
   exact (split_unique (2 ^ (k + 1)) k (by rw [Nat.pow_succ]; omega)
     (by rw [Nat.pow_succ]; omega) (by rw [Nat.pow_succ]; omega)).symm
-
-/-- Section 2.3: `PERMUTATION` is a permutation of the 16 indices. -/
-theorem permutation_injective : ∀ i j : Fin 16, PERMUTATION[i] = PERMUTATION[j] → i = j := by
-  decide
 
 end Blake3

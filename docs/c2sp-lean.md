@@ -69,9 +69,34 @@ theorems fail), and parents without the mode flag (the keyed example's hash diff
 - **Section 3.3's last PERMUTE**: the pseudocode permutes `m` after the seventh round too. That is
   harmless (`m` is not used again), and the Lean keeps it as written.
 
-## Proposing it
+## The pull request, ready for review
 
-A pull request to C2SP/C2SP adding `BLAKE3/` (the files of `c2sp/BLAKE3/`, without the copy of
-`BLAKE3.md`), with `BLAKE3:` commit prefixes, and a sentence in `BLAKE3.md` pointing at it, the
-way Kopis's spec will. As a maintainer you can merge it; the precedent suggests FiloSottile would
-welcome it.
+`c2sp/pr/` holds it: `PULL_REQUEST.md` (its title and description) and
+`0001-BLAKE3-add-a-Lean-specification.patch` (one commit on C2SP/C2SP main at a293183, with the
+`BLAKE3:` prefix the manual asks for; a clone with the branch `BLAKE3-lean` is in
+`/workspace/tmp/C2SP`). It adds `BLAKE3/` (the files of `c2sp/BLAKE3/`, identical) and one
+paragraph in the appendix of `BLAKE3.md` pointing at it, in the form `kopis.md` uses. Nothing is
+pushed or submitted.
+
+Checked before saving it:
+
+- C2SP's own Markdown lint (`.github/lint`, Go 1.27) passes on the changed `BLAKE3.md`.
+- `check.py` passes inside the C2SP layout: the generated section, the appendix's 34 compressions
+  and their round states, the 35 vectors in three modes, 7 theorems on the standard axioms, and all
+  17 quotations of the document in the Lean's comments.
+- Beyond the vectors: the Lean agrees with the official b3sum 1.8.2 on 63 more inputs (every chunk
+  and block boundary up to 64 KiB and random lengths, all three modes, random keys and contexts,
+  outputs of 1 to 300 bytes).
+- Four deliberate errors are each caught (above).
+- The English, read as each of the three readers: positive or neutral phrasing (the remaining
+  negatives are the specification's own words, quoted), each term introduced before use, nothing a
+  reader of the directory does not use.
+
+The description asks the co-maintainers three things: the version for the change, whether the
+Lean should settle disagreements with the prose (as `kopis.md` says of its Lean; the change keeps
+`BLAKE3.md` the specification), and the first trace's chunk label.
+
+## Submitting it
+
+Push the branch to a fork of C2SP/C2SP and open the pull request with `PULL_REQUEST.md`'s title and
+description. As a maintainer of BLAKE3 you can merge it once your co-maintainers agree.
