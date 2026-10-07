@@ -153,6 +153,40 @@ def main():
             print(f"SME2 chunks mutant, {what}: PROVED (the proof is vacuous here)")
             failures += 1
     aarch64.disassemble = real
+    # The Rust paths: a wrong instruction among those each one runs.
+    import prove_rust
+    lib = prove_rust.Library(prove_rust.build())
+    original = dict(lib.code)
+    proofs = {"xof": lambda: prove_rust.prove_xof(lib, "verify_neon_xof_many", 5),
+              "portable": lambda: prove_rust.prove_in_place(lib, "verify_portable_compress_in_place")}
+    ran = {}
+    for path, prove in proofs.items():
+        traced = []
+        step = aarch64.step
+        aarch64.step = lambda m, pc, mnem, ops: (traced.append(pc), step(m, pc, mnem, ops))[1]
+        prove()
+        aarch64.step = step
+        ran[path] = set(traced)
+    def first(pred, path):
+        return next(a for a, (m, o) in sorted(original.items()) if a in ran[path] and pred(m, o))
+    rust = []
+    a = first(lambda m, o: m == "usra", "xof")
+    rust.append(("a NEON rotation's shift one bit off", a, ("usra", original[a][1][:2] + [f"#{aarch64.imm(original[a][1][2]) + 1}"]), "xof"))
+    a = first(lambda m, o: m == "eor" and o[-1].startswith("ror"), "portable")
+    rust.append(("a rotated operand one bit off", a, ("eor", original[a][1][:3] + [f"ror #{aarch64.imm(original[a][1][3].split()[1]) + 1}"]), "portable"))
+    a = first(lambda m, o: m == "add" and o[0].endswith(".4s"), "xof")
+    rust.append(("a vector add made an eor", a, ("eor", [x.replace(".4s", ".16b") for x in original[a][1]]), "xof"))
+    a = first(lambda m, o: m == "mov" and re.search(r"\.d\[1\]", o[0] or ""), "xof")
+    rust.append(("an element moved from the wrong lane", a, ("mov", [original[a][1][0], original[a][1][1].replace("[0]", "[1]")]), "xof"))
+    for what, addr, instr, path in rust:
+        lib.code = dict(original)
+        lib.code[addr] = instr
+        try:
+            proofs[path]()
+            print(f"Rust mutant, {what} at {addr:#x}: PROVED (the proof is vacuous here)")
+            failures += 1
+        except (Unproved, KeyError) as e:
+            print(f"Rust mutant, {what} at {addr:#x}: rejected ({e})")
     sys.exit(1 if failures else 0)
 
 

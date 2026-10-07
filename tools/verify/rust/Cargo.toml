@@ -1,0 +1,18 @@
+# Entry points into blake3-servil's Rust compression code for the proofs
+# (tools/verify/prove_rust.py), compiled as the library is for AArch64.
+[package]
+name = "verify-entries"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+blake3-servil = { path = "../../..", default-features = false }
+
+[profile.release]
+panic = "abort"
+
+[workspace]

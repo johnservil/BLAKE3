@@ -236,6 +236,10 @@ def width(reg):
     return 32 if reg[0] == "w" else 64
 
 
+# Every (mnemonic, operands) executed in this process, for cross_check.py.
+EXECUTED = set()
+
+
 def run(m, entry, stop_at_ret=True, max_steps=10_000_000):
     """Execute from `entry` until `ret`; return the machine."""
     pc = entry
@@ -246,6 +250,7 @@ def run(m, entry, stop_at_ret=True, max_steps=10_000_000):
         if pc not in m.code:
             raise Unproved(f"execution reached {pc:#x}, outside the code under proof")
         mnem, ops = m.code[pc]
+        EXECUTED.add((mnem, tuple(ops)))
         nxt = step(m, pc, mnem, ops)
         if nxt == "ret":
             to = m.x[30]
@@ -267,22 +272,30 @@ def operand_value(m, op, w):
 
 
 def shifted(m, ops, w):
-    """The last operand(s) of an arithmetic instruction: `reg`, `#imm`,
-    `reg, lsl #n`, `#imm, lsl #n`."""
-    if len(ops) == 2 and ops[1].startswith(("lsl", "lsr", "asr", "uxtw", "sxtw")):
-        kind, *amount = ops[1].split()
-        n = imm(amount[0]) if amount else 0
-        v = operand_value(m, ops[0], w)
-        if isinstance(v, Ptr):
-            raise Unproved("shifted pointer")
-        if kind == "lsl":
-            return v << n
-        if kind == "lsr":
-            return LShR(v, n)
-        if kind == "uxtw":
-            return ZeroExt(32, Extract(31, 0, v)) << n
-        raise Unproved(f"shift {kind}")
-    return operand_value(m, ops[0], w)
+    """The last operand(s) of an arithmetic or logical instruction: `reg`,
+    `#imm`, or either followed by `lsl #n`, `lsr #n`, `asr #n`, `ror #n`,
+    or `uxtw`. Any other form stops the run: an operand the model does not
+    read must never be read as something simpler."""
+    if len(ops) == 1:
+        return operand_value(m, ops[0], w)
+    if len(ops) != 2:
+        raise Unproved(f"operands not modelled: {', '.join(ops)}")
+    kind, *amount = ops[1].split()
+    if kind not in ("lsl", "lsr", "asr", "ror", "uxtw") or len(amount) > 1:
+        raise Unproved(f"operand modifier not modelled: {ops[1]}")
+    n = imm(amount[0]) if amount else 0
+    v = operand_value(m, ops[0], w)
+    if isinstance(v, Ptr):
+        raise Unproved("shifted pointer")
+    if kind == "lsl":
+        return v << n
+    if kind == "lsr":
+        return LShR(v, n)
+    if kind == "asr":
+        return v >> n
+    if kind == "ror":
+        return RotateRight(v, n) if n % v.size() else v
+    return ZeroExt(32, Extract(31, 0, v)) << n
 
 
 def add_values(a, b, sub=False):
@@ -330,8 +343,15 @@ def mem_operand(m, ops, k):
     elif parts[1].startswith("#"):
         off = imm(parts[1])
     else:
+        # A register offset: an x register, `lsl #n` or none; or a w
+        # register, `uxtw` with or without `#n`. Any other form stops the run.
+        ext = parts[2].split() if len(parts) > 2 else []
+        if len(parts) > 3 or (ext and not (ext[0] == "lsl" and parts[1][0] == "x" or ext[0] == "uxtw" and parts[1][0] == "w")) or len(ext) > 2:
+            raise Unproved(f"address form not modelled: {s}")
+        if parts[1][0] == "w" and not ext:
+            raise Unproved(f"address form not modelled: {s}")
         idx = m.reg(parts[1]) if parts[1][0] == "x" else ZeroExt(32, m.reg(parts[1]))
-        sh = imm(parts[2].split()[1]) if len(parts) > 2 else 0
+        sh = imm(ext[1]) if len(ext) == 2 else 0
         k_ = concrete(idx)
         if k_ is None:
             raise Unproved("an address depends on data")
@@ -347,7 +367,28 @@ def mem_operand(m, ops, k):
     return addr, None, addr
 
 
+def library_call(m, name):
+    """The C library functions compiled Rust calls, by their contracts:
+    memcpy and memmove copy x2 bytes (a concrete count) from x1 to x0 and
+    return x0. Both buffers are checked against their regions."""
+    if name not in ("memcpy", "memmove"):
+        raise Unproved(f"a call of {name}, which is not modelled")
+    n = concrete(m.x[2])
+    if n is None:
+        raise Unproved(f"{name} of a data-dependent length")
+    dst, src = m.x[0], m.x[1]
+    data = [m.load(src + i, 1) for i in range(n)]
+    for i, b in enumerate(data):
+        m.store(dst + i, b, 1)
+    m.x[0] = dst
+
+
+# Loads and stores with an unscaled offset: the same access as the scaled form.
+UNSCALED = {"ldur": "ldr", "stur": "str", "ldurb": "ldrb", "sturb": "strb", "ldurh": "ldrh", "sturh": "strh"}
+
+
 def step(m, pc, mnem, ops):
+    mnem = UNSCALED.get(mnem, mnem)
     w = width(ops[0]) if ops and ops[0][0] in "wx" else 64
     if mnem == "nop":
         return None
@@ -370,6 +411,47 @@ def step(m, pc, mnem, ops):
         return None
     if mnem == "ror":
         m.set(ops[0], RotateRight(m.reg(ops[1]), imm(ops[2])))
+        return None
+    if mnem == "bfxil":
+        lsb, n = imm(ops[2]), imm(ops[3])
+        old, src = m.reg(ops[0]), m.reg(ops[1])
+        field = Extract(lsb + n - 1, lsb, src)
+        m.set(ops[0], Concat(Extract(w - 1, n, old), field) if n < w else field)
+        return None
+    if mnem in ("tst", "ands"):
+        # An AND that sets the flags (n and z from the result, c and v clear),
+        # which must be concrete, as cmp's are. tst is ands into the zero register.
+        first = 0 if mnem == "tst" else 1
+        a, b = m.reg(ops[first]), shifted(m, ops[first + 1:], w)
+        r = concrete(a & b) if not isinstance(a, Ptr) and not isinstance(b, Ptr) else None
+        if r is None:
+            raise Unproved("a condition depends on data")
+        m.nzcv = (bool(r >> (w - 1) & 1), r == 0, False, False)
+        if mnem == "ands":
+            m.set(ops[0], BitVecVal(r, w))
+        return None
+    if mnem == "neg":
+        v = m.reg(ops[1])
+        if isinstance(v, Ptr):
+            raise Unproved("a negated pointer")
+        m.set(ops[0], -v)
+        return None
+    if mnem == "cset":
+        if m.nzcv is None:
+            raise Unproved("cset before any comparison")
+        m.set(ops[0], BitVecVal(1 if CONDS[ops[1]](*m.nzcv) else 0, w))
+        return None
+    if mnem == "ccmp":
+        # If the condition holds on the current flags, they become those of
+        # the comparison; otherwise the immediate's (n z c v from bit 3 down).
+        if m.nzcv is None:
+            raise Unproved(f"{mnem} before any comparison")
+        if CONDS[ops[3]](*m.nzcv):
+            b = operand_value(m, ops[1], w)
+            set_flags_sub(m, m.reg(ops[0]), b, w)
+        else:
+            k = imm(ops[2])
+            m.nzcv = (bool(k & 8), bool(k & 4), bool(k & 2), bool(k & 1))
         return None
     if mnem == "bfi":
         lsb, n = imm(ops[2]), imm(ops[3])
@@ -421,8 +503,13 @@ def step(m, pc, mnem, ops):
         m.set(ops[0], Ptr("image", int(ops[1].split()[0], 16) & ~0xfff))
         return None
     if mnem == "bl":
+        target = int(ops[0].split()[0], 16)
+        name = getattr(m, "plt", {}).get(target)
+        if name is not None:
+            library_call(m, name)
+            return None
         m.x[30] = Ptr("code", pc + 4)
-        return int(ops[0].split()[0], 16)
+        return target
     if mnem in ("ldr", "ldrb", "ldrh", "str", "strb", "strh") and ops[0][0] in "wx":
         n = {"b": 1, "h": 2}.get(mnem[-1], w // 8)
         addr, wb, new = mem_operand(m, ops, 1)

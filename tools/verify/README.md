@@ -1,12 +1,15 @@
-# Proofs of the assembly kernels
+# Proofs of the compression code
 
-These tools prove every assembly kernel on AArch64 equal to BLAKE3's
-compression function, for every input, key, counter, and flags value:
+These tools prove every assembly kernel on AArch64, and the library's Rust
+compression code, equal to the compression function of the Lean
+specification of BLAKE3 (`c2sp/BLAKE3/`), for every input, key, counter,
+and flags value:
 
     python3 tools/verify/prove_hybrid.py [KERNEL...]   # c/blake3_neon_hybrid_aarch64.S: c1, k2-k10, p2-p9, q1-q9 (327 cases, 2 min on 16 cores)
     python3 tools/verify/prove_sme2.py [KERNEL...]     # c/blake3_sme2_aarch64.S: chunks, chunks_at, messages, parents, xof (34 cases, 3 min)
     python3 tools/verify/lean/emit.py                   # the definition, computed from the Lean specification (needs Lean)
-    python3 tools/verify/cross_check.py                 # the NEON and integer models against the CPU
+    python3 tools/verify/prove_rust.py                  # the Rust paths, compiled: portable, and the NEON platform's (23 cases)
+    python3 tools/verify/cross_check.py                 # the NEON and integer models against the CPU (and every form the Rust proofs run)
     python3 tools/verify/cross_check_sme.py             # the streaming SVE and SME2 models against the CPU (needs SME2)
     python3 tools/verify/mutants.py                     # wrong kernels are rejected
 
@@ -80,8 +83,16 @@ inputs, pointers are (region, offset) pairs. The run checks:
   q kernels' table layout (`prove_partial`). A caller that breaks them
   is outside the proof; the Rust callers are covered by tests and Kani.
 
-Not proved here: the C NEON kernel, the x86 kernels, the portable Rust,
-and the Rust around the kernels.
+The Rust paths (`prove_rust.py`, through `rust/src/lib.rs`, one exported
+call of the library's `Platform` methods each): the portable compression in
+place and its extended-output block; the NEON platform's compression in
+place (the Rust around the scalar kernel); its extended output of 1 to 20
+blocks (Rust NEON intrinsics, four blocks at a time, then the portable
+code). The compiled library runs as a whole, its calls of memcpy and
+memmove by their contracts.
+
+Not proved here: the C NEON kernel, the x86 kernels, and the Rust that
+arranges the tree (chunks, parents, the threads), which the tests cover.
 
 **Code changed for the proofs.** The SME2 message kernel took the last
 block's length with a branch (0 for 64), so a proof had to fix the

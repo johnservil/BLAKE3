@@ -23,16 +23,18 @@ import aarch64
 import prove_hybrid
 from aarch64 import Machine
 
-SKIP = {"ldr", "ldrb", "ldp", "str", "stp", "b", "b.ne", "cbz", "cbnz", "ret", "nop", "adr", "cmp", "csel", "subs", ".word"}
+SKIP = {"ldr", "ldrb", "ldrh", "ldp", "str", "strb", "strh", "stp", "ldur", "stur", "ld1r", "b", "bl", "b.ne", "cbz", "cbnz",
+        "tbz", "tbnz", "ret", "nop", "adr", "adrp", "cmp", "ccmp", "tst", "cset", "csel", "subs", "ands", ".word"}
 
 
-def forms(obj):
-    """Each register-only instruction form, its registers renamed to fixed
-    ones (x9.. for general registers, v0.. for vectors), immediates kept."""
-    code = aarch64.disassemble(obj, 0, 1 << 30)
+def forms(instructions):
+    """Each register-only instruction form among `instructions`, its
+    registers renamed to fixed ones (x9.. for general registers, v0.. for
+    vectors), immediates kept."""
     seen = {}
-    for mnem, ops in code.values():
-        if mnem in SKIP or mnem.startswith("b."):
+    for mnem, ops in instructions:
+        if (mnem in SKIP or mnem.startswith("b.") or "sp" in ops
+                or any("[" in o and not re.search(r"\.[sd]\[\d+\]$", o) for o in ops)):
             continue
         names = {}
         def rename(mt):
@@ -86,8 +88,11 @@ def model(mnem, text, xs, vs):
 
 def main():
     rounds = int(sys.argv[1]) if len(sys.argv) > 1 else 200
+    # The hybrid kernels' file, and every instruction the Rust proofs run.
+    import prove_rust
+    prove_rust.main(exit=False)
     obj = prove_hybrid.assemble()
-    fl = forms(obj)
+    fl = forms(list(aarch64.disassemble(obj, 0, 1 << 30).values()) + sorted(aarch64.EXECUTED))
     lib = build(fl)
     bad = 0
     for i, (mnem, text) in enumerate(fl):

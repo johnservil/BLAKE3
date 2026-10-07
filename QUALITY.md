@@ -141,6 +141,11 @@ read past a buffer) are rejected. CI runs the proofs, the cross-check,
 and the wrong kernels on every change. How they work, and how to run
 them: [`tools/verify/README.md`](tools/verify/README.md).
 
+**The Rust compression code** is proved the same way, compiled: the
+portable compression and its extended output, and on NEON the Rust around
+the scalar kernel and the extended output in NEON intrinsics, at every
+count from 1 to 20 blocks.
+
 **The SME2 kernels** (`c/blake3_sme2_aarch64.S`: chunks, messages,
 parents, and extended output, on Apple M4's 512-bit streaming vectors)
 are proved the same way: the matrix unit's ZA tiles, the predicates, and
