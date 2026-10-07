@@ -1400,6 +1400,15 @@ item out when it lands or is rejected.
   1 KiB messages +20%, and two programs' 4 KiB +26-29% (0.15.3's records).
   Fewer workers awake serve those sizes worse; find which part of a task's
   life they wait on, and whether a size-aware wake keeps both gains.
+- The queue's two speeds per process, measured (October 6, 2026, Mac jobs
+  1435-1440, mains, 6d9cac3 against 9d9f3d6, three pairs alternating),
+  pipelined ns/B per run: 256 B old 0.172 0.170 0.167, new 0.314 0.165
+  0.162; 1 KiB old 0.137 0.103 0.103, new 0.151 0.140 0.103; batches of
+  16 slow in most old runs (median 7.8 ns a message against new 4.1).
+  Both commits run each cell at the same two speeds, each process
+  settling into one; 0.16.1's record drew the slow one at 256 B. A user's
+  process pays the slow speed in about one run in three: the open item
+  below.
 - The queue's shares swing per run (256 B messages, batches of 16, 1 KiB):
   set at process start, perhaps thread placement.
 - The queue's cells slow the next cell (about 2% on the VM); a lingering
