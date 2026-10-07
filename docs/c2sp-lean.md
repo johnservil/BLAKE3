@@ -65,18 +65,18 @@ theorems fail), and parents without the mode flag (the keyed example's hash diff
 ## Two things the document could gain
 
 - **The first example's label**: its one compression is labelled `CHUNK 1, BLOCK 0`; it is
-  chunk 0 (the second example numbers from 0). A one-character fix.
+  chunk 0 (the second example numbers from 0). Opened as C2SP/C2SP#384 (October 7, 2026).
 - **Section 3.3's last PERMUTE**: the pseudocode permutes `m` after the seventh round too. That is
   harmless (`m` is not used again), and the Lean keeps it as written.
 
 ## The pull request, ready for review
 
 `c2sp/pr/` holds it: `PULL_REQUEST.md` (its title and description) and
-`0001-BLAKE3-add-a-Lean-specification.patch` (one commit on C2SP/C2SP main at a293183, with the
-`BLAKE3:` prefix the manual asks for; a clone with the branch `BLAKE3-lean` is in
-`/workspace/tmp/C2SP`). It adds `BLAKE3/` (the files of `c2sp/BLAKE3/`, identical) and one
-paragraph in the appendix of `BLAKE3.md` pointing at it, in the form `kopis.md` uses. Nothing is
-pushed or submitted.
+`0001-BLAKE3-add-a-Lean-specification-definitive-where-the.patch` (one commit on C2SP/C2SP main
+at a293183, with the `BLAKE3:` prefix the manual asks for; a clone with the branch `BLAKE3-lean` is
+in `/workspace/tmp/C2SP`). It adds `BLAKE3/` (the files of `c2sp/BLAKE3/`, identical) and one
+paragraph in the introduction of `BLAKE3.md` that points at it and makes the Lean definitive where
+the two differ (Zooko, October 7, 2026), as `kopis.md` does. It is saved, unsubmitted.
 
 Checked before saving it:
 
@@ -92,9 +92,7 @@ Checked before saving it:
   negatives are the specification's own words, quoted), each term introduced before use, nothing a
   reader of the directory does not use.
 
-The description asks the co-maintainers three things: the version for the change, whether the
-Lean should settle disagreements with the prose (as `kopis.md` says of its Lean; the change keeps
-`BLAKE3.md` the specification), and the first trace's chunk label.
+The description suggests v1.1.0 (every output unchanged, the Lean made definitive).
 
 ## Submitting it
 

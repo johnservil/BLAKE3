@@ -1,9 +1,10 @@
-**Title:** BLAKE3: add a Lean specification
+**Title:** BLAKE3: add a Lean specification, definitive where the two differ
 
 ---
 
 This adds `BLAKE3/`, an executable Lean specification of BLAKE3 transcribed from `BLAKE3.md`, in
-the layout of `kopis/` (#368), and one paragraph in the appendix that points at it.
+the layout of `kopis/` (#368). A paragraph in the introduction points at it and makes it
+definitive where the two differ, as `kopis.md` does for its Lean.
 
 **How the Lean follows the document.** Sections 2.2 to 3.3 (the IV, the permutation, the flags,
 `G`, and `BLAKE3_COMPRESS`) are generated from `BLAKE3.md` by `generate.py`, which translates each
@@ -23,10 +24,5 @@ implements.
 Lean itself is the only dependency (v4.34.1, pinned in `lean-toolchain`), and the check takes a few
 seconds. The Markdown lint passes.
 
-**For the maintainers to decide:**
-
-- The version: the document gains one informative paragraph.
-- Whether the Lean should settle any disagreement with the prose, as `kopis.md` says of its Lean.
-  This change keeps `BLAKE3.md` the specification and the Lean its transcription.
-- The first trace labels its one compression `CHUNK 1, BLOCK 0`; the second trace numbers chunks
-  from 0. A one-character change, for a separate commit.
+The change leaves every BLAKE3 output as it was and makes the Lean definitive, so v1.1.0 seems the
+right version. #384 corrects the first trace's chunk label; the two changes are independent.

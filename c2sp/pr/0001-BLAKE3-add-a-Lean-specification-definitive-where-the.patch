@@ -1,18 +1,20 @@
-From c0752cd48fecf32c0c3faba3e84a8ac3f6f74466 Mon Sep 17 00:00:00 2001
+From ba049c530da92c0a200d1ee180ada525a0c5df4f Mon Sep 17 00:00:00 2001
 From: John Servil <johnservil@users.noreply.github.com>
 Date: Wed, 7 Oct 2026 16:21:45 +0000
-Subject: [PATCH] BLAKE3: add a Lean specification
+Subject: [PATCH] BLAKE3: add a Lean specification, definitive where the two
+ differ
 
 BLAKE3/Blake3.lean is an executable Lean specification of BLAKE3,
 transcribed from BLAKE3.md: sections 2.2 to 3.3 generated from it by
 generate.py, section 4 transcribed by hand. BLAKE3/check.py checks the
 Lean against the document: the generated text, every value of the
 appendix, the linked test vectors, the theorems of Theorems.lean, and
-every quotation. The appendix points at it.
+every quotation. The introduction points at it and makes it definitive
+where the two differ.
 ---
- BLAKE3.md                 |   4 +
+ BLAKE3.md                 |   5 +
  BLAKE3/.gitignore         |   4 +
- BLAKE3/Blake3.lean        | 313 ++++++++++++++++++++++++++++++++++++++
+ BLAKE3/Blake3.lean        | 314 ++++++++++++++++++++++++++++++++++++++
  BLAKE3/README.md          |  29 ++++
  BLAKE3/Tests.lean         |  79 ++++++++++
  BLAKE3/Theorems.lean      |  44 ++++++
@@ -21,7 +23,7 @@ every quotation. The appendix points at it.
  BLAKE3/lake-manifest.json |   6 +
  BLAKE3/lakefile.toml      |   8 +
  BLAKE3/lean-toolchain     |   1 +
- 11 files changed, 976 insertions(+)
+ 11 files changed, 978 insertions(+)
  create mode 100644 BLAKE3/.gitignore
  create mode 100644 BLAKE3/Blake3.lean
  create mode 100644 BLAKE3/README.md
@@ -34,20 +36,21 @@ every quotation. The appendix points at it.
  create mode 100644 BLAKE3/lean-toolchain
 
 diff --git a/BLAKE3.md b/BLAKE3.md
-index 36d5255..3d7278a 100644
+index 36d5255..7d861fc 100644
 --- a/BLAKE3.md
 +++ b/BLAKE3.md
-@@ -531,6 +531,10 @@ We provide execution traces for simple examples of BLAKE3 hashing. More
- complex test cases can be obtained from the [reference implementation]
- and its [test vectors].
+@@ -49,6 +49,11 @@ messages using a single thread on CPUs supporting AVX-512.  When using
+ multiple threads and hashing large messages, BLAKE3 can be more than
+ twenty times faster than BLAKE2.
  
 +An executable Lean specification transcribed from this document is in
-+[`BLAKE3/`](./BLAKE3/). It reproduces every value below and the test
-+vectors, and its README says how to check it against this document.
++[`BLAKE3/`](./BLAKE3/), with a checker that ties the two together (its
++README). Where this document and the Lean specification differ, the
++Lean specification is definitive.
 +
- [reference implementation]: https://github.com/BLAKE3-team/BLAKE3/tree/master/reference_impl
- [test vectors]: https://github.com/BLAKE3-team/BLAKE3/blob/60ff2eafed63b29ed1622bb6330e640c22c683ff/test_vectors/test_vectors.json
+ ### 1.1.  Hashing Modes
  
+ BLAKE3 can instantiate multiple cryptographic primitives, to offer a
 diff --git a/BLAKE3/.gitignore b/BLAKE3/.gitignore
 new file mode 100644
 index 0000000..5a12c7a
@@ -60,14 +63,15 @@ index 0000000..5a12c7a
 +__pycache__/
 diff --git a/BLAKE3/Blake3.lean b/BLAKE3/Blake3.lean
 new file mode 100644
-index 0000000..7a54109
+index 0000000..d5ef66a
 --- /dev/null
 +++ b/BLAKE3/Blake3.lean
-@@ -0,0 +1,313 @@
-+/-! # BLAKE3, as specified in `BLAKE3.md` (c2sp.org/BLAKE3, v1.0.0)
+@@ -0,0 +1,314 @@
++/-! # BLAKE3: the definitive specification, transcribed from `BLAKE3.md` (c2sp.org/BLAKE3)
 +
-+Every definition here corresponds to a section of the specification, under the same name where
-+it has one, and carries the relevant spec text above it.
++Where `BLAKE3.md` and this file differ, this file is definitive. Every definition here corresponds
++to a section of `BLAKE3.md`, under the same name where it has one, and carries the relevant text
++above it.
 +
 +Sections 2.2 to 3.3 (the IV, the permutation, the flags, `G`, and `BLAKE3_COMPRESS`) are generated
 +from `BLAKE3.md` by `generate.py`, one rule per pseudocode construct, and `check.py` requires the
@@ -379,14 +383,14 @@ index 0000000..7a54109
 +end Blake3
 diff --git a/BLAKE3/README.md b/BLAKE3/README.md
 new file mode 100644
-index 0000000..05e72dd
+index 0000000..2409d73
 --- /dev/null
 +++ b/BLAKE3/README.md
 @@ -0,0 +1,29 @@
 +# BLAKE3 in Lean
 +
-+`Blake3.lean` is an executable Lean specification of BLAKE3, transcribed from the Markdown
-+specification, [`BLAKE3.md`](../BLAKE3.md). Sections 2.2 to 3.3 (the constants, `G`, and
++`Blake3.lean` is the definitive specification of BLAKE3, an executable Lean transcription of
++[`BLAKE3.md`](../BLAKE3.md); where the two differ, `Blake3.lean` is definitive. Sections 2.2 to 3.3 (the constants, `G`, and
 +`BLAKE3_COMPRESS`) are generated from the Markdown by `generate.py`, one rule per pseudocode
 +construct; section 4 (the tree and the hashing modes) is prose there and is transcribed by hand,
 +each definition under the text it implements.

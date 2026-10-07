@@ -1,7 +1,7 @@
 # BLAKE3 in Lean
 
-`Blake3.lean` is an executable Lean specification of BLAKE3, transcribed from the Markdown
-specification, [`BLAKE3.md`](../BLAKE3.md). Sections 2.2 to 3.3 (the constants, `G`, and
+`Blake3.lean` is the definitive specification of BLAKE3, an executable Lean transcription of
+[`BLAKE3.md`](../BLAKE3.md); where the two differ, `Blake3.lean` is definitive. Sections 2.2 to 3.3 (the constants, `G`, and
 `BLAKE3_COMPRESS`) are generated from the Markdown by `generate.py`, one rule per pseudocode
 construct; section 4 (the tree and the hashing modes) is prose there and is transcribed by hand,
 each definition under the text it implements.

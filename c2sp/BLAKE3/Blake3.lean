@@ -1,7 +1,8 @@
-/-! # BLAKE3, as specified in `BLAKE3.md` (c2sp.org/BLAKE3, v1.0.0)
+/-! # BLAKE3: the definitive specification, transcribed from `BLAKE3.md` (c2sp.org/BLAKE3)
 
-Every definition here corresponds to a section of the specification, under the same name where
-it has one, and carries the relevant spec text above it.
+Where `BLAKE3.md` and this file differ, this file is definitive. Every definition here corresponds
+to a section of `BLAKE3.md`, under the same name where it has one, and carries the relevant text
+above it.
 
 Sections 2.2 to 3.3 (the IV, the permutation, the flags, `G`, and `BLAKE3_COMPRESS`) are generated
 from `BLAKE3.md` by `generate.py`, one rule per pseudocode construct, and `check.py` requires the
