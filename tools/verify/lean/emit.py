@@ -33,12 +33,26 @@ def main():
     path = os.path.join(HERE, "Generic.lean")
     new = generate.splice(open(path).read(), text)
     open(path, "w").write(new)
-    for args in (["build"], ["env", "lean", "--run", "Emit.lean", "compress.json"]):
+    for args in (["build"], ["env", "lean", "--run", "Emit.lean", "compress.json", "samples.json"]):
         r = subprocess.run(["lake", *args], cwd=HERE, capture_output=True, text=True)
         if r.returncode:
             sys.exit(f"emit.py: lake {' '.join(args)} failed:\n{r.stdout[-3000:]}{r.stderr[-2000:]}")
-    print("emit.py: Generic.lean holds the specification's text; Bridge.lean proves it the specification's"
-          " compression at UInt32; compress.json written")
+    # The graph, read as lean_spec.py reads it, at the specification's own sample outputs.
+    sys.path.insert(0, os.path.dirname(HERE))
+    import json
+    import lean_spec
+    from z3 import BitVecVal, simplify
+    for row in json.load(open(os.path.join(HERE, "samples.json"))):
+        ins = row["inputs"]
+        w = lambda n: BitVecVal(ins[n], 32)
+        got = lean_spec.compress([w(f"h{i}") for i in range(8)], [w(f"m{i}") for i in range(16)],
+                                 BitVecVal(ins["t"], 64), w("len"), w("flags"))
+        if [simplify(x).as_long() for x in got] != row["outputs"]:
+            sys.exit("emit.py: compress.json, read by lean_spec.py, differs from the specification at a sample")
+    os.remove(os.path.join(HERE, "samples.json"))
+    print("emit.py: Generic.lean holds the specification's text; Bridge.lean and Sound.lean prove what"
+          " Emit.lean writes is the specification's compression; compress.json written, and read by"
+          " lean_spec.py it agrees with the specification at the samples")
 
 
 if __name__ == "__main__":

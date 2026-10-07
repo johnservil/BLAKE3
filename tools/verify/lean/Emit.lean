@@ -1,33 +1,11 @@
-import Generic
+import Sound
 import Std.Data.HashMap
 
-/-! The compression function over symbolic terms, written as a graph.
-
-`Term` is a free term: each `+`, `^^^`, `rotr`, numeral, and counter word builds a node. The
-generic compression (the specification's text, `Generic.lean`) applied to variables builds the
-16 output terms; the graph is written with each shared subterm once, as the evaluation shared it.
-Every operation of the generic text is one of these nodes, so the graph computes, under the
-meaning `lean_spec.py` gives each node (32-bit addition, xor, rotation; the counter's low and
-high words), what the generic text computes at `UInt32`: the specification's function
-(`Bridge.lean`). -/
-
-open Blake3Generic
-
-inductive Term where
-  | var (name : String)
-  | const (value : Nat)
-  | add (a b : Term)
-  | xor (a b : Term)
-  | rotr (a : Term) (n : Nat)
-  | low (counter : String)
-  | high (counter : String)
-  deriving Inhabited
-
-instance : Add Term := ⟨.add⟩
-instance : XorOp Term := ⟨.xor⟩
-instance (n : Nat) : OfNat Term n := ⟨.const (n % 2 ^ 32)⟩
-instance : Rotr Term := ⟨.rotr⟩
-instance : Halves String Term := ⟨.low, .high⟩
+/-! `symbolic` (`Sound.lean`), written as a graph for `lean_spec.py`: each node once, as the
+evaluation shared it. `Sound.lean` proves `symbolic` evaluates to the specification's compression
+function under the meaning `Term.eval` gives each node, the meaning `lean_spec.py` gives it in Z3.
+The specification's own outputs at a few inputs go beside the graph, so that `emit.py` checks this
+printer and `lean_spec.py` against them. -/
 
 /-- Nodes in order, each shared subterm once: sharing is the evaluation's own (a value read
 twice is one object), found by address. -/
@@ -65,8 +43,19 @@ unsafe def graph (outs : List Term) : String := Id.run do
 
 @[implemented_by graph] opaque graphSafe (outs : List Term) : String
 
+/-- Sample inputs: words from a fixed sequence (i * 0x9E3779B9 + k), the counter likewise. -/
+def sample (k : Nat) : (String → UInt32) × UInt64 :=
+  let word (n : Nat) : UInt32 := (n * 0x9E3779B9 + 977 * k + 1).toUInt32
+  (fun name => word (name.hash.toNat % 1000003), (k * 0x9E3779B97F4A7C15 + 5).toUInt64)
+
 def main (args : List String) : IO Unit := do
-  let h : Vector Term 8 := Vector.ofFn fun i => .var s!"h{i.val}"
-  let m : Vector Term 16 := Vector.ofFn fun i => .var s!"m{i.val}"
-  let out := BLAKE3_COMPRESS h m "t" (.var "len") (.var "flags")
-  IO.FS.writeFile (args.head!) (graphSafe out.toList)
+  IO.FS.writeFile (args.head!) (graphSafe symbolic.toList)
+  -- The specification's outputs at the samples, with the inputs that gave them.
+  let names := (List.range 8).map (s!"h{·}") ++ (List.range 16).map (s!"m{·}") ++ ["len", "flags"]
+  let rows := (List.range 4).map fun k =>
+    let (env, t) := sample k
+    let out := Blake3.BLAKE3_COMPRESS (Vector.ofFn fun i => env s!"h{i.val}") (Vector.ofFn fun i => env s!"m{i.val}")
+      t (env "len") (env "flags")
+    let ins := ", ".intercalate (names.map fun n => s!"\"{n}\": {(env n).toNat}")
+    s!"\{\"inputs\": \{{ins}, \"t\": {t.toNat}}, \"outputs\": {out.toList.map (·.toNat)}}"
+  IO.FS.writeFile (args[1]!) ("[\n" ++ ",\n".intercalate rows ++ "\n]\n")

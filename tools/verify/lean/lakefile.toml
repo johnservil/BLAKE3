@@ -1,5 +1,5 @@
 name = "Blake3Servil"
-defaultTargets = ["Generic", "Bridge"]
+defaultTargets = ["Generic", "Bridge", "Term", "Sound"]
 
 [[require]]
 name = "Blake3"
@@ -10,3 +10,9 @@ name = "Generic"
 
 [[lean_lib]]
 name = "Bridge"
+
+[[lean_lib]]
+name = "Term"
+
+[[lean_lib]]
+name = "Sound"

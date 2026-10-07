@@ -60,11 +60,13 @@ inputs, pointers are (region, offset) pairs. The run checks:
   checked against all of it (its README). `lean/Generic.lean` holds the
   same generated text over any word type; `lean/Bridge.lean` proves, in
   Lean's kernel, that at 32-bit words it is the specification's
-  `BLAKE3_COMPRESS`; `lean/Emit.lean` runs it over symbolic terms and writes
-  the result as a graph, `lean/compress.json`, which `lean_spec.py` reads
-  as Z3 terms. The step from Lean to Z3 rests on each node meaning the
-  same 32-bit operation in both, and on the generic text using no
-  operation but those (it is polymorphic in the word type).
+  `BLAKE3_COMPRESS`; `lean/Sound.lean` proves that the symbolic terms it
+  computes (`symbolic`) evaluate, under each node's meaning on 32-bit words
+  (`Term.eval`), to the specification's `BLAKE3_COMPRESS` of the inputs.
+  `lean/Emit.lean` writes those terms as a graph, `lean/compress.json`, and
+  `lean_spec.py` reads each node as Z3's operation of the same meaning; the
+  printer and the reader (some 40 lines) are checked together against the
+  specification's own outputs at sample inputs (`lean/emit.py`).
 
 - **The instruction models** (`aarch64.py`, `vector.py`, `sme.py`), each
   a few lines following the Arm architecture reference manual.
