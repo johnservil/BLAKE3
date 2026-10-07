@@ -187,6 +187,27 @@ def main():
             failures += 1
         except (Unproved, KeyError) as e:
             print(f"Rust mutant, {what} at {addr:#x}: rejected ({e})")
+    # The induction over the NEON extended output's loop: its counter and
+    # pointer steps, which only the step from one iteration to the next sees.
+    lib.code = dict(original)
+    function = "_RNvNtCs5y7Y5DyUngN_13blake3_servil8neon_xof8xof_many"
+    head = prove_rust.loop_head(lib, "verify_neon_xof_many", function)
+    back = next(a for a, (m, o) in sorted(original.items())
+                if a > head and m.startswith("b.") and int(o[0].split()[0], 16) == head)
+    body = [a for a in sorted(original) if head <= a <= back]
+    find = prove_rust.loop_head
+    prove_rust.loop_head = lambda *args: head
+    for what, imm, new in (("the loop's counter step", ("#0x8",), "#0x9"), ("the loop's pointer step", ("#0x200",), "#0x1c0")):
+        a = next(a for a in body if original[a][0] == "add" and original[a][1][-1] in imm)
+        lib.code = dict(original)
+        lib.code[a] = ("add", original[a][1][:-1] + [new])
+        try:
+            prove_rust.prove_xof_every(lib, "verify_neon_xof_many", function, 8, 16)
+            print(f"induction mutant, {what} at {a:#x}: PROVED (the proof is vacuous here)")
+            failures += 1
+        except (Unproved, KeyError) as e:
+            print(f"induction mutant, {what} at {a:#x}: rejected ({e})")
+    prove_rust.loop_head = find
     sys.exit(1 if failures else 0)
 
 

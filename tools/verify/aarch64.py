@@ -16,11 +16,81 @@ reference manual, and cross-checked on the CPU (cross_check.py).
 import re
 import subprocess
 from z3 import (BitVec, BitVecVal, Concat, Extract, LShR, RotateRight, ZeroExt,
-                SignExt, simplify, is_bv_value)
+                SignExt, simplify, is_bv_value, BoolRef, Not, And, Or, If, UGE, ULE, Solver, unsat,
+                is_true, is_false, Z3_OP_UNINTERPRETED)
 
 
 class Unproved(Exception):
     """The run met something it cannot or must not do: the proof fails."""
+
+
+class Undecided(Exception):
+    """A branch on lengths that the run's assumptions leave open: the prover
+    splits the run there, one path for each answer (induction.py)."""
+    def __init__(self, cond):
+        super().__init__("a branch the assumptions leave open")
+        self.cond = cond
+
+
+def term_symbols(term, out=None, seen=None):
+    """The names of the uninterpreted constants in `term`."""
+    out = set() if out is None else out
+    seen = set() if seen is None else seen
+    if term.get_id() in seen:
+        return out
+    seen.add(term.get_id())
+    if term.num_args() == 0 and term.decl().kind() == Z3_OP_UNINTERPRETED:
+        out.add(term.decl().name())
+    for c in term.children():
+        term_symbols(c, out, seen)
+    return out
+
+
+def lengths_only(m, term):
+    """Whether `term` depends on the run's length symbols alone (never on
+    data): only such terms may steer a branch or an address."""
+    return bool(m.lengths) and term_symbols(term) <= m.lengths
+
+
+def decide(m, cond):
+    """A condition's truth: concrete, or settled by the run's assumptions
+    for a condition on lengths; otherwise Undecided (on lengths) or Unproved
+    (on data)."""
+    if isinstance(cond, bool):
+        return cond
+    c = simplify(cond)
+    if is_true(c):
+        return True
+    if is_false(c):
+        return False
+    if not lengths_only(m, c):
+        raise Unproved("a branch depends on data")
+    for answer, test in ((True, Not(c)), (False, c)):
+        s = Solver()
+        s.add(*m.assumptions, test)
+        if s.check() == unsat:
+            return answer
+    raise Undecided(c)
+
+
+def holds(m, cond):
+    """Whether `cond` (on lengths) follows from the run's assumptions."""
+    s = Solver()
+    s.add(*m.assumptions, Not(cond))
+    return s.check() == unsat
+
+
+def key(offset):
+    """A memory location's key: a concrete offset, or a symbolic one in
+    normal form (a sum of products of length symbols and constants)."""
+    if isinstance(offset, int):
+        return offset
+    t = simplify(offset, som=True, bv_sort_ac=True)
+    return t.as_long() if is_bv_value(t) else t.sexpr()
+
+
+def as_bv(offset):
+    return BitVecVal(offset % (1 << 64), 64) if isinstance(offset, int) else offset
 
 
 def concrete(term):
@@ -37,7 +107,9 @@ class Ptr:
         self.region, self.offset = region, offset
 
     def __add__(self, n):
-        return Ptr(self.region, self.offset + n)
+        if isinstance(self.offset, int) and isinstance(n, int):
+            return Ptr(self.region, self.offset + n)
+        return Ptr(self.region, simplify(as_bv(self.offset) + as_bv(n), som=True, bv_sort_ac=True))
 
     def __repr__(self):
         return f"{self.region}+{self.offset}"
@@ -61,8 +133,10 @@ class Machine:
         self.code, self.regions = code, regions
         self.x = {}          # general registers, 64-bit terms or Ptr
         self.v = {}          # vector registers: four 32-bit lane terms, lane 0 first
-        self.nzcv = None     # concrete flags (n, z, c, v)
+        self.nzcv = None     # flags (n, z, c, v): booleans, or Z3 conditions on lengths
         self.steps = 0
+        self.lengths = set()     # symbols that may steer branches and addresses (induction.py)
+        self.assumptions = []    # what the run assumes of them
 
     # Registers.
     def reg(self, name):
@@ -99,7 +173,13 @@ class Machine:
         if r is None:
             raise Unproved(f"access to {addr.region}, which is not memory")
         lo = r.lo if r.name != "stack" else self.x["sp"].offset
-        if addr.offset < lo or addr.offset + n > r.size:
+        if isinstance(addr.offset, int) and isinstance(r.size, int):
+            inside = lo <= addr.offset and addr.offset + n <= r.size
+        else:
+            # Offsets and sizes on lengths: in bounds under the run's assumptions.
+            off = as_bv(addr.offset)
+            inside = holds(self, And(UGE(off, as_bv(lo)), ULE(off + n, as_bv(r.size)), ULE(off, off + n)))
+        if not inside:
             raise Unproved(f"{'write' if write else 'read'} of {n} bytes at {addr} outside [{lo}, {r.size})")
         if write and not r.writable:
             raise Unproved(f"write to read-only {r.name}")
@@ -109,11 +189,12 @@ class Machine:
         r = self.access(addr, n, False)
         parts = []
         for i in range(n):
-            b = r.bytes.get(addr.offset + i)
+            k = key((addr + i).offset)
+            b = r.bytes.get(k)
             if b is None:
-                if r.initial is None:
+                if r.initial is None or not isinstance(k, int):
                     raise Unproved(f"read of unwritten {addr + i}")
-                b = r.initial(addr.offset + i)
+                b = r.initial(k)
             parts.append(b)
         if all(isinstance(p, tuple) for p in parts) and n == 8:
             ptrs = {(p[0].region, p[0].offset) for p in parts}
@@ -128,10 +209,10 @@ class Machine:
         if isinstance(val, Ptr):
             assert n == 8, "a pointer stored in 8 bytes"
             for i in range(8):
-                r.bytes[addr.offset + i] = (val, i)
+                r.bytes[key((addr + i).offset)] = (val, i)
             return
         for i in range(n):
-            r.bytes[addr.offset + i] = Extract(8 * i + 7, 8 * i, val)
+            r.bytes[key((addr + i).offset)] = Extract(8 * i + 7, 8 * i, val)
 
 
 import shutil
@@ -221,15 +302,38 @@ def imm(s):
     return int(s, 0)
 
 
+def _not(a):
+    return (not a) if isinstance(a, bool) else Not(a)
+
+
+def _and(a, b):
+    return (a and b) if isinstance(a, bool) and isinstance(b, bool) else And(a, b)
+
+
+def _or(a, b):
+    return (a or b) if isinstance(a, bool) and isinstance(b, bool) else Or(a, b)
+
+
+def _eq(a, b):
+    return (a == b) if isinstance(a, bool) and isinstance(b, bool) else (a == b)
+
+
 CONDS = {
-    "eq": lambda n, z, c, v: z, "ne": lambda n, z, c, v: not z,
+    "eq": lambda n, z, c, v: z, "ne": lambda n, z, c, v: _not(z),
     "hs": lambda n, z, c, v: c, "cs": lambda n, z, c, v: c,
-    "lo": lambda n, z, c, v: not c, "cc": lambda n, z, c, v: not c,
-    "mi": lambda n, z, c, v: n, "pl": lambda n, z, c, v: not n,
-    "hi": lambda n, z, c, v: c and not z, "ls": lambda n, z, c, v: not (c and not z),
-    "ge": lambda n, z, c, v: n == v, "lt": lambda n, z, c, v: n != v,
-    "gt": lambda n, z, c, v: not z and n == v, "le": lambda n, z, c, v: z or n != v,
+    "lo": lambda n, z, c, v: _not(c), "cc": lambda n, z, c, v: _not(c),
+    "mi": lambda n, z, c, v: n, "pl": lambda n, z, c, v: _not(n),
+    "hi": lambda n, z, c, v: _and(c, _not(z)), "ls": lambda n, z, c, v: _not(_and(c, _not(z))),
+    "ge": lambda n, z, c, v: _eq(n, v), "lt": lambda n, z, c, v: _not(_eq(n, v)),
+    "gt": lambda n, z, c, v: _and(_not(z), _eq(n, v)), "le": lambda n, z, c, v: _or(z, _not(_eq(n, v))),
 }
+
+
+def cond(m, name):
+    """Condition `name` on the current flags, decided (see decide)."""
+    if m.nzcv is None:
+        raise Unproved(f"condition {name} before any comparison")
+    return decide(m, CONDS[name](*m.nzcv))
 
 
 def width(reg):
@@ -302,7 +406,10 @@ def add_values(a, b, sub=False):
     if isinstance(a, Ptr):
         k = concrete(b)
         if k is None:
-            raise Unproved(f"pointer {a} moved by a data-dependent amount")
+            if not lengths_only(_machine[0], b):
+                raise Unproved(f"pointer {a} moved by a data-dependent amount")
+            b = b if b.size() == 64 else ZeroExt(64 - b.size(), b)
+            return Ptr(a.region, simplify(as_bv(a.offset) + (-b if sub else b), som=True, bv_sort_ac=True))
         if k >= 1 << (b.size() - 1):
             k -= 1 << b.size()      # two's complement: a negative step
         return a + (-k if sub else k)
@@ -314,20 +421,37 @@ def add_values(a, b, sub=False):
 
 
 def set_flags_sub(m, a, b, w):
-    """NZCV of a - b, which must be concrete (or two pointers into one region)."""
+    """NZCV of a - b: concrete, or (on lengths) Z3 conditions."""
     if isinstance(a, Ptr) or isinstance(b, Ptr):
         if not (isinstance(a, Ptr) and isinstance(b, Ptr) and a.region == b.region):
             raise Unproved(f"comparison of {a} with {b}")
-        x, y = a.offset % (1 << 64), b.offset % (1 << 64)
+        if isinstance(a.offset, int) and isinstance(b.offset, int):
+            x, y = a.offset % (1 << 64), b.offset % (1 << 64)
+        else:
+            return symbolic_flags(m, as_bv(a.offset), as_bv(b.offset), 64)
     else:
         x, y = concrete(a), concrete(b)
         if x is None or y is None:
-            raise Unproved("a condition depends on data")
+            if not (lengths_only(m, a) or concrete(a) is not None) or not (lengths_only(m, b) or concrete(b) is not None):
+                raise Unproved("a condition depends on data")
+            return symbolic_flags(m, a, b, w)
     mask = (1 << w) - 1
     x, y = x & mask, y & mask
     r = (x - y) & mask
     top = 1 << (w - 1)
     m.nzcv = (bool(r & top), r == 0, x >= y, bool(((x ^ y) & (x ^ r)) & top))
+
+
+def symbolic_flags(m, a, b, w):
+    """NZCV of a - b on lengths, as Z3 conditions."""
+    x, y = Extract(w - 1, 0, a) if a.size() > w else a, Extract(w - 1, 0, b) if b.size() > w else b
+    r = x - y
+    top = lambda t: Extract(w - 1, w - 1, t) == 1
+    m.nzcv = (top(r), r == 0, UGE(x, y), top((x ^ y) & (x ^ r)))
+
+
+# The machine whose step is running (add_values reads its length symbols).
+_machine = [None]
 
 
 def mem_operand(m, ops, k):
@@ -388,6 +512,7 @@ UNSCALED = {"ldur": "ldr", "stur": "str", "ldurb": "ldrb", "sturb": "strb", "ldu
 
 
 def step(m, pc, mnem, ops):
+    _machine[0] = m
     mnem = UNSCALED.get(mnem, mnem)
     w = width(ops[0]) if ops and ops[0][0] in "wx" else 64
     if mnem == "nop":
@@ -407,6 +532,11 @@ def step(m, pc, mnem, ops):
         a, b = m.reg(ops[1]), shifted(m, ops[2:], w)
         if isinstance(a, Ptr) or isinstance(b, Ptr):
             raise Unproved(f"{mnem} on a pointer")
+        if mnem == "orr" and lengths_only(m, a) and concrete(b) is not None and holds(m, a & b == 0):
+            # Bits in common none (under the assumptions): the or is the sum,
+            # the form offsets take elsewhere (key).
+            m.set(ops[0], a + b)
+            return None
         m.set(ops[0], {"eor": a ^ b, "orr": a | b, "and": a & b}[mnem])
         return None
     if mnem == "ror":
@@ -423,12 +553,19 @@ def step(m, pc, mnem, ops):
         # which must be concrete, as cmp's are. tst is ands into the zero register.
         first = 0 if mnem == "tst" else 1
         a, b = m.reg(ops[first]), shifted(m, ops[first + 1:], w)
-        r = concrete(a & b) if not isinstance(a, Ptr) and not isinstance(b, Ptr) else None
-        if r is None:
+        if isinstance(a, Ptr) or isinstance(b, Ptr):
+            raise Unproved(f"{mnem} of a pointer")
+        r = concrete(a & b)
+        if r is not None:
+            m.nzcv = (bool(r >> (w - 1) & 1), r == 0, False, False)
+            result = BitVecVal(r, w)
+        elif lengths_only(m, a & b):
+            result = a & b
+            m.nzcv = (Extract(w - 1, w - 1, result) == 1, result == 0, False, False)
+        else:
             raise Unproved("a condition depends on data")
-        m.nzcv = (bool(r >> (w - 1) & 1), r == 0, False, False)
         if mnem == "ands":
-            m.set(ops[0], BitVecVal(r, w))
+            m.set(ops[0], result)
         return None
     if mnem == "neg":
         v = m.reg(ops[1])
@@ -439,14 +576,14 @@ def step(m, pc, mnem, ops):
     if mnem == "cset":
         if m.nzcv is None:
             raise Unproved("cset before any comparison")
-        m.set(ops[0], BitVecVal(1 if CONDS[ops[1]](*m.nzcv) else 0, w))
+        m.set(ops[0], BitVecVal(1 if cond(m, ops[1]) else 0, w))
         return None
     if mnem == "ccmp":
         # If the condition holds on the current flags, they become those of
         # the comparison; otherwise the immediate's (n z c v from bit 3 down).
         if m.nzcv is None:
             raise Unproved(f"{mnem} before any comparison")
-        if CONDS[ops[3]](*m.nzcv):
+        if cond(m, ops[3]):
             b = operand_value(m, ops[1], w)
             set_flags_sub(m, m.reg(ops[0]), b, w)
         else:
@@ -493,7 +630,7 @@ def step(m, pc, mnem, ops):
     if mnem == "csel":
         if m.nzcv is None:
             raise Unproved("csel before any comparison")
-        m.set(ops[0], m.reg(ops[1]) if CONDS[ops[3]](*m.nzcv) else m.reg(ops[2]))
+        m.set(ops[0], m.reg(ops[1]) if cond(m, ops[3]) else m.reg(ops[2]))
         return None
     if mnem == "adr":
         m.set(ops[0], Ptr("text", int(ops[1].split()[0], 16)))
@@ -538,7 +675,7 @@ def step(m, pc, mnem, ops):
         return None
     if mnem.startswith("b.") or mnem == "b":
         target = int(ops[0].split()[0], 16)
-        if mnem == "b" or CONDS[mnem[2:]](*m.nzcv):
+        if mnem == "b" or cond(m, mnem[2:]):
             return target
         return None
     if mnem in ("tbz", "tbnz"):
@@ -550,11 +687,10 @@ def step(m, pc, mnem, ops):
         target = int(ops[2].split()[0], 16)
         return target if (bit == 0) == (mnem == "tbz") else None
     if mnem in ("cbz", "cbnz"):
-        k = concrete(m.reg(ops[0])) if not isinstance(m.reg(ops[0]), Ptr) else 1
-        if k is None:
-            raise Unproved("a branch depends on data")
+        v = m.reg(ops[0])
+        zero = False if isinstance(v, Ptr) else decide(m, v == 0)
         target = int(ops[1].split()[0], 16)
-        return target if (k == 0) == (mnem == "cbz") else None
+        return target if zero == (mnem == "cbz") else None
     if mnem == "ret":
         return "ret"
     import vector

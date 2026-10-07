@@ -88,9 +88,21 @@ inputs, pointers are (region, offset) pairs. The run checks:
 The Rust paths (`prove_rust.py`, through `rust/src/lib.rs`, one exported
 call of the library's `Platform` methods each): the portable compression in
 place and its extended-output block; the NEON platform's compression in
-place (the Rust around the scalar kernel); its extended output of 1 to 20
-blocks (Rust NEON intrinsics, four blocks at a time, then the portable
-code). The compiled library runs as a whole, its calls of memcpy and
+place (the Rust around the scalar kernel); its extended output at every
+count (Rust NEON intrinsics, eight blocks an iteration, then four, then the
+portable code): 1 to 20 blocks one by one, and 16 or more by induction over
+the loop (`induction.py`).
+
+**Induction** (`induction.py`): two successive arrivals at a loop's head are
+generalized into one state at a symbolic iteration K (positions equal in
+both kept, those that differ by a constant written start + K x difference,
+the rest unknown); every path from that state is run, the run splitting
+where a branch on the lengths is open, and each must return to the head in
+the state for K + 1, its iteration's output right and nothing else
+written, or leave the loop with all its output right. Only symbols declared
+as lengths may steer a branch or an address, so a branch on data still
+stops a proof; equalities of lengths are proved under the path's
+assumptions. The compiled library runs as a whole, its calls of memcpy and
 memmove by their contracts.
 
 Not proved here: the C NEON kernel, the x86 kernels, and the Rust that

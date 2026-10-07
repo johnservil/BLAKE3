@@ -15,7 +15,7 @@ hold, so a mismatch is a failed proof, never a false one.
 import sys
 from z3 import (Z3_OP_BADD, Z3_OP_BXOR, Z3_OP_ROTATE_RIGHT, Z3_OP_ROTATE_LEFT, Z3_OP_EXTRACT,
                 Z3_OP_CONCAT, Z3_OP_ZERO_EXT, Z3_OP_EXT_ROTATE_RIGHT, Z3_OP_EXT_ROTATE_LEFT,
-                Z3_OP_UNINTERPRETED, BitVecVal, Solver, unsat, substitute, simplify, is_bv_value)
+                Z3_OP_UNINTERPRETED, BitVecVal, BitVec, Solver, unsat, sat, Or, substitute, simplify, is_bv_value)
 import random
 import re
 
@@ -88,16 +88,43 @@ def symbols_of(t, out, seen):
         symbols_of(c, out, seen)
 
 
+# The context of the comparisons (induction.py): the path's assumptions on
+# its length symbols, and points that satisfy them. Leaves are compared
+# under the assumptions, and fingerprinted with the length symbols at those
+# points (so leaves equal under the assumptions share a fingerprint).
+_context = {"assumptions": [], "points": []}
+
+
+def set_context(assumptions, lengths):
+    """Compare under `assumptions` on the symbols named `lengths`; the
+    normal forms and their caches start afresh."""
+    _ids.clear(); _nodes.clear(); _memo.clear(); _arith.clear(); _data.clear(); _leaves.clear()
+    points = []
+    if assumptions:
+        s = Solver()
+        s.add(*assumptions)
+        for _ in range(ROUNDS):
+            if s.check() != sat:
+                break
+            model = s.model()
+            point = {d.name(): model[d] for d in model.decls() if d.name() in lengths}
+            points.append(point)
+            s.add(Or([BitVec(n, v.size()) != v for n, v in point.items()]) if point else False)
+    _context["assumptions"], _context["points"] = list(assumptions), points
+
+
 def leaf(t):
     """A term with no rounds in it: equal leaves get one id. Leaves whose
-    values agree at random points are proved equal by the solver; the
-    random points only choose which pairs to try."""
+    values agree at sample points are proved equal by the solver, under the
+    context's assumptions; the points only choose which pairs to try."""
     t = simplify(t)
     syms = {}
     symbols_of(t, syms, set())
     print_ = []
     for r in range(ROUNDS):
-        sub = [(v, BitVecVal(_values.setdefault((n, r), random.getrandbits(v.size())) % (1 << v.size()), v.size()))
+        point = _context["points"][r] if r < len(_context["points"]) else {}
+        sub = [(v, point[n] if n in point else
+                BitVecVal(_values.setdefault((n, r), random.getrandbits(v.size())) % (1 << v.size()), v.size()))
                for n, v in syms.items()]
         print_.append(simplify(substitute(t, *sub)).as_long() if sub else simplify(t).as_long())
     key = (t.size(), tuple(print_))
@@ -106,7 +133,7 @@ def leaf(t):
             return n
         s = Solver()
         s.set("timeout", 60_000)
-        s.add(other != t)
+        s.add(*_context["assumptions"], other != t)
         if s.check() == unsat:
             return n
     n = intern(("leaf", t.sexpr()))

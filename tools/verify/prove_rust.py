@@ -115,6 +115,138 @@ def prove_xof(lib, entry, blocks):
     return m.steps
 
 
+def loop_head(lib, entry, function):
+    """The head of `function`'s loop: the target of its one backward jump that
+    a run of 24 blocks takes twice."""
+    import collections
+    start = lib.syms[function]
+    later = [a for a in lib.syms.values() if a > start]
+    end = min(later) if later else start + (1 << 20)
+    jumps = collections.Counter()
+    step = aarch64.step
+    last = [None]
+    def trace(m, pc, mnem, ops):
+        if last[0] is not None and pc < last[0] and start <= pc < end:
+            jumps[pc] += 1
+        last[0] = pc
+        return step(m, pc, mnem, ops)
+    aarch64.step = trace
+    try:
+        prove_xof(lib, entry, 24)
+    finally:
+        aarch64.step = step
+    heads = [pc for pc, n in jumps.items() if n == 2]
+    if len(heads) != 1:
+        raise Unproved(f"{function}: expected one loop taken twice, found {sorted(map(hex, heads))}")
+    return heads[0]
+
+
+def prove_xof_every(lib, entry, function, per_iteration, from_count):
+    """The extended output at every count from `from_count` blocks, by
+    induction over the loop of `function`, which writes `per_iteration`
+    blocks an iteration (induction.py). Counts below `from_count` are the
+    concrete cases."""
+    import induction
+    from z3 import ULE, UGE, BitVecVal
+    head = loop_head(lib, entry, function)
+    cvb, block, length, counter, flags = inputs()
+    n, k = BitVec("len_n", 64), BitVec("len_k", 64)
+    regions = {"cv": Region("cv", 32, False, lambda o: cvb[o]), "block": Region("block", 64, False, lambda o: block[o]),
+               "out": Region("out", n * 64, True, None)}
+    m = machine(lib, regions)
+    m.lengths = {"len_n", "len_k"}
+    m.assumptions = [UGE(n, from_count), ULE(n, 1 << 57)]
+    m.x[0], m.x[1], m.x[2], m.x[3], m.x[4], m.x[5], m.x[6] = (Ptr("cv", 0), Ptr("block", 0), ZeroExt(56, length), counter,
+                                                              ZeroExt(56, flags), Ptr("out", 0), n)
+    s0 = induction.run_to(m, lib.syms[entry], head)
+    if s0.regions["out"].bytes:
+        raise Unproved("output written before the loop")
+    s1 = induction.run_to(induction.snapshot(s0), head, head)
+    check_blocks(s1, 0, per_iteration, cvb, block, length, counter, flags, BitVecVal(0, 64))
+    g = induction.Generalized(s0, s1, k)
+    mk = g.machine(s0, k)
+    mk.assumptions = list(s0.assumptions) + [ULE(k * per_iteration + per_iteration, n), ULE(k, 1 << 54)]
+    ends = induction.paths(mk, head, {head})
+    kinds = {"head": 0, "return": 0}
+    import canon
+    for end, how in ends:
+        kinds[how] += 1
+        canon.set_context(end.assumptions, end.lengths)
+        if how == "head":
+            expect_state(end, g, k + 1)
+            check_blocks(end, 0, per_iteration, cvb, block, length, counter, flags, k * per_iteration, exact=True)
+        else:
+            rest = next((r for r in range(per_iteration) if aarch64.holds(end, n == k * per_iteration + per_iteration + r)), None)
+            if rest is None:
+                raise Unproved("a path leaves the loop with a count the proof does not determine")
+            check_blocks(end, 0, per_iteration + rest, cvb, block, length, counter, flags, k * per_iteration, exact=True)
+            for i in range(19, 30):
+                if isinstance(end.x[i], Ptr) or not same(end.x[i], BitVec(f"x{i}_in", 64)):
+                    raise Unproved(f"callee-saved x{i} changed")
+    canon.set_context([], set())
+    return f"{kinds['head']} paths back to the loop's head, {kinds['return']} out of it"
+
+
+def check_blocks(m, first, count, cvb, block, length, counter, flags, base_block, exact=False):
+    """Output blocks base_block + first .. + count - 1 are the specification's
+    at counter + their index; with `exact`, the only bytes written."""
+    out = m.regions["out"]
+    want_keys = set()
+    for i in range(first, first + count):
+        idx = base_block + i
+        words = want(cvb, block, length, counter + idx, flags)
+        offs = [aarch64.key(aarch64.as_bv(idx * 64 if not isinstance(idx, int) else BitVecVal(idx * 64, 64)) + j) for j in range(64)]
+        want_keys.update(offs)
+        if any(o not in out.bytes for o in offs):
+            raise Unproved(f"output block {i} of the iteration is not wholly written")
+        got = spec.words([out.bytes[o] for o in offs])
+        for w, (gw, x) in enumerate(zip(got, words)):
+            if not same(gw, x):
+                raise Unproved(f"output block {i} of the iteration, word {w}, differs from the specification")
+    if exact and set(out.bytes) != want_keys:
+        raise Unproved("the iteration writes output bytes outside its blocks")
+
+
+def expect_state(m, g, kval):
+    """The machine is the generalized state at iteration `kval`."""
+    inst = g.at(kval)
+    def agree(a, b):
+        if b is None:
+            return True
+        if isinstance(a, tuple) or isinstance(b, tuple):
+            # A byte of a stored pointer.
+            return (isinstance(a, tuple) and isinstance(b, tuple) and a[1] == b[1]
+                    and agree(a[0], b[0]))
+        if isinstance(b, Ptr) or isinstance(a, Ptr):
+            return (isinstance(a, Ptr) and isinstance(b, Ptr) and a.region == b.region
+                    and aarch64.holds(m, aarch64.as_bv(a.offset) == aarch64.as_bv(b.offset)))
+        if same(a, b):
+            return True
+        return aarch64.lengths_only(m, a - b) and aarch64.holds(m, a == b)
+    for r, gv in g.x.items():
+        if not agree(m.x[r], inst(gv)):
+            raise Unproved(f"x{r} at the loop's head differs from the next iteration's")
+    for r, lanes in g.v.items():
+        for l, gv in enumerate(lanes):
+            if not agree(m.v[r][l], inst(gv)):
+                raise Unproved(f"v{r} lane {l} at the loop's head differs from the next iteration's")
+    for name, mem in g.mem.items():
+        if name == "out":
+            continue
+        region = m.regions[name]
+        for off, b in mem.items():
+            if b is None:
+                continue
+            if isinstance(b, tuple) and b[0] == "word":
+                continue
+            if off not in region.bytes or not agree(region.bytes[off], b):
+                raise Unproved(f"{name}+{off} at the loop's head differs from the next iteration's")
+        for off in {o - b[2] for o, b in mem.items() if isinstance(b, tuple) and b[0] == "word"}:
+            w = induction.word(region, off)
+            if w is None or not agree(w, inst(mem[off][1])):
+                raise Unproved(f"{name}+{off} (a word) at the loop's head differs from the next iteration's")
+
+
 def main(exit=True):
     lib = Library(build())
     cases = [("portable compression in place", lambda: prove_in_place(lib, "verify_portable_compress_in_place")),
@@ -122,12 +254,16 @@ def main(exit=True):
              ("NEON platform's compression in place", lambda: prove_in_place(lib, "verify_neon_compress_in_place"))]
     cases += [(f"NEON platform's extended output, {n} blocks", (lambda n: lambda: prove_xof(lib, "verify_neon_xof_many", n))(n))
               for n in range(1, 21)]
+    cases.append(("NEON platform's extended output, every count from 16 blocks (induction over its loop)",
+                  lambda: prove_xof_every(lib, "verify_neon_xof_many",
+                                          "_RNvNtCs5y7Y5DyUngN_13blake3_servil8neon_xof8xof_many", 8, 16)))
     failed = 0
     for what, prove in cases:
         t = time.time()
         try:
-            steps = prove()
-            print(f"{what}: proved ({steps} instructions, {time.time() - t:.1f} s)", flush=True)
+            result = prove()
+            detail = f"{result} instructions" if isinstance(result, int) else result
+            print(f"{what}: proved ({detail}, {time.time() - t:.1f} s)", flush=True)
         except Unproved as e:
             print(f"{what}: NOT PROVED: {e}", flush=True)
             failed += 1
