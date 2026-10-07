@@ -16,7 +16,7 @@ The pseudocode is transcribed as follows:
   `^` (xor).
 * `x >>> n` (rotation right by `n` bits) is `rotr x n`.
 * `v[i] := e` is `v := v.set i e`; `v[a..b] := w[c..d]` is one such assignment per index.
-* `t[0]` and `t[1]` are `t.low` and `t.high`, the counter's low and high 32-bit words.
+* `t[0]` and `t[1]` are `low t` and `high t`, the counter's low and high 32-bit words.
 * `FOR i = 0 TO n DO` is `for i in List.finRange (n + 1)`, with `lo i` and `hi i` for the indices
   `i` and `i + 8` of the 16-word array.
 * `PERMUTE(m)` is `m := PERMUTE m`. -/
@@ -31,10 +31,10 @@ higher-order 32-bit word is `t[1]`. -/
 abbrev Counter := UInt64
 
 /-- `t[0]`, the counter's lower-order word. -/
-def Counter.low (t : Counter) : Word := t.toUInt32
+def low (t : Counter) : Word := t.toUInt32
 
 /-- `t[1]`, the counter's higher-order word. -/
-def Counter.high (t : Counter) : Word := (t >>> 32).toUInt32
+def high (t : Counter) : Word := (t >>> 32).toUInt32
 
 /-- `x >>> n`: `x` rotated right by `n` bits, for `n` in 1 to 31. -/
 def rotr (x : Word) (n : Nat) : Word :=
@@ -99,8 +99,8 @@ def BLAKE3_COMPRESS (h : Vector Word 8) (m : Vector Word 16) (t : Counter) (len 
   v := v.set 9 IV[1]
   v := v.set 10 IV[2]
   v := v.set 11 IV[3]
-  v := v.set 12 t.low
-  v := v.set 13 t.high
+  v := v.set 12 (low t)
+  v := v.set 13 (high t)
   v := v.set 14 len
   v := v.set 15 flags
   for _ in [0:7] do
@@ -137,8 +137,8 @@ def BLAKE3_COMPRESS_TRACE (h : Vector Word 8) (m : Vector Word 16) (t : Counter)
   v := v.set 9 IV[1]
   v := v.set 10 IV[2]
   v := v.set 11 IV[3]
-  v := v.set 12 t.low
-  v := v.set 13 t.high
+  v := v.set 12 (low t)
+  v := v.set 13 (high t)
   v := v.set 14 len
   v := v.set 15 flags
   for _ in [0:7] do

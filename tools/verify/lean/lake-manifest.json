@@ -1,0 +1,13 @@
+{"version": "1.2.0",
+ "packagesDir": ".lake/packages",
+ "packages":
+ [{"type": "path",
+   "scope": "",
+   "name": "Blake3",
+   "manifestFile": "lake-manifest.json",
+   "inherited": false,
+   "dir": "../../../c2sp/BLAKE3",
+   "configFile": "lakefile.toml"}],
+ "name": "Blake3Servil",
+ "lakeDir": ".lake",
+ "fixedToolchain": false}

@@ -1,0 +1,12 @@
+name = "Blake3Servil"
+defaultTargets = ["Generic", "Bridge"]
+
+[[require]]
+name = "Blake3"
+path = "../../../c2sp/BLAKE3"
+
+[[lean_lib]]
+name = "Generic"
+
+[[lean_lib]]
+name = "Bridge"

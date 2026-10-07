@@ -5,7 +5,7 @@ compression function, for every input, key, counter, and flags value:
 
     python3 tools/verify/prove_hybrid.py [KERNEL...]   # c/blake3_neon_hybrid_aarch64.S: c1, k2-k10, p2-p9, q1-q9 (327 cases, 2 min on 16 cores)
     python3 tools/verify/prove_sme2.py [KERNEL...]     # c/blake3_sme2_aarch64.S: chunks, chunks_at, messages, parents, xof (34 cases, 3 min)
-    python3 tools/verify/check_spec.py                  # the definition (spec.py) against BLAKE3's official test vectors
+    python3 tools/verify/lean/emit.py                   # the definition, computed from the Lean specification (needs Lean)
     python3 tools/verify/cross_check.py                 # the NEON and integer models against the CPU
     python3 tools/verify/cross_check_sme.py             # the streaming SVE and SME2 models against the CPU (needs SME2)
     python3 tools/verify/mutants.py                     # wrong kernels are rejected
@@ -33,7 +33,7 @@ takes the kernel's instructions from objdump's disassembly of the object
 inputs, pointers are (region, offset) pairs. The run checks:
 
 - **The result**: each output word equals the specification's
-  (`spec.py`, written from the BLAKE3 paper), compared in a normal form
+  (`lean_spec.py`, from the Lean specification), compared in a normal form
   (`canon.py`) that sorts sums and xors, keeps rotations, and undoes the
   byte and lane shuffles of loads, stores, spills, and transposes; small
   terms without rounds in them (the counter's halves, the flag words) go
@@ -52,14 +52,16 @@ inputs, pointers are (region, offset) pairs. The run checks:
 
 ## What it rests on
 
-- **The definition**, `spec.py`: BLAKE3's compression function in 40
-  lines, written from the BLAKE3 paper (section 2.2). `check_spec.py`
-  matches it to the C2SP specification's execution trace (c2sp.org/BLAKE3
-  v1.0.0: the state after each of the 7 rounds of one compression), and
-  builds a whole BLAKE3 on it (chunks, tree, keyed hashing, key
-  derivation, extended output, from the paper's sections 2.1-2.6) and
-  reproduces all 35 official test vectors in all three modes, 131 bytes
-  each; a swapped permutation entry or a rotation off by one fails it.
+- **The definition**: the compression function of the Lean specification,
+  `c2sp/BLAKE3/Blake3.lean`, which is generated from C2SP's `BLAKE3.md` and
+  checked against all of it (its README). `lean/Generic.lean` holds the
+  same generated text over any word type; `lean/Bridge.lean` proves, in
+  Lean's kernel, that at 32-bit words it is the specification's
+  `BLAKE3_COMPRESS`; `lean/Emit.lean` runs it over symbolic terms and writes
+  the result as a graph, `lean/compress.json`, which `lean_spec.py` reads
+  as Z3 terms. The step from Lean to Z3 rests on each node meaning the
+  same 32-bit operation in both, and on the generic text using no
+  operation but those (it is polymorphic in the word type).
 
 - **The instruction models** (`aarch64.py`, `vector.py`, `sme.py`), each
   a few lines following the Arm architecture reference manual.

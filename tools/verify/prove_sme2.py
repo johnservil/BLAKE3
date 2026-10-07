@@ -19,7 +19,7 @@ import aarch64
 from aarch64 import Region, Ptr, Unproved
 import prove_hybrid
 from prove_hybrid import Setup, byte_symbols, same
-import spec
+import lean_spec as spec
 
 ROOT_DIR = prove_hybrid.ROOT_DIR
 # An assembler that knows SME2 (Clang/LLVM 17 and later).

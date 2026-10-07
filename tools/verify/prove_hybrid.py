@@ -6,7 +6,7 @@ at every block count they take (tools/verify/README.md).
 
 Assembles the file, disassembles each kernel, and runs it symbolically
 (aarch64.py). For each block count it checks that the output equals the
-specification's (spec.py), that every access stays inside the buffers the
+specification's (lean_spec.py), that every access stays inside the buffers the
 kernel's contract gives it and inside its own stack frame, that the path
 depends only on the block count, and that the callee-saved registers come
 back unchanged. Exits nonzero on the first failure.
@@ -22,7 +22,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from z3 import BitVec, BitVecVal, Concat, Extract, ZeroExt, simplify, eq, Solver, unsat
 import aarch64
 from aarch64 import Machine, Region, Ptr, Unproved
-import spec
+import lean_spec as spec
 import canon
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))

@@ -128,9 +128,9 @@ equal to BLAKE3's compression function for every input, key, counter,
 and flags value, at every block count each takes: 327 cases. Each proof
 runs the instructions the CPU runs (the assembled object, disassembled)
 on symbolic values and compares every output word with the
-specification's: BLAKE3's compression function as the BLAKE3 paper
-defines it, written out in 40 lines of Python, which reproduces all of
-BLAKE3's official test vectors. It also shows that every memory access stays inside the
+specification's: the compression function of a Lean specification of
+BLAKE3 generated from C2SP's BLAKE3 standard, as Lean computes it
+(`c2sp/BLAKE3/`, `tools/verify/lean/`). It also shows that every memory access stays inside the
 kernel's buffers and its own stack frame, that the path depends only on
 the block count (no branch or address depends on the data), and that the
 calling convention holds. The proofs rest on models of the 40-odd

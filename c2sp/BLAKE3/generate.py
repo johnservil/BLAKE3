@@ -18,7 +18,7 @@ Translation rules (pseudocode -> Lean):
     x mod 2**32                x            (UInt32 arithmetic is mod 2^32)
     x ^ y                      x ^^^ y
     x >>> n                    rotr x n
-    t[0], t[1]                 t.low, t.high (the counter's 32-bit words)
+    t[0], t[1]                 low t, high t (the counter's 32-bit words)
     v := G( v, a, b, c, d, x, y )   v := G v a b c d x y
     PERMUTE(m)                 m := PERMUTE m
     FOR i = 0 TO n DO ... END FOR   for i in [0:n+1] do ... (over Fin for indices)
@@ -100,8 +100,8 @@ def expr(e):
     """One pseudocode expression in Lean."""
     e = e.strip()
     e = re.sub(r"\s*mod 2\*\*32", "", e)
-    e = re.sub(r"t\[0\]", "t.low", e)
-    e = re.sub(r"t\[1\]", "t.high", e)
+    e = re.sub(r"t\[0\]", "low t", e)
+    e = re.sub(r"t\[1\]", "high t", e)
     m = re.fullmatch(r"\((.*)\)\s*>>>\s*(\d+)", e)
     if m:
         return f"rotr ({expr(m.group(1))}) {m.group(2)}"
