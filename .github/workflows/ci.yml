@@ -366,7 +366,7 @@ jobs:
 
   # Note that this jobs builds AArch64 binaries from an x86_64 host.
   kernel_proofs:
-    name: proofs of the hybrid kernels
+    name: proofs of the assembly kernels
     # Arm runners: the cross-check runs each instruction form natively.
     runs-on: ubuntu-24.04-arm
     steps:

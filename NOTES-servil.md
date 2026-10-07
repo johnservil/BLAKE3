@@ -1430,6 +1430,13 @@ item out when it lands or is rejected.
 
 ### Tooling
 
+- The SME2 kernels' group loop: show its state at the loop head the same
+  at every iteration but for the advanced pointers and counter, so the
+  proofs (one and two groups) cover any number of groups.
+- The proofs' instruction models replaced by Arm's machine-readable
+  specification (Sail, Isla), or the kernels proved in s2n-bignum's HOL
+  Light model; the C NEON kernel (`c/blake3_neon.c`) proved too.
+
 - P/E classification of every Mac sample; perf_regress P against P.
 - Host load in the VM (no steal time): a reference loop timed beside the
   samples would show it.
@@ -2046,6 +2053,30 @@ To settle before documenting: whether the transient Vecs earn their
 place (a fixed array of 64 pieces on the stack would make the
 multithreaded calls allocation-free too), and a test per claim (the
 counting allocator of tests/queue_no_alloc.rs).
+
+## The assembly kernels proved (October 6, 2026)
+
+`tools/verify` (its README) proves every AArch64 assembly kernel equal to
+BLAKE3's compression for every input: the hybrids at every block count
+(327 cases), SME2's five entry points at the 512-bit vector length (34).
+Symbolic execution of the assembled object over Z3 terms; outputs
+compared in a normal form of our own (`canon.py`: sorted sums and xors,
+whole rotations, byte and lane shuffles undone), since Z3's simplifier
+splits words into bytes differently on each side and its solver cannot
+settle seven rounds; small parameter terms (counter halves, flags) go to
+the solver. Regions check every access; a data-dependent branch, select,
+address, or table index stops a proof, so proved kernels branch on
+lengths alone.
+
+Lessons, for the next tool of this kind: cache Z3 terms by id only while
+holding them (ids are reused, which could equate different terms), and
+give each proof case a fresh process (the caches grow; 16 workers ran the
+VM out of memory). The cross-checks found one model error: a four-
+register ZA move aligns its slice base down to a multiple of four.
+
+Code changed for the proofs: the SME2 message kernel's last-block length
+without a branch (285ecf0; Mac job 1442, no regression), so one proof
+covers every length (199 cases with concrete lengths became 34).
 
 ## How much of a cold one-shot call is its code (October 6, 2026, jobs 1426-1427)
 
