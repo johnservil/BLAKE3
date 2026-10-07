@@ -5,6 +5,7 @@ compression function, for every input, key, counter, and flags value:
 
     python3 tools/verify/prove_hybrid.py [KERNEL...]   # c/blake3_neon_hybrid_aarch64.S: c1, k2-k10, p2-p9, q1-q9 (327 cases, 2 min on 16 cores)
     python3 tools/verify/prove_sme2.py [KERNEL...]     # c/blake3_sme2_aarch64.S: chunks, chunks_at, messages, parents, xof (34 cases, 3 min)
+    python3 tools/verify/check_spec.py                  # the definition (spec.py) against BLAKE3's official test vectors
     python3 tools/verify/cross_check.py                 # the NEON and integer models against the CPU
     python3 tools/verify/cross_check_sme.py             # the streaming SVE and SME2 models against the CPU (needs SME2)
     python3 tools/verify/mutants.py                     # wrong kernels are rejected
@@ -50,6 +51,13 @@ inputs, pointers are (region, offset) pairs. The run checks:
   and sp come back unchanged, and the kernel returns through x30.
 
 ## What it rests on
+
+- **The definition**, `spec.py`: BLAKE3's compression function in 40
+  lines, written from the BLAKE3 paper (section 2.2). `check_spec.py`
+  builds a whole BLAKE3 on it (chunks, tree, keyed hashing, key
+  derivation, extended output, from the paper's sections 2.1-2.6) and
+  reproduces all 35 official test vectors in all three modes, 131 bytes
+  each; a swapped permutation entry or a rotation off by one fails it.
 
 - **The instruction models** (`aarch64.py`, `vector.py`, `sme.py`), each
   a few lines following the Arm architecture reference manual.
