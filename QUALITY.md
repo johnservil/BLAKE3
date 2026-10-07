@@ -10,8 +10,9 @@ BLAKE3 reference implementation and fixed published digests, and every
 process re-checks each assembly kernel against fixed answers before it
 first hashes. The code
 has run under AddressSanitizer, ThreadSanitizer, and Miri, and against
-inaccessible guard pages, and a few of its index calculations are proved
-with the Kani model checker. No human has yet reviewed it line by line,
+inaccessible guard pages. Every NEON and integer assembly kernel is
+proved equal to BLAKE3's compression function for every input, and a few
+index calculations are proved with the Kani model checker. No human has yet reviewed it line by line,
 and nobody has audited it. The [README's warning](README.md) stands.
 
 ## What is new, and so where the risk is
@@ -119,7 +120,26 @@ unrolled kernel code.
 
 ## Proofs
 
-We use [Kani](https://github.com/model-checking/kani), a bounded model
+**The hybrid assembly kernels** (`c/blake3_neon_hybrid_aarch64.S`: c1,
+k2-k10, p2-p9, q1-q9, which hash every input of 1 KiB to 16 KiB and the
+batches on AArch64 without SME2, and the parents beside SME2) are proved
+equal to BLAKE3's compression function for every input, key, counter,
+and flags value, at every block count each takes: 327 cases. Each proof
+runs the instructions the CPU runs (the assembled object, disassembled)
+on symbolic values and compares every output word with the
+specification's. It also shows that every memory access stays inside the
+kernel's buffers and its own stack frame, that the path depends only on
+the block count (no branch or address depends on the data), and that the
+calling convention holds. The proofs rest on models of the 40-odd
+instruction forms the kernels use, each checked against the CPU on random
+states, and on the assembler and disassembler. Deliberately wrong kernels
+(a rotation off by one, an add made an xor, a lane shuffle swapped, a
+read past a buffer) are rejected. CI runs the proofs, the cross-check,
+and the wrong kernels on every change. How they work, and how to run
+them: [`tools/verify/README.md`](tools/verify/README.md). The SME2 kernels
+are not yet covered.
+
+We also use [Kani](https://github.com/model-checking/kani), a bounded model
 checker for Rust. For every input, not just sampled ones, it proves:
 
 - the pool's piece length is a power of two within its bounds and near a
@@ -271,6 +291,11 @@ names the commit that introduced the code and the one that fixed it, in
 - **SAW with a Cryptol specification**: considered, not tried yet. It
   proves C or LLVM code equal to a specification, and could cover the C
   NEON kernel. It does not model SME2.
+- **Symbolic execution of the hybrid assembly**: done (above), with our
+  own instruction models checked against the CPU. Replacing them with
+  Arm's machine-readable specification (Sail, Isla), or proving the
+  kernels in s2n-bignum's HOL Light model of AArch64, would remove that
+  part of the trust base.
 - **The SME2 assembly**: we know of no production verification tool that
   models SME2. Arm's machine-readable architecture specification
   includes SME, and research tools built on it (Sail, Isla) could in

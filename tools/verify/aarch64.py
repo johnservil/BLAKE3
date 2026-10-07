@@ -60,7 +60,7 @@ class Machine:
         """`code`: {address: (mnemonic, operands)}; `regions`: {name: Region}."""
         self.code, self.regions = code, regions
         self.x = {}          # general registers, 64-bit terms or Ptr
-        self.v = {}          # vector registers, 128-bit terms
+        self.v = {}          # vector registers: four 32-bit lane terms, lane 0 first
         self.nzcv = None     # concrete flags (n, z, c, v)
         self.steps = 0
 
@@ -90,12 +90,6 @@ class Machine:
                 raise Unproved(f"pointer written to {name}")
             val = ZeroExt(32, val) if val.size() == 32 else val
         self.x[n] = val
-
-    def vreg(self, name):
-        return self.v[int(re.match(r"[vqdsb](\d+)", name).group(1))]
-
-    def set_v(self, name, val):
-        self.v[int(re.match(r"[vqdsb](\d+)", name).group(1))] = val
 
     # Memory.
     def access(self, addr, n, write):
@@ -335,6 +329,17 @@ def step(m, pc, mnem, ops):
     if mnem == "ror":
         m.set(ops[0], RotateRight(m.reg(ops[1]), imm(ops[2])))
         return None
+    if mnem == "bfi":
+        lsb, n = imm(ops[2]), imm(ops[3])
+        old, src = m.reg(ops[0]), m.reg(ops[1])
+        parts = []
+        if lsb + n < w:
+            parts.append(Extract(w - 1, lsb + n, old))
+        parts.append(Extract(n - 1, 0, src))
+        if lsb > 0:
+            parts.append(Extract(lsb - 1, 0, old))
+        m.set(ops[0], Concat(*parts))
+        return None
     if mnem in ("lsr", "lsl"):
         a = m.reg(ops[1])
         m.set(ops[0], LShR(a, imm(ops[2])) if mnem == "lsr" else a << imm(ops[2]))
@@ -343,7 +348,7 @@ def step(m, pc, mnem, ops):
         lsb, n = imm(ops[2]), imm(ops[3])
         m.set(ops[0], ZeroExt(w - n, Extract(lsb + n - 1, lsb, m.reg(ops[1]))))
         return None
-    if mnem == "mov":
+    if mnem == "mov" and ops[0][0] in "wxs":
         if ops[1].startswith("#"):
             m.set(ops[0], BitVecVal(imm(ops[1]) % (1 << w), w))
         else:
@@ -384,22 +389,14 @@ def step(m, pc, mnem, ops):
         if wb:
             m.set(wb, new)
         return None
-    if mnem in ("ldp", "stp") and ops[0][0] in "wxdq":
-        n = {"w": 4, "x": 8, "d": 8, "q": 16}[ops[0][0]]
+    if mnem in ("ldp", "stp") and ops[0][0] in "wx":
+        n = w // 8
         addr, wb, new = mem_operand(m, ops, 2)
         for i, r in enumerate(ops[:2]):
-            a = addr + i * n
-            if ops[0][0] in "wx":
-                if mnem == "ldp":
-                    m.set(r, m.load(a, n))
-                else:
-                    m.store(a, m.reg(r), n)
+            if mnem == "ldp":
+                m.set(r, m.load(addr + i * n, n))
             else:
-                if mnem == "ldp":
-                    val = m.load(a, n)
-                    m.set_v(r, ZeroExt(128 - 8 * n, val) if n < 16 else val)
-                else:
-                    m.store(a, Extract(8 * n - 1, 0, m.vreg(r)), n)
+                m.store(addr + i * n, m.reg(r), n)
         if wb:
             m.set(wb, new)
         return None

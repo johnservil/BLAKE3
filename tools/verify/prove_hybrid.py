@@ -64,7 +64,7 @@ class Setup:
         for i in range(31):
             self.m.x[i] = BitVec(f"x{i}_in", 64)
         for i in range(32):
-            self.m.v[i] = BitVec(f"v{i}_in", 128)
+            self.m.v[i] = [BitVec(f"v{i}_{l}_in", 32) for l in range(4)]
         self.m.x["sp"] = Ptr("stack", STACK)
         self.m.x[30] = Ptr("return", 0)
 
@@ -75,10 +75,10 @@ class Setup:
         if not (isinstance(m.x["sp"], Ptr) and m.x["sp"].offset == STACK):
             raise Unproved(f"sp not restored: {m.x['sp']}")
         for i in range(19, 30):
-            if not same(m.x[i], BitVec(f"x{i}_in", 64)) if not isinstance(m.x[i], Ptr) else True:
+            if isinstance(m.x[i], Ptr) or not same(m.x[i], BitVec(f"x{i}_in", 64)):
                 raise Unproved(f"callee-saved x{i} changed")
         for i in range(8, 16):
-            if not same(Extract(63, 0, m.v[i]), Extract(63, 0, BitVec(f"v{i}_in", 128))):
+            if not all(same(m.v[i][l], BitVec(f"v{i}_{l}_in", 32)) for l in (0, 1)):
                 raise Unproved(f"callee-saved d{i} changed")
         return m
 
@@ -128,18 +128,146 @@ def prove_c1(obj, blocks, alias):
     return m.steps
 
 
-def main():
-    obj = assemble()
+def prove_table(obj, name, n, blocks, per_input_counter):
+    """kernel(inputs, blocks, key, counter, packed, out) (the file's
+    header): input i, at inputs[i], is `blocks` blocks hashed from key at
+    counter + i (k kernels) or counter (p kernels); its chaining value goes
+    to out[32 i..]. Flags as c1's."""
+    inputs = [byte_symbols(f"in{i}_", 64 * blocks) for i in range(n)]
+    key = byte_symbols("key", 32)
+    regions = {f"input{i}": Region(f"input{i}", 64 * blocks, False, (lambda b: lambda o: b[o])(inputs[i])) for i in range(n)}
+    regions["key"] = Region("key", 32, False, lambda o: key[o])
+    regions["out"] = Region("out", 32 * n, True, None)
+    table = Region("table", 8 * n, False, None)
+    for i in range(n):
+        for j in range(8):
+            table.bytes[8 * i + j] = (Ptr(f"input{i}", 0), j)
+    regions["table"] = table
+    s = Setup(obj, name, name + "_end", regions)
+    counter = BitVec("counter", 64)
+    flags, start, end, last_len = (BitVec(x, 8) for x in ("flags", "start", "end", "last_len"))
+    m = s.m
+    m.x[0], m.x[1], m.x[2], m.x[3] = Ptr("table", 0), BitVecVal(blocks, 64), Ptr("key", 0), counter
+    m.x[4] = ZeroExt(32, Concat(last_len, end, start, flags))
+    m.x[5] = Ptr("out", 0)
+    s.run_and_check_abi()
+    out = m.regions["out"]
+    if any(i not in out.bytes for i in range(32 * n)):
+        raise Unproved("the output is not wholly written")
+    zero = BitVecVal(0, 8)
+    for i in range(n):
+        cv = spec.words(key)
+        c = counter + i if per_input_counter else counter
+        for b in range(blocks):
+            block = spec.words(inputs[i][64 * b:64 * b + 64])
+            f = ZeroExt(24, flags | (start if b == 0 else zero) | (end if b == blocks - 1 else zero))
+            length = ZeroExt(24, last_len) if b == blocks - 1 else BitVecVal(64, 32)
+            cv = spec.compress(cv, block, c, length, f)[:8]
+        got = spec.words([out.bytes[32 * i + j] for j in range(32)])
+        for w in range(8):
+            if not same(got[w], cv[w]):
+                raise Unproved(f"input {i}, output word {w} differs from the specification")
+    return m.steps
+
+
+def prove_partial(obj, n, pblocks):
+    """q<n>(inputs, 16, key, counter, packed, out, partial): n whole chunks
+    and a partial chunk of `pblocks` blocks (zero-padded) whose last block
+    records last_len bytes, partial = pblocks | last_len << 8. Input i < n
+    is chunk i at counter + i; the partial chunk, at counter + n, is the
+    table's last input (q1's table is chunk, partial, chunk: its pair reads
+    the chunk twice, and the third value is not part of the contract).
+    The values go to out in that order."""
+    chunks = [byte_symbols(f"in{i}_", 1024) for i in range(n)]
+    part = byte_symbols("part", 64 * pblocks)
+    key = byte_symbols("key", 32)
+    regions = {f"input{i}": Region(f"input{i}", 1024, False, (lambda b: lambda o: b[o])(chunks[i])) for i in range(n)}
+    regions["partial"] = Region("partial", len(part), False, lambda o: part[o])
+    regions["key"] = Region("key", 32, False, lambda o: key[o])
+    slots = [f"input{i}" for i in range(n)] + ["partial"] if n > 1 else ["input0", "partial", "input0"]
+    regions["out"] = Region("out", 32 * len(slots), True, None)
+    table = Region("table", 8 * len(slots), False, None)
+    for i, r in enumerate(slots):
+        for j in range(8):
+            table.bytes[8 * i + j] = (Ptr(r, 0), j)
+    regions["table"] = table
+    s = Setup(obj, f"blake3_hybrid_q{n}", f"blake3_hybrid_q{n}_end", regions)
+    counter = BitVec("counter", 64)
+    flags, start, end, last_len, plast = (BitVec(x, 8) for x in ("flags", "start", "end", "last_len", "plast"))
+    m = s.m
+    m.x[0], m.x[1], m.x[2], m.x[3] = Ptr("table", 0), BitVecVal(16, 64), Ptr("key", 0), counter
+    m.x[4] = ZeroExt(32, Concat(last_len, end, start, flags))
+    m.x[5] = Ptr("out", 0)
+    m.x[6] = ZeroExt(48, Concat(plast, BitVecVal(pblocks, 8)))
+    s.run_and_check_abi()
+    out = m.regions["out"]
+    if any(i not in out.bytes for i in range(32 * (n + 1))):
+        raise Unproved("the output is not wholly written")
+    zero = BitVecVal(0, 8)
+    for i in range(n + 1):
+        data, blocks, final = (chunks[i], 16, last_len) if i < n else (part, pblocks, plast)
+        cv = spec.words(key)
+        for b in range(blocks):
+            block = spec.words(data[64 * b:64 * b + 64])
+            f = ZeroExt(24, flags | (start if b == 0 else zero) | (end if b == blocks - 1 else zero))
+            length = ZeroExt(24, final) if b == blocks - 1 else BitVecVal(64, 32)
+            cv = spec.compress(cv, block, counter + i, length, f)[:8]
+        got = spec.words([out.bytes[32 * i + j] for j in range(32)])
+        for w in range(8):
+            if not same(got[w], cv[w]):
+                raise Unproved(f"input {i}, output word {w} differs from the specification")
+    return m.steps
+
+
+def cases(only):
+    """Every (kernel, block count) case: c1 apart from and equal to key,
+    the k and p kernels, and the q kernels at every partial chunk."""
+    out = []
     for blocks in range(1, 17):
         for alias in (False, True):
-            t = time.time()
-            steps = prove_c1(obj, blocks, alias)
-            print(f"c1, {blocks:2} blocks{', out = key' if alias else ''}: proved ({steps} instructions, {time.time() - t:.1f} s)", flush=True)
+            out.append(("c1", blocks, alias))
+    for name in [f"k{n}" for n in range(2, 11)] + [f"p{n}" for n in (2, 3, 4, 5, 7, 8, 9)]:
+        for blocks in (range(1, 17) if name[0] == "k" else [1]):
+            out.append((name, blocks, False))
+    for n in range(1, 10):
+        for pblocks in range(1, 17):
+            out.append((f"q{n}", pblocks, False))
+    return [c for c in out if not only or c[0] in only]
+
+
+OBJ = None
+
+
+def prove_case(case):
+    global OBJ
+    if OBJ is None:
+        OBJ = assemble()
+    name, blocks, alias = case
+    t = time.time()
+    try:
+        if name == "c1":
+            steps = prove_c1(OBJ, blocks, alias)
+        elif name[0] == "q":
+            steps = prove_partial(OBJ, int(name[1:]), blocks)
+        else:
+            steps = prove_table(OBJ, f"blake3_hybrid_{name}", int(name[1:]), blocks, name[0] == "k")
+    except Unproved as e:
+        return case, f"NOT PROVED: {e}"
+    what = f"partial chunk of {blocks} blocks" if name[0] == "q" else f"{blocks} blocks" + (", out = key" if alias else "")
+    return case, f"proved ({what}, {steps} instructions, {time.time() - t:.1f} s)"
+
+
+def main():
+    import multiprocessing
+    todo = cases(set(sys.argv[1:]))
+    failed = 0
+    with multiprocessing.Pool() as pool:
+        for (name, _, _), verdict in pool.imap(prove_case, todo):
+            print(f"{name}: {verdict}", flush=True)
+            failed += verdict.startswith("NOT")
+    print(f"{len(todo) - failed} of {len(todo)} cases proved")
+    sys.exit(1 if failed else 0)
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except Unproved as e:
-        print(f"NOT PROVED: {e}")
-        sys.exit(1)
+    main()

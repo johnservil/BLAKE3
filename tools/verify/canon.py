@@ -43,10 +43,12 @@ def intern(t):
 
 
 def has_arith(t):
+    """Whether `t` holds round arithmetic: a 32-bit sum, xor, or rotation
+    (the counter's 64-bit sums are leaves, for the solver)."""
     k = t.get_id()
     r = _arith.get(k)
     if r is None:
-        r = (t, t.decl().kind() in ARITH or any(has_arith(c) for c in t.children()))
+        r = (t, (t.decl().kind() in ARITH and t.size() == 32) or any(has_arith(c) for c in t.children()))
         _arith[k] = r
     return r[1]
 
@@ -147,6 +149,11 @@ def _canon(t):
             x, h, l = ps[0]
             if l == 0 and h == x.size() - 1:
                 return canon(x)
+        if len(ps) == 2 and ps[0][0].eq(ps[1][0]):
+            # x's low k bits above its high bits: x rotated right by k.
+            (x, h1, l1), (_, h2, l2) = ps
+            if l1 == 0 and h2 == x.size() - 1 and l2 == h1 + 1:
+                return intern(("ror", l2, canon(x)))
         return intern(("cat", tuple((canon(x), h, l) for x, h, l in ps)))
     if kind == Z3_OP_BADD:
         terms = []

@@ -44,6 +44,42 @@ def mutants(code):
     return out
 
 
+def vector_mutants(code):
+    out = []
+    def first(pred):
+        return next((a for a, (m, ops) in sorted(code.items()) if pred(m, ops)), None)
+    def change(addr, mnem, ops, what):
+        if addr is None:
+            return
+        c = dict(code)
+        c[addr] = (mnem, ops)
+        out.append((f"{what} at {addr:#x}", c))
+    a = first(lambda m, o: m == "xar")
+    if a is not None:
+        m, o = code[a]
+        change(a, m, o[:3] + [f"#{aarch64.imm(o[3]) + 1}"], "an xar rotation one bit off")
+    a = first(lambda m, o: m == "sri")
+    if a is not None:
+        m, o = code[a]
+        change(a, m, o[:2] + [f"#{aarch64.imm(o[2]) - 1}"], "an sri shift one bit off")
+    a = first(lambda m, o: m == "add" and o[0].startswith("v"))
+    if a is not None:
+        m, o = code[a]
+        change(a, "eor", [x.replace(".4s", ".16b") for x in o], "a vector add made an eor")
+    a = first(lambda m, o: m == "zip1")
+    if a is not None:
+        change(a, "zip2", code[a][1], "a zip1 made a zip2")
+    a = first(lambda m, o: m == "tbl")
+    if a is not None:
+        m, o = code[a]
+        change(a, m, [o[0], o[1], o[0]], "a tbl through the wrong index table")
+    a = first(lambda m, o: m == "lsr" and o[0][0] == "x" and o[1] == "x6")
+    if a is not None:
+        m, o = code[a]
+        change(a, m, o[:2] + ["#9"], "the partial chunk's length field misread")
+    return out
+
+
 def main():
     obj = prove_hybrid.assemble()
     real = aarch64.disassemble
@@ -57,6 +93,19 @@ def main():
             failures += 1
         except (Unproved, KeyError) as e:
             print(f"c1 mutant, {what}: rejected ({e})")
+    syms = aarch64.symbols(obj)
+    for name, prove in (("k2", lambda: prove_hybrid.prove_table(obj, "blake3_hybrid_k2", 2, 2, True)),
+                        ("k7", lambda: prove_hybrid.prove_table(obj, "blake3_hybrid_k7", 7, 2, True)),
+                        ("q3", lambda: prove_hybrid.prove_partial(obj, 3, 3))):
+        base = real(obj, syms[f"blake3_hybrid_{name}"], syms[f"blake3_hybrid_{name}_end"])
+        for what, code in vector_mutants(base):
+            aarch64.disassemble = lambda *a, code=code: code
+            try:
+                prove()
+                print(f"{name} mutant, {what}: PROVED (the proof is vacuous here)")
+                failures += 1
+            except (Unproved, KeyError) as e:
+                print(f"{name} mutant, {what}: rejected ({e})")
     aarch64.disassemble = real
     sys.exit(1 if failures else 0)
 
