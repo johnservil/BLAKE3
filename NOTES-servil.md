@@ -1430,6 +1430,13 @@ item out when it lands or is rejected.
 
 ### Tooling
 
+- The Rust that arranges the tree (chunks, parents, the Hasher, batches,
+  the threads' division of work), against the Lean specification for every
+  input: prototype a safe-Rust core of the single-thread tree walk for
+  Aeneas (Rust to Lean), measure its cells, and prove it in Lean against
+  c2sp/BLAKE3 with the kernels as axioms the machine-code proofs discharge.
+- The cross-check compares registers and memory; the flag-setting
+  instructions (cmp, ccmp, tst, cset) want their flags compared too.
 - The SME2 kernels' group loop: show its state at the loop head the same
   at every iteration but for the advanced pointers and counter, so the
   proofs (one and two groups) cover any number of groups.
