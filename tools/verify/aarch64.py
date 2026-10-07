@@ -173,6 +173,26 @@ def text_bytes(obj):
     return data
 
 
+def image_bytes(obj):
+    """The loaded sections' bytes, {address: int}: the image a shared
+    library maps, for its read-only constants. Sections that are not
+    loaded (debug information) overlap these addresses and are left out."""
+    heads = subprocess.run(["objdump", "-h", obj], capture_output=True, text=True, check=True).stdout.splitlines()
+    loaded = [heads[i].split()[1] for i in range(len(heads) - 1)
+              if re.match(r"\s+\d+ ", heads[i]) and "ALLOC" in heads[i + 1] and "CONTENTS" in heads[i + 1]]
+    out = subprocess.run(["objdump", "-s"] + [f"-j{n}" for n in loaded] + [obj], capture_output=True, text=True, check=True).stdout
+    data = {}
+    for line in out.splitlines():
+        mt = re.match(r"\s([0-9a-f]+) ((?:[0-9a-f]{2,8} ?){1,4})", line)
+        if not mt:
+            continue
+        addr = int(mt.group(1), 16)
+        hexs = "".join(mt.group(2).split())
+        for i in range(0, len(hexs), 2):
+            data[addr + i // 2] = int(hexs[i:i + 2], 16)
+    return data
+
+
 def symbols(obj):
     out = subprocess.run(["nm", obj], capture_output=True, text=True, check=True).stdout
     return {p[2]: int(p[0], 16) for p in (l.split() for l in out.splitlines()) if len(p) == 3}
@@ -228,7 +248,14 @@ def run(m, entry, stop_at_ret=True, max_steps=10_000_000):
         mnem, ops = m.code[pc]
         nxt = step(m, pc, mnem, ops)
         if nxt == "ret":
-            return m
+            to = m.x[30]
+            if not isinstance(to, Ptr):
+                raise Unproved("return through a non-address")
+            if to.region == "return":
+                return m
+            if to.region != "code":
+                raise Unproved(f"return to {to}")
+            nxt = to.offset
         pc = nxt if nxt is not None else pc + 4
 
 
@@ -263,6 +290,8 @@ def add_values(a, b, sub=False):
         k = concrete(b)
         if k is None:
             raise Unproved(f"pointer {a} moved by a data-dependent amount")
+        if k >= 1 << (b.size() - 1):
+            k -= 1 << b.size()      # two's complement: a negative step
         return a + (-k if sub else k)
     if isinstance(b, Ptr):
         if sub:
@@ -311,7 +340,11 @@ def mem_operand(m, ops, k):
         post = imm(ops[k + 1])
         return add_values(base, BitVecVal(0, 64)), parts[0], add_values(base, BitVecVal(post, 64))
     addr = add_values(base, BitVecVal(off % (1 << 64), 64))
-    return addr, (parts[0] if pre else None), addr
+    if pre:
+        # Pre-indexed: the base moves first (so a push below sp is inside
+        # the new frame), and there is nothing left to write back.
+        m.set(parts[0], addr)
+    return addr, None, addr
 
 
 def step(m, pc, mnem, ops):
@@ -383,6 +416,13 @@ def step(m, pc, mnem, ops):
     if mnem == "adr":
         m.set(ops[0], Ptr("text", int(ops[1].split()[0], 16)))
         return None
+    if mnem == "adrp":
+        # The page of a read-only constant: the image region (image_bytes).
+        m.set(ops[0], Ptr("image", int(ops[1].split()[0], 16) & ~0xfff))
+        return None
+    if mnem == "bl":
+        m.x[30] = Ptr("code", pc + 4)
+        return int(ops[0].split()[0], 16)
     if mnem in ("ldr", "ldrb", "ldrh", "str", "strb", "strh") and ops[0][0] in "wx":
         n = {"b": 1, "h": 2}.get(mnem[-1], w // 8)
         addr, wb, new = mem_operand(m, ops, 1)
