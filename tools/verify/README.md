@@ -54,6 +54,8 @@ inputs, pointers are (region, offset) pairs. The run checks:
 
 - **The definition**, `spec.py`: BLAKE3's compression function in 40
   lines, written from the BLAKE3 paper (section 2.2). `check_spec.py`
+  matches it to the C2SP specification's execution trace (c2sp.org/BLAKE3
+  v1.0.0: the state after each of the 7 rounds of one compression), and
   builds a whole BLAKE3 on it (chunks, tree, keyed hashing, key
   derivation, extended output, from the paper's sections 2.1-2.6) and
   reproduces all 35 official test vectors in all three modes, 131 bytes

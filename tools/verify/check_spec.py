@@ -1,5 +1,6 @@
 """Check spec.py, the definition the proofs compare the kernels with,
-against BLAKE3's official test vectors (test_vectors/test_vectors.json,
+against the C2SP specification's execution trace (the state after each
+round of one compression) and BLAKE3's official test vectors (test_vectors/test_vectors.json,
 from the BLAKE3 team's repository): a whole BLAKE3 built on spec.compress
 (chunks, the tree, keyed hashing, key derivation, extended output) must
 reproduce every vector's hash, keyed hash, and derived key, all 131 bytes
@@ -88,7 +89,41 @@ def blake3(data, key, flags, n):
     return out.root_bytes(n)
 
 
+# C2SP BLAKE3 v1.0.0, "Test Values", hash of a single block: "IETF", the
+# state after each of the 7 rounds, and the output (words in hex).
+C2SP_ROUNDS = """
+d7737c52 a0d29b6a d3b4f608 e20caed2 49091c17 b1abb189 961f03ba c3474f4e a7590324 9c110e95 f77c59cc b47c3370 9c1aed89 b7c28f82 bab6db43 e634ca3e
+4cce55f2 9cdfa58b 297f68b4 887fd036 4e620c26 321af343 b8e634b0 72737ae9 6f6ecf4a 628788fb df9428c1 a2c42d78 a51ddf7b 6cf97481 72dccb9c 1878acb8
+8e99a713 bd202a18 d70c8d18 603ba3ad f411ae76 88ff9580 03db2909 a12e939f 19b81233 69787f12 d2b0c5b7 52034613 21baaea8 84e5fe6d c8c96ae8 422a96d8
+eeb6ec2a 22f4289a 64900193 d9f751b3 216a610d f5aadf41 ddf5584d ae312167 c8f40fb3 97f06701 6eee4503 4827825d 3c59d243 473585da 90d24798 c5957f9d
+11876617 4a71dc87 23a5b774 185e51fa a1ed35c0 729a3348 6da19311 9716237c f66bbb71 f303cf35 585dd137 e5c9c363 8b2b32ed 6add0d37 12b87a10 f96fde3e
+02b010fc 345f4920 ce96e963 018a8afd c0e0faca 651d2baf 0b24a23d d1ffa8fc aa7de2ee d80796c0 ff96b6bd 7cfbf53a 292b8630 8d8e1a78 31c6cb9d b471de23
+a4839e1a 064b478f bb47c942 3f4a0350 efd0bb79 61167ed0 356b01f5 b40f5364 ba5d3c99 adadb369 9fcea12a f08a4ddf 7ba07e35 9e94d896 e3dfca24 568e0272
+"""
+C2SP_OUTPUT = "1edea283 abe6f4e6 24896868 cfc04e8f 9470c54c ff82a646 d6b4cbd1 e2815116"
+
+
+def check_trace():
+    """spec.compress on C2SP's single-block example, round by round."""
+    want = [[int(w, 16) for w in line.split()] for line in C2SP_ROUNDS.strip().splitlines()]
+    got = []
+    out = spec.compress([BitVecVal(w, 32) for w in spec.IV], [BitVecVal(w, 32) for w in words(b"IETF")],
+                        BitVecVal(0, 64), BitVecVal(4, 32), BitVecVal(spec.CHUNK_START | spec.CHUNK_END | spec.ROOT, 32),
+                        after_round=lambda r, v: got.append([simplify(w).as_long() for w in v]))
+    for r in range(7):
+        if got[r] != want[r]:
+            print(f"MISMATCH: C2SP's trace, after round {r}")
+            return False
+    if [simplify(w).as_long() for w in out[:8]] != [int(w, 16) for w in C2SP_OUTPUT.split()]:
+        print("MISMATCH: C2SP's trace, the output")
+        return False
+    print("C2SP's single-block trace: the state after each of the 7 rounds and the output agree")
+    return True
+
+
 def main():
+    if not check_trace():
+        sys.exit(1)
     vectors = json.load(open(os.path.join(ROOT_DIR, "test_vectors/test_vectors.json")))
     key = list(int.from_bytes(vectors["key"].encode()[4 * i:4 * i + 4], "little") for i in range(8))
     context = vectors["context_string"].encode()

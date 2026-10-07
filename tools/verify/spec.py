@@ -20,9 +20,10 @@ def g(v, a, b, c, d, x, y):
     v[b] = RotateRight(v[b] ^ v[c], 7)
 
 
-def compress(cv, block, counter, block_len, flags):
+def compress(cv, block, counter, block_len, flags, after_round=None):
     """The 16 output words; `cv` 8 and `block` 16 32-bit terms, `counter`
-    64-bit, `block_len` and `flags` 32-bit."""
+    64-bit, `block_len` and `flags` 32-bit. `after_round(r, v)`, if given,
+    sees the state after each round (for check_spec.py's trace)."""
     v = list(cv) + [BitVecVal(x, 32) for x in IV[:4]] + [
         Extract(31, 0, counter), Extract(63, 32, counter), block_len, flags]
     m = list(block)
@@ -35,6 +36,8 @@ def compress(cv, block, counter, block_len, flags):
         g(v, 1, 6, 11, 12, m[10], m[11])
         g(v, 2, 7, 8, 13, m[12], m[13])
         g(v, 3, 4, 9, 14, m[14], m[15])
+        if after_round:
+            after_round(r, list(v))
         if r < 6:
             m = [m[PERMUTATION[i]] for i in range(16)]
     return [v[i] ^ v[i + 8] for i in range(8)] + [v[i + 8] ^ cv[i] for i in range(8)]
