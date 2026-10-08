@@ -121,15 +121,22 @@ theorem wide_spec {K : Type} (KI : widecore.Kernels K) (k : K) (D d : Nat) (hD :
       2 ≤ children.length → children.length ≤ 256 → (children.length + 1) / 2 ≤ out.length →
       KI.parents k children out ⦃ r => r.1.val = (children.length + 1) / 2 ∧ r.2.length = out.length ∧
         r.2.val.take r.1.val = layerL parentf children.val ⦄)
-    (input : Slice Std.U8) (counter : Std.U64) (out : Slice Cv)
+    (hsubtree : ∀ (input : Slice Std.U8) (ahead : Std.Usize) (counter : Std.U64) (out : Slice Cv),
+      D * 1024 < input.length → max D 2 ≤ out.length →
+      KI.subtree k input ahead counter out ⦃ r => r.2.length = out.length ∧
+        ∀ n, r.1 = some n → n.val = (wideI D (leafOf chunkf input.val counter.val) parentf counter.val
+          (chunks input.length)).length ∧
+        r.2.val.take n.val = wideI D (leafOf chunkf input.val counter.val) parentf counter.val (chunks input.length) ⦄)
+    (input : Slice Std.U8) (ahead : Std.Usize) (counter : Std.U64) (out : Slice Cv)
     (hne : 1 ≤ input.length) (hfit : counter.val + input.length / 1024 + 1 ≤ Std.U64.max)
+    (hahead : input.length + ahead.val ≤ Std.Usize.max)
     (hout : min (chunks input.length) (max D 2) ≤ out.length) :
-    widecore.wide KI k input counter out ⦃ r =>
+    widecore.wide KI k input ahead counter out ⦃ r =>
       r.1.val = (wideI D (leafOf chunkf input.val counter.val) parentf counter.val (chunks input.length)).length ∧
       r.2.length = out.length ∧
       r.2.val.take r.1.val = wideI D (leafOf chunkf input.val counter.val) parentf counter.val
         (chunks input.length) ⦄ := by
-  induction hn : input.length using Nat.strong_induction_on generalizing input counter out with
+  induction hn : input.length using Nat.strong_induction_on generalizing input ahead counter out with
   | _ n ih =>
   unfold widecore.wide
   have hk : widecore.CHUNK_LEN.val = 1024 := by simp [widecore.CHUNK_LEN]
@@ -215,13 +222,13 @@ theorem wide_spec {K : Type} (KI : widecore.Kernels K) (k : K) (D d : Nat) (hD :
       all_goals (try rw [l_post] at ln_post2)
       all_goals (try rw [hAeq a (by rw [a_post2, l_post])] at ln_post)
       all_goals (try rw [hAeq a (by rw [a_post2, l_post])] at ln_post2)
-      all_goals (try have hi4 : i4.val = K := (by rw [i4_post]; (try rw [l_post]); rw [hk]; omega))
-      all_goals (try have hi5 : i5.val = K := (by
-        rw [i5_post, UScalar.cast_val_eq, hi4]
+      all_goals (try have hi4 : i6.val = K := (by rw [i6_post]; (try rw [l_post]); rw [hk]; omega))
+      all_goals (try have hi5 : i7.val = K := (by
+        rw [i7_post, UScalar.cast_val_eq, hi4]
         apply Nat.mod_eq_of_lt
         have hm : U64.max = 2 ^ 64 - 1 := by simp [U64.max, U64.numBits]
         rw [hm] at hfit; simp only [UScalarTy.numBits]; omega))
-      all_goals (try have hi6 : i6.val = counter.val + K := (by rw [i6_post, hi5]))
+      all_goals (try have hi6 : i8.val = counter.val + K := (by rw [i8_post, hi5]))
       all_goals (try rw [hi6, l_post, hn] at rn_post)
       all_goals (try rw [hi6, l_post, hn] at rn_post2)
       all_goals (try rw [hBeq b (by rw [a_post3, l_post])] at rn_post)
@@ -231,16 +238,16 @@ theorem wide_spec {K : Type} (KI : widecore.Kernels K) (k : K) (D d : Nat) (hD :
       all_goals (try simp only [show (0#usize).val = 0 from rfl, show (1#usize).val = 1 from rfl,
         show (2#usize).val = 2 from rfl] at *)
       all_goals (try omega)
-      all_goals (try (rw [out1_post, Slice.set_length]; omega))
+      all_goals (try (rw [out3_post, Slice.set_length]; omega))
       -- the left half gave one value: the branch that pairs is unreachable
       all_goals (try exact absurd (UScalar.eq_of_val_eq (by rw [ln_post, hWA1]; rfl)) ‹¬ ln = 1#usize›)
       -- the two values, unpaired
-      refine ⟨by simp [hWA1, hWB1], by rw [out2_post, Slice.set_length, out1_post, Slice.set_length], ?_⟩
-      have hout2 : 2 ≤ out.val.length := by simp [Slice.length] at hout; omega
+      refine ⟨by simp [hWA1, hWB1], by rw [out4_post, Slice.set_length, out3_post, Slice.set_length, o_post], ?_⟩
+      have hout4 : 2 ≤ out1.val.length := by simp [Slice.length] at hout o_post; omega
       rw [← ln_post2, ← rn_post2, show ln.val = 1 by omega, show rn.val = 1 by omega,
-        out2_post, Slice.set_val_eq, out1_post, Slice.set_val_eq, a2_post, a3_post]
+        out4_post, Slice.set_val_eq, out3_post, Slice.set_val_eq, a2_post, a3_post]
       simp only [show (0#usize).val = 0 from rfl, show (1#usize).val = 1 from rfl]
-      rw [take_two_set _ _ _ hout2, take_one_eq _ (by simp [Slice.length] at ln_post1 lo_post; omega),
+      rw [take_two_set _ _ _ hout4, take_one_eq _ (by simp [Slice.length] at ln_post1 lo_post; omega),
         take_one_eq _ (by simp [Slice.length] at rn_post1 lo_post1 hs256; omega)]
       rfl
     · have hlC : ¬ l = widecore.CHUNK_LEN := by
@@ -263,13 +270,13 @@ theorem wide_spec {K : Type} (KI : widecore.Kernels K) (k : K) (D d : Nat) (hD :
         all_goals (try rw [l_post] at ln_post2)
         all_goals (try rw [hAeq a (by rw [a_post2, l_post])] at ln_post)
         all_goals (try rw [hAeq a (by rw [a_post2, l_post])] at ln_post2)
-        all_goals (try have hi4 : i4.val = K := (by rw [i4_post]; (try rw [l_post]); rw [hk]; omega))
-        all_goals (try have hi5 : i5.val = K := (by
-          rw [i5_post, UScalar.cast_val_eq, hi4]
+        all_goals (try have hi4 : i6.val = K := (by rw [i6_post]; (try rw [l_post]); rw [hk]; omega))
+        all_goals (try have hi5 : i7.val = K := (by
+          rw [i7_post, UScalar.cast_val_eq, hi4]
           apply Nat.mod_eq_of_lt
           have hm : U64.max = 2 ^ 64 - 1 := by simp [U64.max, U64.numBits]
           rw [hm] at hfit; simp only [UScalarTy.numBits]; omega))
-        all_goals (try have hi6 : i6.val = counter.val + K := (by rw [i6_post, hi5]))
+        all_goals (try have hi6 : i8.val = counter.val + K := (by rw [i8_post, hi5]))
         all_goals (try rw [hi6, l_post, hn] at rn_post)
         all_goals (try rw [hi6, l_post, hn] at rn_post2)
         all_goals (try rw [hBeq b (by rw [a_post3, l_post])] at rn_post)
@@ -289,10 +296,10 @@ theorem wide_spec {K : Type} (KI : widecore.Kernels K) (k : K) (D d : Nat) (hD :
         have hlo1 : lo1.val = WA := by
           rw [← ln_post2, List.take_of_length_le]; simp [Slice.length] at ln_post1 lo_post; omega
         have hs2 : s2.val = WA ++ WB := by
-          rw [s2_post, List.slice_zero_j, hbuf, i7_post, List.take_append, hlo1, List.take_of_length_le (by omega),
+          rw [s2_post, List.slice_zero_j, hbuf, i9_post, List.take_append, hlo1, List.take_of_length_le (by omega),
             show ln.val + rn.val - WA.length = rn.val by omega, rn_post2]
-        refine ⟨?_, r_post1, by rw [r_post2, hs2]⟩
-        rw [r_post, s2_post1, i7_post, layerL_length]; simp; omega
+        refine ⟨?_, by rw [r_post1, o_post], by rw [r_post2, hs2]⟩
+        rw [r_post, s2_post1, i9_post, layerL_length]; simp; omega
       · have hcv : max D 2 = D := by have : ¬ degU.val < 2 := (by scalar_tac); omega
         simp only [hd2, ↓reduceIte]
         step*
@@ -301,13 +308,13 @@ theorem wide_spec {K : Type} (KI : widecore.Kernels K) (k : K) (D d : Nat) (hD :
         all_goals (try rw [l_post] at ln_post2)
         all_goals (try rw [hAeq a (by rw [a_post2, l_post])] at ln_post)
         all_goals (try rw [hAeq a (by rw [a_post2, l_post])] at ln_post2)
-        all_goals (try have hi4 : i4.val = K := (by rw [i4_post]; (try rw [l_post]); rw [hk]; omega))
-        all_goals (try have hi5 : i5.val = K := (by
-          rw [i5_post, UScalar.cast_val_eq, hi4]
+        all_goals (try have hi4 : i6.val = K := (by rw [i6_post]; (try rw [l_post]); rw [hk]; omega))
+        all_goals (try have hi5 : i7.val = K := (by
+          rw [i7_post, UScalar.cast_val_eq, hi4]
           apply Nat.mod_eq_of_lt
           have hm : U64.max = 2 ^ 64 - 1 := by simp [U64.max, U64.numBits]
           rw [hm] at hfit; simp only [UScalarTy.numBits]; omega))
-        all_goals (try have hi6 : i6.val = counter.val + K := (by rw [i6_post, hi5]))
+        all_goals (try have hi6 : i8.val = counter.val + K := (by rw [i8_post, hi5]))
         all_goals (try rw [hi6, l_post, hn] at rn_post)
         all_goals (try rw [hi6, l_post, hn] at rn_post2)
         all_goals (try rw [hBeq b (by rw [a_post3, l_post])] at rn_post)
@@ -327,10 +334,10 @@ theorem wide_spec {K : Type} (KI : widecore.Kernels K) (k : K) (D d : Nat) (hD :
         have hlo1 : lo1.val = WA := by
           rw [← ln_post2, List.take_of_length_le]; simp [Slice.length] at ln_post1 lo_post; omega
         have hs2 : s2.val = WA ++ WB := by
-          rw [s2_post, List.slice_zero_j, hbuf, i7_post, List.take_append, hlo1, List.take_of_length_le (by omega),
+          rw [s2_post, List.slice_zero_j, hbuf, i9_post, List.take_append, hlo1, List.take_of_length_le (by omega),
             show ln.val + rn.val - WA.length = rn.val by omega, rn_post2]
-        refine ⟨?_, r_post1, by rw [r_post2, hs2]⟩
-        rw [r_post, s2_post1, i7_post, layerL_length]; simp; omega
+        refine ⟨?_, by rw [r_post1, o_post], by rw [r_post2, hs2]⟩
+        rw [r_post, s2_post1, i9_post, layerL_length]; simp; omega
 
 /-- The library-shaped walk computes the C2SP specification's tree: under
 an abstraction `abs` of chaining values, with kernels that meet their
@@ -350,18 +357,25 @@ theorem wide_is_tree {K : Type} (KI : widecore.Kernels K) (k : K) (D d : Nat) (h
       2 ≤ children.length → children.length ≤ 256 → (children.length + 1) / 2 ≤ out.length →
       KI.parents k children out ⦃ r => r.1.val = (children.length + 1) / 2 ∧ r.2.length = out.length ∧
         r.2.val.take r.1.val = layerL parentf children.val ⦄)
+    (hsubtree : ∀ (input : Slice Std.U8) (ahead : Std.Usize) (counter : Std.U64) (out : Slice Cv),
+      D * 1024 < input.length → max D 2 ≤ out.length →
+      KI.subtree k input ahead counter out ⦃ r => r.2.length = out.length ∧
+        ∀ n, r.1 = some n → n.val = (wideI D (leafOf chunkf input.val counter.val) parentf counter.val
+          (chunks input.length)).length ∧
+        r.2.val.take n.val = wideI D (leafOf chunkf input.val counter.val) parentf counter.val (chunks input.length) ⦄)
     (hchunk_spec : ∀ b i, abs (chunkf b i) = (Blake3.chunkNode key mode (toBA b) i).cv)
     (hparent_spec : ∀ a b, abs (parentf a b) = (Blake3.parentNode key mode (abs a) (abs b)).cv)
-    (input : Slice Std.U8) (out : Slice Cv) (hne : input.val ≠ [])
-    (hfit : input.length / 1024 + 1 ≤ Std.U64.max) (hout : min (chunks input.length) (max D 2) ≤ out.length) :
-    widecore.wide KI k input 0#u64 out ⦃ r =>
+    (input : Slice Std.U8) (ahead : Std.Usize) (out : Slice Cv) (hne : input.val ≠ [])
+    (hfit : input.length / 1024 + 1 ≤ Std.U64.max) (hahead : input.length + ahead.val ≤ Std.Usize.max)
+    (hout : min (chunks input.length) (max D 2) ≤ out.length) :
+    widecore.wide KI k input ahead 0#u64 out ⦃ r =>
       abs (treeL parentf (r.2.val.take r.1.val)) =
         (Blake3.tree key mode ((Array.range (max 1 (((toBA input.val).size + 1023) / 1024))).map
           fun i => Blake3.chunkNode key mode ((toBA input.val).extract (1024 * i) (1024 * (i + 1))) i)).cv ⦄ := by
   have hlen : 1 ≤ input.length := by
     have := List.length_pos_iff.mpr hne; simp only [Slice.length]; omega
-  apply WP.spec_mono (wide_spec KI k D d hD hDmax chunkf parentf degU hdegU hdeg hchunks hparents
-    input 0#u64 out hlen (by simpa using hfit) hout)
+  apply WP.spec_mono (wide_spec KI k D d hD hDmax chunkf parentf degU hdegU hdeg hchunks hparents hsubtree
+    input ahead 0#u64 out hlen (by simpa using hfit) hahead hout)
   rintro r ⟨_, _, hr⟩
   have hc : 1 ≤ chunks input.length := by unfold chunks; omega
   rw [hr, (wideI_spec D d hD (leafOf chunkf input.val (0#u64 : Std.U64).val) parentf _ hc _).1]

@@ -254,6 +254,7 @@ pub mod traits;
 
 #[cfg(feature = "std")]
 mod io;
+mod tree;
 mod join;
 #[cfg(feature = "std")]
 mod lanes;
@@ -1047,69 +1048,9 @@ fn compress_subtree_wide<J: join::Join>(
     platform: Platform,
     out: &mut [u8],
 ) -> usize {
-    // Note that the single chunk case does *not* bump the SIMD degree up to 2
-    // when it is 1. This allows Rayon the option of multithreading even the
-    // 2-chunk case, which can help performance on smaller platforms.
-    if input.len() <= platform.simd_degree() * CHUNK_LEN {
-        return compress_chunks_parallel(input, key, chunk_counter, flags, platform, out);
-    }
-    // Whole subtrees of 32 KiB to 1 MiB on SME2: the flat walk, SME2 alone,
-    // with an integer lane beside its groups from 256 KiB (see
-    // sme2::compress_subtree_flat).
-    #[cfg(blake3_sme2)]
-    if matches!(platform, Platform::SME2) && sme2::flat_takes(input.len()) {
-        // Safe: the SME2 platform is selected only where the CPU has it,
-        // and `out` holds simd_degree() values, which is sme2::DEGREE.
-        return unsafe { sme2::compress_subtree_flat(input, ahead, key, chunk_counter, flags, out) };
-    }
-
-    // With more than simd_degree chunks, we need to recurse. Start by dividing
-    // the input into left and right subtrees. (Note that this is only optimal
-    // as long as the SIMD degree is a power of 2. If we ever get a SIMD degree
-    // of 3 or something, we'll need a more complicated strategy.)
-    debug_assert_eq!(platform.simd_degree().count_ones(), 1, "power of 2");
-    let (left, right) = input.split_at(hazmat::left_subtree_len(input.len() as u64) as usize);
-    let right_chunk_counter = chunk_counter + (left.len() / CHUNK_LEN) as u64;
-
-    // Make space for the child outputs. Here we use MAX_SIMD_DEGREE_OR_2 to
-    // account for the special case of returning 2 outputs when the SIMD degree
-    // is 1.
-    let mut cv_array = [0; 2 * MAX_SIMD_DEGREE_OR_2 * OUT_LEN];
-    let degree = if left.len() == CHUNK_LEN {
-        // The "simd_degree=1 and we're at the leaf nodes" case.
-        debug_assert_eq!(platform.simd_degree(), 1);
-        1
-    } else {
-        cmp::max(platform.simd_degree(), 2)
-    };
-    let (left_out, right_out) = cv_array.split_at_mut(degree * OUT_LEN);
-
-    // Recurse! For update_rayon(), this is where we take advantage of RayonJoin and use multiple
-    // threads.
-    let (left_n, right_n) = J::join(
-        || compress_subtree_wide::<J>(left, right.len() + ahead, key, chunk_counter, flags, platform, left_out),
-        || compress_subtree_wide::<J>(right, ahead, key, right_chunk_counter, flags, platform, right_out),
-    );
-
-    // The special case again. If simd_degree=1, then we'll have left_n=1 and
-    // right_n=1. Rather than compressing them into a single output, return
-    // them directly, to make sure we always have at least two outputs.
-    debug_assert_eq!(left_n, degree);
-    debug_assert!(right_n >= 1 && right_n <= left_n);
-    if left_n == 1 {
-        out[..2 * OUT_LEN].copy_from_slice(&cv_array[..2 * OUT_LEN]);
-        return 2;
-    }
-
-    // Otherwise, do one layer of parent node compression.
-    let num_children = left_n + right_n;
-    compress_parents_parallel(
-        &cv_array[..num_children * OUT_LEN],
-        key,
-        flags,
-        platform,
-        out,
-    )
+    let kernels = tree::PlatformKernels { key, flags, platform };
+    let (cvs, _) = out.as_chunks_mut::<OUT_LEN>();
+    tree::wide(&kernels, input, ahead, chunk_counter, cvs)
 }
 
 // Hash a subtree with compress_subtree_wide(), and then condense the resulting
