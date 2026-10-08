@@ -30,6 +30,10 @@ def snapshot(m):
         c.regions[name] = r2
     c.assumptions = list(m.assumptions)
     c.lengths = set(m.lengths)
+    if getattr(m, "za", None) is not None:
+        c.za = [[list(row) for row in tile] for tile in m.za]
+    if hasattr(m, "p"):
+        c.p = {k: (list(v) if v is not None else None) for k, v in m.p.items()}
     return c
 
 
@@ -84,6 +88,15 @@ class Generalized:
         self.wild = 0
         self.x = {r: self.unify(s0.x[r], s1.x[r]) for r in s0.x}
         self.v = {r: [self.unify(a, b) for a, b in zip(s0.v[r], s1.v[r])] for r in s0.v}
+        # SME2's state: the ZA tiles and the predicates.
+        self.za = None
+        if getattr(s0, "za", None) is not None and getattr(s1, "za", None) is not None:
+            self.za = [[[self.unify(a, b) for a, b in zip(r0, r1)] for r0, r1 in zip(t0, t1)]
+                       for t0, t1 in zip(s0.za, s1.za)]
+        self.p = None
+        if hasattr(s0, "p") and hasattr(s1, "p"):
+            self.p = {k: (s0.p[k] if s0.p[k] == s1.p.get(k) and all(isinstance(x, bool) for x in (s0.p[k] or [])) else None)
+                      for k in s0.p}
         self.mem = {}
         for name, r0 in s0.regions.items():
             if not r0.writable or name not in s1.regions:
@@ -106,6 +119,23 @@ class Generalized:
                 if g is not None:
                     for i in range(8):
                         mem[off + i] = ("word", g, i)
+
+    def forget(self, pos):
+        """Make a position unknown in the invariant."""
+        kind = pos[0]
+        if kind == "x":
+            self.x[pos[1]] = ("unknown", 64)
+        elif kind == "v":
+            self.v[pos[1]][pos[2]] = ("unknown", 32)
+        elif kind == "za":
+            self.za[pos[1]][pos[2]][pos[3]] = ("unknown", 32)
+        elif kind == "p":
+            self.p[pos[1]] = None
+        elif kind == "mem":
+            self.mem[pos[1]][pos[2]] = None
+        elif kind == "word":
+            for i in range(8):
+                self.mem[pos[1]][pos[2] + i] = None
 
     def fresh(self, size):
         self.wild += 1
@@ -162,6 +192,10 @@ class Generalized:
                     region.bytes[off] = b
                 # unknown bytes stay unwritten: a read of one fails the proof
         m.nzcv = None
+        if self.za is not None:
+            m.za = [[[(inst(g) if inst(g) is not None else self.fresh(32)) for g in row] for row in tile] for tile in self.za]
+        if self.p is not None:
+            m.p = {k: (list(v) if v is not None else None) for k, v in self.p.items()}
         return m
 
 
@@ -192,3 +226,15 @@ def same_term(a, b):
 
 def same_ptr(a, b):
     return a.region == b.region and aarch64.key(a.offset) == aarch64.key(b.offset)
+
+
+def forced(m, term):
+    """`term`'s value when the run's assumptions force one (a model's value,
+    and no other possible), else None."""
+    from z3 import Solver, sat
+    s = Solver()
+    s.add(*m.assumptions)
+    if s.check() != sat:
+        return None
+    v = s.model().eval(term, model_completion=True)
+    return v.as_long() if aarch64.holds(m, term == v) else None

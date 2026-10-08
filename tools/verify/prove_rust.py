@@ -23,9 +23,10 @@ import time
 sys.path.insert(0, os.path.dirname(__file__))
 from z3 import BitVec, BitVecVal, Concat, ZeroExt
 import aarch64
+import induction
 from aarch64 import Machine, Region, Ptr, Unproved
 import lean_spec as spec
-from prove_hybrid import same, byte_symbols
+from prove_hybrid import same, byte_symbols, check_abi
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TARGET = "/tmp/target/verify-rust"
@@ -67,11 +68,7 @@ def machine(lib, regions):
 
 def run(lib, m, entry):
     aarch64.run(m, lib.syms[entry])
-    for i in range(19, 30):
-        if isinstance(m.x[i], Ptr) or not same(m.x[i], BitVec(f"x{i}_in", 64)):
-            raise Unproved(f"callee-saved x{i} changed")
-    if not (isinstance(m.x["sp"], Ptr) and m.x["sp"].offset == STACK):
-        raise Unproved("sp not restored")
+    check_abi(m)
 
 
 def inputs():
@@ -164,26 +161,16 @@ def prove_xof_every(lib, entry, function, per_iteration, from_count):
     s1 = induction.run_to(induction.snapshot(s0), head, head)
     check_blocks(s1, 0, per_iteration, cvb, block, length, counter, flags, BitVecVal(0, 64))
     g = induction.Generalized(s0, s1, k)
-    mk = g.machine(s0, k)
-    mk.assumptions = list(s0.assumptions) + [ULE(k * per_iteration + per_iteration, n), ULE(k, 1 << 54)]
-    ends = induction.paths(mk, head, {head})
-    kinds = {"head": 0, "return": 0}
-    import canon
-    for end, how in ends:
-        kinds[how] += 1
-        canon.set_context(end.assumptions, end.lengths)
+    def check(end, how):
         if how == "head":
-            expect_state(end, g, k + 1)
             check_blocks(end, 0, per_iteration, cvb, block, length, counter, flags, k * per_iteration, exact=True)
-        else:
-            rest = next((r for r in range(per_iteration) if aarch64.holds(end, n == k * per_iteration + per_iteration + r)), None)
-            if rest is None:
-                raise Unproved("a path leaves the loop with a count the proof does not determine")
-            check_blocks(end, 0, per_iteration + rest, cvb, block, length, counter, flags, k * per_iteration, exact=True)
-            for i in range(19, 30):
-                if isinstance(end.x[i], Ptr) or not same(end.x[i], BitVec(f"x{i}_in", 64)):
-                    raise Unproved(f"callee-saved x{i} changed")
-    canon.set_context([], set())
+            return
+        rest = next((r for r in range(per_iteration) if aarch64.holds(end, n == k * per_iteration + per_iteration + r)), None)
+        if rest is None:
+            raise Unproved("a path leaves the loop with a count the proof does not determine")
+        check_blocks(end, 0, per_iteration + rest, cvb, block, length, counter, flags, k * per_iteration, exact=True)
+        check_abi(end)
+    kinds = loop_step(g, s0, k, list(s0.assumptions) + [ULE(k * per_iteration + per_iteration, n), ULE(k, 1 << 54)], head, check)
     return f"{kinds['head']} paths back to the loop's head, {kinds['return']} out of it"
 
 
@@ -207,8 +194,9 @@ def check_blocks(m, first, count, cvb, block, length, counter, flags, base_block
         raise Unproved("the iteration writes output bytes outside its blocks")
 
 
-def expect_state(m, g, kval):
-    """The machine is the generalized state at iteration `kval`."""
+def mismatches(m, g, kval):
+    """The positions where the machine differs from the generalized state at
+    iteration `kval` (none: it is that state)."""
     inst = g.at(kval)
     def agree(a, b):
         if b is None:
@@ -223,28 +211,73 @@ def expect_state(m, g, kval):
         if same(a, b):
             return True
         return aarch64.lengths_only(m, a - b) and aarch64.holds(m, a == b)
+    bad = []
     for r, gv in g.x.items():
         if not agree(m.x[r], inst(gv)):
-            raise Unproved(f"x{r} at the loop's head differs from the next iteration's")
+            bad.append(("x", r))
     for r, lanes in g.v.items():
         for l, gv in enumerate(lanes):
             if not agree(m.v[r][l], inst(gv)):
-                raise Unproved(f"v{r} lane {l} at the loop's head differs from the next iteration's")
+                bad.append(("v", r, l))
+    if g.za is not None:
+        for t, tile in enumerate(g.za):
+            for row, cells in enumerate(tile):
+                for col, gv in enumerate(cells):
+                    if not agree(m.za[t][row][col], inst(gv)):
+                        bad.append(("za", t, row, col))
+    if g.p is not None:
+        for k, v in g.p.items():
+            if v is not None and m.p.get(k) != v:
+                bad.append(("p", k))
     for name, mem in g.mem.items():
         if name == "out":
             continue
         region = m.regions[name]
         for off, b in mem.items():
-            if b is None:
-                continue
-            if isinstance(b, tuple) and b[0] == "word":
+            if b is None or (isinstance(b, tuple) and b[0] == "word"):
                 continue
             if off not in region.bytes or not agree(region.bytes[off], b):
-                raise Unproved(f"{name}+{off} at the loop's head differs from the next iteration's")
+                bad.append(("mem", name, off))
         for off in {o - b[2] for o, b in mem.items() if isinstance(b, tuple) and b[0] == "word"}:
             w = induction.word(region, off)
             if w is None or not agree(w, inst(mem[off][1])):
-                raise Unproved(f"{name}+{off} (a word) at the loop's head differs from the next iteration's")
+                bad.append(("word", name, off))
+    return bad
+
+
+def loop_step(g, start, kval, assumptions, head, check):
+    """Every path of one iteration from `g` at `kval` (induction.py): `check`
+    each path's end (`check(end, how)`); a path back at the head must be in the
+    state for kval + 1. Positions where it differs become unknown in `g`, and
+    the step is proved again: the invariant needs only what the iterations
+    rely on (a weaker invariant still holds at the start). Returns the
+    counts of paths."""
+    import canon
+    passes = 0
+    while True:
+        passes += 1
+        mk = g.machine(start, kval)
+        mk.assumptions = assumptions
+        ends = induction.paths(mk, head, {head})
+        forget = set()
+        for end, how in ends:
+            if how == "head":
+                canon.set_context(end.assumptions, end.lengths)
+                forget.update(mismatches(end, g, kval + 1))
+        canon.set_context([], set())
+        print(f"  induction pass {passes}: {len(ends)} paths, {len(forget)} positions left unknown {sorted(map(str, forget))[:8]}", flush=True)
+        if not forget:
+            break
+        for pos in forget:
+            g.forget(pos)
+    # The invariant settled: each path's own obligations.
+    kinds = {"head": 0, "return": 0}
+    for end, how in ends:
+        kinds[how] += 1
+        canon.set_context(end.assumptions, end.lengths)
+        check(end, how)
+    canon.set_context([], set())
+    return kinds
 
 
 def main(exit=True):

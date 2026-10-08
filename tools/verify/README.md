@@ -8,10 +8,13 @@ and flags value:
     python3 tools/verify/prove_hybrid.py [KERNEL...]   # c/blake3_neon_hybrid_aarch64.S: c1, k2-k10, p2-p9, q1-q9 (327 cases, 2 min on 16 cores)
     python3 tools/verify/prove_sme2.py [KERNEL...]     # c/blake3_sme2_aarch64.S: chunks, chunks_at, messages, parents, xof (34 cases, 3 min)
     python3 tools/verify/lean/emit.py                   # the definition, computed from the Lean specification (needs Lean)
-    python3 tools/verify/prove_rust.py                  # the Rust paths, compiled: portable, and the NEON platform's (23 cases)
+    python3 tools/verify/prove_rust.py                  # the Rust paths, compiled: portable, and the NEON platform's (24 cases)
     python3 tools/verify/cross_check.py                 # the NEON and integer models against the CPU (and every form the Rust proofs run)
     python3 tools/verify/cross_check_sme.py             # the streaming SVE and SME2 models against the CPU (needs SME2)
     python3 tools/verify/mutants.py                     # wrong kernels are rejected
+    python3 -m unittest discover -s tools/verify -p test_canon.py  # symbolic counter normalization
+    python3 tools/verify/isla_check.py                  # the NEON and integer models against Arm's specification (needs Isla)
+    sh tools/verify/tree/check.sh                       # the tree walk in safe Rust against the specification's tree (needs Aeneas)
 
 They need Python 3 with Z3 (`python3-z3`), an AArch64 machine with the
 SHA-3 extension, and Clang and llvm-objdump 17 or later (for SME2). CI
@@ -76,8 +79,24 @@ inputs, pointers are (region, offset) pairs. The run checks:
   the CPU and in the model over random states. The SME2 check found one
   model error: a four-register ZA move rounds its slice base down to a
   multiple of four (the kernels use aligned bases, so no proof was
-  affected); the model now does too. A stronger base would replace the models with Arm's
-  own machine-readable specification (Sail, Isla).
+  affected); the model now does too. `isla_check.py` proves the models
+  equal to Arm's own specification (Sail's Armv9.4, run by Isla) for every
+  input on every path that completes: the general registers, the flags,
+  and a NEON register's 128 bits. It checks 136 of the 137 forms the
+  proofs use, the flag-setting and conditional ones among them; Isla
+  cannot run `tbl`, which stays checked against the CPU. It then plants
+  model errors and requires each rejected: a carry computed as `>`, `hi`
+  ignoring Z, `xar` and a shifted `eor` rotated one place off, `dup`
+  reading the wrong lane.
+  The snapshot runs with Sail's later fix of `unsigned_subrange`
+  (rems-project/sail 1f8f173), which the check applies itself. Without
+  it, the snapshot reads `dup`'s element index as `imm5[4]`
+  ([Isla #107](https://github.com/rems-project/isla/issues/107)). It
+  needs Isla's source (`ISLA`), `isla-footprint` (`ISLA_FOOTPRINT`),
+  the Armv9.4 snapshot (`ISLA_SNAPSHOT`), and LLVM's assembler (`LLVM_MC`):
+  Isla `e9b5d94`, isla-snapshots `d8b3101`, whose snapshot archive's
+  SHA-256 is `d8c547eefd125a8bd01a827d2733fc9eddbc415839e8d278310e527c7721a3db`.
+  Upper vector bits, memory effects, and SME2 are outside it.
 - **objdump's disassembly** of the assembled object, and the assembler.
 - **The contracts as the harnesses state them**: the input buffers apart
   from each other and from `out` (c1 also with `out` equal to `key`, as
@@ -105,8 +124,10 @@ stops a proof; equalities of lengths are proved under the path's
 assumptions. The compiled library runs as a whole, its calls of memcpy and
 memmove by their contracts.
 
-Not proved here: the C NEON kernel, the x86 kernels, and the Rust that
-arranges the tree (chunks, parents, the threads), which the tests cover.
+Not proved here: the C NEON kernel, the x86 kernels, and the library's
+Rust that arranges the tree (chunks, parents, the threads), which the
+tests cover. `tree/` proves a safe-Rust version of the library's
+single-thread walk (`tree/README.md`).
 
 **Code changed for the proofs.** The SME2 message kernel took the last
 block's length with a branch (0 for 64), so a proof had to fix the

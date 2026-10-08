@@ -69,18 +69,24 @@ class Setup:
         self.m.x[30] = Ptr("return", 0)
 
     def run_and_check_abi(self):
-        m = aarch64.run(self.m, self.entry)
-        if not (isinstance(m.x[30], Ptr) and m.x[30].region == "return"):
-            raise Unproved("returned through a changed x30")
-        if not (isinstance(m.x["sp"], Ptr) and m.x["sp"].offset == STACK):
-            raise Unproved(f"sp not restored: {m.x['sp']}")
-        for i in range(19, 30):
-            if isinstance(m.x[i], Ptr) or not same(m.x[i], BitVec(f"x{i}_in", 64)):
-                raise Unproved(f"callee-saved x{i} changed")
-        for i in range(8, 16):
-            if not all(same(m.v[i][l], BitVec(f"v{i}_{l}_in", 32)) for l in (0, 1)):
-                raise Unproved(f"callee-saved d{i} changed")
-        return m
+        return check_abi(aarch64.run(self.m, self.entry))
+
+
+def check_abi(m):
+    """The run returned with the AArch64 calling convention preserved."""
+    if not (isinstance(m.x[30], Ptr) and m.x[30].region == "return"):
+        raise Unproved("returned through a changed x30")
+    if not (isinstance(m.x["sp"], Ptr) and m.x["sp"].region == "stack"
+            and aarch64.holds(m, aarch64.as_bv(m.x["sp"].offset)
+                             == aarch64.as_bv(m.regions["stack"].size))):
+        raise Unproved(f"sp not restored: {m.x['sp']}")
+    for i in range(19, 30):
+        if isinstance(m.x[i], Ptr) or not same(m.x[i], BitVec(f"x{i}_in", 64)):
+            raise Unproved(f"callee-saved x{i} changed")
+    for i in range(8, 16):
+        if not all(same(m.v[i][l], BitVec(f"v{i}_{l}_in", 32)) for l in (0, 1)):
+            raise Unproved(f"callee-saved d{i} changed")
+    return m
 
 
 def byte_symbols(name, n):
@@ -263,7 +269,7 @@ def main():
     failed = 0
     # A fresh process per case: the normal forms' caches keep their terms
     # alive (canon.py), so a worker that kept them would only grow.
-    with multiprocessing.Pool(min(8, multiprocessing.cpu_count()), maxtasksperchild=1) as pool:
+    with multiprocessing.Pool(min(4, multiprocessing.cpu_count()), maxtasksperchild=1) as pool:
         for (name, _, _), verdict in pool.imap(prove_case, todo):
             print(f"{name}: {verdict}", flush=True)
             failed += verdict.startswith("NOT")

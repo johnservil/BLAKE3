@@ -396,6 +396,8 @@ jobs:
     - uses: dtolnay/rust-toolchain@stable
     - name: the instruction models agree with the CPU (the Rust paths' proofs among them)
       run: python3 tools/verify/cross_check.py
+    - name: the normalizer handles symbolic iteration counters
+      run: python3 -m unittest discover -s tools/verify -p test_canon.py
     - name: every hybrid kernel equals BLAKE3's compression
       run: python3 tools/verify/prove_hybrid.py
     - name: every SME2 kernel equals BLAKE3's compression

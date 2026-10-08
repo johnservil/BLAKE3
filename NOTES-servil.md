@@ -2442,3 +2442,69 @@ luck to remove, so the only benefit is fewer stuck checks on the VM.
 **The Mac's held 64 B cell (job 852) is layout luck**: the A/Bs of
 7270b21 against fa1ec7b read servil st 64 B after other work x0.93
 (unaligned, jobs 856-859) and x0.88 (aligned, 860-863). No regression.
+
+## Verification work (October 8, 2026)
+
+**The normalizer's length symbols.** `canon.has_data` counted a declared
+length symbol (the induction's iteration `len_k`) as message data. So two
+equal forms of the counter's low half took different routes:
+`Extract(31, 0, counter + 16 len_k)` became a solver leaf, while
+`Extract(31, 0, counter) + 16 Extract(31, 0, len_k)` became round
+arithmetic. Their normal forms then differed. `canon.set_context` now hands
+the path's length symbols to that classification; `test_canon.py` holds it
+(CI runs it). With the fix, the SME2 group-loop induction proved its old
+harness for every group count (1 path back to the head, 1 out, 66 min). A
+substitution check on the input's upper bits was considered first and
+dropped: it would have added a mechanism before the cause was known
+(AGENTS.md, the orange flag).
+
+**The SME2 induction's harness had a gap; it is closed.** The old harness
+gave every group's table entries the same 16 chunks, so a kernel that
+never advanced its table pointer (`add x0, x0, #0x80` made `#0x0`: every
+group hashing group 0's chunks) was **proved** by it (4852 s). The
+harness now gives group G's chunk for lane l its own offset, 1024 G, in
+lane l's region. Each read must lie inside the current group's chunk,
+group 0 in the runs to the loop's head and K in the step; the solver
+checks this under the path's assumptions. The same mutant is rejected:
+"a read of lane 0 outside the current group's chunk" (4739 s).
+Reusing the chunks' symbols across groups stays sound: a read of another
+group's data fails the check, and register state carried across groups
+is generalized to unknowns. A kernel that preloads the next group would
+fail the check even when right: the proof can be incomplete, never
+unsound. The corrected harness runs about twice as long as the old.
+
+**The instruction models against Arm's specification.**
+`tools/verify/isla_check.py` runs each form through Isla on Sail's
+Armv9.4 snapshot. It proves our model equal to Arm's for every input on
+every completing path: the general registers, the NZCV flags (PSTATE's
+1-bit fields), and a vector register's 128 bits. A condition left open
+(csel, ccmp, cset) is checked on each side. It covers 136 of the 137
+forms the proofs use, the flag-setting ones included; Isla cannot run
+`tbl`. It rejects five planted model errors.
+
+The four `dup (element)` forms first disagreed. The cause is in the
+snapshot (isla-snapshots, armv9p4, December 2024): it was compiled with
+Sail's `unsigned_subrange` before Sail's fix (rems-project/sail 1f8f173,
+June 2026, for sail-arm#32), which shifted the selected bits right by
+their high index. `isla_check` applies that one-argument fix itself and
+asserts it finds the unfixed code. With the fix, all four agree; a model
+reading the wrong lane is still rejected. Reported, with the correction:
+[Isla #107](https://github.com/rems-project/isla/issues/107).
+
+**The tree walk in Lean, through Aeneas** (`tools/verify/tree/`). The
+safe-Rust crate `widecore` has the shape of the library's
+`compress_subtree_wide`: chunk and parent kernels behind a trait, a
+256-value stack buffer, the degree-1 case. Aeneas translates it to Lean;
+`wide_is_tree` proves it computes the C2SP specification's tree for every
+nonempty input whose chunk count fits in 64 bits. It returns without
+panicking or overflowing, every buffer is large enough, and the
+`cvs[..ln + rn]` slice reads exactly the two halves' values (the left
+half fills its buffer). Kernels of any power-of-two degree up to 128
+qualify. The kernels' contracts are its hypotheses, which the assembly
+proofs establish, and kernels meeting them exist. Two mutated walks fail
+the proof, one of the binary walk's loop and one of the wide walk's
+degree-1 test. The key lemma, `treeL_layerL`: the specification's tree
+over one layer of parents is its tree over the layer below. The library
+itself does not yet call `widecore`: making it do so (with SME2's flat
+path and the hybrids' partial chunk as kernels) is the step that puts
+the proof on the code users run, measured on the Mac first.

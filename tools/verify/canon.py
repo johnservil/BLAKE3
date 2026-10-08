@@ -55,7 +55,9 @@ def has_data(t):
     r = _data.get(k)
     if r is None:
         if t.num_args() == 0:
-            v = t.decl().kind() == Z3_OP_UNINTERPRETED and not PARAMS.match(t.decl().name())
+            v = (t.decl().kind() == Z3_OP_UNINTERPRETED
+                 and not PARAMS.match(t.decl().name())
+                 and t.decl().name() not in _context["lengths"])
         else:
             v = any(has_data(c) for c in t.children())
         r = _data[k] = (t, v)
@@ -92,7 +94,7 @@ def symbols_of(t, out, seen):
 # its length symbols, and points that satisfy them. Leaves are compared
 # under the assumptions, and fingerprinted with the length symbols at those
 # points (so leaves equal under the assumptions share a fingerprint).
-_context = {"assumptions": [], "points": []}
+_context = {"assumptions": [], "points": [], "lengths": set()}
 
 
 def set_context(assumptions, lengths):
@@ -111,13 +113,15 @@ def set_context(assumptions, lengths):
             points.append(point)
             s.add(Or([BitVec(n, v.size()) != v for n, v in point.items()]) if point else False)
     _context["assumptions"], _context["points"] = list(assumptions), points
+    _context["lengths"] = set(lengths)
 
 
 def leaf(t):
     """A term with no rounds in it: equal leaves get one id. Leaves whose
     values agree at sample points are proved equal by the solver, under the
-    context's assumptions; the points only choose which pairs to try."""
-    t = simplify(t)
+    context's assumptions; the points only choose which pairs to try. The
+    polynomial normal form first makes most equal leaves identical."""
+    t = simplify(t, som=True, bv_sort_ac=True)
     syms = {}
     symbols_of(t, syms, set())
     print_ = []

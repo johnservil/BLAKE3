@@ -192,9 +192,15 @@ class Machine:
             k = key((addr + i).offset)
             b = r.bytes.get(k)
             if b is None:
-                if r.initial is None or not isinstance(k, int):
+                if r.initial is None:
                     raise Unproved(f"read of unwritten {addr + i}")
-                b = r.initial(k)
+                if not isinstance(k, int):
+                    # A symbolic offset: a region whose initial bytes depend on it.
+                    if not getattr(r, "symbolic_initial", False):
+                        raise Unproved(f"read of unwritten {addr + i}")
+                    b = r.initial((addr + i).offset)
+                else:
+                    b = r.initial(k)
             parts.append(b)
         if all(isinstance(p, tuple) for p in parts) and n == 8:
             ptrs = {(p[0].region, p[0].offset) for p in parts}
