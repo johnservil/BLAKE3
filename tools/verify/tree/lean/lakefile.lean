@@ -13,3 +13,4 @@ lean_lib Widecore {}
 lean_lib Blake3 {}
 @[default_target] lean_lib Proofs {}
 @[default_target] lean_lib WideProofs {}
+@[default_target] lean_lib HasherProofs {}

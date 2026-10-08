@@ -50,6 +50,18 @@ compression function.
 3. `walk_eq_goIdx` and `walk_is_tree` connect the walk over bytes to the
    specification's `tree` over its `ByteArray` chunks.
 
+**The Hasher's stack** (`HasherProofs.lean`, the algorithm; the
+library's `Hasher` code itself is not yet in a form Aeneas translates). After
+the first c chunks the stack holds one chaining value per 1-bit of c, the
+tree over the aligned power-of-two block it stands for (`stackCvs`):
+
+- `merge_push`: `push_cv` keeps this. After the block of 2^k chunks at
+  chunk c (2^k dividing c) goes on top, `merge_cv_stack` merging to the
+  1-bits of c + 2^k leaves the stack of c + 2^k.
+- `final_output_whole`, `final_output_partial`: `final_output`'s fold of
+  the stack onto its top (or onto a partial last chunk) is the
+  specification's tree over all the chunks.
+
 **Status.** The library's walk (`compress_subtree_wide`) is not yet this
 crate. It differs in four ways:
 
