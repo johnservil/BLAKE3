@@ -396,8 +396,8 @@ jobs:
     - uses: dtolnay/rust-toolchain@stable
     - name: the instruction models agree with the CPU (the Rust paths' proofs among them)
       run: python3 tools/verify/cross_check.py
-    - name: the normalizer handles symbolic iteration counters
-      run: python3 -m unittest discover -s tools/verify -p test_canon.py
+    - name: the proofs' helpers (the normalizer, the induction's generalization)
+      run: python3 -m unittest discover -s tools/verify -p test_helpers.py
     - name: every hybrid kernel equals BLAKE3's compression
       run: python3 tools/verify/prove_hybrid.py
     - name: every SME2 kernel equals BLAKE3's compression
@@ -406,14 +406,14 @@ jobs:
       run: python3 tools/verify/mutants.py
 
   sme2_every_group_count:
-    name: the SME2 chunk kernel at every group count (induction)
+    name: the SME2 chunk and parent kernels at every group count (induction)
     runs-on: ubuntu-24.04-arm
     # About 3.5 hours on the M4 Max's VM.
     timeout-minutes: 350
     steps:
     - uses: actions/checkout@v4
     - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends python3-z3 clang llvm
-    - run: python3 tools/verify/prove_sme2.py every
+    - run: python3 tools/verify/prove_sme2.py every parents_every
 
   build_apple_silicon:
     name: build for Apple Silicon

@@ -2451,7 +2451,7 @@ equal forms of the counter's low half took different routes:
 `Extract(31, 0, counter + 16 len_k)` became a solver leaf, while
 `Extract(31, 0, counter) + 16 Extract(31, 0, len_k)` became round
 arithmetic. Their normal forms then differed. `canon.set_context` now hands
-the path's length symbols to that classification; `test_canon.py` holds it
+the path's length symbols to that classification; `test_helpers.py` holds it
 (CI runs it). With the fix, the SME2 group-loop induction proved its old
 harness for every group count (1 path back to the head, 1 out, 66 min). A
 substitution check on the input's upper bits was considered first and
@@ -2483,6 +2483,25 @@ were run once (October 8), at 3.4 hours each. A faster form of the check
 (pointers built from the current group, offsets compared by
 simplification first) is saved in `tmp/sme2-fast-harness.patch`: no
 first pass after 69 min, so it was set aside unmeasured.
+
+**The parent kernel at every group count** (`prove_sme2.py
+parents_every`, 66 s). Its loop jumps back past its entry's loads, and
+each iteration preloads the next group's pairs, so the chunk kernel's
+check (every read inside the current group) rejected it, rightly: with
+every group reading the same symbols, a preloading kernel that hashed
+the next group's pairs in place of its own would compute the same terms.
+So each group's words differ: word w of group G is pair_w + G (for each G
+these range over every value). Consecutive groups' words differ by 1, a
+constant, which the generalization keeps as pair_w + K. Two tools
+improved on the way, each with a test in `test_helpers.py`:
+`induction.constant_difference` asks the solver (after a random-point
+screen, and for terms without BLAKE3's xors and rotations) when byte
+shuffles hide a constant difference from Z3's simplifier, and `canon` makes a sum's data-free summands one leaf (K + 1
+against a group number computed from an address). Its loop steps,
+planted wrong, are rejected by the induction: the input step (`add x9,
+x9, #0x400` made `#0x3c0`) and the output step (`#0x200` made `#0x1e0`).
+All suites pass with the changed normalizer (hybrid 327, SME2 34, Rust 24,
+mutants 29).
 
 **The instruction models against Arm's specification.**
 `tools/verify/isla_check.py` runs each form through Isla on Sail's

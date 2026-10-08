@@ -13,6 +13,8 @@ sound: a path whose result depends on one fails its comparison.
 
 import copy
 
+import canon
+
 from z3 import BitVec, BitVecVal, ZeroExt, Extract, Not, ULE, UGE, simplify, is_bv_value, eq
 import aarch64
 from aarch64 import Ptr, Unproved, Undecided
@@ -151,7 +153,7 @@ class Generalized:
             return ("unknown", 64) if wildcard else None
         if same_term(a, b):
             return a
-        d = aarch64.concrete(b - a)
+        d = constant_difference(a, b)
         if d is not None:
             return ("step", a, d)
         return ("unknown", a.size()) if wildcard else None
@@ -197,6 +199,50 @@ class Generalized:
         if self.p is not None:
             m.p = {k: (list(v) if v is not None else None) for k, v in self.p.items()}
         return m
+
+
+_mixes = {}
+
+
+def mixes(t):
+    """Whether `t` holds an xor or a rotation (BLAKE3's mixing)."""
+    from z3 import Z3_OP_BXOR, Z3_OP_ROTATE_LEFT, Z3_OP_ROTATE_RIGHT, Z3_OP_EXT_ROTATE_LEFT, Z3_OP_EXT_ROTATE_RIGHT
+    k = t.get_id()
+    r = _mixes.get(k)
+    if r is None:
+        kinds = (Z3_OP_BXOR, Z3_OP_ROTATE_LEFT, Z3_OP_ROTATE_RIGHT, Z3_OP_EXT_ROTATE_LEFT, Z3_OP_EXT_ROTATE_RIGHT)
+        r = _mixes[k] = (t, t.decl().kind() in kinds or any(mixes(c) for c in t.children()))
+    return r[1]
+
+
+def constant_difference(a, b):
+    """`b - a` when it is the same for every value of the symbols, else None:
+    by simplification, or by the solver (byte shuffles of a sum hide a
+    constant difference from the simplifier). Values at random points first
+    settle cheaply most differences that are not constant; terms holding
+    BLAKE3's mixing are not tried."""
+    import random
+    from z3 import Solver, unsat, substitute, BitVecVal
+    d = aarch64.concrete(b - a)
+    if d is not None:
+        return d
+    # Positions holding a hash's state (its xors and rotations) change by no
+    # constant: only data moved or added to is worth the solver.
+    if mixes(a) or mixes(b):
+        return None
+    diff = simplify(b - a)
+    syms = {}
+    canon.symbols_of(diff, syms, set())
+    values = set()
+    for _ in range(3):
+        point = [(v, BitVecVal(random.getrandbits(v.size()), v.size())) for v in syms.values()]
+        values.add(simplify(substitute(diff, *point)).as_long())
+        if len(values) > 1:
+            return None
+    value = values.pop()
+    s = Solver()
+    s.add(diff != BitVecVal(value, diff.size()))
+    return value if s.check() == unsat else None
 
 
 def aarch64_snapshot_blank(template):

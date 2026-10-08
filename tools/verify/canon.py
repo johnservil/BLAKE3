@@ -145,6 +145,13 @@ def leaf(t):
     return n
 
 
+def summands(t):
+    """The terms a sum adds, through nested sums."""
+    if t.decl().kind() == Z3_OP_BADD:
+        return [x for c in t.children() for x in summands(c)]
+    return [t]
+
+
 def pieces(t):
     """`t` as a list of (term, hi, lo) bit ranges, most significant first,
     seeing through concatenations, extractions, and zero extensions."""
@@ -207,8 +214,19 @@ def _canon(t):
                 return intern(("ror", l2, canon(x)))
         return intern(("cat", tuple((canon(x), h, l) for x, h, l in ps)))
     if kind == Z3_OP_BADD:
+        # The summands without data (lengths, parameters, constants) become
+        # one leaf, their sum: equal sums whose length parts are split
+        # differently (K + 1 against a group number the kernel computes from
+        # an address) then share a normal form.
+        data, rest = [], []
+        for c in summands(t):
+            (data if has_data(c) else rest).append(c)
+        if len(rest) > 1:
+            rest = [simplify(sum(rest[1:], rest[0]))]
+        if not data:
+            return leaf(t)
         terms = []
-        for c in t.children():
+        for c in data + rest:
             n = canon(c)
             terms.extend(node(n)[1] if node(n)[0] == "add" else [n])
         return intern(("add", tuple(sorted(terms))))

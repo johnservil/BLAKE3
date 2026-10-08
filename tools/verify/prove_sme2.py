@@ -149,7 +149,7 @@ def prove_messages(obj, groups, blocks, stored):
     return m.steps
 
 
-def prove_parents(obj, groups):
+def prove_parents(obj, groups, check=True):
     """hash16_parents_512(pairs, key, counter, flags, out, groups): parent
     i compresses pairs[64 i..] under key at counter (unchanged), block
     length 64, the 32-bit flags word."""
@@ -168,6 +168,8 @@ def prove_parents(obj, groups):
     s.run_and_check_abi()
     if aarch64.concrete(m.x[0]) != 16:
         raise Unproved(f"returned {m.x[0]}, not 16")
+    if not check:
+        return m.steps
     cvs = [spec.compress(spec.words(key), spec.words(pairs[64 * i:64 * i + 64]), counter, BitVecVal(64, 32), flags)[:8] for i in range(n)]
     check_out(m.regions["out"], 0, cvs)
     return m.steps
@@ -333,6 +335,88 @@ def prove_chunks_every(obj, stored):
     return f"{kinds['head']} paths back to the group loop's head, {kinds['return']} out of it"
 
 
+def prove_parents_every(obj):
+    """hash16_parents_512 at every number of groups from 2 to 2^40 (1 and 2
+    are the concrete cases), by induction over its group loop: group K's
+    parent i compresses pairs[1024 K + 64 i..] under key at counter
+    (unchanged), into out[32 (16 K + i)..]. Each group's pairs are arbitrary:
+    word w of group G's pairs is pair_w + G, so each group's words range
+    over every value while the groups differ: a kernel that hashed another
+    group's pairs (it preloads the next group's) would compute other terms.
+    Between groups the words differ by 1, a constant, so the loop invariant
+    holds the next group's words as pair_w + K + 1."""
+    import induction
+    from z3 import ULE, UGE, ULT
+    words = [BitVec(f"pair{w}", 32) for w in range(256)]
+    key = byte_symbols("key", 32)
+    g, k = BitVec("len_groups", 64), BitVec("len_k", 64)
+    def pair_byte(offset):
+        m = aarch64._machine[0]
+        if isinstance(offset, int):
+            group, within = BitVecVal(offset // 1024, 32), offset % 1024
+        else:
+            within = induction.forced(m, aarch64.as_bv(offset) & 1023)
+            if within is None:
+                raise Unproved("a read of pairs whose place in its group the lengths leave open")
+            # From the word's first byte, so its four bytes are one word's.
+            first = simplify(aarch64.as_bv(offset) - within % 4, som=True, bv_sort_ac=True)
+            group = simplify(Extract(31, 0, LShR(first, 10)), som=True, bv_sort_ac=True)
+        word = simplify(words[within // 4] + group, som=True, bv_sort_ac=True)
+        return Extract(8 * (within % 4) + 7, 8 * (within % 4), word)
+    regions = {"pairs": Region("pairs", g * 1024, False, pair_byte),
+               "key": Region("key", 32, False, lambda o: key[o]),
+               "out": Region("out", g * 512, True, None)}
+    regions["pairs"].symbolic_initial = True
+    s = SmeSetup(obj, "blake3_sme2_hash16_parents_512", regions)
+    m = s.m
+    m.lengths = {"len_groups", "len_k"}
+    m.assumptions = [UGE(g, 2), ULE(g, 1 << 40)]
+    counter, flags = BitVec("counter", 64), BitVec("flags", 32)
+    m.x[0], m.x[1], m.x[2] = Ptr("pairs", 0), Ptr("key", 0), counter
+    m.x[3] = ZeroExt(32, flags)
+    m.x[4], m.x[5] = Ptr("out", 0), g
+    head = loop_head(obj, lambda: prove_parents(obj, 3, check=False), 2)
+    def group_cvs(kval):
+        group = BitVecVal(kval, 32) if isinstance(kval, int) else Extract(31, 0, kval)
+        block = [simplify(w + group, som=True, bv_sort_ac=True) for w in words]
+        return [spec.compress(spec.words(key), block[16 * i:16 * i + 16], counter, BitVecVal(64, 32), flags)[:8]
+                for i in range(16)]
+    def check_group(mach, kval):
+        out = mach.regions["out"]
+        keys = set()
+        for i, cv in enumerate(group_cvs(kval)):
+            base = BitVecVal(kval * 512, 64) if isinstance(kval, int) else aarch64.as_bv(kval * 512)
+            offs = [aarch64.key(base + 32 * i + j) for j in range(32)]
+            keys.update(offs)
+            if any(o not in out.bytes for o in offs):
+                raise Unproved(f"group output {i} is not wholly written")
+            got = spec.words([out.bytes[o] for o in offs])
+            for w in range(8):
+                if not same(got[w], cv[w]):
+                    raise Unproved(f"group output {i}, word {w}, differs from the specification")
+        if set(out.bytes) != keys:
+            raise Unproved("the group writes output bytes outside its own")
+    # The group loop jumps back to the kernel's entry: the first arrival at
+    # its head is the call itself.
+    s0 = induction.snapshot(m) if head == s.entry else induction.run_to(m, s.entry, head)
+    if s0.regions["out"].bytes:
+        raise Unproved("output written before the group loop")
+    s1 = induction.run_to(induction.snapshot(s0), head, head)
+    check_group(s1, 0)
+    gen = induction.Generalized(s0, s1, k)
+    import prove_rust
+    def check(endm, how):
+        check_group(endm, k)
+        if how == "return":
+            if not aarch64.holds(endm, g == k + 1):
+                raise Unproved("a path leaves the group loop before the last group")
+            if aarch64.concrete(endm.x[0]) != 16:
+                raise Unproved(f"returned {endm.x[0]}, not 16")
+            prove_hybrid.check_abi(endm)
+    kinds = prove_rust.loop_step(gen, s0, k, list(s0.assumptions) + [ULT(k, g), ULE(k, 1 << 39)], head, check)
+    return f"{kinds['head']} paths back to the group loop's head, {kinds['return']} out of it"
+
+
 def cases(only):
     out = []
     for groups in (1, 2):
@@ -345,8 +429,8 @@ def cases(only):
     out.append(("messages", 2, (3, 7)))
     out += [("parents", 1, None), ("parents", 2, None), ("xof", 1, None), ("xof", 2, None)]
     # Hours long: run when named.
-    out.append(("every", None, None))
-    return [c for c in out if (c[0] in only if only else c[0] != "every")]
+    out += [("every", None, None), ("parents_every", None, None)]
+    return [c for c in out if (c[0] in only if only else not c[0].endswith("every"))]
 
 
 OBJ = None
@@ -369,6 +453,9 @@ def prove_case(case):
         elif name == "every":
             what = prove_chunks_every(OBJ, 0)
             return case, f"proved (the chunk kernel at every group count, the last group storing 16: {what}, {time.time() - t:.0f} s)"
+        elif name == "parents_every":
+            what = prove_parents_every(OBJ)
+            return case, f"proved (the parent kernel at every group count: {what}, {time.time() - t:.0f} s)"
         elif name == "parents":
             steps, what = prove_parents(OBJ, groups), f"{groups} groups"
         else:
