@@ -4,6 +4,7 @@ vector length of Apple M4 (`cntw` = 16; the kernels return at once on any
 other).
 
     python3 tools/verify/prove_sme2.py [KERNEL...]
+    python3 tools/verify/prove_sme2.py every   # the chunk kernel at every group count (3.5 hours)
 """
 
 import os
@@ -343,7 +344,9 @@ def cases(only):
         out.append(("messages", 1, (5, stored)))
     out.append(("messages", 2, (3, 7)))
     out += [("parents", 1, None), ("parents", 2, None), ("xof", 1, None), ("xof", 2, None)]
-    return [c for c in out if not only or c[0] in only]
+    # Hours long: run when named.
+    out.append(("every", None, None))
+    return [c for c in out if (c[0] in only if only else c[0] != "every")]
 
 
 OBJ = None
@@ -363,6 +366,9 @@ def prove_case(case):
             blocks, stored = arg
             steps = prove_messages(OBJ, groups, blocks, stored)
             what = f"{groups} groups of {blocks}-block messages, the last block of any length, the last group storing {stored or 16}"
+        elif name == "every":
+            what = prove_chunks_every(OBJ, 0)
+            return case, f"proved (the chunk kernel at every group count, the last group storing 16: {what}, {time.time() - t:.0f} s)"
         elif name == "parents":
             steps, what = prove_parents(OBJ, groups), f"{groups} groups"
         else:

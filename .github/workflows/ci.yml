@@ -405,6 +405,16 @@ jobs:
     - name: the proofs reject wrong kernels
       run: python3 tools/verify/mutants.py
 
+  sme2_every_group_count:
+    name: the SME2 chunk kernel at every group count (induction)
+    runs-on: ubuntu-24.04-arm
+    # About 3.5 hours on the M4 Max's VM.
+    timeout-minutes: 350
+    steps:
+    - uses: actions/checkout@v4
+    - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends python3-z3 clang llvm
+    - run: python3 tools/verify/prove_sme2.py every
+
   build_apple_silicon:
     name: build for Apple Silicon
     runs-on: macOS-latest

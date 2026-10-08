@@ -2471,7 +2471,18 @@ Reusing the chunks' symbols across groups stays sound: a read of another
 group's data fails the check, and register state carried across groups
 is generalized to unknowns. A kernel that preloads the next group would
 fail the check even when right: the proof can be incomplete, never
-unsound. The corrected harness runs about twice as long as the old.
+unsound. Under the corrected harness the kernel is proved at every group
+count (1 path back to the head, 1 out; 12145 s, 3.4 hours, against 66 min
+for the old harness: every chunk byte is read at a symbolic offset, and
+the solver places it). Its loop's other steps, planted wrong, are
+rejected too: the output pointer's (`add x4, x4, #0x200` made `#0x1e0`,
+"group output 0 is not wholly written", 12438 s) and the counter's (`lsl
+#4` made `lsl #3`, "group output 0, word 0, differs", 12135 s). The proof
+runs as `prove_sme2.py every`, and in CI as a job of its own; the mutants
+were run once (October 8), at 3.4 hours each. A faster form of the check
+(pointers built from the current group, offsets compared by
+simplification first) is saved in `tmp/sme2-fast-harness.patch`: no
+first pass after 69 min, so it was set aside unmeasured.
 
 **The instruction models against Arm's specification.**
 `tools/verify/isla_check.py` runs each form through Isla on Sail's

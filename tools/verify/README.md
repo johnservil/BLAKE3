@@ -7,6 +7,7 @@ and flags value:
 
     python3 tools/verify/prove_hybrid.py [KERNEL...]   # c/blake3_neon_hybrid_aarch64.S: c1, k2-k10, p2-p9, q1-q9 (327 cases, 2 min on 16 cores)
     python3 tools/verify/prove_sme2.py [KERNEL...]     # c/blake3_sme2_aarch64.S: chunks, chunks_at, messages, parents, xof (34 cases, 3 min)
+    python3 tools/verify/prove_sme2.py every           # the chunk kernel at every group count (3.5 hours)
     python3 tools/verify/lean/emit.py                   # the definition, computed from the Lean specification (needs Lean)
     python3 tools/verify/prove_rust.py                  # the Rust paths, compiled: portable, and the NEON platform's (24 cases)
     python3 tools/verify/cross_check.py                 # the NEON and integer models against the CPU (and every form the Rust proofs run)
@@ -26,9 +27,11 @@ the VM on it).
 at the 512-bit streaming vector length (`cntw` = 16, which they check
 themselves), for one and two groups, the last group storing 1, 15, or
 all 16 values, and the message kernel at every message length of 2 to 16
-blocks with the last block of any length. More groups repeat the loop
-these cases run twice; the proofs do not yet show the loop's state the
-same at each iteration.
+blocks with the last block of any length. The chunk kernel at every group
+count, its last group storing all 16 values, by induction over its group
+loop (`prove_sme2.py every`, 3.5 hours; CI runs it as a job of its own):
+every read of a chunk is checked to lie in the current group's own chunk.
+The other SME2 kernels' loops are covered at one and two groups.
 
 ## What a proof shows
 
