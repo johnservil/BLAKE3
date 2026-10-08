@@ -156,6 +156,11 @@ class Generalized:
         d = constant_difference(a, b)
         if d is not None:
             return ("step", a, d)
+        # A difference of parameters alone (a counter's step): the same each
+        # iteration, if the step from K to K + 1 proves it.
+        diff = simplify(b - a)
+        if not canon.has_data(diff) and not mixes(diff):
+            return ("step", a, diff)
         return ("unknown", a.size()) if wildcard else None
 
     def at(self, kval):

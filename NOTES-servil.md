@@ -2503,6 +2503,16 @@ x9, #0x400` made `#0x3c0`) and the output step (`#0x200` made `#0x1e0`).
 All suites pass with the changed normalizer (hybrid 327, SME2 34, Rust 24,
 mutants 29).
 
+**The extended-output kernel at every group count** (`prove_sme2.py
+xof_every`, 72 s): 1 path back to the head, 1 out. Its counter step
+(`add x2, x2, #0x10` made `#0xf`) and output step (`#0x400` made `#0x3c0`),
+planted wrong, are rejected by the induction. **The message kernel**
+(`messages_every`, one induction per block count, 2 to 16): its counter
+advances by a parameter, `step`, so the generalization now also takes a
+difference made of parameters alone as the iteration's step (the
+induction's step from K to K + 1 then proves it); with 2-block messages,
+1 path back, 1 out, 767 s.
+
 **The instruction models against Arm's specification.**
 `tools/verify/isla_check.py` runs each form through Isla on Sail's
 Armv9.4 snapshot. It proves our model equal to Arm's for every input on

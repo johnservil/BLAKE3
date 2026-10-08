@@ -1,4 +1,4 @@
-From ba049c530da92c0a200d1ee180ada525a0c5df4f Mon Sep 17 00:00:00 2001
+From c844a3d1aeb0d2ff0b37c2568bd15bcae5da8292 Mon Sep 17 00:00:00 2001
 From: John Servil <johnservil@users.noreply.github.com>
 Date: Wed, 7 Oct 2026 16:21:45 +0000
 Subject: [PATCH] BLAKE3: add a Lean specification, definitive where the two
@@ -18,12 +18,12 @@ where the two differ.
  BLAKE3/README.md          |  29 ++++
  BLAKE3/Tests.lean         |  79 ++++++++++
  BLAKE3/Theorems.lean      |  44 ++++++
- BLAKE3/check.py           | 206 +++++++++++++++++++++++++
- BLAKE3/generate.py        | 282 ++++++++++++++++++++++++++++++++++
+ BLAKE3/check.py           | 208 +++++++++++++++++++++++++
+ BLAKE3/generate.py        | 283 ++++++++++++++++++++++++++++++++++
  BLAKE3/lake-manifest.json |   6 +
  BLAKE3/lakefile.toml      |   8 +
  BLAKE3/lean-toolchain     |   1 +
- 11 files changed, 978 insertions(+)
+ 11 files changed, 981 insertions(+)
  create mode 100644 BLAKE3/.gitignore
  create mode 100644 BLAKE3/Blake3.lean
  create mode 100644 BLAKE3/README.md
@@ -553,10 +553,10 @@ index 0000000..475f71e
 +end Blake3
 diff --git a/BLAKE3/check.py b/BLAKE3/check.py
 new file mode 100644
-index 0000000..3aeed1d
+index 0000000..259afb0
 --- /dev/null
 +++ b/BLAKE3/check.py
-@@ -0,0 +1,206 @@
+@@ -0,0 +1,208 @@
 +"""Check that Blake3.lean matches BLAKE3.md.
 +
 +    python3 check.py [path/to/BLAKE3.md]     (default: ../BLAKE3.md)
@@ -673,7 +673,8 @@ index 0000000..3aeed1d
 +    path = os.path.join(HERE, "test_vectors.json")
 +    if not os.path.exists(path):
 +        with urllib.request.urlopen(raw, timeout=60) as r:
-+            open(path, "wb").write(r.read())
++            with open(path, "wb") as f:
++                f.write(r.read())
 +    if hashlib.sha256(open(path, "rb").read()).hexdigest() != VECTORS_SHA256:
 +        fail(f"{path} differs from the file the appendix links")
 +    return path, url
@@ -729,8 +730,8 @@ index 0000000..3aeed1d
 +    n = sum(len(t["compressions"]) for t in traces)
 +    print(f"appendix: {n} compressions extracted; the trace is consistent with itself and the text")
 +    fields = ("title", "compressions", "hash", "len", "input_hex")
-+    json.dump([{k: t[k] for k in fields} | {"key_hex": t.get("key_hex", "")} for t in traces],
-+              open(os.path.join(HERE, "traces.json"), "w"), indent=1)
++    with open(os.path.join(HERE, "traces.json"), "w") as f:
++        json.dump([{k: t[k] for k in fields} | {"key_hex": t.get("key_hex", "")} for t in traces], f, indent=1)
 +    # 3. The vectors.
 +    vpath, vurl = vectors(md)
 +    # 4. Lean: build, the theorems' axioms, then the tests.
@@ -740,7 +741,8 @@ index 0000000..3aeed1d
 +    names = [t for f in ("Blake3.lean", "Theorems.lean")
 +             for t in re.findall(r"^theorem (\w+)", open(os.path.join(HERE, f)).read(), re.M)]
 +    probe = "import Theorems\n" + "".join(f"#print axioms Blake3.{t}\n" for t in names)
-+    open(os.path.join(HERE, ".axioms.lean"), "w").write(probe)
++    with open(os.path.join(HERE, ".axioms.lean"), "w") as f:
++        f.write(probe)
 +    r = lake("env", "lean", ".axioms.lean")
 +    os.remove(os.path.join(HERE, ".axioms.lean"))
 +    allowed = {"propext", "Classical.choice", "Quot.sound"}
@@ -765,10 +767,10 @@ index 0000000..3aeed1d
 +    main()
 diff --git a/BLAKE3/generate.py b/BLAKE3/generate.py
 new file mode 100644
-index 0000000..92e48cf
+index 0000000..f46db1b
 --- /dev/null
 +++ b/BLAKE3/generate.py
-@@ -0,0 +1,282 @@
+@@ -0,0 +1,283 @@
 +"""Generate the formal part of Blake3.lean from BLAKE3.md, deterministically.
 +
 +BLAKE3.md gives sections 2.2 to 3.3 in fixed forms: the IV and the
@@ -1044,7 +1046,8 @@ index 0000000..92e48cf
 +    if "--write" in sys.argv:
 +        path = __file__.replace("generate.py", "Blake3.lean")
 +        new = splice(open(path).read(), g)
-+        open(path, "w").write(new)
++        with open(path, "w") as f:
++            f.write(new)
 +    else:
 +        sys.stdout.write(g)
 +

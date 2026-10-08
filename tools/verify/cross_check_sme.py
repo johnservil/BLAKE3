@@ -92,7 +92,8 @@ def build(fl):
                 "  ldp d10, d11, [sp, #16]", "  ldp d12, d13, [sp, #32]", "  ldp d14, d15, [sp, #48]", "  ldp d8, d9, [sp], #64", "  ret"]
     d = tempfile.mkdtemp()
     path = os.path.join(d, "f.S")
-    open(path, "w").write("\n".join(src) + "\n")
+    with open(path, "w") as f:
+        f.write("\n".join(src) + "\n")
     lib = os.path.join(d, "f.so")
     subprocess.run([prove_sme2.CLANG, "-shared", "-march=armv9-a+sme2", path, "-o", lib], check=True)
     return ctypes.CDLL(lib)

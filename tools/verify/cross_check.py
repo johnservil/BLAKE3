@@ -64,7 +64,8 @@ def build(form_list):
                 "  stp x9, x10, [x0]", "  stp x11, x12, [x0, #16]",
                 "  st1 {v0.16b, v1.16b, v2.16b, v3.16b}, [x1]", "  ret"]
     path = os.path.join(d, "forms.S")
-    open(path, "w").write("\n".join(src) + "\n")
+    with open(path, "w") as f:
+        f.write("\n".join(src) + "\n")
     lib = os.path.join(d, "forms.so")
     subprocess.run(["cc", "-shared", "-march=armv8.2-a+sha3", path, "-o", lib], check=True)
     return ctypes.CDLL(lib)

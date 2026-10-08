@@ -114,7 +114,8 @@ def vectors(md):
     path = os.path.join(HERE, "test_vectors.json")
     if not os.path.exists(path):
         with urllib.request.urlopen(raw, timeout=60) as r:
-            open(path, "wb").write(r.read())
+            with open(path, "wb") as f:
+                f.write(r.read())
     if hashlib.sha256(open(path, "rb").read()).hexdigest() != VECTORS_SHA256:
         fail(f"{path} differs from the file the appendix links")
     return path, url
@@ -170,8 +171,8 @@ def main():
     n = sum(len(t["compressions"]) for t in traces)
     print(f"appendix: {n} compressions extracted; the trace is consistent with itself and the text")
     fields = ("title", "compressions", "hash", "len", "input_hex")
-    json.dump([{k: t[k] for k in fields} | {"key_hex": t.get("key_hex", "")} for t in traces],
-              open(os.path.join(HERE, "traces.json"), "w"), indent=1)
+    with open(os.path.join(HERE, "traces.json"), "w") as f:
+        json.dump([{k: t[k] for k in fields} | {"key_hex": t.get("key_hex", "")} for t in traces], f, indent=1)
     # 3. The vectors.
     vpath, vurl = vectors(md)
     # 4. Lean: build, the theorems' axioms, then the tests.
@@ -181,7 +182,8 @@ def main():
     names = [t for f in ("Blake3.lean", "Theorems.lean")
              for t in re.findall(r"^theorem (\w+)", open(os.path.join(HERE, f)).read(), re.M)]
     probe = "import Theorems\n" + "".join(f"#print axioms Blake3.{t}\n" for t in names)
-    open(os.path.join(HERE, ".axioms.lean"), "w").write(probe)
+    with open(os.path.join(HERE, ".axioms.lean"), "w") as f:
+        f.write(probe)
     r = lake("env", "lean", ".axioms.lean")
     os.remove(os.path.join(HERE, ".axioms.lean"))
     allowed = {"propext", "Classical.choice", "Quot.sound"}

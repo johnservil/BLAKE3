@@ -273,7 +273,8 @@ def main():
     if "--write" in sys.argv:
         path = __file__.replace("generate.py", "Blake3.lean")
         new = splice(open(path).read(), g)
-        open(path, "w").write(new)
+        with open(path, "w") as f:
+            f.write(new)
     else:
         sys.stdout.write(g)
 

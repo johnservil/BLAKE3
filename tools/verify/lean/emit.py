@@ -32,7 +32,8 @@ def main():
         sys.exit("emit.py: Blake3.lean's generated section is not generate.py's output (run c2sp/BLAKE3/check.py)")
     path = os.path.join(HERE, "Generic.lean")
     new = generate.splice(open(path).read(), text)
-    open(path, "w").write(new)
+    with open(path, "w") as f:
+        f.write(new)
     for args in (["build"], ["env", "lean", "--run", "Emit.lean", "compress.json", "samples.json"]):
         r = subprocess.run(["lake", *args], cwd=HERE, capture_output=True, text=True)
         if r.returncode:
