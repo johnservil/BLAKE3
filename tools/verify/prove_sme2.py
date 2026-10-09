@@ -253,7 +253,8 @@ def prove_chunks_every(obj, stored):
             group = offset // 1024 if isinstance(offset, int) else LShR(offset, 10)
             within = offset % 1024 if isinstance(offset, int) else induction.forced(m, offset & 1023)
             same_group = (group == current[0]) if isinstance(group, int) and isinstance(current[0], int) else \
-                aarch64.holds(m, aarch64.as_bv(group) == aarch64.as_bv(current[0]))
+                within is not None and (aarch64.concrete(aarch64.as_bv(offset) - within - aarch64.as_bv(current[0]) * 1024) == 0
+                                        or aarch64.holds(m, aarch64.as_bv(group) == aarch64.as_bv(current[0])))
             if within is None or not same_group:
                 raise Unproved(f"a read of lane {l} outside the current group's chunk")
             return lanes[l][within]
@@ -364,7 +365,8 @@ def prove_messages_every(obj, blocks):
             group = offset // 1024 if isinstance(offset, int) else LShR(offset, 10)
             within = offset % 1024 if isinstance(offset, int) else induction.forced(m, offset & 1023)
             same_group = (group == current[0]) if isinstance(group, int) and isinstance(current[0], int) else \
-                aarch64.holds(m, aarch64.as_bv(group) == aarch64.as_bv(current[0]))
+                within is not None and (aarch64.concrete(aarch64.as_bv(offset) - within - aarch64.as_bv(current[0]) * 1024) == 0
+                                        or aarch64.holds(m, aarch64.as_bv(group) == aarch64.as_bv(current[0])))
             if within is None or not same_group:
                 raise Unproved(f"a read of lane {l} outside the current group's chunk")
             return lanes[l][within]

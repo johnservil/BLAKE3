@@ -151,6 +151,10 @@ class Generalized:
             return None if not wildcard else ("unknown", 64)
         if isinstance(a, Ptr) or isinstance(b, Ptr):
             return ("unknown", 64) if wildcard else None
+        # A hash's state (BLAKE3's xors and rotations) is kept only when it is
+        # the same term in both: it is never a step.
+        if mixes(a) or mixes(b):
+            return a if eq(a, b) else (("unknown", a.size()) if wildcard else None)
         if same_term(a, b):
             return a
         d = constant_difference(a, b)
@@ -283,6 +287,9 @@ def forced(m, term):
     """`term`'s value when the run's assumptions force one (a model's value,
     and no other possible), else None."""
     from z3 import Solver, sat
+    c = aarch64.concrete(term)
+    if c is not None:
+        return c
     s = Solver()
     s.add(*m.assumptions)
     if s.check() != sat:
