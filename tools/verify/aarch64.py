@@ -497,6 +497,24 @@ def mem_operand(m, ops, k):
     return addr, None, addr
 
 
+_clobbers = [0]
+
+
+def clobber(m, keep_x0=False):
+    """After a call by contract: the registers the calling convention lets a
+    callee change (x0-x18 but what the contract returns, and v0-v7, v16-v31,
+    and d8-d15's upper lanes) hold fresh values, and the flags none."""
+    _clobbers[0] += 1
+    n = _clobbers[0]
+    for i in range(1 if keep_x0 else 0, 19):
+        m.x[i] = BitVec(f"clobbered{n}_x{i}", 64)
+    for i in list(range(0, 8)) + list(range(16, 32)):
+        m.v[i] = [BitVec(f"clobbered{n}_v{i}_{l}", 32) for l in range(16)]
+    for i in range(8, 16):
+        m.v[i] = m.v[i][:2] + [BitVec(f"clobbered{n}_v{i}_{l}", 32) for l in range(2, 16)]
+    m.nzcv = None
+
+
 def library_call(m, name):
     """The C library functions compiled Rust calls, by their contracts:
     memcpy and memmove copy x2 bytes (a concrete count) from x1 to x0 and
@@ -650,6 +668,12 @@ def step(m, pc, mnem, ops):
         name = getattr(m, "plt", {}).get(target)
         if name is not None:
             library_call(m, name)
+            clobber(m, keep_x0=True)
+            return None
+        contract = getattr(m, "contracts", {}).get(target)
+        if contract is not None:
+            contract(m)
+            clobber(m)
             return None
         m.x[30] = Ptr("code", pc + 4)
         return target

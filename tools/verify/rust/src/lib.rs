@@ -23,3 +23,11 @@ pub extern "C" fn verify_neon_xof_many(cv: &[u32; 8], block: &[u8; 64], len: u8,
     let out = unsafe { core::slice::from_raw_parts_mut(out, blocks * 64) };
     Platform::NEON.xof_many(cv, block, len, counter, flags, out)
 }
+
+#[unsafe(no_mangle)]
+pub extern "C" fn verify_hasher(input: *const u8, len: usize, out: &mut [u8; 32]) {
+    // Safe: the caller gives `len` readable bytes. The Hasher's stack code
+    // (HasherCore::merge_cv_stack, final_output) is proved as compiled here.
+    let input = unsafe { core::slice::from_raw_parts(input, len) };
+    *out = *blake3_servil::Hasher::new().update(input).finalize().as_bytes();
+}

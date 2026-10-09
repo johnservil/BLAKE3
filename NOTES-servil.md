@@ -2522,9 +2522,15 @@ time; the VM reports no per-thread cycles): a Hasher's whole life on 64
 bytes (new, update, finalize) took 59.9 ns with the `ArrayVec` stack and
 69.8 ns with `[CVBytes; 55]` and a length, in all 8 alternating pairs
 (examples/hasher_short.rs on probe/stack-array): zeroing 1.7 KiB in
-`Hasher::new` costs about 10 ns, 16%. So the stack is to be proved as
-compiled machine code, `ArrayVec` and all, as the kernels are, rather than
-rewritten for Aeneas or given a trusted contract.
+`Hasher::new` costs about 10 ns, 16%. The array made at the first push
+instead (`Option<[CVBytes; 55]>` and a length; probe/stack-array): a
+message of one chunk pushes nothing, and a longer one zeroes it once,
+after hashing a chunk. Measured the same way, 3 alternating sets of old
+new new old, means of 6 runs a side: 64 B 61.5 against 60.1 ns, 1025 B
+(one push) 897 against 894, 2 KiB 996 against 997, 8 KiB 2184 against
+2175: no cost seen. So the stack can be plain safe Rust that Aeneas
+translates, as the walk is, with no machine-code proof and no trusted
+contract for `ArrayVec`.
 
 **Isla and ZA writes**: the moves into ZA's vertical slices, and
 single-register writes into ZA of either orientation, grow Isla past 98
