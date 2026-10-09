@@ -841,8 +841,11 @@ fn test_zeroize() {
         },
         initial_chunk_counter: 42,
         key: [42; 8],
-        cv_stack: [[42; 32]; { crate::MAX_DEPTH + 1 }].into(),
+        cv_stack: crate::stack::CvStack::new(),
     };
+    for _ in 0..crate::MAX_DEPTH + 1 {
+        hasher.cv_stack.push([42; 32]);
+    }
     hasher.zeroize();
     assert_eq!(hasher.chunk_state.cv, [0; 8]);
     assert_eq!(hasher.chunk_state.chunk_counter, 0);
@@ -856,7 +859,8 @@ fn test_zeroize() {
     ));
     assert_eq!(hasher.initial_chunk_counter, 0);
     assert_eq!(hasher.key, [0; 8]);
-    assert_eq!(&*hasher.cv_stack, &[[0u8; 32]; 0]);
+    assert_eq!(hasher.cv_stack.len(), 0);
+    assert_eq!(hasher.cv_stack.array(), Some(&[[0u8; 32]; crate::MAX_DEPTH + 1]));
 
     let mut output_reader = crate::OutputReader {
         inner: crate::Output {
