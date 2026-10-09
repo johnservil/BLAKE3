@@ -2510,8 +2510,27 @@ planted wrong, are rejected by the induction. **The message kernel**
 (`messages_every`, one induction per block count, 2 to 16): its counter
 advances by a parameter, `step`, so the generalization now also takes a
 difference made of parameters alone as the iteration's step (the
-induction's step from K to K + 1 then proves it); with 2-block messages,
-1 path back, 1 out, 767 s.
+induction's step from K to K + 1 then proves it). All 15 block counts are
+proved at every group count, 123 s (2 blocks) to 3645 s (16), and the
+chunk kernel again on the final code, 5107 s (12145 s before two
+speedups: `induction.forced` and the group check try simplification
+before the solver, and the generalization keeps a hash state only when
+both arrivals hold the same term).
+
+**The Hasher's stack as a plain array, measured** (October 9, VM, wall
+time; the VM reports no per-thread cycles): a Hasher's whole life on 64
+bytes (new, update, finalize) took 59.9 ns with the `ArrayVec` stack and
+69.8 ns with `[CVBytes; 55]` and a length, in all 8 alternating pairs
+(examples/hasher_short.rs on probe/stack-array): zeroing 1.7 KiB in
+`Hasher::new` costs about 10 ns, 16%. So the stack is to be proved as
+compiled machine code, `ArrayVec` and all, as the kernels are, rather than
+rewritten for Aeneas or given a trusted contract.
+
+**Isla and ZA writes**: the moves into ZA's vertical slices, and
+single-register writes into ZA of either orientation, grow Isla past 98
+GB in under two minutes (the four-register horizontal moves complete in
+about 16 GB): a limit of its symbolic execution here, not a memory need
+just past 50 GB.
 
 **The instruction models against Arm's specification.**
 `tools/verify/isla_check.py` runs each form through Isla on Sail's

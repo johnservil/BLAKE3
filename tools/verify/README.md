@@ -7,7 +7,7 @@ and flags value:
 
     python3 tools/verify/prove_hybrid.py [KERNEL...]   # c/blake3_neon_hybrid_aarch64.S: c1, k2-k10, p2-p9, q1-q9 (327 cases, 2 min on 16 cores)
     python3 tools/verify/prove_sme2.py [KERNEL...]     # c/blake3_sme2_aarch64.S: chunks, chunks_at, messages, parents, xof (34 cases, 3 min)
-    python3 tools/verify/prove_sme2.py every parents_every  # the chunk and parent kernels at every group count (3.5 hours)
+    python3 tools/verify/prove_sme2.py every parents_every xof_every messages_every  # each kernel at every group count (hours)
     python3 tools/verify/lean/emit.py                   # the definition, computed from the Lean specification (needs Lean)
     python3 tools/verify/prove_rust.py                  # the Rust paths, compiled: portable, and the NEON platform's (24 cases)
     python3 tools/verify/cross_check.py                 # the NEON and integer models against the CPU (and every form the Rust proofs run)
@@ -29,13 +29,14 @@ themselves), for one and two groups, the last group storing 1, 15, or
 all 16 values, and the message kernel at every message length of 2 to 16
 blocks with the last block of any length. The chunk kernel at every group
 count up to 2^40 groups, its last group storing all 16 values, by
-induction over its group loop (`prove_sme2.py every`, 3.5 hours): every
+induction over its group loop (`prove_sme2.py every`, 85 minutes): every
 read of a chunk is checked to lie in the current group's own chunk. The
-parent kernel the same way (`prove_sme2.py parents_every`, about a minute).
-It preloads the next group's pairs, so each group's words differ instead
-(word w of group G is pair_w + G): hashing another group's pairs gives
-other terms. CI runs both as a job of its own. The message and
-extended-output kernels' loops are covered at one and two groups.
+parent kernel the same way (`parents_every`, under a minute); it preloads
+the next group's pairs, so each group's words differ instead (word w of
+group G is pair_w + G): hashing another group's pairs gives other terms.
+The extended-output kernel (`xof_every`, under a minute), and the message
+kernel at each message length of 2 to 16 blocks (`messages_every`, 2 to
+61 minutes each). CI runs them as a matrix of jobs.
 
 ## What a proof shows
 
@@ -106,8 +107,8 @@ inputs, pointers are (region, offset) pairs. The run checks:
   The SME2 kernels' streaming register forms run the same way in
   streaming mode, all 16 lanes and ZA cell by cell, each ZA move at the
   slice base its register holds in the kernels: 19 of 23 agree. The four
-  moves into tile 1's vertical slices need more than 50 GB of memory in
-  Isla (the VM has 62 and failed); they, the predicated `add`, `cmphi`,
+  moves into tile 1's vertical slices exhaust Isla's memory (98 GB, as do
+  single-register writes into ZA); they, the predicated `add`, `cmphi`,
   and the ZA loads and stores stay checked against the CPU. Memory effects
   are outside it.
 - **objdump's disassembly** of the assembled object, and the assembler.
