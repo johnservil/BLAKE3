@@ -2093,7 +2093,57 @@ pub(crate) struct HasherCore {
     // requires a 4th entry, rather than merging everything down to 1, because
     // we don't know whether more input is coming. This is different from how
     // the reference implementation does things.
-    cv_stack: ArrayVec<CVBytes, { MAX_DEPTH + 1 }>,
+    cv_stack: CvStack,
+}
+
+/// The chaining values of the finished subtrees, bottom first: a plain
+/// array and its length, made at the first push (a message of one chunk
+/// pushes none, so it never pays for the array).
+#[derive(Clone)]
+struct CvStack {
+    cvs: Option<[CVBytes; MAX_DEPTH + 1]>,
+    len: usize,
+}
+
+impl CvStack {
+    fn new() -> Self {
+        Self { cvs: None, len: 0 }
+    }
+    fn len(&self) -> usize {
+        self.len
+    }
+    fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+    fn push(&mut self, cv: CVBytes) {
+        let cvs = self.cvs.get_or_insert([[0; OUT_LEN]; MAX_DEPTH + 1]);
+        cvs[self.len] = cv;
+        self.len += 1;
+    }
+    fn pop(&mut self) -> Option<CVBytes> {
+        self.len = self.len.checked_sub(1)?;
+        Some(self.cvs.as_ref()?[self.len])
+    }
+    fn clear(&mut self) {
+        self.len = 0;
+    }
+}
+
+impl core::ops::Index<usize> for CvStack {
+    type Output = CVBytes;
+    fn index(&self, i: usize) -> &CVBytes {
+        &self.cvs.as_ref().expect("an index below the stack's length")[..self.len][i]
+    }
+}
+
+#[cfg(feature = "zeroize")]
+impl Zeroize for CvStack {
+    fn zeroize(&mut self) {
+        if let Some(cvs) = &mut self.cvs {
+            cvs.zeroize();
+        }
+        self.len = 0;
+    }
 }
 
 impl Hasher {
@@ -2493,7 +2543,7 @@ impl HasherCore {
             key: *key,
             chunk_state: ChunkState::new(key, 0, flags, platform),
             initial_chunk_counter: 0,
-            cv_stack: ArrayVec::new(),
+            cv_stack: CvStack::new(),
         }
     }
 
