@@ -31,3 +31,11 @@ pub extern "C" fn verify_hasher(input: *const u8, len: usize, out: &mut [u8; 32]
     let input = unsafe { core::slice::from_raw_parts(input, len) };
     *out = *blake3_servil::Hasher::new().update(input).finalize().as_bytes();
 }
+
+#[unsafe(no_mangle)]
+pub extern "C" fn verify_hash(input: *const u8, len: usize, out: &mut [u8; 32]) {
+    // Safe: the caller gives `len` readable bytes. Whole calls, for the
+    // timing proof: what a hash runs depends only on `len`.
+    let input = unsafe { core::slice::from_raw_parts(input, len) };
+    *out = *blake3_servil::hash(input).as_bytes();
+}

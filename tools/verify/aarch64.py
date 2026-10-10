@@ -517,8 +517,20 @@ def clobber(m, keep_x0=False):
 
 def library_call(m, name):
     """The C library functions compiled Rust calls, by their contracts:
-    memcpy and memmove copy x2 bytes (a concrete count) from x1 to x0 and
-    return x0. Both buffers are checked against their regions."""
+    memcpy and memmove copy x2 bytes (a concrete count) from x1 to x0, and
+    memset writes x2 copies of x1's low byte at x0; each returns x0. The
+    buffers are checked against their regions."""
+    if name == "memset":
+        # memset(dst, byte, n): n (concrete) copies of the low byte.
+        n = concrete(m.x[2])
+        if n is None:
+            raise Unproved("memset of a data-dependent length")
+        byte = Extract(7, 0, m.x[1]) if not isinstance(m.x[1], Ptr) else None
+        if byte is None:
+            raise Unproved("memset with a pointer for its byte")
+        for i in range(n):
+            m.store(m.x[0] + i, byte, 1)
+        return
     if name not in ("memcpy", "memmove"):
         raise Unproved(f"a call of {name}, which is not modelled")
     n = concrete(m.x[2])
@@ -551,6 +563,19 @@ def step(m, pc, mnem, ops):
         return None
     if mnem == "cmp":
         set_flags_sub(m, m.reg(ops[0]), shifted(m, ops[1:], w), w)
+        return None
+    if mnem == "and" and ops[1][0] in "wx" and isinstance(m.reg(ops[1]), Ptr) and len(ops) == 3 and ops[2].startswith("#"):
+        # A stack address aligned down to a power of two up to a page: the
+        # stack's base is taken page-aligned, so the offset aligns the same way.
+        a, mask = m.reg(ops[1]), imm(ops[2]) % (1 << 64)
+        align = (1 << 64) - mask
+        if not (a.region == "stack" and isinstance(a.offset, int) and align & (align - 1) == 0 and align <= 4096):
+            raise Unproved(f"and of the pointer {a} with {ops[2]}")
+        aligned = Ptr("stack", a.offset & mask)
+        if ops[0] == "sp":
+            m.x["sp"] = aligned
+        else:
+            m.set(ops[0], aligned)
         return None
     if mnem in ("eor", "orr", "and") and ops[0][0] in "wx":
         a, b = m.reg(ops[1]), shifted(m, ops[2:], w)
@@ -627,7 +652,15 @@ def step(m, pc, mnem, ops):
         return None
     if mnem in ("lsr", "lsl"):
         a = m.reg(ops[1])
-        m.set(ops[0], LShR(a, imm(ops[2])) if mnem == "lsr" else a << imm(ops[2]))
+        if ops[2].startswith("#"):
+            n = imm(ops[2])
+        else:
+            # The amount in a register, taken modulo the width.
+            n = m.reg(ops[2])
+            if isinstance(n, Ptr):
+                raise Unproved("a shift by a pointer")
+            n = n & (w - 1)
+        m.set(ops[0], LShR(a, n) if mnem == "lsr" else a << n)
         return None
     if mnem == "ubfx":
         lsb, n = imm(ops[2]), imm(ops[3])
@@ -656,6 +689,31 @@ def step(m, pc, mnem, ops):
             raise Unproved("csel before any comparison")
         m.set(ops[0], m.reg(ops[1]) if cond(m, ops[3]) else m.reg(ops[2]))
         return None
+    if mnem == "clz":
+        a = m.reg(ops[1])
+        if isinstance(a, Ptr):
+            raise Unproved("clz of a pointer")
+        c = concrete(a)
+        if c is not None:
+            m.set(ops[0], BitVecVal(w - c.bit_length() if c else w, w))
+        else:
+            # The highest set bit, as a chain of cases.
+            r = BitVecVal(w, w)
+            for i in range(w):
+                r = If(Extract(i, i, a) == 1, BitVecVal(w - 1 - i, w), r)
+            m.set(ops[0], r)
+        return None
+    if mnem == "csinc":
+        if m.nzcv is None:
+            raise Unproved("csinc before any comparison")
+        if cond(m, ops[3]):
+            m.set(ops[0], m.reg(ops[1]))
+        else:
+            b = m.reg(ops[2])
+            if isinstance(b, Ptr):
+                raise Unproved("csinc of a pointer")
+            m.set(ops[0], b + 1)
+        return None
     if mnem == "adr":
         m.set(ops[0], Ptr("text", int(ops[1].split()[0], 16)))
         return None
@@ -666,6 +724,11 @@ def step(m, pc, mnem, ops):
     if mnem == "bl":
         target = int(ops[0].split()[0], 16)
         name = getattr(m, "plt", {}).get(target)
+        if name is not None and name in getattr(m, "local", {}):
+            # A call through the PLT of a function the library defines: the
+            # dynamic linker binds it to that definition.
+            m.x[30] = Ptr("code", pc + 4)
+            return m.local[name]
         if name is not None:
             library_call(m, name)
             clobber(m, keep_x0=True)
@@ -680,6 +743,13 @@ def step(m, pc, mnem, ops):
     if mnem in ("ldr", "ldrb", "ldrh", "str", "strb", "strh") and ops[0][0] in "wx":
         n = {"b": 1, "h": 2}.get(mnem[-1], w // 8)
         addr, wb, new = mem_operand(m, ops, 1)
+        if mnem.startswith("ldr") and ops[0] in ("xzr", "wzr"):
+            # A load that keeps nothing (a stack probe): the access alone,
+            # checked against its region.
+            m.access(addr, n, False)
+            if wb:
+                m.set(wb, new)
+            return None
         if mnem.startswith("ldr"):
             val = m.load(addr, n)
             if isinstance(val, Ptr):

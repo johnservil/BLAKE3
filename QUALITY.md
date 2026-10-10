@@ -343,10 +343,13 @@ however often the hash is timed.
    only on the length.** Proved for every AArch64 assembly kernel and
    for the Rust compression code, as compiled: each proof stops at any
    branch, memory address, or table index that depends on the key or
-   the message. The code around them, which arranges the tree and keeps
-   the Hasher's state, is written to branch only on lengths; a proof of
-   whole calls is still to come. On x86 the fork runs upstream's code,
-   which these proofs do not cover.
+   the message. For whole calls of `hash` on AArch64, as compiled, the
+   same holds at every length from 0 to 129 bytes and at the chunk
+   boundaries and powers of two (and their neighbours) to 64 KiB, on
+   NEON, and to 4 KiB on SME2: each length's call runs one path,
+   whatever the message. Longer inputs on SME2, other lengths, and
+   `keyed_hash`, `derive_key` and the Hasher are still to come. On x86
+   the fork runs upstream's code, which these proofs do not cover.
 2. **Each instruction takes the same time whatever values it computes
    on.** That is a promise of the CPU. Arm CPUs make it, for a listed set
    of instructions, while data-independent timing (DIT) is enabled. The

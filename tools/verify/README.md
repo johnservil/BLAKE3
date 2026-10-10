@@ -10,6 +10,7 @@ and flags value:
     python3 tools/verify/prove_sme2.py every parents_every xof_every messages_every  # each kernel at every group count (hours)
     python3 tools/verify/lean/emit.py                   # the definition, computed from the Lean specification (needs Lean)
     python3 tools/verify/prove_rust.py                  # the Rust paths, compiled: portable, and the NEON platform's (24 cases)
+    python3 tools/verify/prove_timing.py                # whole `hash` calls run one path per length (294 lengths)
     python3 tools/verify/cross_check.py                 # the NEON and integer models against the CPU (and every form the Rust proofs run)
     python3 tools/verify/cross_check_sme.py             # the streaming SVE and SME2 models against the CPU (needs SME2)
     python3 tools/verify/mutants.py                     # wrong kernels are rejected
@@ -117,6 +118,17 @@ inputs, pointers are (region, offset) pairs. The run checks:
   `compress_in_place` calls it), `packed` with zero upper bits, and the
   q kernels' table layout (`prove_partial`). A caller that breaks them
   is outside the proof; the Rust callers are covered by tests and Kani.
+
+Whole calls (`prove_timing.py`, through `rust/src/lib.rs`'s `verify_hash`)
+run the compiled library's `hash` on symbolic message bytes, from the
+process state a hash meets after its first call (the library's file bytes
+and relocated pointers, the self-test passed, SME2's detection cached as
+absent or present). The executor stops at any branch, select, address or
+table index that depends on the message, so each length that runs to the
+end runs one path for every message. A planted branch on a message byte,
+and a planted table lookup indexed by one, are rejected. The SME2 path past
+4 KiB builds a table of pointers in vector lanes, which the executor does
+not model; it is proved to 4 KiB.
 
 The Rust paths (`prove_rust.py`, through `rust/src/lib.rs`, one exported
 call of the library's `Platform` methods each): the portable compression in

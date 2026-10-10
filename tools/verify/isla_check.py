@@ -451,7 +451,9 @@ def all_forms():
     import cross_check
     import prove_hybrid
     import prove_rust
-    prove_rust.main(exit=False)
+    import prove_timing
+    if prove_rust.main(exit=False) or prove_timing.main(exit=False):
+        sys.exit("a proof above failed")
     obj = prove_hybrid.assemble()
     forms = cross_check.forms(list(aarch64.disassemble(obj, 0, 1 << 30).values()) + sorted(aarch64.EXECUTED))
     return forms

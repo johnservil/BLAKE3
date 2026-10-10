@@ -303,6 +303,7 @@ def main(exit=True):
     print(f"{len(cases) - failed} of {len(cases)} cases proved")
     if exit:
         sys.exit(1 if failed else 0)
+    return failed
 
 
 if __name__ == "__main__":

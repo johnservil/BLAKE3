@@ -6,7 +6,7 @@ manual's pseudocode for the arrangement the kernels use; others stop the
 run."""
 
 import re
-from z3 import BitVecVal, Concat, Extract, RotateRight, LShR, is_app_of, is_bv_value, Z3_OP_CONCAT
+from z3 import BitVecVal, Concat, Extract, RotateRight, LShR, If, is_app_of, is_bv_value, Z3_OP_CONCAT
 import aarch64
 from aarch64 import Unproved
 import canon
@@ -48,6 +48,14 @@ def xar_pair(lo, hi, k):
 def step(m, pc, mnem, ops):
     mnem = {"ldur": "ldr", "stur": "str"}.get(mnem, mnem)
     d, da = arrangement(ops[0]) if ops else (None, None)
+    if mnem == "movi" and da == "2d":
+        # MOVI Vd.2D: each byte of the 64-bit immediate is 0x00 or 0xff.
+        v = int(ops[1].lstrip("#"), 0) % (1 << 64)
+        if any(((v >> (8 * i)) & 0xff) not in (0, 0xff) for i in range(8)):
+            raise aarch64.Unproved(f"movi with an immediate it cannot encode: {ops[1]}")
+        lo, hi = BitVecVal(v & 0xffffffff, 32), BitVecVal(v >> 32, 32)
+        put(m, ops[0], [lo, hi, lo, hi])
+        return True
     if mnem == "add" and da == "4s":
         a, b = lanes(m, ops[1]), lanes(m, ops[2])
         put(m, ops[0], [x + y for x, y in zip(a, b)])
@@ -110,6 +118,83 @@ def step(m, pc, mnem, ops):
         else:
             r = [a[1], b[1], a[3], b[3]]
         put(m, ops[0], r)
+        return True
+    if mnem == "fmov" and re.fullmatch(r"d\d+", ops[0]) and ops[1][0] == "x":
+        # The general register into the low 64 bits; the rest cleared.
+        x = m.reg(ops[1])
+        if isinstance(x, aarch64.Ptr):
+            raise Unproved("a pointer moved into a vector")
+        put(m, ops[0], [Extract(31, 0, x), Extract(63, 32, x), BitVecVal(0, 32), BitVecVal(0, 32)])
+        return True
+    ins = re.fullmatch(r"v(\d+)\.([sd])\[(\d+)\]", ops[0]) if mnem in ("mov", "ins") and ops else None
+    if ins and len(ops) == 2 and ops[1][0] in "wx":
+        # A general register into one element; the others kept.
+        r, size, i = int(ins.group(1)), ins.group(2), int(ins.group(3))
+        x = m.reg(ops[1])
+        if isinstance(x, aarch64.Ptr):
+            raise Unproved("a pointer moved into a vector")
+        ls = list(m.v[r])
+        if size == "s":
+            ls[i] = x
+        else:
+            ls[2 * i], ls[2 * i + 1] = Extract(31, 0, x), Extract(63, 32, x)
+        m.v[r] = ls
+        return True
+    if mnem == "fmov" and re.fullmatch(r"s\d+", ops[0]) and ops[1][0] == "w":
+        x = m.reg(ops[1])
+        if isinstance(x, aarch64.Ptr):
+            raise Unproved("a pointer moved into a vector")
+        put(m, ops[0], [x, BitVecVal(0, 32), BitVecVal(0, 32), BitVecVal(0, 32)])
+        return True
+    if mnem == "fmov" and ops[0][0] == "w" and re.fullmatch(r"s\d+", ops[1]):
+        m.set(ops[0], m.v[int(ops[1][1:])][0])
+        return True
+    if mnem == "fmov" and ops[0][0] == "x" and re.fullmatch(r"d\d+", ops[1]):
+        v = m.v[int(ops[1][1:])]
+        m.set(ops[0], Concat(v[1], v[0]))
+        return True
+    if mnem == "shrn" and da == "2s" and arrangement(ops[1])[1] == "2d":
+        # Each 64-bit lane shifted right, its low half kept; the upper half
+        # of the destination cleared.
+        k = int(ops[2].lstrip("#"), 0)
+        out = [Extract(31, 0, LShR(Concat(hi, lo), k)) for lo, hi in pairs(lanes(m, ops[1]))]
+        put(m, ops[0], out + [BitVecVal(0, 32), BitVecVal(0, 32)])
+        return True
+    if mnem == "xtn2" and da == "4s" and arrangement(ops[1])[1] == "2d":
+        # Each 64-bit lane's low half into the upper half; the lower kept.
+        d = lanes(m, ops[0])
+        put(m, ops[0], d[:2] + [lo for lo, hi in pairs(lanes(m, ops[1]))])
+        return True
+    if mnem == "movi" and da == "4s" and len(ops) == 2:
+        v = int(ops[1].lstrip("#"), 0) & 0xff
+        put(m, ops[0], [BitVecVal(v, 32)] * 4)
+        return True
+    if mnem == "cmlt" and da == "2d" and ops[2] == "#0":
+        # Each 64-bit lane all ones where negative, else zero.
+        out = []
+        for lo, hi in pairs(lanes(m, ops[1])):
+            neg = If(Extract(31, 31, hi) == 1, BitVecVal(0xffffffff, 32), BitVecVal(0, 32))
+            out += [neg, neg]
+        put(m, ops[0], out)
+        return True
+    if mnem in ("shl", "ushr", "sshr") and da == "2d" and ops[2].startswith("#"):
+        k = int(ops[2].lstrip("#"), 0)
+        out = []
+        for lo, hi in pairs(lanes(m, ops[1])):
+            v = Concat(hi, lo)
+            v = v << k if mnem == "shl" else (LShR(v, k) if mnem == "ushr" else v >> k)
+            out += [Extract(31, 0, v), Extract(63, 32, v)]
+        put(m, ops[0], out)
+        return True
+    if mnem == "uxtl" and da == "2d" and arrangement(ops[1])[1] == "2s":
+        a = lanes(m, ops[1])
+        put(m, ops[0], [a[0], BitVecVal(0, 32), a[1], BitVecVal(0, 32)])
+        return True
+    if mnem == "dup" and da == "2s" and ops[1][0] == "w":
+        x = m.reg(ops[1])
+        if isinstance(x, aarch64.Ptr):
+            raise Unproved("a pointer duplicated into a vector")
+        put(m, ops[0], [x, x, BitVecVal(0, 32), BitVecVal(0, 32)])
         return True
     if mnem == "dup" and da == "4s":
         src = ops[1]

@@ -24,7 +24,7 @@ import prove_hybrid
 from aarch64 import Machine
 
 SKIP = {"ldr", "ldrb", "ldrh", "ldp", "str", "strb", "strh", "stp", "ldur", "stur", "ld1r", "b", "bl", "b.ne", "cbz", "cbnz",
-        "tbz", "tbnz", "ret", "nop", "adr", "adrp", "cmp", "ccmp", "tst", "cset", "csel", "subs", "ands", ".word"}
+        "tbz", "tbnz", "ret", "nop", "adr", "adrp", "cmp", "ccmp", "tst", "cset", "csel", "csinc", "subs", "ands", ".word"}
 
 
 def forms(instructions):
@@ -89,9 +89,12 @@ def model(mnem, text, xs, vs):
 
 def main():
     rounds = int(sys.argv[1]) if len(sys.argv) > 1 else 200
-    # The hybrid kernels' file, and every instruction the Rust proofs run.
+    # The hybrid kernels' file, and every instruction the Rust proofs and the
+    # timing proof run.
     import prove_rust
-    prove_rust.main(exit=False)
+    import prove_timing
+    if prove_rust.main(exit=False) or prove_timing.main(exit=False):
+        sys.exit("a proof above failed")
     obj = prove_hybrid.assemble()
     fl = forms(list(aarch64.disassemble(obj, 0, 1 << 30).values()) + sorted(aarch64.EXECUTED))
     lib = build(fl)

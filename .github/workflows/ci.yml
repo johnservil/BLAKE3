@@ -394,7 +394,7 @@ jobs:
     - name: the generated file is the generator's
       run: python3 tools/gen_neon_hybrid.py | cmp - c/blake3_neon_hybrid_aarch64.S
     - uses: dtolnay/rust-toolchain@stable
-    - name: the instruction models agree with the CPU (the Rust paths' proofs among them)
+    - name: the Rust paths and whole hash calls proved; the instruction models agree with the CPU
       run: python3 tools/verify/cross_check.py
     - name: the proofs' helpers (the normalizer, the induction's generalization)
       run: python3 -m unittest discover -s tools/verify -p test_helpers.py
