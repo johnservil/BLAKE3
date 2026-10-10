@@ -12,6 +12,15 @@ work=${TREE_WORK:-$HOME/.cache/blake3-servil-tree}
 mkdir -p "$work/packages"
 ln -sfn "$aeneas" "$work/aeneas"
 
+# standard_axioms_only BUILD_LOG: every `#print axioms` line lists only
+# propext, Classical.choice, and Quot.sound; at least one line.
+standard_axioms_only() {
+	awk '/depends on axioms/ { n++; s = $0; sub(/.*\[/, "", s); sub(/\].*/, "", s)
+		k = split(s, a, ", "); for (i = 1; i <= k; i++)
+			if (a[i] != "propext" && a[i] != "Classical.choice" && a[i] != "Quot.sound") { print "beyond the standard axioms: " $0; bad = 1 } }
+		END { exit (bad || n == 0) }' "$1" >&2
+}
+
 # translate CRATE_DIR OUT_DIR: Charon and Aeneas on a crate, in place.
 translate() {
 	krate=$(basename "$1")
@@ -47,7 +56,11 @@ for max in 128 16 8 4 2; do
 	rm -f "$lean/WideProofs.lean.orig"
 	# Mathlib's prebuilt cache, once.
 	[ -d "$work/packages/mathlib/.lake/build" ] || (cd "$lean" && lake exe cache get)
-	(cd "$lean" && lake build)
+	(cd "$lean" && lake build) > "$lean/build.txt" 2>&1 || { cat "$lean/build.txt" >&2; exit 1; }
+	# Each theorem's axioms, shown, and none beyond Lean's standard three
+	# (an unproved step, `sorry`, is only a warning, and shows as sorryAx).
+	grep "depends on axioms" "$lean/build.txt" | sed 's/^info: //' | sort -u
+	standard_axioms_only "$lean/build.txt"
 	echo "MAX = $max: proved"
 done
 echo "proved: the library's tree walk and the binary walk compute the C2SP specification's tree; the Hasher's stack computes its algorithm"

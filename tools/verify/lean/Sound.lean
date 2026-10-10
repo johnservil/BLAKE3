@@ -69,3 +69,5 @@ theorem symbolic_is_the_specifications :
   rfl
 
 end
+
+#print axioms symbolic_is_the_specifications

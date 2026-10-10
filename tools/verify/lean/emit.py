@@ -38,6 +38,15 @@ def main():
         r = subprocess.run(["lake", *args], cwd=HERE, capture_output=True, text=True)
         if r.returncode:
             sys.exit(f"emit.py: lake {' '.join(args)} failed:\n{r.stdout[-3000:]}{r.stderr[-2000:]}")
+        if args == ["build"]:
+            # Each theorem's axioms, shown, and none beyond Lean's standard
+            # three (an unproved step, `sorry`, is only a warning, and shows
+            # as sorryAx).
+            lines = sorted({l.removeprefix("info: ") for l in r.stdout.splitlines() if "depends on axioms" in l})
+            print("\n".join(lines))
+            standard = {"propext", "Classical.choice", "Quot.sound"}
+            if not lines or any(set(l.split("[", 1)[1].rstrip("]").split(", ")) - standard for l in lines):
+                sys.exit("emit.py: a theorem depends on more than Lean's standard axioms")
     # The graph, read as lean_spec.py reads it, at the specification's own sample outputs.
     sys.path.insert(0, os.path.dirname(HERE))
     import json
