@@ -36,20 +36,13 @@ LENGTHS = sorted(set(list(range(0, 130)) + [1023, 1024, 1025, 2047, 2048, 2049, 
 PLATFORMS = {"NEON": (1, 1 << 16), "SME2": (2, 4096)}
 
 
-def static(syms, suffix):
-    found = [a for name, a in syms.items() if name.endswith(suffix)]
-    if len(found) != 1:
-        raise Unproved(f"expected one symbol ending {suffix}, found {len(found)}")
-    return found[0]
-
-
 def process_image(lib, sme2_cache):
     """The library as loaded: its file bytes, its relocated pointers, and
     `.bss`, zero but the self-test's state (passed) and SME2's cache."""
     sections = subprocess.run(["readelf", "-SW", lib.so], capture_output=True, text=True, check=True).stdout
     bss = re.search(r"\.bss\s+NOBITS\s+([0-9a-f]+)\s+[0-9a-f]+\s+([0-9a-f]+)", sections)
     end = int(bss.group(1), 16) + int(bss.group(2), 16)
-    fixed = {static(lib.syms, "9self_test5STATE"): 2, static(lib.syms, "13sme2_detected5CACHE"): sme2_cache}
+    fixed = {lib.syms[lib.symbol("9self_test5STATE")]: 2, lib.syms[lib.symbol("13sme2_detected5CACHE")]: sme2_cache}
     pointers = {}
     for line in subprocess.run(["readelf", "-rW", lib.so], capture_output=True, text=True, check=True).stdout.splitlines():
         f = line.split()

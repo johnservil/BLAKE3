@@ -49,6 +49,14 @@ class Library:
         listing = subprocess.run(["objdump", "-d", so], capture_output=True, text=True, check=True).stdout
         self.plt = {int(a, 16): n for a, n in re.findall(r"^([0-9a-f]+) <(\w+)@plt>:", listing, re.M)}
 
+    def symbol(self, suffix):
+        """The one symbol whose name ends with `suffix`: a Rust name's
+        mangling carries a hash of the crate, which varies by compiler."""
+        found = [n for n in self.syms if n.endswith(suffix)]
+        if len(found) != 1:
+            raise Unproved(f"expected one symbol ending {suffix}, found {found}")
+        return found[0]
+
 
 def machine(lib, regions):
     image = lib.image
@@ -289,7 +297,7 @@ def main(exit=True):
               for n in range(1, 21)]
     cases.append(("NEON platform's extended output, every count from 16 blocks (induction over its loop)",
                   lambda: prove_xof_every(lib, "verify_neon_xof_many",
-                                          "_RNvNtCs5y7Y5DyUngN_13blake3_servil8neon_xof8xof_many", 8, 16)))
+                                          lib.symbol("_13blake3_servil8neon_xof8xof_many"), 8, 16)))
     failed = 0
     for what, prove in cases:
         t = time.time()

@@ -380,6 +380,7 @@ jobs:
       run: python3 c2sp/BLAKE3/check.py
     - name: the proofs' definition is the one the Lean specification computes
       run: |
+        sudo apt-get update && sudo apt-get install -y --no-install-recommends python3-z3
         python3 tools/verify/lean/emit.py
         git diff --exit-code tools/verify/lean/compress.json tools/verify/lean/Generic.lean
 

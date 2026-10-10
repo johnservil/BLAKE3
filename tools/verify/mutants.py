@@ -190,7 +190,7 @@ def main():
     # The induction over the NEON extended output's loop: its counter and
     # pointer steps, which only the step from one iteration to the next sees.
     lib.code = dict(original)
-    function = "_RNvNtCs5y7Y5DyUngN_13blake3_servil8neon_xof8xof_many"
+    function = lib.symbol("_13blake3_servil8neon_xof8xof_many")
     head = prove_rust.loop_head(lib, "verify_neon_xof_many", function)
     back = next(a for a, (m, o) in sorted(original.items())
                 if a > head and m.startswith("b.") and int(o[0].split()[0], 16) == head)
