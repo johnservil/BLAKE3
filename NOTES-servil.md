@@ -2543,7 +2543,13 @@ stack, while `clocks` found the Mac busy (0.6-0.9 CPUs of other
 programs) in each pair, so those runs are no evidence of speed. Open:
 measure again on an idle Mac on mains power; if it holds, its cause
 (code layout from the new module is the first suspect) before the stack
-goes further.
+goes further. Proved as code (e8a75e3): Aeneas translates `src/stack_core.rs` as
+it is (`rust/stackcore` includes it); `StackProofs.lean` proves its
+`merge` computes `HasherProofs.lean`'s merge, never failing, on a stack
+of at most 55 values and a target of at least 1, and its `push` appends.
+The derived `Clone` brought `Option`'s clone in as an external definition
+(a trusted axiom); a clone written by hand copies the array, and the
+translation has none.
 
 **Isla and ZA writes**: the moves into ZA's vertical slices, and
 single-register writes into ZA of either orientation, grow Isla past 98
