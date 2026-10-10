@@ -2020,8 +2020,50 @@ pub(crate) struct HasherCore {
     // requires a 4th entry, rather than merging everything down to 1, because
     // we don't know whether more input is coming. This is different from how
     // the reference implementation does things.
-    cv_stack: ArrayVec<CVBytes, { MAX_DEPTH + 1 }>,
+    cv_stack: CvStack,
 }
+
+/// The Hasher's stack (src/stack_core.rs, proved in tools/verify/tree).
+pub(crate) mod stack {
+    use crate::{CVBytes as Cv, MAX_DEPTH};
+    const DEPTH: usize = MAX_DEPTH + 1;
+    include!("stack_core.rs");
+
+    #[cfg(all(test, feature = "zeroize"))]
+    impl CvStack {
+        /// The array, for the zeroize test.
+        pub fn array(&self) -> Option<&[Cv; DEPTH]> {
+            self.cvs.as_ref()
+        }
+    }
+
+    #[cfg(feature = "zeroize")]
+    impl zeroize::Zeroize for CvStack {
+        fn zeroize(&mut self) {
+            if let Some(cvs) = &mut self.cvs {
+                cvs.zeroize();
+            }
+            self.len = 0;
+        }
+    }
+}
+use stack::{CvStack, Parent};
+
+/// The parent compression on the Hasher's key, flags, and platform.
+struct Parents<'a> {
+    key: &'a CVWords,
+    flags: u8,
+    platform: Platform,
+}
+
+impl Parent for Parents<'_> {
+    #[inline(always)]
+    fn parent(&self, left: &CVBytes, right: &CVBytes) -> CVBytes {
+        parent_node_output(left, right, self.key, self.flags, self.platform).chaining_value()
+    }
+}
+
+
 
 impl Hasher {
     fn from_core(core: HasherCore) -> Self {
@@ -2338,7 +2380,7 @@ impl HasherCore {
             key: *key,
             chunk_state: ChunkState::new(key, 0, flags, platform),
             initial_chunk_counter: 0,
-            cv_stack: ArrayVec::new(),
+            cv_stack: CvStack::new(),
         }
     }
 
@@ -2376,18 +2418,8 @@ impl HasherCore {
         // use the hazmat module.
         let post_merge_stack_len =
             (chunk_counter - self.initial_chunk_counter).count_ones() as usize;
-        while self.cv_stack.len() > post_merge_stack_len {
-            let right_child = self.cv_stack.pop().unwrap();
-            let left_child = self.cv_stack.pop().unwrap();
-            let parent_output = parent_node_output(
-                &left_child,
-                &right_child,
-                &self.key,
-                self.chunk_state.flags,
-                self.chunk_state.platform,
-            );
-            self.cv_stack.push(parent_output.chaining_value());
-        }
+        let parents = Parents { key: &self.key, flags: self.chunk_state.flags, platform: self.chunk_state.platform };
+        self.cv_stack.merge(&parents, post_merge_stack_len);
     }
 
     // In reference_impl.rs, we merge the new CV with existing CVs from the
@@ -2651,7 +2683,7 @@ impl HasherCore {
         // If the current chunk is the only chunk, that makes it the root node
         // also. Convert it directly into an Output. Otherwise, we need to
         // merge subtrees below.
-        if self.cv_stack.is_empty() {
+        if self.cv_stack.len() == 0 {
             debug_assert_eq!(self.chunk_state.chunk_counter, self.initial_chunk_counter);
             return self.chunk_state.output();
         }
@@ -2680,8 +2712,8 @@ impl HasherCore {
         } else {
             debug_assert!(self.cv_stack.len() >= 2);
             output = parent_node_output(
-                &self.cv_stack[num_cvs_remaining - 2],
-                &self.cv_stack[num_cvs_remaining - 1],
+                &self.cv_stack.get(num_cvs_remaining - 2),
+                &self.cv_stack.get(num_cvs_remaining - 1),
                 &self.key,
                 self.chunk_state.flags,
                 self.chunk_state.platform,
@@ -2690,7 +2722,7 @@ impl HasherCore {
         }
         while num_cvs_remaining > 0 {
             output = parent_node_output(
-                &self.cv_stack[num_cvs_remaining - 1],
+                &self.cv_stack.get(num_cvs_remaining - 1),
                 &output.chaining_value(),
                 &self.key,
                 self.chunk_state.flags,

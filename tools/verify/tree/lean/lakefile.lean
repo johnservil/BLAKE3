@@ -11,6 +11,8 @@ package tree where
 lean_lib Treecore {}
 lean_lib Widecore {}
 lean_lib Blake3 {}
+lean_lib Stackcore {}
 @[default_target] lean_lib Proofs {}
 @[default_target] lean_lib WideProofs {}
 @[default_target] lean_lib HasherProofs {}
+@[default_target] lean_lib StackProofs {}

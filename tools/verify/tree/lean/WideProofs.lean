@@ -222,7 +222,7 @@ theorem wide_spec {K : Type} (KI : widecore.Kernels K) (k : K) (D d : Nat) (hD :
       all_goals (try rw [l_post] at ln_post2)
       all_goals (try rw [hAeq a (by rw [a_post2, l_post])] at ln_post)
       all_goals (try rw [hAeq a (by rw [a_post2, l_post])] at ln_post2)
-      all_goals (try have hi4 : i6.val = K := (by rw [i6_post]; (try rw [l_post]); rw [hk]; omega))
+      all_goals (try have hi4 : i6.val = K := (by rw [i6_post]; rw [hk]; omega))
       all_goals (try have hi5 : i7.val = K := (by
         rw [i7_post, UScalar.cast_val_eq, hi4]
         apply Nat.mod_eq_of_lt
@@ -270,7 +270,7 @@ theorem wide_spec {K : Type} (KI : widecore.Kernels K) (k : K) (D d : Nat) (hD :
         all_goals (try rw [l_post] at ln_post2)
         all_goals (try rw [hAeq a (by rw [a_post2, l_post])] at ln_post)
         all_goals (try rw [hAeq a (by rw [a_post2, l_post])] at ln_post2)
-        all_goals (try have hi4 : i6.val = K := (by rw [i6_post]; (try rw [l_post]); rw [hk]; omega))
+        all_goals (try have hi4 : i6.val = K := (by rw [i6_post]; rw [hk]; omega))
         all_goals (try have hi5 : i7.val = K := (by
           rw [i7_post, UScalar.cast_val_eq, hi4]
           apply Nat.mod_eq_of_lt
@@ -308,7 +308,7 @@ theorem wide_spec {K : Type} (KI : widecore.Kernels K) (k : K) (D d : Nat) (hD :
         all_goals (try rw [l_post] at ln_post2)
         all_goals (try rw [hAeq a (by rw [a_post2, l_post])] at ln_post)
         all_goals (try rw [hAeq a (by rw [a_post2, l_post])] at ln_post2)
-        all_goals (try have hi4 : i6.val = K := (by rw [i6_post]; (try rw [l_post]); rw [hk]; omega))
+        all_goals (try have hi4 : i6.val = K := (by rw [i6_post]; rw [hk]; omega))
         all_goals (try have hi5 : i7.val = K := (by
           rw [i7_post, UScalar.cast_val_eq, hi4]
           apply Nat.mod_eq_of_lt

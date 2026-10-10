@@ -20,8 +20,9 @@ translate() {
 	"$aeneas/aeneas" -backend lean "$2/$krate.llbc" -dest "$2/lean" >/dev/null
 }
 
-# The committed translations are the Rust's (widecore at MAX = 128).
-for pair in treecore:Treecore widecore:Widecore; do
+# The committed translations are the Rust's (widecore at MAX = 128;
+# stackcore includes the library's own src/stack_core.rs).
+for pair in treecore:Treecore widecore:Widecore stackcore:Stackcore; do
 	crate=${pair%%:*}; name=${pair##*:}
 	rm -rf "$work/$crate"; mkdir -p "$work/$crate"
 	translate "$here/rust/$crate" "$work/$crate"
@@ -39,7 +40,7 @@ for max in 128 16 8 4 2; do
 		"$here/rust/widecore/src/lib.rs" > "$crate/src/lib.rs"
 	translate "$crate" "$out"
 	lean="$work/lean-$max"; mkdir -p "$lean"
-	cp "$here"/lean/*.lean "$here/lean/lean-toolchain" "$here/lean/lakefile.lean" "$here/lean/lake-manifest.json" "$lean/"
+	cp "$here"/lean/*.lean "$here/lean/lean-toolchain" "$here/lean/lake-manifest.json" "$lean/"
 	cp "$here/../../../c2sp/BLAKE3/Blake3.lean" "$lean/Blake3.lean"
 	cp "$out/lean/Widecore.lean" "$lean/Widecore.lean"
 	sed -i.orig -e "s/D ≤ 128/D ≤ $max/g" -e "s/256/$((2 * max))/g" "$lean/WideProofs.lean"
@@ -49,4 +50,4 @@ for max in 128 16 8 4 2; do
 	(cd "$lean" && lake build)
 	echo "MAX = $max: proved"
 done
-echo "proved: the library's tree walk and the binary walk compute the C2SP specification's tree"
+echo "proved: the library's tree walk and the binary walk compute the C2SP specification's tree; the Hasher's stack computes its algorithm"
