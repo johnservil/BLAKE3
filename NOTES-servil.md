@@ -2530,7 +2530,20 @@ new new old, means of 6 runs a side: 64 B 61.5 against 60.1 ns, 1025 B
 (one push) 897 against 894, 2 KiB 996 against 997, 8 KiB 2184 against
 2175: no cost seen. So the stack can be plain safe Rust that Aeneas
 translates, as the walk is, with no machine-code proof and no trusted
-contract for `ArrayVec`.
+contract for `ArrayVec`. The stack then moved into `src/stack_core.rs` (probe/stack-array
+8df858c): the lazy array, push, and merge over a one-method `Parent`
+trait, which `merge_cv_stack` calls. Its suites pass (default, no_sme2,
+pure, zeroize, doc tests, api_plan, vectors, warnings-as-errors builds).
+VM: `hasher_short` 64 B to 64 KiB within 0.3% (64 B 2% faster),
+`perf_regress` no cell slower. Mac (jobs 1480-1489, on battery):
+`perf_regress` no cell slower twice; but the benchmark's servil-st small
+cells read slower in all three alternating pairs (64 B x1.09-1.19, 128 B
+x1.02-1.15, batches of 2 x1.19-1.32), on paths that never touch the
+stack, while `clocks` found the Mac busy (0.6-0.9 CPUs of other
+programs) in each pair, so those runs are no evidence of speed. Open:
+measure again on an idle Mac on mains power; if it holds, its cause
+(code layout from the new module is the first suspect) before the stack
+goes further.
 
 **Isla and ZA writes**: the moves into ZA's vertical slices, and
 single-register writes into ZA of either orientation, grow Isla past 98
