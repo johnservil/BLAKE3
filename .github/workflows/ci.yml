@@ -10,6 +10,8 @@ on:
     paths-ignore:
       - "**.md"
   pull_request:
+  # By hand, for a push whose event GitHub dropped.
+  workflow_dispatch:
 
 # A newer push to a branch supersedes its running tests.
 concurrency:
