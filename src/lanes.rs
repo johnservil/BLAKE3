@@ -225,7 +225,7 @@ pub(crate) fn subtree_children(
     let _caller = Caller(&pool.callers);
     let threads = pool.cpus;
     if callers >= pool.cpus {
-        return crate::compress_subtree_to_parent_node::<crate::join::SerialJoin>(input, 0, key, counter, flags, pool_platform());
+        return crate::compress_subtree_to_parent_node(input, 0, key, counter, flags, pool_platform());
     }
     let turn = crate::platform::Sme2Turn::take(Platform::detect(), true);
     let (pieces, own) = cut_with_prefix(input.len(), threads, prefix_for(&turn, input.len(), threads));
@@ -438,7 +438,7 @@ impl Job<'_> {
                 let piece = pieces[index];
                 let bytes = &input[piece.offset..][..piece.len];
                 let counter = counter + (piece.offset / CHUNK_LEN) as u64;
-                let cv = crate::hash_all_at_once::<crate::join::SerialJoin>(bytes, key, counter, *flags, platform).chaining_value();
+                let cv = crate::hash_all_at_once(bytes, key, counter, *flags, platform).chaining_value();
                 unsafe { *cvs.add(index) = cv };
             }
             Work::Groups { input, pieces, key, flags, cvs } => {
@@ -1038,9 +1038,9 @@ impl Task {
         // Sound: a subtree's `out` is one 64-byte block.
         let out = unsafe { &mut *(self.out as *mut [u8; crate::BLOCK_LEN]) };
         if self.counter == 0 && self.len > CHUNK_LEN {
-            *out = crate::compress_subtree_to_parent_node::<crate::join::SerialJoin>(bytes, 0, &self.key, 0, self.flags, platform);
+            *out = crate::compress_subtree_to_parent_node(bytes, 0, &self.key, 0, self.flags, platform);
         } else {
-            out[..crate::OUT_LEN].copy_from_slice(&crate::hash_all_at_once::<crate::join::SerialJoin>(bytes, &self.key, self.counter, self.flags, platform).chaining_value());
+            out[..crate::OUT_LEN].copy_from_slice(&crate::hash_all_at_once(bytes, &self.key, self.counter, self.flags, platform).chaining_value());
         }
         unsafe { &*self.left }.fetch_sub(1, Ordering::Release);
     }
@@ -1280,7 +1280,7 @@ mod test {
                 assert_eq!(offset, len);
                 let mut cvs: Vec<ChainingValue> = pieces
                     .iter()
-                    .map(|p| crate::hash_all_at_once::<crate::join::SerialJoin>(&input[p.offset..][..p.len], crate::IV, (p.offset / CHUNK_LEN) as u64, 0, Platform::detect()).chaining_value())
+                    .map(|p| crate::hash_all_at_once(&input[p.offset..][..p.len], crate::IV, (p.offset / CHUNK_LEN) as u64, 0, Platform::detect()).chaining_value())
                     .collect();
                 assert_eq!(merge_root(&pieces, &mut cvs, crate::IV, 0), crate::hash(&input[..len]), "{len} {threads}");
             }

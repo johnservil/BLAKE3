@@ -65,7 +65,7 @@ impl Hasher {
     /// assert_eq!((&out[0], &out[1]), (blake3_servil::hash(b"abc").as_bytes(), blake3_servil::hash(b"xyz").as_bytes()));
     /// ```
     pub fn update_each(hashers: &mut [Hasher], pieces: &[(usize, &[u8])]) {
-        update_turn::<crate::join::SerialJoin>(hashers, pieces, false);
+        update_turn(hashers, pieces, false);
     }
 
     /// [`update_each`](Hasher::update_each), using other CPU cores where
@@ -74,7 +74,7 @@ impl Hasher {
     /// Requires each `i < hashers.len()`.
     #[cfg(feature = "std")]
     pub fn update_each_multithreaded(hashers: &mut [Hasher], pieces: &[(usize, &[u8])]) {
-        update_turn::<crate::join::SerialJoin>(hashers, pieces, true);
+        update_turn(hashers, pieces, true);
     }
 
     /// The hash of each message `which` names: `out[k]` is
@@ -95,7 +95,7 @@ impl Hasher {
 /// between (the SME unit stays in its fast state), then each level of
 /// their parents in one call. Then the waiting pieces, the same way, until
 /// none is left.
-fn update_turn<J: crate::join::Join>(hashers: &mut [Hasher], pieces: &[(usize, &[u8])], pooled: bool) {
+fn update_turn(hashers: &mut [Hasher], pieces: &[(usize, &[u8])], pooled: bool) {
     let mut turn: Vec<(usize, &[u8])> = pieces.to_vec();
     let mut waiting: Vec<(usize, &[u8])> = Vec::new();
     let mut held: Vec<usize> = Vec::new();
@@ -107,7 +107,7 @@ fn update_turn<J: crate::join::Join>(hashers: &mut [Hasher], pieces: &[(usize, &
                 waiting.push((i, bytes));
                 continue;
             }
-            let rest = hashers[i].gather_part::<J>(bytes, pooled, true);
+            let rest = hashers[i].gather_part(bytes, pooled, true);
             if hashers[i].held_group().is_some() {
                 held.push(i);
                 if !rest.is_empty() {

@@ -56,17 +56,12 @@ jobs:
     - name: print instruction set support
       run: cargo run --quiet
       working-directory: ./tools/instruction_set_support
-    # Default tests plus Rayon and trait implementations.
-    - run: cargo test --features=rayon,traits-preview,serde,zeroize
-    # Same but with only one thread in the Rayon pool. This can find deadlocks.
-    - name: "again with RAYON_NUM_THREADS=1"
-      run: cargo test --features=rayon,traits-preview,serde,zeroize
-      env:
-        RAYON_NUM_THREADS: 1
-    # The mmap feature by itself (update_mmap_rayon is omitted).
+    # Default tests plus trait implementations.
+    - run: cargo test --features=traits-preview,serde,zeroize
+    # The mmap feature by itself.
     - run: cargo test --features=mmap
     # All public features put together.
-    - run: cargo test --features=mmap,rayon,traits-preview,serde,zeroize
+    - run: cargo test --features=mmap,traits-preview,serde,zeroize
     # no_std tests.
     - run: cargo test --no-default-features
     - name: Make sure enabling LTO via CFLAGS doesn't break the build.
@@ -117,7 +112,7 @@ jobs:
     - run: cargo test --features=no_avx512,no_avx2,no_sse41,no_sse2,pure --release
 
     # Test benchmarks. RUSTC_BOOTSTRAP=1 lets this run on non-nightly toolchains.
-    - run: cargo test --benches --features=rayon
+    - run: cargo test --benches
       env:
         RUSTC_BOOTSTRAP: 1
     # Test vectors.
@@ -177,7 +172,7 @@ jobs:
     # This test target is here so that we notice if we accidentally bump
     # the MSRV, but it's not a promise that we won't bump it.
     - uses: dtolnay/rust-toolchain@1.85.1
-    - run: cargo build --features=mmap,rayon,traits-preview,serde,zeroize
+    - run: cargo build --features=mmap,traits-preview,serde,zeroize
 
   b3sum_tests:
     name: b3sum ${{ matrix.target.name }} ${{ matrix.channel }}
@@ -289,7 +284,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
-    - run: docker run -v $(pwd):/io -w /io messense/cargo-xwin cargo xwin test --target x86_64-pc-windows-msvc --features=mmap,rayon,traits-preview,serde,zeroize
+    - run: docker run -v $(pwd):/io -w /io messense/cargo-xwin cargo xwin test --target x86_64-pc-windows-msvc --features=mmap,traits-preview,serde,zeroize
 
   # Currently only on x86.
   cmake_c_tests:

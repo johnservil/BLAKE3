@@ -129,16 +129,8 @@
 //! method for [`Hasher`], and also the [`Read`] and [`Seek`] implementations
 //! for [`OutputReader`].
 //!
-//! The `rayon` feature (disabled by default, but enabled for [docs.rs]) adds
-//! the [`update_rayon`](Hasher::update_rayon) and (in combination with `mmap`
-//! below) [`update_mmap_rayon`](Hasher::update_mmap_rayon) methods for
-//! multithreaded hashing. However, even if this feature is enabled, all other
-//! APIs remain single-threaded.
-//!
 //! The `mmap` feature (disabled by default, but enabled for [docs.rs]) adds the
-//! [`update_mmap`](Hasher::update_mmap) and (in combination with `rayon` above)
-//! [`update_mmap_rayon`](Hasher::update_mmap_rayon) helper methods for
-//! memory-mapped IO.
+//! [`update_mmap`](Hasher::update_mmap) helper method for memory-mapped IO.
 //!
 //! The `zeroize` feature (disabled by default, but enabled for [docs.rs])
 //! implements
@@ -167,9 +159,7 @@
 //! expect breaking changes between patch versions. (The "-preview" feature name
 //! follows the conventions of the RustCrypto [`signature`] crate.)
 //!
-//! [`Hasher::update_rayon`]: struct.Hasher.html#method.update_rayon
 //! [BLAKE3]: https://blake3.io
-//! [Rayon]: https://github.com/rayon-rs/rayon
 //! [docs.rs]: https://docs.rs/
 //! [`Read`]: https://doc.rust-lang.org/std/io/trait.Read.html
 //! [`Write`]: https://doc.rust-lang.org/std/io/trait.Write.html
@@ -254,7 +244,6 @@ pub mod traits;
 
 #[cfg(feature = "std")]
 mod io;
-mod join;
 #[cfg(feature = "std")]
 mod lanes;
 mod many;
@@ -819,7 +808,6 @@ impl Zeroize for ChunkState {
 // and for the incremental input with Hasher (though we have to be careful with
 // subtree boundaries in the incremental case). compress_subtree_wide() applies
 // several optimizations at the same time:
-// - Multithreading with Rayon.
 // - Parallel chunk hashing with SIMD.
 // - Parallel parent hashing with SIMD. Note that while SIMD chunk hashing
 //   maxes out at MAX_SIMD_DEGREE*CHUNK_LEN, parallel parent hashing continues
@@ -1038,7 +1026,7 @@ fn compress_parents_parallel(
 // Why not just have the caller split the input on the first update(), instead
 // of implementing this special rule? Because we don't want to limit SIMD or
 // multithreading parallelism for that update().
-fn compress_subtree_wide<J: join::Join>(
+fn compress_subtree_wide(
     input: &[u8],
     ahead: usize,
     key: &CVWords,
@@ -1047,9 +1035,6 @@ fn compress_subtree_wide<J: join::Join>(
     platform: Platform,
     out: &mut [u8],
 ) -> usize {
-    // Note that the single chunk case does *not* bump the SIMD degree up to 2
-    // when it is 1. This allows Rayon the option of multithreading even the
-    // 2-chunk case, which can help performance on smaller platforms.
     if input.len() <= platform.simd_degree() * CHUNK_LEN {
         return compress_chunks_parallel(input, key, chunk_counter, flags, platform, out);
     }
@@ -1084,12 +1069,8 @@ fn compress_subtree_wide<J: join::Join>(
     };
     let (left_out, right_out) = cv_array.split_at_mut(degree * OUT_LEN);
 
-    // Recurse! For update_rayon(), this is where we take advantage of RayonJoin and use multiple
-    // threads.
-    let (left_n, right_n) = J::join(
-        || compress_subtree_wide::<J>(left, right.len() + ahead, key, chunk_counter, flags, platform, left_out),
-        || compress_subtree_wide::<J>(right, ahead, key, right_chunk_counter, flags, platform, right_out),
-    );
+    let left_n = compress_subtree_wide(left, right.len() + ahead, key, chunk_counter, flags, platform, left_out);
+    let right_n = compress_subtree_wide(right, ahead, key, right_chunk_counter, flags, platform, right_out);
 
     // The special case again. If simd_degree=1, then we'll have left_n=1 and
     // right_n=1. Rather than compressing them into a single output, return
@@ -1131,7 +1112,7 @@ fn compress_subtree_wide<J: join::Join>(
 // sixteen chaining values at most, and gets arrays of that size (768 bytes)
 // in place of zeroing 6 KiB for a few chunks.
 #[inline(never)]
-fn compress_subtree_to_parent_node<J: join::Join>(
+fn compress_subtree_to_parent_node(
     input: &[u8],
     ahead: usize,
     key: &CVWords,
@@ -1148,9 +1129,9 @@ fn compress_subtree_to_parent_node<J: join::Join>(
         return unsafe { sme2::compress_subtree_flat_to_parent(input, ahead, key, chunk_counter, flags) };
     }
     if input.len() <= SMALL_TREE_CHUNKS * CHUNK_LEN {
-        condense_subtree::<J, SMALL_TREE_CHUNKS, { SMALL_TREE_CHUNKS / 2 }>(input, ahead, key, chunk_counter, flags, platform)
+        condense_subtree::<SMALL_TREE_CHUNKS, { SMALL_TREE_CHUNKS / 2 }>(input, ahead, key, chunk_counter, flags, platform)
     } else {
-        condense_subtree::<J, MAX_SIMD_DEGREE_OR_2, { MAX_SIMD_DEGREE_OR_2 / 2 }>(input, ahead, key, chunk_counter, flags, platform)
+        condense_subtree::<MAX_SIMD_DEGREE_OR_2, { MAX_SIMD_DEGREE_OR_2 / 2 }>(input, ahead, key, chunk_counter, flags, platform)
     }
 }
 
@@ -1162,7 +1143,7 @@ const SMALL_TREE_CHUNKS: usize = 16;
 /// which must cover the most `compress_subtree_wide` returns for `input`,
 /// and `HALF` = `CVS / 2` parents.
 #[inline(always)]
-fn condense_subtree<J: join::Join, const CVS: usize, const HALF: usize>(
+fn condense_subtree<const CVS: usize, const HALF: usize>(
     input: &[u8],
     ahead: usize,
     key: &CVWords,
@@ -1172,7 +1153,7 @@ fn condense_subtree<J: join::Join, const CVS: usize, const HALF: usize>(
 ) -> [u8; BLOCK_LEN] {
     let mut cv_array = [[0u8; OUT_LEN]; CVS];
     let cv_array = cv_array.as_flattened_mut();
-    let mut num_cvs = compress_subtree_wide::<J>(input, ahead, &key, chunk_counter, flags, platform, cv_array);
+    let mut num_cvs = compress_subtree_wide(input, ahead, &key, chunk_counter, flags, platform, cv_array);
     debug_assert!(num_cvs >= 2);
 
     // If MAX_SIMD_DEGREE is greater than 2 and there's enough input,
@@ -1237,7 +1218,7 @@ fn hash_one_chunk_root(input: &[u8], key: &CVWords, flags: u8) -> Hash {
 // is then a straight line from the public function to the kernel, and the
 // multi-chunk path is one call to compress_subtree_to_parent_node().
 #[inline]
-fn hash_all_at_once<J: join::Join>(
+fn hash_all_at_once(
     input: &[u8], key: &CVWords, chunk_counter: u64, flags: u8, platform: Platform,
 ) -> Output {
     // The input is a complete subtree at chunk_counter, or the whole
@@ -1257,7 +1238,7 @@ fn hash_all_at_once<J: join::Join>(
     // compress_subtree_to_parent_node().
     Output {
         input_chaining_value: *key,
-        block: Aligned64(compress_subtree_to_parent_node::<J>(
+        block: Aligned64(compress_subtree_to_parent_node(
             input, 0, key, chunk_counter, flags, platform,
         )),
         block_len: BLOCK_LEN as u8,
@@ -1597,7 +1578,7 @@ fn hash_serial_on(input: &[u8], key: &CVWords, flags: u8, platform: Platform) ->
     if input.len() <= CHUNK_LEN {
         return hash_one_chunk_root(input, key, flags);
     }
-    hash_all_at_once::<join::SerialJoin>(input, key, 0, flags, platform).root_hash()
+    hash_all_at_once(input, key, 0, flags, platform).root_hash()
 }
 
 /// The hashes of many messages of one length, laid out in one buffer, on
@@ -2035,9 +2016,7 @@ fn parent_node_output(
 /// A `Hasher` is about 18 KiB (it holds short pieces until it has 16 KiB
 /// to hash at once); box it where that matters.
 ///
-/// The `rayon` and `mmap` Cargo features add methods for multithreading
-/// and memory-mapped files; [`update_multithreaded`](Hasher::update_multithreaded)
-/// needs neither.
+/// The `mmap` Cargo feature adds a method for memory-mapped files.
 ///
 /// When the `traits-preview` Cargo feature is enabled, this type implements
 /// several commonly used traits from the
@@ -2121,8 +2100,8 @@ impl Hasher {
     /// (but a fresh hasher's first chunk goes to the core),
     /// and the stage goes to the core as one update, its chunks side by
     /// side in the lanes.
-    fn gather<J: join::Join>(&mut self, input: &[u8], pooled: bool) -> &mut Self {
-        self.gather_part::<J>(input, pooled, false);
+    fn gather(&mut self, input: &[u8], pooled: bool) -> &mut Self {
+        self.gather_part(input, pooled, false);
         self
     }
 
@@ -2130,13 +2109,13 @@ impl Hasher {
     /// whole group (from offset zero) is kept for the caller to hash with
     /// others' (`held_group`), and the rest of `input`
     /// returned; else nothing is left.
-    fn gather_part<'a, J: join::Join>(&mut self, mut input: &'a [u8], pooled: bool, hold: bool) -> &'a [u8] {
+    fn gather_part<'a>(&mut self, mut input: &'a [u8], pooled: bool, hold: bool) -> &'a [u8] {
         self.core.assert_room(self.count(), input.len());
         while !input.is_empty() {
             // Whole groups, and a fresh hasher's first chunk (which hashes
             // serially either way), skip the stage.
             if self.staged == 0 && (input.len() >= STAGE_LEN || self.core.count() + input.len() as u64 <= CHUNK_LEN as u64) {
-                self.core.update_with_join::<J>(input, pooled);
+                self.core.update_pooled(input, pooled);
                 return &[];
             }
             let at = (self.core.initial_chunk_counter * CHUNK_LEN as u64 + self.count()) % STAGE_LEN as u64;
@@ -2154,7 +2133,7 @@ impl Hasher {
             // Sound: the first `staged` bytes were written; the core reads
             // them before the stage is written again.
             let bytes = unsafe { core::slice::from_raw_parts(self.stage.as_ptr() as *const u8, staged) };
-            self.core.update_with_join::<J>(bytes, pooled);
+            self.core.update_pooled(bytes, pooled);
         }
         &[]
     }
@@ -2245,7 +2224,7 @@ impl Hasher {
         if self.count() == 0 && (CHUNK_LEN + 1..PREFETCH_BELOW).contains(&input.len()) {
             prefetch_after_pause(input.len(), self.core.chunk_state.platform, true);
         }
-        self.gather::<join::SerialJoin>(input, false)
+        self.gather(input, false)
     }
 
     /// [`update`](Hasher::update), using other CPU cores where that is
@@ -2265,7 +2244,7 @@ impl Hasher {
     /// ```
     #[cfg(feature = "std")]
     pub fn update_multithreaded(&mut self, input: &[u8]) -> &mut Self {
-        self.gather::<join::SerialJoin>(input, true)
+        self.gather(input, true)
     }
 
     /// Finalize the hash state and return the [`Hash`](struct.Hash.html) of
@@ -2324,8 +2303,7 @@ impl Hasher {
     /// [`std::io::Read`](https://doc.rust-lang.org/std/io/trait.Read.html) might be
     /// [`std::fs::File`](https://doc.rust-lang.org/std/fs/struct.File.html), but note that memory
     /// mapping can be faster than this method for hashing large files. See
-    /// [`update_mmap`](Hasher::update_mmap) and [`update_mmap_rayon`](Hasher::update_mmap_rayon),
-    /// which require the `mmap` and (for the latter) `rayon` Cargo features.
+    /// [`update_mmap`](Hasher::update_mmap), which requires the `mmap` Cargo feature.
     ///
     /// This method requires the `std` Cargo feature, which is enabled by default.
     ///
@@ -2348,31 +2326,6 @@ impl Hasher {
         Ok(self)
     }
 
-    /// As [`update`](Hasher::update), but using Rayon-based multithreading
-    /// internally.
-    ///
-    /// This method is gated by the `rayon` Cargo feature, which is disabled by
-    /// default but enabled on [docs.rs](https://docs.rs).
-    ///
-    /// To get any performance benefit from multithreading, the input buffer
-    /// needs to be large. As a rule of thumb on x86_64, `update_rayon` is
-    /// _slower_ than `update` for inputs under 128 KiB. That threshold varies
-    /// quite a lot across different processors, and it's important to benchmark
-    /// your specific use case. See also the performance warning associated with
-    /// [`update_mmap_rayon`](Hasher::update_mmap_rayon).
-    ///
-    /// If you already have a large buffer in memory, and you want to hash it
-    /// with multiple threads, this method is a good option. However, reading a
-    /// file into memory just to call this method can be a performance mistake,
-    /// both because it requires lots of memory and because single-threaded
-    /// reads can be slow. For hashing whole files, see
-    /// [`update_mmap_rayon`](Hasher::update_mmap_rayon), which is gated by both
-    /// the `rayon` and `mmap` Cargo features.
-    #[cfg(feature = "rayon")]
-    pub fn update_rayon(&mut self, input: &[u8]) -> &mut Self {
-        self.gather::<join::RayonJoin>(input, false)
-    }
-
     /// As [`update`](Hasher::update), but reading the contents of a file using memory mapping.
     ///
     /// Not all files can be memory mapped, and memory mapping small files can be slower than
@@ -2383,9 +2336,8 @@ impl Hasher {
     /// Like [`update`](Hasher::update), this method is single-threaded. In this author's
     /// experience, memory mapping improves single-threaded performance by ~10% for large files
     /// that are already in cache. This probably varies between platforms, and as always it's a
-    /// good idea to benchmark your own use case. In comparison, the multithreaded
-    /// [`update_mmap_rayon`](Hasher::update_mmap_rayon) method can have a much larger impact on
-    /// performance.
+    /// good idea to benchmark your own use case. For several threads, map the file and call
+    /// [`update_multithreaded`](Hasher::update_multithreaded) on it.
     ///
     /// There's a correctness reason that this method takes
     /// [`Path`](https://doc.rust-lang.org/stable/std/path/struct.Path.html) instead of
@@ -2419,61 +2371,6 @@ impl Hasher {
         let mut file = std::fs::File::open(path.as_ref())?;
         if let Some(mmap) = io::maybe_mmap_file(&mut file)? {
             self.update(&mmap);
-        } else {
-            io::copy_wide(&file, self)?;
-        }
-        Ok(self)
-    }
-
-    /// As [`update_rayon`](Hasher::update_rayon), but reading the contents of a file using
-    /// memory mapping. This is the default behavior of `b3sum`.
-    ///
-    /// For large files that are likely to be in cache, this can be much faster than
-    /// single-threaded hashing. When benchmarks report that BLAKE3 is 10x or 20x faster than other
-    /// cryptographic hashes, this is usually what they're measuring. However...
-    ///
-    /// **Performance Warning:** There are cases where multithreading hurts performance. The worst
-    /// case is [a large file on a spinning disk](https://github.com/BLAKE3-team/BLAKE3/issues/31),
-    /// where simultaneous reads from multiple threads can cause "thrashing" (i.e. the disk spends
-    /// more time seeking around than reading data). Windows tends to be somewhat worse about this,
-    /// in part because it's less likely than Linux to keep very large files in cache. More
-    /// generally, if your CPU cores are already busy, then multithreading will add overhead
-    /// without improving performance. If your code runs in different environments that you don't
-    /// control and can't measure, then unfortunately there's no one-size-fits-all answer for
-    /// whether multithreading is a good idea.
-    ///
-    /// The memory mapping behavior of this function is the same as
-    /// [`update_mmap`](Hasher::update_mmap), and the heuristic for when to fall back to standard
-    /// file IO might change at any time.
-    ///
-    /// This method requires both the `mmap` and `rayon` Cargo features, which are disabled by
-    /// default but enabled on [docs.rs](https://docs.rs).
-    ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// # use std::io;
-    /// # use std::path::Path;
-    /// # fn main() -> io::Result<()> {
-    /// # #[cfg(feature = "rayon")]
-    /// # {
-    /// let path = Path::new("big_file.dat");
-    /// let mut hasher = blake3_servil::Hasher::new();
-    /// hasher.update_mmap_rayon(path)?;
-    /// println!("{}", hasher.finalize());
-    /// # }
-    /// # Ok(())
-    /// # }
-    /// ```
-    #[cfg(feature = "mmap")]
-    #[cfg(feature = "rayon")]
-    pub fn update_mmap_rayon(
-        &mut self,
-        path: impl AsRef<std::path::Path>,
-    ) -> std::io::Result<&mut Self> {
-        let mut file = std::fs::File::open(path.as_ref())?;
-        if let Some(mmap) = io::maybe_mmap_file(&mut file)? {
-            self.update_rayon(&mmap);
         } else {
             io::copy_wide(&file, self)?;
         }
@@ -2630,7 +2527,7 @@ impl HasherCore {
 
     /// `update`'s loop; with `pooled`, whole subtrees of
     /// `lanes::MIN_SPLIT_LEN` and more go to the pool.
-    pub(crate) fn update_with_join<J: join::Join>(&mut self, mut input: &[u8], pooled: bool) -> &mut Self {
+    pub(crate) fn update_pooled(&mut self, mut input: &[u8], pooled: bool) -> &mut Self {
         #[cfg(not(feature = "std"))]
         let _ = pooled;
         self.assert_room(self.count(), input.len());
@@ -2756,7 +2653,7 @@ impl HasherCore {
                     unreachable!()
                 } else if pooled {
                     let own = platform::Sme2Turn::take(self.chunk_state.platform, subtree_len >= SME2_SIZED_LEN);
-                    compress_subtree_to_parent_node::<J>(
+                    compress_subtree_to_parent_node(
                         &input[..subtree_len],
                         input.len() - subtree_len,
                         &self.key,
@@ -2765,7 +2662,7 @@ impl HasherCore {
                         own.platform(),
                     )
                 } else {
-                    compress_subtree_to_parent_node::<J>(
+                    compress_subtree_to_parent_node(
                         &input[..subtree_len],
                         input.len() - subtree_len,
                         &self.key,
@@ -2865,7 +2762,7 @@ impl HasherCore {
 
     /// The serial update: whole subtrees now, the last chunk kept.
     pub(crate) fn update(&mut self, input: &[u8]) -> &mut Self {
-        self.update_with_join::<join::SerialJoin>(input, false)
+        self.update_pooled(input, false)
     }
 
     /// Requires that `len` more bytes after `count` fit the subtree that

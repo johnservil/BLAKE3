@@ -1382,8 +1382,10 @@ item out when it lands or is rejected.
 - Revisit a possible energy-efficiency option (removed October 2, 2026:
   its complexity outweighed its likely use; the September 25
   measurements, "Energy per byte" above, are where to start).
-- update_rayon on the fork's pool, one mechanism for multithreading
-  (changes its contract: today it runs on the caller's Rayon pool).
+- update_rayon removed (Zooko, October 10, 2026): one mechanism for
+  multithreading (`update_multithreaded` and the fork's workers); with it
+  went `update_mmap_rayon`, the `rayon` feature, rayon-core, and the
+  `Join` generic over the tree walk, which only it used.
 - A Merkle tree API (`servil::merkle`, for users like Remco's WHIR);
   write its trade-offs up for Zooko before building.
 

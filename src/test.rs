@@ -368,17 +368,6 @@ fn test_compare_reference_impl() {
                 *<&[u8; 32]>::try_from(&expected_out[..32]).unwrap()
             );
             assert_eq!(hasher.finalize(), test_out);
-            // incremental (rayon)
-            #[cfg(feature = "rayon")]
-            {
-                let mut hasher = crate::Hasher::new();
-                hasher.update_rayon(input);
-                assert_eq!(
-                    hasher.finalize(),
-                    *<&[u8; 32]>::try_from(&expected_out[..32]).unwrap()
-                );
-                assert_eq!(hasher.finalize(), test_out);
-            }
             // xof
             let mut extended = [0; OUT];
             hasher.finalize_xof().fill(&mut extended);
@@ -406,17 +395,6 @@ fn test_compare_reference_impl() {
                 *<&[u8; 32]>::try_from(&expected_out[..32]).unwrap()
             );
             assert_eq!(hasher.finalize(), test_out);
-            // incremental (rayon)
-            #[cfg(feature = "rayon")]
-            {
-                let mut hasher = crate::Hasher::new_keyed(&TEST_KEY);
-                hasher.update_rayon(input);
-                assert_eq!(
-                    hasher.finalize(),
-                    *<&[u8; 32]>::try_from(&expected_out[..32]).unwrap()
-                );
-                assert_eq!(hasher.finalize(), test_out);
-            }
             // xof
             let mut extended = [0; OUT];
             hasher.finalize_xof().fill(&mut extended);
@@ -445,20 +423,6 @@ fn test_compare_reference_impl() {
                 hasher.finalize(),
                 *<&[u8; 32]>::try_from(&test_out[..32]).unwrap()
             );
-            // incremental (rayon)
-            #[cfg(feature = "rayon")]
-            {
-                let mut hasher = crate::Hasher::new_derive_key(context);
-                hasher.update_rayon(input);
-                assert_eq!(
-                    hasher.finalize(),
-                    *<&[u8; 32]>::try_from(&expected_out[..32]).unwrap()
-                );
-                assert_eq!(
-                    hasher.finalize(),
-                    *<&[u8; 32]>::try_from(&test_out[..32]).unwrap()
-                );
-            }
             // xof
             let mut extended = [0; OUT];
             hasher.finalize_xof().fill(&mut extended);
@@ -1038,29 +1002,6 @@ fn test_mmap_virtual_file() -> Result<(), std::io::Error> {
     let mut read_hasher = crate::Hasher::new();
     read_hasher.update_reader(std::fs::File::open(virtual_filepath)?)?;
     assert_eq!(mmap_hasher.finalize(), read_hasher.finalize());
-    Ok(())
-}
-
-#[test]
-#[cfg(feature = "mmap")]
-#[cfg(feature = "rayon")]
-// NamedTempFile isn't Miri-compatible
-#[cfg(not(miri))]
-fn test_mmap_rayon() -> Result<(), std::io::Error> {
-    // This is a brief test, since update_mmap_rayon() is mostly a wrapper around update_rayon(),
-    // which already has substantial testing.
-    use std::io::prelude::*;
-    let mut input = vec![0; 1_000_000];
-    paint_test_input(&mut input);
-    let mut tempfile = tempfile::NamedTempFile::new()?;
-    tempfile.write_all(&input)?;
-    tempfile.flush()?;
-    assert_eq!(
-        crate::Hasher::new()
-            .update_mmap_rayon(tempfile.path())?
-            .finalize(),
-        crate::hash(&input),
-    );
     Ok(())
 }
 
