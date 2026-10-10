@@ -12,8 +12,9 @@ first hashes. The code
 has run under AddressSanitizer, ThreadSanitizer, and Miri, and against
 inaccessible guard pages. Every AArch64 assembly kernel (NEON, integer,
 and SME2) is proved equal to BLAKE3's compression function for every
-input, and a few index calculations are proved with the Kani model
-checker. No human has yet reviewed it line by line,
+input, the instruction models those proofs rest on are proved equal to
+Arm's own specification, and a few index calculations are proved with
+the Kani model checker. No human has yet reviewed it line by line,
 and nobody has audited it. The [README's warning](README.md) stands.
 
 ## What is new, and so where the risk is
@@ -133,9 +134,10 @@ BLAKE3 generated from C2SP's BLAKE3 standard, as Lean computes it
 (`c2sp/BLAKE3/`, `tools/verify/lean/`). It also shows that every memory access stays inside the
 kernel's buffers and its own stack frame, that the path depends only on
 the block count (no branch or address depends on the data), and that the
-calling convention holds. The proofs rest on models of the 40-odd
-instruction forms the kernels use, each checked against the CPU on random
-states, and on the assembler and disassembler. Deliberately wrong kernels
+calling convention holds. The proofs rest on models of the instruction
+forms the kernels use, each checked against the CPU on random states and
+proved equal to Arm's specification (below), and on the assembler and
+disassembler. Deliberately wrong kernels
 (a rotation off by one, an add made an xor, a lane shuffle swapped, a
 read past a buffer) are rejected. CI runs the proofs, the cross-check,
 and the wrong kernels on every change. How they work, and how to run
@@ -150,10 +152,22 @@ count from 1 to 20 blocks.
 parents, and extended output, on Apple M4's 512-bit streaming vectors)
 are proved the same way: the matrix unit's ZA tiles, the predicates, and
 the streaming vector instructions are modelled and checked against the
-CPU, and each kernel is proved for one and two groups of sixteen, the last group storing 1, 15,
-or all 16 values, and the message kernel at every
-message length. More groups repeat the same loop; a proof of its
-invariant is still to come.
+CPU, and each kernel is proved for one and two groups of sixteen, the
+last group storing 1, 15, or all 16 values, and the message kernel at
+every message length. Each kernel is also proved for every number of
+groups, by induction over its loop.
+
+**The instruction models** are proved equal to Arm's own specification
+of the architecture (Sail's Armv9.4, run by Isla) for every input: 136
+of the 137 NEON and integer forms the proofs use, and 19 of the 23
+streaming register forms. Isla cannot run the rest within reason; they,
+and the matrix unit's loads and stores, are checked against the CPU.
+
+**The tree walk and the Hasher's stack** are proved in Lean to compute
+the tree of C2SP's BLAKE3 standard: the tree walk as safe Rust,
+translated by Aeneas, given kernels that compute the compression
+function; the Hasher's stack as an algorithm. The library does not yet
+run that walk as its own code.
 
 We also use [Kani](https://github.com/model-checking/kani), a bounded model
 checker for Rust. For every input, not just sampled ones, it proves:
@@ -295,12 +309,11 @@ names the commit that introduced the code and the one that fixed it, in
   the assembly kernels or C code.
 - **Miri**: used (above). It checks the executions it runs, which falls
   short of a proof, and it cannot run assembly or intrinsics.
-- **Deductive verifiers for Rust (Verus, Prusti, Creusot, Aeneas)**:
-  considered, not tried yet. They could prove the pool and the batch
-  paths correct for every input and every thread interleaving. The cost
-  is annotating or restructuring the code (atomics, raw pointers,
-  uninitialised memory), and the kernels would still sit outside the
-  proof.
+- **Aeneas** (safe Rust translated to Lean): used for the tree walk
+  (above). **Verus, Prusti, Creusot**: considered, not tried. They could
+  prove the pool and the batch paths for every thread interleaving; the
+  cost is annotating or restructuring the code (atomics, raw pointers,
+  uninitialised memory).
 - **hax to F\* or Rocq** (as used for libcrux): considered, not tried
   yet. It suits proving the portable Rust equal to BLAKE3's
   specification. That code is upstream's and the least changed.
@@ -308,19 +321,43 @@ names the commit that introduced the code and the one that fixed it, in
   proves C or LLVM code equal to a specification, and could cover the C
   NEON kernel. It does not model SME2.
 - **Symbolic execution of the hybrid assembly**: done (above), with our
-  own instruction models checked against the CPU. Replacing them with
-  Arm's machine-readable specification (Sail, Isla), or proving the
-  kernels in s2n-bignum's HOL Light model of AArch64, would remove that
-  part of the trust base.
+  own instruction models, proved equal to Arm's specification through
+  Isla.
 - **The SME2 assembly**: done (above), with our own models of the
-  streaming and ZA instructions checked against the CPU; we know of no
-  production tool that models SME2.
-- **Constant-time behaviour**: not checked. By design the kernels branch
-  only on lengths and counts, never on the data. That matters to users
-  of the keyed mode, and a tool such as dudect or ctgrind would test it.
+  streaming and ZA instructions, proved equal to Arm's specification
+  where Isla can run them and checked against the CPU elsewhere.
+- **Constant-time behaviour**: see "Timing and secrets", below.
 - **Fuzzing (cargo-fuzz)**: not used. The tests enumerate every kernel
   at every input shape, count, and boundary against fixed answers, the
   paths a fuzzer would search for.
+
+## Timing and secrets
+
+If you hash a secret, or a message that contains one, can the time the
+hash takes reveal anything about it? Three conditions decide it. When
+all three hold, the time depends only on the message's length: whoever
+chooses the other bytes, wherever the secret's bits sit among them, and
+however often the hash is timed.
+
+1. **The instructions run, and the memory addresses they touch, depend
+   only on the length.** Proved for every AArch64 assembly kernel and
+   for the Rust compression code, as compiled: each proof stops at any
+   branch, memory address, or table index that depends on the key or
+   the message. The code around them, which arranges the tree and keeps
+   the Hasher's state, is written to branch only on lengths; a proof of
+   whole calls is still to come. On x86 the fork runs upstream's code,
+   which these proofs do not cover.
+2. **Each instruction takes the same time whatever values it computes
+   on.** That is a promise of the CPU. Arm CPUs make it, for a listed set
+   of instructions, while data-independent timing (DIT) is enabled. The
+   fork does not enable DIT; its cost is still to be measured.
+3. **Power does not show in the timing.** A chip's power draw depends
+   on the data it computes, and power can change its clock speed and so
+   the time (the Hertzbleed attack, 2022). A fixed clock speed removes
+   this channel; no proof about code reaches it. Apple M1 to M3 chips
+   also have a prefetcher whose behaviour depends on the data in memory
+   (the GoFetch attack, 2024); Apple's guidance for cryptographic code
+   is to enable DIT.
 
 ## Not yet done
 
