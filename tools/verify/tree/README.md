@@ -50,8 +50,10 @@ compression function.
 3. `walk_eq_goIdx` and `walk_is_tree` connect the walk over bytes to the
    specification's `tree` over its `ByteArray` chunks.
 
-**The Hasher's stack** (`HasherProofs.lean`, the algorithm; the
-library's `Hasher` code itself is not yet in a form Aeneas translates). After
+**The Hasher's stack** (`HasherProofs.lean`, the algorithm, and
+`StackProofs.lean`, the code: `src/stack_core.rs`, included as it is by
+`rust/stackcore`, whose `push` and `merge` are proved to compute the
+algorithm's, never failing on a stack of at most 55 values). After
 the first c chunks the stack holds one chaining value per 1-bit of c, the
 tree over the aligned power-of-two block it stands for (`stackCvs`):
 

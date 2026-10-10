@@ -10,10 +10,12 @@ aeneas=${AENEAS:?set AENEAS to the Aeneas release directory}
 work=${TREE_WORK:-$HOME/.cache/blake3-servil-tree}
 mkdir -p "$work/lean"
 # The committed translations are the Rust's.
-for pair in treecore:Treecore widecore:Widecore; do
+for pair in treecore:Treecore widecore:Widecore stackcore:Stackcore; do
 	crate=${pair%%:*}; name=${pair##*:}
-	rm -rf "$work/$crate"; cp -r "$here/rust/$crate" "$work/$crate"
-	(cd "$work/$crate" && PATH="$aeneas:$PATH" "$aeneas/charon" cargo --preset=aeneas >/dev/null)
+	# In place: stackcore includes the library's own src/stack_core.rs.
+	rm -rf "$work/$crate"; mkdir -p "$work/$crate"
+	(cd "$here/rust/$crate" && CARGO_TARGET_DIR="$work/$crate/target" PATH="$aeneas:$PATH" \
+		"$aeneas/charon" cargo --preset=aeneas >/dev/null && mv "$crate.llbc" "$work/$crate/")
 	"$aeneas/aeneas" -backend lean "$work/$crate/$crate.llbc" -dest "$work/$crate/lean" >/dev/null
 	cmp "$work/$crate/lean/$name.lean" "$here/lean/$name.lean" ||
 		{ echo "$name.lean differs from the Rust's translation" >&2; exit 1; }

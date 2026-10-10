@@ -10,10 +10,15 @@ pub trait Parent {
 
 /// Chaining values bottom first: an array made at the first push (a message
 /// of one chunk pushes none) and its length.
-#[derive(Clone)]
 pub struct CvStack {
     cvs: Option<[Cv; DEPTH]>,
     len: usize,
+}
+
+impl Clone for CvStack {
+    fn clone(&self) -> CvStack {
+        CvStack { cvs: self.cvs, len: self.len }
+    }
 }
 
 impl CvStack {
