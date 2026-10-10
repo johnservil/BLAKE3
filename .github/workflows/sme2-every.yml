@@ -1,0 +1,28 @@
+name: SME2 proofs at every group count
+
+# Hours of Arm time, and their result changes only with the SME2 kernels
+# (c/*sme2*, tools/verify): started by hand, before a promotion of servil
+# and after a change to those kernels.
+on:
+  workflow_dispatch:
+
+jobs:
+  sme2_every_group_count:
+    name: SME2 kernels at every group count (${{ matrix.cases }})
+    runs-on: ubuntu-24.04-arm
+    # The longest, the chunk kernel, about 3.5 hours on the M4 Max's VM.
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        cases:
+        - every
+        - parents_every xof_every messages_every:2 messages_every:3 messages_every:4 messages_every:5
+        - messages_every:6 messages_every:7 messages_every:8 messages_every:9
+        - messages_every:10 messages_every:11 messages_every:12
+        - messages_every:13 messages_every:14
+        - messages_every:15 messages_every:16
+    steps:
+    - uses: actions/checkout@v4
+    - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends python3-z3 clang llvm
+    - run: python3 tools/verify/prove_sme2.py ${{ matrix.cases }}

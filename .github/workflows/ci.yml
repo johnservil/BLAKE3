@@ -403,26 +403,6 @@ jobs:
     - name: the proofs reject wrong kernels
       run: python3 tools/verify/mutants.py
 
-  sme2_every_group_count:
-    name: SME2 kernels at every group count (${{ matrix.cases }})
-    runs-on: ubuntu-24.04-arm
-    # The longest, the chunk kernel, about 3.5 hours on the M4 Max's VM.
-    timeout-minutes: 350
-    strategy:
-      fail-fast: false
-      matrix:
-        cases:
-        - every
-        - parents_every xof_every messages_every:2 messages_every:3 messages_every:4 messages_every:5
-        - messages_every:6 messages_every:7 messages_every:8 messages_every:9
-        - messages_every:10 messages_every:11 messages_every:12
-        - messages_every:13 messages_every:14
-        - messages_every:15 messages_every:16
-    steps:
-    - uses: actions/checkout@v4
-    - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends python3-z3 clang llvm
-    - run: python3 tools/verify/prove_sme2.py ${{ matrix.cases }}
-
   build_apple_silicon:
     name: build for Apple Silicon
     runs-on: macOS-latest
