@@ -35,6 +35,22 @@ covers everything and our own instruction models, Z3, and Isla go?
   Lean's elaboration of the result takes over 40 minutes; the decoder is
   one 2,542-line definition.
 
-Next: decoding (whether the decoder's build time is a one-time cost we
-accept, or a smaller route to it), loads and stores, and a sequence of
-instructions (one G function), to measure how proofs scale.
+- Arm's model maps `MOD` (`emod_nat`, prelude.sail) to Lean's `Nat.div`,
+  so every rotation (`ROR`) in the Lean model computed a quotient; mapped
+  to `Nat.mod` here. Unreported upstream (sail-arm) as of this note.
+- `Gpr.lean` reads and writes general registers as plain values (`gpr`,
+  `setGpr`), proved equal to Arm's `read_gpr` and `write_gpr`;
+  `Insns.lean` proves `add`, `eor`, and `ror` (`extr`) on 32-bit
+  registers for any registers and any state; `G.lean` proves 14
+  instructions, BLAKE3's G as the compiled portable code computes it,
+  compute G on any inputs from any state. Lean's standard axioms; the
+  whole sequence checks in under a second.
+- Choices: the generated model resolves Arm's UNKNOWN values with Sail's
+  trivial choice source (fixed values). A proof under it holds for one
+  resolution; a faithful proof quantifies over every choice source.
+- `bv_decide` checks its certificate with compiled code by default and
+  adds an axiom for it; the proofs here avoid it.
+
+Next: the opcode word's decoding (whether the decoder's build time is a
+one-time cost we accept, or a smaller route to it), loads and stores, NEON,
+any choice source, and a whole kernel against `Blake3.lean`'s compression.

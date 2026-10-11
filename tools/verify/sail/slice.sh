@@ -11,6 +11,7 @@ cd "$SAIL_ARM"
 srcs=$(sed -n 's/^SAIL_SRCS=//p' Makefile | sed 's/\$(DEVICES_PATH)/src\/devices.sail/')
 printf ':slice_roots %s\n:slice\n:ast %s/sliced.sail\n:q\n' "$(cat "$here/ROOTS" | tr '\n' ' ')" "$out" > "$out/script.txt"
 "$SAIL" --undefined-gen --is "$out/script.txt" $srcs src/termination_measures.sail > "$out/slice.log" 2>&1
-# One file: the backend names its outputs by the $include markers.
-grep -v '^\$include_\(start\|end\)' "$out/sliced.sail" > "$out/flat.sail"
+# One file: the backend names its outputs by the $include markers. Arm's
+# prelude maps MOD (emod_nat) to Lean's Nat.div; Nat.mod is MOD.
+grep -v '^\$include_\(start\|end\)' "$out/sliced.sail" | sed 's/lean: "Nat.div"}/lean: "Nat.mod"}/' > "$out/flat.sail"
 "$SAIL" --no-core --lean --lean-output-dir "$out/lean" --lean-noncomputable -o armv9 "$out/flat.sail"
