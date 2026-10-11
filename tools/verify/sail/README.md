@@ -57,6 +57,14 @@ covers everything and our own instruction models, Z3, and Isla go?
 - `bv_decide` checks its certificate with compiled code by default and
   adds an axiom for it; the proofs here avoid it.
 
+- Loads: slicing to `ldr` (unsigned offset) keeps 1,461 functions (26,837
+  lines of Sail, 25,410 of Lean): `Mem_read`, `AArch64_MemSingle_read`, and
+  address translation (`AArch64_TranslateAddress`) with its checks; Lean was
+  still building it after 30 minutes, when it was stopped. Where
+  the theorem states that virtual memory behaves as memory (at `Mem_read`,
+  as a hypothesis on the state; or translation proved the identity under
+  conditions on the system registers) is a decision for Zooko.
+
 Next: the opcode word's decoding (whether the decoder's build time is a
 one-time cost we accept, or a smaller route to it), loads and stores, NEON,
 any choice source, and a whole kernel against `Blake3.lean`'s compression.
