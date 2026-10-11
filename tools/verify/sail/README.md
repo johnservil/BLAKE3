@@ -45,6 +45,12 @@ covers everything and our own instruction models, Z3, and Isla go?
   instructions, BLAKE3's G as the compiled portable code computes it,
   compute G on any inputs from any state. Lean's standard axioms; the
   whole sequence checks in under a second.
+- The translation, tested: compiled (without `--lean-noncomputable`), the
+  Lean model agrees with the CPU on 8,000 random cases of `add`, `eor`,
+  `eor` with a rotated operand, and `extr` (`cpu_check.py`). With `MOD`
+  as `Nat.div`, 1,931 of 2,000 `eor ..., ror #k` results differ: the
+  check finds translation bugs of this kind. (`extr` computes without
+  `ROR`, so it is unaffected.)
 - Choices: the generated model resolves Arm's UNKNOWN values with Sail's
   trivial choice source (fixed values). A proof under it holds for one
   resolution; a faithful proof quantifies over every choice source.
