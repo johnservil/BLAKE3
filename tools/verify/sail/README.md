@@ -24,5 +24,17 @@ covers everything and our own instruction models, Z3, and Isla go?
   instance arguments (`if sf == 1 then 64 else 32`), which `simp` does not
   rewrite; `erw` does.
 
-Next: decoding from the opcode word, loads and stores, and a sequence of
+- Upstream: rems-project/sail#1772 proposes the fix, with an exec test
+  that fails without it and passes with it; Sail's Lean suite passes
+  (247 passes, 0 failures).
+- Decoding from the opcode word: slicing to the integer data-processing
+  decoder (`__DecodeA64_DataProcReg`) keeps 928 functions (17,518 lines
+  of Sail, 17,841 of Lean; it brings in PMU events and implementation-
+  defined choices). Sail's main branch needs the `vector_update` overload
+  declared in the slice (its rewrites call it; the slice drops overloads).
+  Lean's elaboration of the result takes over 40 minutes; the decoder is
+  one 2,542-line definition.
+
+Next: decoding (whether the decoder's build time is a one-time cost we
+accept, or a smaller route to it), loads and stores, and a sequence of
 instructions (one G function), to measure how proofs scale.
