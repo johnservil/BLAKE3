@@ -65,6 +65,16 @@ covers everything and our own instruction models, Z3, and Isla go?
   as a hypothesis on the state; or translation proved the identity under
   conditions on the system registers) is a decision for Zooko.
 
+- NEON: slicing to `add` and `eor` (vector) keeps 542 functions (10,284
+  lines of Sail, 9,479 of Lean); each instruction first runs
+  `CheckFPAdvSIMDEnabled64` (exception levels, system registers), so a
+  proof assumes the program may use FP/SIMD, and vector registers are read
+  as the low bits of SVE's 2048-bit `_Z` registers. Lean was still building
+  it after 30 minutes, when it was stopped; the three integer instructions'
+  774 lines build in 5 seconds, so particular definitions dominate, and
+  finding them is the next step for build time. The element loops
+  (`[0:elements-1]i`) are Sail's inclusive `IntRange`, as the model means.
+
 Next: the opcode word's decoding (whether the decoder's build time is a
 one-time cost we accept, or a smaller route to it), loads and stores, NEON,
 any choice source, and a whole kernel against `Blake3.lean`'s compression.
