@@ -557,6 +557,7 @@ type Output = hasher::Output<Platform>;
 
 /// A block, 64-byte aligned as hasher::Output's is (chunk_core.rs explains).
 #[repr(align(64))]
+#[cfg(blake3_neon_hybrid)]
 struct Aligned64([u8; BLOCK_LEN]);
 
 impl Clone for Output {
