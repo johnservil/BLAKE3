@@ -125,6 +125,7 @@ impl<P: Blocks> Output<P> {
 
     /// The first 32 bytes of the root's output (the node the root, its
     /// counter 0).
+    #[inline]
     pub fn root_bytes(&self) -> [u8; 32] {
         let mut cv = self.input_chaining_value;
         self.platform.compress_in_place(&mut cv, &self.block, self.block_len, 0, self.flags | ROOT);
