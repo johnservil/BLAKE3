@@ -265,7 +265,7 @@ def Output.chaining_value
 @[global_simps, irreducible] def ROOT : Std.U8 := 8#u8
 
 /-- [hashercore::{hashercore::Output<P>}::root_bytes]:
-    Source: 'src/../../../../../../src/chunk_core.rs', lines 128:4-132:5
+    Source: 'src/../../../../../../src/chunk_core.rs', lines 129:4-133:5
     Visibility: public -/
 def Output.root_bytes
   {P : Type} (BlocksInst : Blocks P) (self : Output P) :
@@ -283,7 +283,7 @@ def Output.root_bytes
 @[global_simps, irreducible] def CHUNK_END : Std.U8 := 2#u8
 
 /-- [hashercore::{hashercore::ChunkState<P>}::output]:
-    Source: 'src/../../../../../../src/chunk_core.rs', lines 137:4-146:5
+    Source: 'src/../../../../../../src/chunk_core.rs', lines 138:4-147:5
     Visibility: public -/
 def ChunkState.output
   {P : Type} (BlocksInst : Blocks P) (coremarkerCopyInst : core.marker.Copy P)
@@ -309,7 +309,7 @@ def ChunkState.output
 @[global_simps, irreducible] def PARENT : Std.U8 := 4#u8
 
 /-- [hashercore::parent_output]:
-    Source: 'src/../../../../../../src/chunk_core.rs', lines 150:0-155:1
+    Source: 'src/../../../../../../src/chunk_core.rs', lines 151:0-156:1
     Visibility: public -/
 def parent_output
   {P : Type} (left : Array Std.U8 32#usize) (right : Array Std.U8 32#usize)
@@ -353,7 +353,7 @@ structure Chunk (Self : Type) where
   advance : Self → Std.U64 → Result Self
 
 /-- [hashercore::{impl hashercore::Chunk for hashercore::ChunkState<P>}::advance]:
-    Source: 'src/../../../../../../src/chunk_core.rs', lines 175:4-177:5
+    Source: 'src/../../../../../../src/chunk_core.rs', lines 176:4-178:5
     Visibility: public -/
 def ChunkState.Insts.HashercoreChunk.advance
   {P : Type} (BlocksInst : Blocks P) (self : ChunkState P) (chunks : Std.U64) :
@@ -363,7 +363,7 @@ def ChunkState.Insts.HashercoreChunk.advance
   ok { self with chunk_counter := i }
 
 /-- [hashercore::{impl hashercore::Chunk for hashercore::ChunkState<P>}::update]:
-    Source: 'src/../../../../../../src/chunk_core.rs', lines 170:4-172:5
+    Source: 'src/../../../../../../src/chunk_core.rs', lines 171:4-173:5
     Visibility: public -/
 def ChunkState.Insts.HashercoreChunk.update
   {P : Type} (BlocksInst : Blocks P) (self : ChunkState P)
@@ -373,7 +373,7 @@ def ChunkState.Insts.HashercoreChunk.update
   ChunkState.absorb BlocksInst self input
 
 /-- [hashercore::{impl hashercore::Chunk for hashercore::ChunkState<P>}::len]:
-    Source: 'src/../../../../../../src/chunk_core.rs', lines 165:4-167:5
+    Source: 'src/../../../../../../src/chunk_core.rs', lines 166:4-168:5
     Visibility: public -/
 def ChunkState.Insts.HashercoreChunk.len
   {P : Type} (BlocksInst : Blocks P) (self : ChunkState P) :
@@ -382,7 +382,7 @@ def ChunkState.Insts.HashercoreChunk.len
   ChunkState.count BlocksInst self
 
 /-- [hashercore::{impl hashercore::Chunk for hashercore::ChunkState<P>}::counter]:
-    Source: 'src/../../../../../../src/chunk_core.rs', lines 160:4-162:5
+    Source: 'src/../../../../../../src/chunk_core.rs', lines 161:4-163:5
     Visibility: public -/
 def ChunkState.Insts.HashercoreChunk.counter
   {P : Type} (BlocksInst : Blocks P) (self : ChunkState P) :
@@ -391,7 +391,7 @@ def ChunkState.Insts.HashercoreChunk.counter
   ok self.chunk_counter
 
 /-- Trait implementation: [hashercore::{impl hashercore::Chunk for hashercore::ChunkState<P>}]
-    Source: 'src/../../../../../../src/chunk_core.rs', lines 158:0-178:1 -/
+    Source: 'src/../../../../../../src/chunk_core.rs', lines 159:0-179:1 -/
 @[reducible]
 def ChunkState.Insts.HashercoreChunk {P : Type} (BlocksInst : Blocks P) : Chunk
   (ChunkState P) := {
