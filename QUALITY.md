@@ -191,8 +191,10 @@ library that compute BLAKE3 are proved to compute what
 [C2SP's BLAKE3 standard](https://c2sp.org/BLAKE3) specifies:
 
 - **The compression function**: every assembly kernel (NEON, integer,
-  and SME2) but the SME2 hybrid kernel, and the Rust compression code, as the CPU runs them, for every input, key, counter, and flags
-  value (the SME2 kernels at the 512-bit vector length of Apple's M4).
+  and SME2; the SME2 hybrid kernel at one and two groups so far) and the
+  Rust compression code, as the CPU runs them, for every input, key,
+  counter, and flags value (the SME2 kernels at the 512-bit vector length
+  of Apple's M4).
   Each kernel also reads and writes only its own buffers, keeps
   the calling convention, and takes a path that depends only on lengths.
 - **The hash, around its kernels**: the library's one-shot hash, which
@@ -230,7 +232,7 @@ library that compute BLAKE3 are proved to compute what
   pin in `tools/verify/rust/rust-toolchain.toml` moves to it).
 
 Each part but whole calls is proved for every input; whole calls, for
-every input of each length proved. Three things remain before "the
+every input of each length proved. Four things remain before "the
 library's `hash` returns BLAKE3's hash of its input" is one theorem for
 every length:
 
