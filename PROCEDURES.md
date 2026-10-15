@@ -21,7 +21,30 @@ Speed is this fork's purpose, so no commit that makes it slower may enter git un
 
 **Releases:** `python3 tools/gen-ver.py X.Y.Z` from a clean tree (Zooko's technique, copied from bench-hashes: a commit setting X.Y.Z, a second setting X.Y.Z+<first commit>, a lightweight tag vX.Y.Z+<first commit>; push `servil`, then the tag by name). Before a release, run `check --against <previous release tag>`. Each commit is checked only against its parent, so slowdowns too small to flag one at a time could add up; the release check sees their sum.
 
-**eBASH, after each release:** `sh supercop/make-tarball.sh vX.Y.Z+<commit>` pins SUPERCOP's `crypto_hash/blake3/rust_servil` to the release and writes its tarball into `supercop/`, in place of the last one; commit both, push, and give the user the tarball's URL at that commit (`https://raw.githubusercontent.com/johnservil/BLAKE3/<commit>/supercop/<tarball>`) to send to the eBATS list, ebats at list.cr.yp.to. `supercop/README.md` says what the submission is; NOTES-servil.md, "eBASH", why and what is open.
+**eBASH, after each release** (once the submission is due: NOTES-servil.md, "eBASH"):
+1. `sh supercop/make-tarball.sh vX.Y.Z+<commit>` pins SUPERCOP's `crypto_hash/blake3/rust_servil` to the release and writes its tarball into `supercop/`, in place of the last one; commit both and push.
+2. `sh supercop/check.sh` runs the pinned crate through a fresh SUPERCOP tree, as eBASH does (a minute or more: ask for the host first), and reports its checksums and SUPERCOP's choice. Both must pass; the cycles count only from an idle machine.
+3. Give Zooko the email below, to send to the eBATS list (subscribe first: an empty message to ebats-subscribe@list.cr.yp.to), with the tarball's URL at that commit. `supercop/README.md` says what the submission is; NOTES-servil.md, "eBASH", why and what is open.
+
+```
+To: ebats@list.cr.yp.to
+Subject: BLAKE3: new implementation crypto_hash/blake3/rust_servil
+
+Dan,
+
+Please include https://raw.githubusercontent.com/johnservil/BLAKE3/<commit>/supercop/<tarball>
+in SUPERCOP. It adds one implementation, crypto_hash/blake3/rust_servil,
+and leaves the existing ones unchanged: the blake3-servil Rust crate,
+pinned by its Cargo.lock and called as its users call it. The crate
+picks its kernels at run time for each message length, so its timings
+at every length are the ones its users get.
+
+License CC0-1.0 OR Apache-2.0; copyright and patent level 0.
+
+Zooko
+```
+
+The email and the tarball are all Dan reads: the submission succeeds when he adds it with one action, so it looks like the code already in SUPERCOP (its layout, file names and conventions), and anything that saves him no work stays in our notes.
 
 **Commits that skipped the check** (`--no-verify`, or made where the hook was absent) must be checked before they are pushed: `pypy3 tools/perf_regress.py compare <parent> <commit>` for one, `pypy3 tools/perf_bisect.py <commit> <commit> ...` for a run of them (each against the one before, then the last against the first).
 
@@ -57,6 +80,12 @@ Before a change or a question goes on Zooko's decision list, ask whether it adds
 # Probes
 
 Every clock read, in the fork, in bench-hashes, and in any scratch probe, goes through the `clocks/` crate in this repository (AGENTS.md, "Measuring"): `clocks::measure(batches, batch_ns, || ...)` for a probe's batches (each batch's wall time and the thread's counts per core kind, shown as ns per call and the clock it ran at), `clocks::measure_after_gaps_prepared(calls, gap, gap_ns, input, prepare, call)` for calls that must each come after a gap (`clocks::Gap::Idle`, a sleep, or `clocks::Gap::Busy(work)`, a fixed other program and a walk of `work`; each call timed alone and summed, since a call of a few clock ticks cannot be timed alone: the crate's "Resolution"), `clocks::now()` and `clocks::since_ns()` for wall time alone, `clocks::Counts::read()` for the counts. The fork's examples have it as a dev-dependency; a scratch crate adds `clocks = { path = "/workspace/blake3-servil/clocks" }`. Its documentation says which clocks and why (github.com/johnservil/measure-clocks3, `CPU-TIME-CLOCKS-AND-FREQUENCY.md`, has the experiments). The pool's pacing in `src/lanes.rs` reads `Instant` directly: control, not measurement, and the library depends on nothing.
+
+Two probes need no quiet machine, because they count instead of time, and they guide designs for cores we have no machine for:
+- `sh tools/insn_count/count.sh x86_64|aarch64 CPU LEN...`: instructions per `hash()` call, the fork's and upstream's, under qemu (CPU a qemu model: eBASH's Arm cores are cortex-a53, cortex-a72, cortex-a76, neoverse-n1); `tools/insn_count/one_call.py` splits one call's by function. Exact and repeatable, so it compares two builds while the host is busy.
+- `sh tools/mca/model.sh OBJECT LABEL...`: LLVM 19's llvm-mca cycles per pass of a loop or function on the Cortex-A53, A57 (for the A72) and Neoverse N1 (for the A76) models.
+
+A count or a model is reported as such, never as a measurement, and never replaces `perf_regress`'s verdict.
 
 # `perf_regress` and older commits
 

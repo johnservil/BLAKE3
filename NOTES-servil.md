@@ -912,6 +912,12 @@ code is widely used, and their timings must keep predicting it (Zooko).
 fork has optimizations for the machines eBASH runs on (below), and until all of its new
 code is formally verified (the progress meter: issue #24).
 
+**What decides the submission.** eBASH's own pages (`call-hash.html`, `tips.html`,
+`supercop.html`) and SUPERCOP's tree (its `crypto_*` examples, `do-part`,
+`OPERATIONS`) win over these notes and over the fork's habits. Its reader is Dan
+Bernstein, the maintainer, who adds what he is sent in one action
+(PROCEDURES.md, "eBASH, after each release").
+
 **The rule for changes made with eBASH in mind** (Zooko, October 12, 2026): eBASH
 should predict what our users see. A change that also speeds the fork up for
 users in plausible cases is made; one that makes eBASH more representative of
@@ -948,6 +954,10 @@ the crate runs upstream's code with its runtime choice of SSE4.1, AVX2 or AVX-51
 **Open.**
 - Does the scalar kernel beat upstream's portable C on Cortex-A72 and A76? A
   Raspberry Pi 4 or 5 answers it; a loss there is a loss for those users too.
+  It runs more instructions: `hash()` of 64 bytes 1178 against upstream's 1002,
+  of 1 KiB 17138 against 14612, on each of qemu's A53, A72, A76 and N1 models
+  (`tools/insn_count`, October 15, 2026); llvm-mca's cycles are in "The scalar
+  kernel's loads before its arithmetic", above.
 - SME2 depends on the C compiler: with Debian 12's gcc (binutils 2.40) the crate
   builds without it, and SUPERCOP may keep that build by its 1536-byte timing.
   Assembling the kernels with rustc's own assembler would give every build SME2.

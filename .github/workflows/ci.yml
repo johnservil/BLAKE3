@@ -9,6 +9,7 @@ on:
     # not on tags; not for commits that change documents alone
     paths-ignore:
       - "**.md"
+  pull_request:
   # By hand, for a push whose event GitHub dropped.
   workflow_dispatch:
 
@@ -24,6 +25,8 @@ env:
 
 jobs:
   library_tests:
+    # A pull request from a branch of this repository: its push runs CI already.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
     name: ${{ matrix.target.name }} ${{ matrix.channel }}
     runs-on: ${{ matrix.target.os }}
     strategy:
@@ -157,6 +160,8 @@ jobs:
       working-directory: ./reference_impl
 
   msrv_build:
+    # A pull request from a branch of this repository: its push runs CI already.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
     name: MSRV build ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
@@ -174,6 +179,8 @@ jobs:
     - run: cargo build --features=mmap,traits-preview,serde,zeroize
 
   b3sum_tests:
+    # A pull request from a branch of this repository: its push runs CI already.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
     name: b3sum ${{ matrix.target.name }} ${{ matrix.channel }}
     runs-on: ${{ matrix.target.os }}
     strategy:
@@ -212,6 +219,8 @@ jobs:
       working-directory: ./b3sum
 
   cross_tests:
+    # A pull request from a branch of this repository: its push runs CI already.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
     name: cross ${{ matrix.arch }}
     runs-on: ubuntu-latest
     strategy:
@@ -249,6 +258,8 @@ jobs:
       if: startsWith(matrix.arch, 'armv7-') || startsWith(matrix.arch, 'aarch64-')
 
   wasm_tests:
+    # A pull request from a branch of this repository: its push runs CI already.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
     name: WASM tests
     runs-on: ubuntu-latest
     steps:
@@ -279,6 +290,8 @@ jobs:
       working-directory: ./test_vectors
 
   cargo_xwin_test:
+    # A pull request from a branch of this repository: its push runs CI already.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
     name: cargo xwin test
     runs-on: ubuntu-latest
     steps:
@@ -287,6 +300,8 @@ jobs:
 
   # Currently only on x86.
   cmake_c_tests:
+    # A pull request from a branch of this repository: its push runs CI already.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
     name: CMake C tests SIMD=${{ matrix.simd }} TBB=${{ matrix.use_tbb }}
     runs-on: ubuntu-latest
     strategy:
@@ -332,6 +347,8 @@ jobs:
 
   # Currently only on x86.
   pkg_config_c_tests:
+    # A pull request from a branch of this repository: its push runs CI already.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
     name: pkg-config C tests TBB=${{ matrix.use_tbb }} BUILD_SHARED_LIBS=${{ matrix.shared_libs }} STDLIB=${{ matrix.stdlib }}
     runs-on: ubuntu-latest
     strategy:
@@ -362,6 +379,8 @@ jobs:
 
   # Note that this jobs builds AArch64 binaries from an x86_64 host.
   lean_spec:
+    # A pull request from a branch of this repository: its push runs CI already.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
     name: the Lean specification and the proofs' definition from it
     runs-on: ubuntu-latest
     steps:
@@ -379,6 +398,8 @@ jobs:
         git diff --exit-code tools/verify/lean/compress.json tools/verify/lean/schedules.json tools/verify/lean/Generic.lean
 
   kernel_proofs:
+    # A pull request from a branch of this repository: its push runs CI already.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
     name: proofs of the assembly kernels
     # Arm runners: the mutants build and run the library natively.
     runs-on: ubuntu-24.04-arm
@@ -404,6 +425,8 @@ jobs:
       run: pypy3 tools/verify/mutants.py
 
   build_apple_silicon:
+    # A pull request from a branch of this repository: its push runs CI already.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
     name: build for Apple Silicon
     runs-on: macOS-latest
     strategy:
@@ -420,6 +443,8 @@ jobs:
       working-directory: ./b3sum
 
   build_tinycc:
+    # A pull request from a branch of this repository: its push runs CI already.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
     name: build with the Tiny C Compiler
     runs-on: ubuntu-latest
     steps:
@@ -437,6 +462,8 @@ jobs:
   # Note that this isn't guaranteed to execute on an AVX-512-supporting server,
   # but hopefully at least some of the time it will.
   gcc54:
+    # A pull request from a branch of this repository: its push runs CI already.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
     name: "compile and test with GCC 5.4"
     runs-on: ubuntu-latest
     steps:
@@ -453,6 +480,8 @@ jobs:
 
   # CMake build test (Library only).
   cmake_current_build:
+    # A pull request from a branch of this repository: its push runs CI already.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
     name: CMake ${{ matrix.os }} CC=${{ matrix.toolchain.cc }} CXX=${{ matrix.toolchain.cxx }} TBB=${{ matrix.use_tbb }}
     runs-on: ${{ matrix.os }}
     strategy:
@@ -506,6 +535,8 @@ jobs:
           cmake --build c/build --target install
 
   cmake_3-9_build:
+    # A pull request from a branch of this repository: its push runs CI already.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
     name: CMake 3.9.6 ubuntu-latest
     runs-on: ubuntu-latest
     steps:
@@ -523,6 +554,8 @@ jobs:
         working-directory: c/build
 
   miri_smoketest:
+    # A pull request from a branch of this repository: its push runs CI already.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
     name: Miri smoketest
     runs-on: ubuntu-latest
     steps:
@@ -540,6 +573,8 @@ jobs:
         MIRIFLAGS: "-Zmiri-num-cpus=4 -Zmiri-ignore-leaks"
 
   tbb_rust_bindings_tests:
+    # A pull request from a branch of this repository: its push runs CI already.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
     name: TBB test bindings ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
