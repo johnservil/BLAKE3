@@ -418,6 +418,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "blake3_wasm32_simd",
         // Set by `cargo kani` for the proofs (QUALITY.md).
         "kani",
+        // Set by tools/verify/rust's build alone: the flat walk's entry points.
+        "blake3_verify",
     ];
     for cfg_name in all_cfgs {
         // https://doc.rust-lang.org/cargo/reference/build-scripts.html#outputs-of-the-build-script

@@ -12,6 +12,7 @@ and flags value:
     pypy3 tools/verify/lean/emit.py                   # the definition and schedules, from the Lean specification (needs Lean)
     pypy3 tools/verify/prove_rust.py                  # the Rust paths, compiled: every platform's (363 cases)
     pypy3 tools/verify/prove_timing.py                # whole calls return the standard's result on one path (2316 cases)
+    pypy3 tools/verify/prove_flat.py                  # the SME2 flat walk at every subtree it takes: the standard's tree over its kernels (30 cases)
     pypy3 tools/verify/cross_check.py                 # the NEON and integer models against the CPU (and every form the Rust and whole-call proofs run)
     pypy3 tools/verify/cross_check_sme.py             # the streaming SVE and SME2 models against the CPU (needs SME2)
     pypy3 tools/verify/mutants.py                     # wrong kernels are rejected

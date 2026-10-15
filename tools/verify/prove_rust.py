@@ -26,7 +26,7 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(__file__))
-from z3 import BitVec, BitVecVal, Concat, Extract, ULT, UGE, ZeroExt, simplify
+from z3 import BitVec, BitVecSort, BitVecVal, Concat, Extract, Function, ULT, UGE, ZeroExt, simplify
 import aarch64
 import induction
 import results
@@ -168,49 +168,80 @@ def write_cvs(m, out, cvs, reads):
 
 def proved_code(lib, obj, name, end):
     """Stop unless the library's bytes of kernel `name` (to the symbol
-    `end`) are the bytes of the object its proof ran: a contract stands
-    for the code its proof covered, and only for that."""
+    `end`, or to the end of the object's text when `end` is None) are the
+    bytes of the object its proof ran: a contract stands for the code its
+    proof covered, and only for that."""
     syms, text = aarch64.symbols(obj), aarch64.text_bytes(obj)
-    lo, hi = syms[name], syms[end]
+    lo, hi = syms[name], (syms[end] if end else max(text) + 1)
     if [text[a] for a in range(lo, hi)] != [lib.image.get(lib.syms[name] + i) for i in range(hi - lo)]:
         raise Unproved(f"the library's {name} is not the code its proof covered")
 
 
-def sme2_contracts(lib):
-    """The SME2 kernels hash_many calls, by what prove_sme2.py's always-run
-    cases prove of them (its chunk_cvs and parent_cvs, the one statement
-    each), at the group counts those cases cover (prove_sme2.GROUPS):
-    {address: contract}. Each argument is taken in
-    simplest form, so it reads as the caller wrote it."""
+# The kernels' results as uninterpreted functions of where their input lies
+# (sme2_contracts' `opaque`): CH_j, word j of the chaining value of the chunk
+# at input offset `offset`, counter, flags word, and key; PA_j, of the
+# parent of 16 child words under key, counter, and flags. Each kernel's
+# statement makes them the specification's compressions of the bytes there.
+CH = [Function(f"CH{j}", BitVecSort(64), BitVecSort(64), BitVecSort(32), *[BitVecSort(32)] * 8, BitVecSort(32)) for j in range(8)]
+PA = [Function(f"PA{j}", *[BitVecSort(32)] * 24, BitVecSort(64), BitVecSort(32), BitVecSort(32)) for j in range(8)]
+
+
+def sme2_contracts(lib, opaque=False):
+    """The SME2 kernels the library calls, by what prove_sme2.py's
+    always-run cases prove of them (chunk_cvs and parent_cvs, the one
+    statement each), at the group counts those cases cover
+    (prove_sme2.GROUPS; prove_sme2.HYBRID_GROUPS for the kernel with an
+    integer lane): {address: contract}. With `opaque`, each result is its
+    CH or PA term instead: the chunks' bytes are never read, only where
+    they lie, in a region nothing writes (prove_flat.py). Each argument is
+    taken in simplest form, so it reads as the caller wrote it."""
     import prove_sme2
 
-    def groups_of(m):
+    def groups_of(m, proved, what):
         g = aarch64.concrete(m.x[5])
-        if g not in prove_sme2.GROUPS:
-            raise Unproved(f"an SME2 kernel called with {m.x[5]} groups, outside prove_sme2's cases")
+        if g not in proved:
+            raise Unproved(f"an SME2 {what} kernel called with {g if g is not None else simplify(m.x[5])} groups, outside prove_sme2's cases")
         return g
 
-    def chunks(m):
-        g, word, reads = groups_of(m), m.x[3], []
-        if aarch64.concrete(Extract(31, 24, word)) != 0:
-            raise Unproved("the chunk kernel storing part of its last group")
-        key = [simplify(b) for b in read_bytes(m, m.x[1], 32, [])]
-        data = []
-        for i in range(16 * g):
-            ptr = m.load(m.x[0] + 8 * i, 8)
-            if not isinstance(ptr, Ptr):
-                raise Unproved("a chunk table entry that is not a pointer")
-            data.append(read_bytes(m, ptr, 1024, reads))
-        cvs = prove_sme2.chunk_cvs(data, key, [simplify(m.x[2] + i) for i in range(16 * g)],
-                                   *(simplify(Extract(h, h - 7, word)) for h in (7, 15, 23)))
-        write_cvs(m, m.x[4], cvs, reads)
-        m.x[0] = BitVecVal(16, 64)
+    def chunk_kernel(lanes, proved, what):
+        def run(m):
+            g, word, reads = groups_of(m, proved, what), m.x[3], []
+            if aarch64.concrete(Extract(31, 24, word)) != 0:
+                raise Unproved("the chunk kernel storing part of its last group")
+            key = [simplify(b) for b in read_bytes(m, m.x[1], 32, [])]
+            ptrs = []
+            for i in range(lanes * g):
+                ptr = m.load(m.x[0] + 8 * i, 8)
+                if not isinstance(ptr, Ptr):
+                    raise Unproved("a chunk table entry that is not a pointer")
+                ptrs.append(ptr)
+            counters = [simplify(m.x[2] + i) for i in range(lanes * g)]
+            if opaque:
+                words, flags = spec.words(key), simplify(Extract(31, 0, word))
+                cvs = []
+                for ptr, c in zip(ptrs, counters):
+                    if m.regions[ptr.region].writable:
+                        raise Unproved("an opaque chunk in a region the call may write")
+                    m.load(ptr, 1), m.load(ptr + 1023, 1)        # the chunk lies inside its region
+                    reads.append((ptr, 1024))
+                    cvs.append([CH[j](simplify(aarch64.as_bv(ptr.offset)), c, flags, *words) for j in range(8)])
+            else:
+                data = [read_bytes(m, ptr, 1024, reads) for ptr in ptrs]
+                cvs = prove_sme2.chunk_cvs(data, key, counters, *(simplify(Extract(h, h - 7, word)) for h in (7, 15, 23)))
+            write_cvs(m, m.x[4], cvs, reads)
+            m.x[0] = BitVecVal(16, 64)
+        return run
 
     def parents(m):
-        g, reads = groups_of(m), []
+        g, reads = groups_of(m, prove_sme2.GROUPS, "parent"), []
         pairs = read_bytes(m, m.x[0], 64 * 16 * g, reads)
         key = [simplify(b) for b in read_bytes(m, m.x[1], 32, [])]
-        cvs = prove_sme2.parent_cvs(pairs, key, simplify(m.x[2]), simplify(Extract(31, 0, m.x[3])), 16 * g)
+        if opaque:
+            words, kw = [simplify(w) for w in spec.words(pairs)], [simplify(w) for w in spec.words(key)]
+            c, f = simplify(m.x[2]), simplify(Extract(31, 0, m.x[3]))
+            cvs = [[PA[j](*words[16 * i:16 * i + 16], *kw, c, f) for j in range(8)] for i in range(16 * g)]
+        else:
+            cvs = prove_sme2.parent_cvs(pairs, key, simplify(m.x[2]), simplify(Extract(31, 0, m.x[3])), 16 * g)
         write_cvs(m, m.x[4], cvs, reads)
         m.x[0] = BitVecVal(16, 64)
 
@@ -218,8 +249,11 @@ def sme2_contracts(lib):
         obj = prove_sme2.assemble()
         for name in ("blake3_sme2_hash16_chunks_512", "blake3_sme2_hash16_parents_512"):
             proved_code(lib, obj, name, "blake3_sme2_text_end")
+        proved_code(lib, prove_sme2.assemble_hybrid(), "blake3_sme2x2_hash_chunks_512", None)
         lib.sme2_checked = True
-    return {lib.syms["blake3_sme2_hash16_chunks_512"]: chunks, lib.syms["blake3_sme2_hash16_parents_512"]: parents}
+    return {lib.syms["blake3_sme2_hash16_chunks_512"]: chunk_kernel(16, prove_sme2.GROUPS, "chunk"),
+            lib.syms["blake3_sme2_hash16_parents_512"]: parents,
+            lib.syms["blake3_sme2x2_hash_chunks_512"]: chunk_kernel(prove_sme2.HYBRID_GROUP, prove_sme2.HYBRID_GROUPS, "hybrid chunk")}
 
 
 def hybrid_contracts(lib):

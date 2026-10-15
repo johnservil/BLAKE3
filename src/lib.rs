@@ -237,6 +237,14 @@ mod portable;
 #[cfg(blake3_sme2)]
 #[path = "ffi_sme2.rs"]
 mod sme2;
+
+/// The SME2 flat walk's entry points, for the machine-code proofs
+/// (tools/verify/prove_flat.py), in their build alone (`--cfg blake3_verify`).
+#[cfg(all(blake3_verify, blake3_sme2))]
+#[doc(hidden)]
+pub mod verify {
+    pub use crate::sme2::{compress_subtree_flat, compress_subtree_flat_to_cv, compress_subtree_flat_to_parent};
+}
 #[cfg(blake3_sse2_rust)]
 #[path = "rust_sse2.rs"]
 mod sse2;

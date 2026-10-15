@@ -102,7 +102,7 @@ def model(mnem, text, xs, vs):
 
 
 def proved_forms():
-    """Every instruction form the Rust and whole-call proofs run: from their
+    """Every instruction form the Rust, whole-call, and flat-walk proofs run: from their
     last passing runs on this library with these tools (results.py), or by
     running them. Stops if one fails."""
     import prove_rust
@@ -110,7 +110,8 @@ def proved_forms():
     import results
     so = prove_rust.build()
     forms = set()
-    for kind, prove in (("rust", prove_rust.prove), ("timing", prove_timing.prove)):
+    import prove_flat
+    for kind, prove in (("rust", prove_rust.prove), ("timing", prove_timing.prove), ("flat", prove_flat.prove)):
         got = results.load_forms(kind, so)
         if got is None:
             failed, got = prove()

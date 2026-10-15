@@ -105,3 +105,25 @@ pub extern "C" fn verify_derive_key(input: *const u8, len: usize, out: &mut [u8;
     let input = unsafe { core::slice::from_raw_parts(input, len) };
     *out = blake3_servil::derive_key(CONTEXT, input);
 }
+
+/// The SME2 flat walk, keeping 128 values (the one-shot hash's tree walk),
+/// 2 (the root's children), or 1 (the Hasher's subtree): `len` bytes of a
+/// whole subtree, `ahead` more to prefetch, the values into `out`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn verify_sme2_flat(input: *const u8, len: usize, ahead: usize, key: &[u32; 8], counter: u64, flags: u8, out: *mut u8) -> usize {
+    // Sound: the caller gives `len` readable bytes and room for 128 values.
+    let (input, out) = unsafe { (core::slice::from_raw_parts(input, len), core::slice::from_raw_parts_mut(out, 128 * 32)) };
+    unsafe { blake3_servil::verify::compress_subtree_flat(input, ahead, key, counter, flags, out) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn verify_sme2_flat_to_parent(input: *const u8, len: usize, ahead: usize, key: &[u32; 8], counter: u64, flags: u8, out: &mut [u8; 64]) {
+    let input = unsafe { core::slice::from_raw_parts(input, len) };
+    *out = unsafe { blake3_servil::verify::compress_subtree_flat_to_parent(input, ahead, key, counter, flags) };
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn verify_sme2_flat_to_cv(input: *const u8, len: usize, ahead: usize, key: &[u32; 8], counter: u64, flags: u8, out: &mut [u8; 32]) {
+    let input = unsafe { core::slice::from_raw_parts(input, len) };
+    *out = unsafe { blake3_servil::verify::compress_subtree_flat_to_cv(input, ahead, key, counter, flags) };
+}

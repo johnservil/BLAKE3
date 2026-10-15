@@ -1,0 +1,4 @@
+# The library's flat-walk entry points (blake3_servil::verify), for this
+# build alone: the users' build leaves them out.
+[build]
+rustflags = ["--cfg", "blake3_verify"]

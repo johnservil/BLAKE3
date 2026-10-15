@@ -664,6 +664,10 @@ def prove_chunks_x2(obj, groups, check=True):
 # group loop (every, parents_every), which run with them. prove_rust.py's
 # contracts stand in for the kernels at these counts alone.
 GROUPS = range(1, (1 << 40) + 1)
+# The group counts at which the kernel with an integer lane is proved: its
+# concrete cases (chunks_x2, 1 and 2 groups) until its induction over every
+# count (x2_every) has passed and runs always.
+HYBRID_GROUPS = range(1, 3)
 ALWAYS = ("every", "parents_every")
 
 
