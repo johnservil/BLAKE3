@@ -233,16 +233,22 @@ def loop_head(obj, run, taken):
     return heads[0]
 
 
-def prove_chunks_every(obj, stored):
+def prove_chunks_every(obj, stored, hybrid=False):
     """hash16_chunks_512 at every number of groups from 2 (1 and 2 are the
     concrete cases), by induction over its group loop (induction.py): group
     K's lane l hashes the chunk table[16 K + l] points to, at counter + 16 K
     + l, into out[32 (16 K + l)..]. Each group's chunks are arbitrary (one
-    set of symbols, since each step is proved for any)."""
+    set of symbols, since each step is proved for any). With `hybrid`, the
+    same for the kernel with an integer lane, sme2x2_hash_chunks_512: 18
+    lanes a group (16 SME2, 2 integer), each 18 K + l, its flags without a
+    stored count (`stored` 0)."""
     import induction
     import canon
-    from z3 import ULE, UGE, ULT
-    lanes = [byte_symbols(f"in{l}_", 1024) for l in range(16)]
+    from z3 import ULE, UGE, ULT, URem, UDiv
+    n = HYBRID_GROUP if hybrid else 16
+    assert not (hybrid and stored), "the hybrid kernel stores every value"
+    stride = 8 * n                  # table bytes a group
+    lanes = [byte_symbols(f"in{l}_", 1024) for l in range(n)]
     key = byte_symbols("key", 32)
     g, k = BitVec("len_groups", 64), BitVec("len_k", 64)
     # Group G's chunk for lane l lies at offset 1024 G of lane l's region.
@@ -264,29 +270,29 @@ def prove_chunks_every(obj, stored):
             return lanes[l][within]
         return byte
     regions = {}
-    for l in range(16):
+    for l in range(n):
         regions[f"lane{l}"] = Region(f"lane{l}", g * 1024, False, chunk_byte(l))
         regions[f"lane{l}"].symbolic_initial = True
     regions["key"] = Region("key", 32, False, lambda o: key[o])
-    regions["out"] = Region("out", g * 512, True, None)
+    regions["out"] = Region("out", g * 32 * n, True, None)
     def entry(offset):
         """Table byte `offset`: byte offset % 8 of the pointer to group
-        offset / 128's chunk for lane (offset % 128) / 8."""
+        offset / stride's chunk for lane (offset % stride) / 8."""
         if isinstance(offset, int):
-            group, within = offset // 128, offset % 128
+            group, within = offset // stride, offset % stride
             base = 1024 * group
         else:
-            within = induction.forced(aarch64._machine[0], offset & 127)
+            within = induction.forced(aarch64._machine[0], offset & 127 if n == 16 else URem(aarch64.as_bv(offset), stride))
             if within is None:
                 raise Unproved("a table read whose lane the lengths leave open")
             # From the entry's first byte, so all eight bytes name one pointer.
             first = simplify(aarch64.as_bv(offset) - within % 8, som=True, bv_sort_ac=True)
-            base = simplify(LShR(first, 7) * 1024, som=True, bv_sort_ac=True)
+            base = simplify((LShR(first, 7) if n == 16 else UDiv(first, stride)) * 1024, som=True, bv_sort_ac=True)
         return (Ptr(f"lane{within // 8}", base), within % 8)
-    table = Region("table", g * 128, False, entry)
+    table = Region("table", g * stride, False, entry)
     table.symbolic_initial = True
     regions["table"] = table
-    s = SmeSetup(obj, "blake3_sme2_hash16_chunks_512", regions)
+    s = HybridSetup(obj, regions) if hybrid else SmeSetup(obj, "blake3_sme2_hash16_chunks_512", regions)
     m = s.m
     # The counter takes part in conditions (its carry), each decided by the solver.
     m.lengths = {"len_groups", "len_k", "counter"}
@@ -296,23 +302,23 @@ def prove_chunks_every(obj, stored):
     m.x[0], m.x[1], m.x[2] = Ptr("table", 0), Ptr("key", 0), counter
     m.x[3] = Concat(BitVec("junk", 32), BitVecVal(stored, 8), end, start, flags)
     m.x[4], m.x[5] = Ptr("out", 0), g
-    head = loop_head(obj, lambda: prove_chunks(obj, 3, 0, False, check=False), 2)
+    head = loop_head(obj, (lambda: prove_chunks_x2(obj, 3, check=False)) if hybrid else (lambda: prove_chunks(obj, 3, 0, False, check=False)), 2)
     zero = BitVecVal(0, 8)
-    def want_group(kval, count=16):
+    def want_group(kval, count=n):
         cvs = []
         for l in range(count):
-            c = counter + kval * 16 + l
+            c = counter + kval * n + l
             cv = spec.words(key)
             for b in range(16):
                 f = ZeroExt(24, flags | (start if b == 0 else zero) | (end if b == 15 else zero))
                 cv = spec.compress(cv, spec.words(lanes[l][64 * b:64 * b + 64]), c, BitVecVal(64, 32), f)[:8]
             cvs.append(cv)
         return cvs
-    def check_group(mach, kval, count=16):
+    def check_group(mach, kval, count=n):
         out = mach.regions["out"]
         keys = set()
         for l, cv in enumerate(want_group(kval, count)):
-            offs = [aarch64.key(aarch64.as_bv(kval * 512 if not isinstance(kval, int) else BitVecVal(kval * 512, 64)) + 32 * l + j) for j in range(32)]
+            offs = [aarch64.key(aarch64.as_bv(kval * 32 * n if not isinstance(kval, int) else BitVecVal(kval * 32 * n, 64)) + 32 * l + j) for j in range(32)]
             keys.update(offs)
             if any(o not in out.bytes for o in offs):
                 raise Unproved(f"group output {l} is not wholly written")
@@ -338,7 +344,7 @@ def prove_chunks_every(obj, stored):
             raise Unproved("a path leaves the group loop before the last group")
         if aarch64.concrete(endm.x[0]) != 16:
             raise Unproved(f"returned {endm.x[0]}, not 16")
-        check_group(endm, k, stored or 16)
+        check_group(endm, k, stored or n)
         prove_hybrid.check_abi(endm)
     kinds = prove_rust.loop_step(gen, s0, k, list(s0.assumptions) + [ULT(k, g), ULE(k, 1 << 39)], head, check)
     return f"{kinds['head']} paths back to the group loop's head, {kinds['return']} out of it"
@@ -673,6 +679,7 @@ def cases(only):
     out.append(("messages", 2, (3, 7)))
     out += [("parents", 1, None), ("parents", 2, None), ("xof", 1, None), ("xof", 2, None)]
     out += [("chunks_x2", 1, None), ("chunks_x2", 2, None)]
+    out.append(("x2_every", None, None))
     # Hours long: run when named.
     # The inductions: every and parents_every always (the contracts rest on
     # them; the chunk kernel's takes hours); the rest when named.
@@ -713,6 +720,11 @@ def prove_case(case):
         elif name == "parents_every":
             what = prove_parents_every(OBJ)
             return case, f"proved (the parent kernel at every group count: {what}, {time.time() - t:.0f} s)"
+        elif name == "x2_every":
+            if HYBRID_OBJ[0] is None:
+                HYBRID_OBJ[0] = assemble_hybrid()
+            what = prove_chunks_every(HYBRID_OBJ[0], 0, hybrid=True)
+            return case, f"proved (the kernel with an integer lane at every group count: {what}, {time.time() - t:.0f} s)"
         elif name == "chunks_x2":
             if HYBRID_OBJ[0] is None:
                 HYBRID_OBJ[0] = assemble_hybrid()
