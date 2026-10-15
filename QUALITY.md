@@ -365,7 +365,7 @@ llvm-objdump 17 or later; details in [`tools/verify/README.md`](tools/verify/REA
 
 ```sh
 pypy3 tools/verify/prove_hybrid.py   # ends "327 of 327 cases proved"
-pypy3 tools/verify/prove_sme2.py     # ends "36 of 36 cases proved" (hours: the chunk kernel at every group count)
+pypy3 tools/verify/prove_sme2.py     # ends "39 of 39 cases proved" (hours: the chunk kernels at every group count)
 pypy3 tools/verify/prove_sme2.py xof_every messages_every  # the other kernels at every group count (hours)
 pypy3 tools/verify/prove_rust.py     # ends "363 of 363 cases proved"
 pypy3 tools/verify/prove_timing.py   # ends "2316 of 2316 cases proved"
