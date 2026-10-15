@@ -51,7 +51,7 @@ for max in 128 16 8 4 2; do
 		"$here/rust/widecore/src/lib.rs" > "$crate/src/lib.rs"
 	translate "$crate" "$out"
 	lean="$work/lean-$max"; mkdir -p "$lean"
-	cp "$here"/lean/*.lean "$here/lean/lean-toolchain" "$here/lean/lake-manifest.json" "$lean/"
+	cp "$here"/lean/*.lean "$here/lean/lakefile.lean" "$here/lean/lean-toolchain" "$here/lean/lake-manifest.json" "$lean/"
 	cp "$here/../../../c2sp/BLAKE3/Blake3.lean" "$lean/Blake3.lean"
 	cp "$out/lean/Widecore.lean" "$lean/Widecore.lean"
 	for f in WideProofs ChildrenProofs HashProofs; do
