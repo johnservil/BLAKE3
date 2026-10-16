@@ -82,7 +82,7 @@ use crate::platform::Platform;
 use crate::{CHUNK_LEN, Hash};
 #[cfg(test)]
 use crate::{Hasher, KEY_LEN};
-use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex, OnceLock};
 
 /// Inputs below this length are hashed on the calling thread. Every call
@@ -657,14 +657,16 @@ struct Pool {
     cpus: usize,
     /// Whether the SME2 thread runs (this CPU has SME2).
     sme2: bool,
-    /// Workers asleep on `posted`.
-    sleepers: AtomicUsize,
-    /// Of those, the ones a caller has asked to wake and that have yet to.
-    notified: AtomicUsize,
-    /// Of those, the ones still to be woken: woken workers wake them.
+    /// Workers parked: bit w of word w / 64 for worker w (0 for
+    /// blake3-worker-1). A worker sets its own bit before it parks; a
+    /// waker clears one (fetch_and), which makes it the one to unpark that
+    /// worker. Each worker parks on its own thread's token (std's park), so
+    /// no two share a lock or a futex word.
+    parked: Box<[OwnLine<AtomicU64>]>,
+    /// Each worker's thread, set as it starts.
+    threads: Box<[OnceLock<std::thread::Thread>]>,
+    /// Wakes still owed: each woken worker pays them before it works.
     owed: AtomicUsize,
-    sleep_lock: Mutex<()>,
-    posted: Condvar,
     /// Callers asleep on `finished_signal`.
     waiters: AtomicUsize,
     finished: Mutex<()>,
@@ -693,16 +695,13 @@ pub(crate) fn initialize() {
         callers: AtomicUsize::new(0),
         cpus,
         sme2,
-        sleepers: AtomicUsize::new(0),
-        notified: AtomicUsize::new(0),
+        parked: (0..cpus.div_ceil(64)).map(|_| OwnLine(AtomicU64::new(0))).collect(),
+        threads: (0..cpus).map(|_| OnceLock::new()).collect(),
         owed: AtomicUsize::new(0),
-        sleep_lock: Mutex::new(()),
-        posted: Condvar::new(),
         waiters: AtomicUsize::new(0),
         finished: Mutex::new(()),
         finished_signal: Condvar::new(),
     };
-    prepare(&pool.sleep_lock, &pool.posted);
     prepare(&pool.finished, &pool.finished_signal);
     prepare(&TASKS.sme2_asleep, &TASKS.sme2_wake);
     drop(TASKS.list.lock());
@@ -719,10 +718,10 @@ pub(crate) fn initialize() {
             for worker in 2..cpus {
                 std::thread::Builder::new()
                     .name(format!("blake3-worker-{worker}"))
-                    .spawn(worker_main)
+                    .spawn(move || worker_main(worker - 1))
                     .expect("spawning a BLAKE3 worker");
             }
-            worker_main()
+            worker_main(0)
         })
         .expect("spawning a BLAKE3 worker");
 }
@@ -828,27 +827,47 @@ impl Pool {
         Some(slot)
     }
 
-    /// Make `wanted` workers awake or on their way, waking sleepers as
-    /// needed: the caller wakes one, the woken wake the rest.
-    fn wake_for(&self, wanted: usize) {
-        // Sleepers already notified are on their way (a wake takes tens
-        // of microseconds to land); a second caller in that window counts
-        // them as awake and pays nothing. The lock-free reads are a hint;
-        // the counts are exact under sleep_lock, where every sleeper
-        // counted is waiting (see next_piece).
-        let unnotified = self.sleepers.load(Ordering::SeqCst).saturating_sub(self.notified.load(Ordering::SeqCst));
-        if unnotified > 0 && self.cpus - 1 - unnotified.min(self.cpus - 1) < wanted {
-            let _guard = self.sleep_lock.lock().unwrap();
-            let sleepers = self.sleepers.load(Ordering::SeqCst);
-            let unnotified = sleepers - self.notified.load(Ordering::SeqCst);
-            let awake = self.cpus - 1 - unnotified;
-            if unnotified > 0 && awake < wanted {
-                let wake = (wanted - awake).min(unnotified);
-                self.notified.fetch_add(wake, Ordering::SeqCst);
-                self.owed.fetch_add(wake - 1, Ordering::SeqCst);
-                self.posted.notify_one();
+    /// Make `wanted` workers awake or on their way, waking parked ones as
+    /// needed: the caller wakes one, the woken wake the rest (owed). The
+    /// read of `parked` follows the caller's publication of its work (a
+    /// locked instruction, or the fence in publish), as a parking worker's
+    /// re-check follows its bit: one of the two sees the other.
+    pub(crate) fn wake_for(&self, wanted: usize) {
+        let parked: usize = self.parked.iter().map(|w| w.load(Ordering::SeqCst).count_ones() as usize).sum();
+        if parked == 0 {
+            return;
+        }
+        let awake = self.cpus - 1 - parked;
+        if awake < wanted {
+            let need = (wanted - awake).min(parked);
+            if need > 1 {
+                self.owed.fetch_add(need - 1, Ordering::SeqCst);
+            }
+            self.wake_one();
+        }
+    }
+
+    /// Wake one parked worker, if any: whether one was.
+    pub(crate) fn wake_one(&self) -> bool {
+        for (w, word) in self.parked.iter().enumerate() {
+            let mut bits = word.load(Ordering::SeqCst);
+            while bits != 0 {
+                let bit = 1u64 << bits.trailing_zeros();
+                let before = word.fetch_and(!bit, Ordering::SeqCst);
+                if before & bit != 0 {
+                    let worker = w * 64 + bit.trailing_zeros() as usize;
+                    self.threads[worker].get().expect("a parked worker has set its thread").unpark();
+                    return true;
+                }
+                bits = before & !bit;
             }
         }
+        false
+    }
+
+    /// Whether any worker is parked (one load a word).
+    pub(crate) fn any_parked(&self) -> bool {
+        self.parked.iter().any(|w| w.load(Ordering::Relaxed) != 0)
     }
 
     /// Clear the slot and wait out any worker mid-take on it.
@@ -929,10 +948,16 @@ impl Pool {
         None
     }
 
-    /// The next piece for a worker, hashing the queues' tasks it finds on
-    /// the way; asleep whenever it finds neither.
-    fn next_piece(&self, start: &mut usize) -> (*const Job<'static>, usize) {
+    /// The next piece for worker `me`, hashing the streams' and the
+    /// queues' tasks it finds on the way; spinning a while when a stream is
+    /// open (more is coming), else parked, whenever it finds nothing.
+    fn next_piece(&self, me: usize, start: &mut usize) -> (*const Job<'static>, usize) {
+        let (word, bit) = (&self.parked[me / 64], 1u64 << (me % 64));
         loop {
+            if let Some(task) = crate::lanes::sources::claim() {
+                task.run(pool_platform());
+                continue;
+            }
             if let Some(task) = TASKS.pop() {
                 task.run(pool_platform());
                 TASKS.in_flight.fetch_sub(1, Ordering::SeqCst);
@@ -941,40 +966,199 @@ impl Pool {
             if let Some(taken) = self.take_piece(start) {
                 return taken;
             }
-            // Nothing to take: asleep until a wake. The guard is held from
-            // the count's increment through the take, the wait, and the
-            // decrement, so
-            // under sleep_lock every sleeper counted is waiting, and
-            // notified never exceeds sleepers: a caller's wake cannot fall
-            // between the check and the wait, and a sleeper that leaves
-            // without waiting was never counted as notified.
-            let mut guard = self.sleep_lock.lock().unwrap();
-            self.sleepers.fetch_add(1, Ordering::SeqCst);
-            let taken = self.take_piece(start);
-            // Asleep only with nothing to take: no piece, no task queued. A
-            // queue's tasks can be queued while nothing is registered (the
-            // delivery thread takes its hold after the push), and a worker
-            // that slept on them then would use up the push's wake.
-            let waited = taken.is_none() && TASKS.queued.load(Ordering::SeqCst) == 0;
-            if waited {
-                guard = self.posted.wait(guard).unwrap();
-                // Awake: one fewer notified sleeper on the way (a wake
-                // nobody asked for leaves the count where it is).
-                // Every write of `notified` holds sleep_lock, as here.
-                let notified = self.notified.load(Ordering::SeqCst);
-                self.notified.store(notified.saturating_sub(1), Ordering::SeqCst);
+            if sources::open() && spin_for_work(self) {
+                continue;
             }
-            self.sleepers.fetch_sub(1, Ordering::SeqCst);
-            drop(guard);
-            if waited {
-                for _ in 0..self.owed.swap(0, Ordering::SeqCst) {
-                    self.posted.notify_one();
+            // Park: the bit first, then one more look (a publisher stores,
+            // then reads `parked`; this sets the bit, then looks: one of the
+            // two sees the other), then the token.
+            word.fetch_or(bit, Ordering::SeqCst);
+            if self.work_visible() {
+                // Ours to clear unless a waker cleared it first (then its
+                // unpark leaves a token, and a later park returns at once).
+                word.fetch_and(!bit, Ordering::SeqCst);
+                continue;
+            }
+            while word.load(Ordering::SeqCst) & bit != 0 {
+                std::thread::park();
+            }
+            // Woken: pay the wakes owed before working.
+            while self.owed.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1)).is_ok() {
+                if !self.wake_one() {
+                    self.owed.store(0, Ordering::SeqCst);
+                    break;
                 }
             }
-            if let Some(taken) = taken {
-                return taken;
+        }
+    }
+
+    /// Whether a stream, the queues, or a job has work (a look, no take).
+    fn work_visible(&self) -> bool {
+        sources::visible() || TASKS.queued.load(Ordering::SeqCst) > 0 || self.slots.iter().any(|s| !s.job.load(Ordering::SeqCst).is_null())
+    }
+}
+
+/// How long a worker that finds nothing keeps looking while a stream is
+/// open (more is coming) before it parks: 5 us. i7-12700K, against the
+/// stream on the earlier pool: none cost small messages 9-12% (a park and
+/// a wake at every gap); 20 us cost 22% more CPU time a run for no speed;
+/// a cap on how many workers spin did not help.
+const SPIN: std::time::Duration = std::time::Duration::from_micros(5);
+
+/// Look for work for up to SPIN: whether some appeared.
+fn spin_for_work(pool: &Pool) -> bool {
+    let started = std::time::Instant::now();
+    loop {
+        for _ in 0..16 {
+            if pool.work_visible() {
+                return true;
+            }
+            core::hint::spin_loop();
+        }
+        if started.elapsed() >= SPIN || !sources::open() {
+            return false;
+        }
+    }
+}
+
+/// The streams' tasks: each open stream is a source the workers take from
+/// directly. A stream writes a task into its source's ring and publishes
+/// it with one Release store of `published` (the stream alone writes it);
+/// workers take tasks in order by compare-and-swap on `claimed` (workers
+/// alone write it), only below `published`. Both only count up, also
+/// across the streams that reuse a source, so a stale take is impossible;
+/// a slot is written again only after its task was taken (copied out).
+/// Sources live in streams' storage, which is recycled and never freed,
+/// so a worker may read a source's counters after its stream ended.
+pub(crate) mod sources {
+    use super::*;
+    use core::cell::UnsafeCell;
+    use core::mem::MaybeUninit;
+
+    /// Sources registered at once; a stream that finds none free hands its
+    /// tasks to the queues' list instead.
+    const SLOTS: usize = 64;
+
+    static REGISTERED: [AtomicPtr<Source>; SLOTS] = [const { AtomicPtr::new(core::ptr::null_mut()) }; SLOTS];
+    static ACTIVE: AtomicU64 = AtomicU64::new(0);
+    /// Streams open: workers spin a while for more work only when some are.
+    static OPEN: OwnLine<AtomicUsize> = OwnLine(AtomicUsize::new(0));
+
+    pub(crate) struct Source {
+        ring: Box<[UnsafeCell<MaybeUninit<Task>>]>,
+        published: OwnLine<AtomicUsize>,
+        claimed: OwnLine<AtomicUsize>,
+    }
+
+    // Sound: a slot is written by its stream only below `claimed` + len
+    // and above `published`, read by the one worker whose CAS took it,
+    // across the Release store of `published` and the Acquire load.
+    unsafe impl Sync for Source {}
+    unsafe impl Send for Source {}
+
+    impl Source {
+        pub(crate) fn new(len: usize) -> Source {
+            Source {
+                ring: (0..len).map(|_| UnsafeCell::new(MaybeUninit::uninit())).collect(),
+                published: OwnLine(AtomicUsize::new(0)),
+                claimed: OwnLine(AtomicUsize::new(0)),
             }
         }
+
+        /// Hand `task` to the workers: one write, one Release store; then,
+        /// with two or more waiting and a worker parked, wake one.
+        pub(crate) fn publish(&self, task: Task) {
+            let p = self.published.load(Ordering::Relaxed);
+            debug_assert!(p - self.claimed.load(Ordering::Relaxed) < self.ring.len(), "a source's ring holds every task not yet taken");
+            // Sound: slot p % len is free (its last task was taken), and
+            // only this stream writes it.
+            unsafe { (*self.ring[p % self.ring.len()].get()).write(task) };
+            self.published.store(p + 1, Ordering::Release);
+            core::sync::atomic::fence(Ordering::SeqCst);
+            let pool = pool();
+            if pool.any_parked() && p + 1 - self.claimed.load(Ordering::Relaxed) >= 2 {
+                pool.wake_one();
+            }
+        }
+
+        /// Take the next published task, if any.
+        pub(crate) fn take(&self) -> Option<Task> {
+            let mut c = self.claimed.load(Ordering::Acquire);
+            loop {
+                let p = self.published.load(Ordering::Acquire);
+                if c >= p {
+                    return None;
+                }
+                match self.claimed.compare_exchange_weak(c, c + 1, Ordering::AcqRel, Ordering::Acquire) {
+                    // Sound: this thread alone took slot c, written before
+                    // `published` passed it.
+                    Ok(_) => return Some(unsafe { (*self.ring[c % self.ring.len()].get()).assume_init_read() }),
+                    Err(now) => c = now,
+                }
+            }
+        }
+
+        fn waiting(&self) -> usize {
+            self.published.load(Ordering::Acquire).saturating_sub(self.claimed.load(Ordering::Acquire))
+        }
+
+        /// Register for the workers: the slot, or None when all are taken.
+        pub(crate) fn register(&'static self) -> Option<usize> {
+            let ptr = self as *const Source as *mut Source;
+            let slot = (0..SLOTS).find(|&i| REGISTERED[i].compare_exchange(core::ptr::null_mut(), ptr, Ordering::SeqCst, Ordering::Relaxed).is_ok())?;
+            ACTIVE.fetch_or(1 << slot, Ordering::SeqCst);
+            Some(slot)
+        }
+
+        pub(crate) fn unregister(slot: usize) {
+            ACTIVE.fetch_and(!(1 << slot), Ordering::SeqCst);
+            REGISTERED[slot].store(core::ptr::null_mut(), Ordering::SeqCst);
+        }
+    }
+
+    pub(crate) fn opened() {
+        OPEN.fetch_add(1, Ordering::SeqCst);
+    }
+
+    pub(crate) fn closed() {
+        OPEN.fetch_sub(1, Ordering::SeqCst);
+    }
+
+    pub(crate) fn open() -> bool {
+        OPEN.load(Ordering::Relaxed) > 0
+    }
+
+    fn each(mut f: impl FnMut(&'static Source) -> bool) -> bool {
+        let mut active = ACTIVE.load(Ordering::SeqCst);
+        while active != 0 {
+            let slot = active.trailing_zeros() as usize;
+            active &= active - 1;
+            let ptr = REGISTERED[slot].load(Ordering::Acquire);
+            // Sound: sources are never freed (their storage is recycled).
+            if !ptr.is_null() && f(unsafe { &*ptr }) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// A task from any open stream; when more wait and a worker is
+    /// parked, this worker wakes the next before it hashes (the chain).
+    pub(crate) fn claim() -> Option<Task> {
+        let mut found = None;
+        each(|source| {
+            found = source.take();
+            if found.is_some() && source.waiting() >= 2 && pool().any_parked() {
+                pool().wake_one();
+            }
+            found.is_some()
+        });
+        found
+    }
+
+    /// Whether any open stream has a task waiting.
+    pub(crate) fn visible() -> bool {
+        each(|source| source.waiting() > 0)
     }
 }
 
@@ -1291,6 +1475,11 @@ impl Tasks {
     }
 }
 
+/// Run `task` on this thread, as a worker would.
+pub(crate) fn run_task(task: Task) {
+    task.run(pool_platform());
+}
+
 /// Run one task waiting in the pool's list on this thread, as a worker
 /// would: whether there was one (a program waiting on its stream helps).
 pub(crate) fn run_one_task() -> bool {
@@ -1304,11 +1493,12 @@ pub(crate) fn run_one_task() -> bool {
     }
 }
 
-fn worker_main() {
+fn worker_main(me: usize) {
     let pool = pool();
+    assert!(pool.threads[me].set(std::thread::current()).is_ok(), "each worker sets its thread once");
     let mut start = 0;
     loop {
-        let (job_ptr, index) = pool.next_piece(&mut start);
+        let (job_ptr, index) = pool.next_piece(me, &mut start);
         // Sound by the pool's contract: our active reservation keeps the job alive.
         let job = unsafe { &*job_ptr };
         unsafe { job.hash_piece(index, pool_platform()) };

@@ -11,9 +11,11 @@
 //!   subtree at its offset and a task of its own; the program's thread
 //!   merges the pieces' chaining values in order as it hands back the
 //!   digest.
-//! - Tasks go to the pool's task list a task at a time (one lock per task,
-//!   no locked instruction per message). The open task is handed over when
-//!   it fills, or when the program collects or finishes.
+//! - The stream is its own source of tasks for the pool's workers
+//!   (`lanes::sources`): it writes each task into its source's ring and
+//!   publishes it with one store, and workers take tasks in order by
+//!   compare-and-swap, with no lock and no shared queue. The open task is
+//!   handed over when it fills, or when the program collects or finishes.
 //! - Each submission names where its digests go, in the program's memory;
 //!   the threads write them there (a long message's, merged on the
 //!   program's thread, too). The stream hands that memory back to the
@@ -36,8 +38,12 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 /// this long (a task's subtree).
 pub(crate) const PIECE: usize = TASK_LEN;
 
-/// The bytes a stream keeps for messages and batches written in place.
-const RING_BYTES: usize = 4 << 20;
+/// The bytes a stream keeps for messages and batches written in place:
+/// 2 MiB. With the digests in the program's places, 4 MiB made two
+/// programs streaming 4 MiB batches 18% slower (the ring, the places, and
+/// the programs' own buffers past the L3, i7-12700K); 2 MiB is level there
+/// and 2-4 points less fast than 4 MiB on some other cells.
+const RING_BYTES: usize = 2 << 20;
 
 /// The most entries (messages and pieces) in flight in one stream (1024:
 /// 4 KiB to 16 KiB messages 8-9% faster than at 8192, i7-12700K; 256 lost
@@ -109,6 +115,13 @@ struct Out<const N: usize>(UnsafeCell<[u8; N]>);
 /// `body` share goes in a [`Cell`](core::cell::Cell) or
 /// [`RefCell`](core::cell::RefCell).
 ///
+/// Each message's place comes back alone, about 1-2 ns a message: for
+/// many short messages of one length, [`Stream::submit_batch`] hands back
+/// one place per batch and hashes them side by side (64-byte messages one
+/// at a time ran 4-8% slower than in the stream's earlier design, which
+/// handed back runs of digests from its own memory; batches of them,
+/// 5-13% faster; i7-12700K).
+///
 /// ```
 /// # blake3_servil::initialize_multithreaded();
 /// use blake3_servil::{Hash, Mode};
@@ -127,11 +140,16 @@ struct Out<const N: usize>(UnsafeCell<[u8; N]>);
 pub fn stream<'env, D: FnMut(&'env mut [Hash]), T>(mode: Mode, done: D, body: impl for<'s> FnOnce(&'s mut Stream<'env, D>) -> T) -> T {
     crate::lanes::require();
     let (key, flags) = mode.key_and_flags();
-    let s = SPARE.with(|spare| spare.take()).unwrap_or_else(Storage::new);
+    let s = Storage::take();
+    // Sound: the storage is never freed, so its source lives for 'static.
+    let source: &'static crate::lanes::sources::Source = unsafe { &*(&s.source as *const crate::lanes::sources::Source) };
+    let slot = source.register();
+    crate::lanes::sources::opened();
     let mut stream = Stream {
         key,
         flags,
-        s: core::mem::ManuallyDrop::new(s),
+        s,
+        slot,
         done,
         open_first: 0,
         next: 0,
@@ -165,18 +183,35 @@ struct Storage {
     /// prefetcher pairs lines), so that the program polling one shares no
     /// line with the threads writing digests. Zero between streams.
     lefts: Box<[OwnLine<AtomicUsize>]>,
+    /// The workers' view of this storage's tasks.
+    source: crate::lanes::sources::Source,
 }
 
-std::thread_local! {
-    /// The storage of this thread's last stream.
-    static SPARE: core::cell::Cell<Option<Storage>> = const { core::cell::Cell::new(None) };
-}
+/// Streams' storage not in use: recycled, never freed (a worker may read a
+/// source's counters after its stream ended).
+static FREE: std::sync::Mutex<std::vec::Vec<FreeStorage>> = std::sync::Mutex::new(std::vec::Vec::new());
+
+struct FreeStorage(&'static mut Storage);
+
+// Sound: a storage in the free list is no stream's; the one that takes it
+// owns it alone.
+unsafe impl Send for FreeStorage {}
 
 impl Storage {
+    /// A storage from the free list, or a new one (kept for good).
+    fn take() -> &'static mut Storage {
+        match FREE.lock().unwrap().pop() {
+            Some(FreeStorage(s)) => s,
+            None => Box::leak(Box::new(Storage::new())),
+        }
+    }
+
     fn new() -> Storage {
-        // Every entry may be a task in flight at once.
+        // Every entry may be a task in flight at once (in the queues' list
+        // when a stream finds no source slot free).
         TASKS.make_room(ENTRIES);
         Storage {
+            source: crate::lanes::sources::Source::new(ENTRIES),
             entries: std::vec![Entry { len: 0, kind: Kind::Abandoned, first: 0, ring_end: 0 }; ENTRIES].into_boxed_slice(),
             // Zeroed, untouched pages: only the bytes used are faulted in.
             ring: Box::into_raw(std::vec![0u8; RING_BYTES].into_boxed_slice()) as *mut u8,
@@ -193,15 +228,6 @@ impl Storage {
     }
 }
 
-impl Drop for Storage {
-    /// Give back its room and its ring.
-    fn drop(&mut self) {
-        TASKS.give_room(ENTRIES);
-        // Sound: the ring is Storage::new's allocation, and no task reads it
-        // (a stream's storage drops only after its tasks are done).
-        drop(unsafe { Box::from_raw(core::ptr::slice_from_raw_parts_mut(self.ring, RING_BYTES)) });
-    }
-}
 
 /// Part `i` of a message in `pieces` parts, its digest at `out`: the
 /// message whole, or a piece.
@@ -215,7 +241,9 @@ pub struct Stream<'env, D> {
     key: CVWords,
     flags: u8,
     /// Its own until the stream ends (then the thread's spare).
-    s: core::mem::ManuallyDrop<Storage>,
+    s: &'static mut Storage,
+    /// The source's registration, or None (tasks to the queues' list).
+    slot: Option<usize>,
     /// The handler that takes each place back.
     done: D,
     /// The open task's first entry.
@@ -434,7 +462,7 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
                     left: &*self.s.lefts[entry],
                     ..Task::of(bytes, counter)
                 };
-                TASKS.push(core::iter::once(task));
+                self.hand_over(task);
                 return;
             }
         };
@@ -500,8 +528,20 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
     /// Hand back what is done; with nothing done, hash a waiting task or
     /// pause.
     fn help(&mut self) {
-        if self.deliver() == 0 && !crate::lanes::run_one_task() {
+        if self.deliver() == 0 && !self.run_waiting() {
             core::hint::spin_loop();
+        }
+    }
+
+    /// Hash a task no thread has taken, the stream's own first: whether
+    /// there was one.
+    fn run_waiting(&mut self) -> bool {
+        match self.s.source.take() {
+            Some(task) => {
+                crate::lanes::run_task(task);
+                true
+            }
+            None => crate::lanes::run_one_task(),
         }
     }
 
@@ -534,7 +574,16 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
         if let Some(task) = self.open.take() {
             // Before the push, whose lock orders it before the threads' reads.
             self.s.lefts[self.open_first].store(task.members, Ordering::Relaxed);
-            TASKS.push(core::iter::once(task));
+            self.hand_over(task);
+        }
+    }
+
+    /// Give `task` to the workers: through the stream's source, or the
+    /// queues' list when it has no slot.
+    fn hand_over(&mut self, task: Task) {
+        match self.slot {
+            Some(_) => self.s.source.publish(task),
+            None => TASKS.push(core::iter::once(task)),
         }
     }
 
@@ -608,19 +657,32 @@ impl<D> Drop for Stream<'_, D> {
         if let Some(task) = self.open.take() {
             // Handed over, so that the wait below ends: as publish.
             self.s.lefts[self.open_first].store(task.members, Ordering::Relaxed);
-            TASKS.push(core::iter::once(task));
+            match self.slot {
+                Some(_) => self.s.source.publish(task),
+                None => TASKS.push(core::iter::once(task)),
+            }
         }
         for i in self.delivered..self.next {
-            let left = &self.s.lefts[self.s.entries[i % ENTRIES].first];
-            while left.load(Ordering::Acquire) != 0 {
-                if !crate::lanes::run_one_task() {
+            while self.s.lefts[self.s.entries[i % ENTRIES].first].load(Ordering::Acquire) != 0 {
+                let ran = match self.s.source.take() {
+                    Some(task) => {
+                        crate::lanes::run_task(task);
+                        true
+                    }
+                    None => crate::lanes::run_one_task(),
+                };
+                if !ran {
                     core::hint::spin_loop();
                 }
             }
         }
-        // Sound: `s` is not used again.
-        let s = unsafe { core::mem::ManuallyDrop::take(&mut self.s) };
-        SPARE.with(|spare| spare.set(Some(s)));
+        if let Some(slot) = self.slot {
+            crate::lanes::sources::Source::unregister(slot);
+        }
+        crate::lanes::sources::closed();
+        // Sound: `s` is not used again; the next stream takes it whole.
+        let s: &'static mut Storage = unsafe { &mut *(self.s as *mut Storage) };
+        FREE.lock().unwrap().push(FreeStorage(s));
     }
 }
 
