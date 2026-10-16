@@ -37,20 +37,9 @@ run() {  # name, command...: its log in $logs/name.txt; a failure ends the run
 	[ "$state" = success ] || return 0
 	"$@" > "$logs/$name.txt" 2>&1 || { verdict="FAILED ($name)" state=failure; }
 }
-run lean_spec python3 c2sp/BLAKE3/check.py
-run lean_emit sh -c 'pypy3 tools/verify/lean/emit.py && git diff --exit-code tools/verify/lean/compress.json tools/verify/lean/schedules.json tools/verify/lean/Generic.lean'
-run generated sh -c 'pypy3 tools/gen_neon_hybrid.py | cmp - c/blake3_neon_hybrid_aarch64.S'
-run helpers pypy3 -m unittest discover -s tools/verify -p test_helpers.py
-run prove_hybrid pypy3 tools/verify/prove_hybrid.py
-run prove_sme2 pypy3 tools/verify/prove_sme2.py chunks chunks_at messages parents xof chunks_x2 every parents_every x2_every xof_every messages_every
-run prove_flat pypy3 tools/verify/prove_flat.py
-run cross_check pypy3 tools/verify/cross_check.py
-run mutants pypy3 tools/verify/mutants.py
-# The library's tests against plausible bugs, every survivor known
-# (tools/mutants/check.py; cargo-mutants under /root/tools when absent).
-export PATH=/root/tools/bin:$PATH
-command -v cargo-mutants >/dev/null || CARGO_INSTALL_ROOT=/root/tools cargo install -q cargo-mutants --locked
-run test_mutants pypy3 tools/mutants/check.py
+# The steps are the commit's own, from its tree: a commit's proofs are
+# what it names.
+. ./tools/verify/long-proofs-steps.sh
 hash=$(pypy3 -c 'import sys; sys.path.insert(0, "tools/verify"); import results
 print(results.blake3(data="\n".join(results.blake3(sorted(sys.argv[1:]))).encode())[0][:16])' "$logs"/*.txt)
 status "$state" "$verdict: Lean, hybrid, SME2, cross_check, mutants; logs' BLAKE3 $hash (VM)"
