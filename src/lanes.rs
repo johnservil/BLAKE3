@@ -1008,7 +1008,8 @@ pub(crate) struct Task {
 /// The most short messages (or small batches) one task takes.
 pub(crate) const MEMBERS: usize = 64;
 
-/// A short message in a task of several ([`Task::members`]).
+/// A short message in a task of several ([`Task::members`]). Members in a
+/// row may share one `left`, counted down once for all of them.
 #[derive(Clone, Copy)]
 pub(crate) struct Member {
     pub(crate) input: *const u8,
@@ -1072,14 +1073,15 @@ impl Task {
     fn run_members(self, platform: Platform) {
         let members = &self.member[..self.members];
         if let Some(message_len) = self.batch {
-            for m in members {
+            let mut run = 0;
+            for (i, m) in members.iter().enumerate() {
                 // Sound: the queue keeps each batch's bytes, digest space,
                 // and `left` in place until its `left` is zero.
                 let bytes = unsafe { core::slice::from_raw_parts(m.input, m.len) };
                 let count = m.len / crate::many::slot_len(message_len);
                 let digests = unsafe { core::slice::from_raw_parts_mut(m.out as *mut [u8; crate::OUT_LEN], count) };
                 crate::many::hash_many_on(bytes, message_len, &self.key, self.flags, digests, platform);
-                unsafe { &*m.left }.fetch_sub(1, Ordering::Release);
+                count_down(members, i, &mut run);
             }
             return;
         }
@@ -1099,12 +1101,26 @@ impl Task {
                 _ => {}
             }
         }
-        for m in members {
+        let mut run = 0;
+        for (i, m) in members.iter().enumerate() {
             let bytes = unsafe { core::slice::from_raw_parts(m.input, m.len) };
             let hash = crate::hash_serial_on(bytes, &self.key, self.flags, platform);
             unsafe { core::ptr::copy_nonoverlapping(hash.as_bytes().as_ptr(), m.out, crate::OUT_LEN) };
-            unsafe { &*m.left }.fetch_sub(1, Ordering::Release);
+            count_down(members, i, &mut run);
         }
+    }
+}
+
+/// Count member `i`'s `left` down for it and the members before it that
+/// share that counter (`run` of them so far): one count a run of members
+/// sharing one (a stream's task), one a member where each has its own (a
+/// queue's).
+fn count_down(members: &[Member], i: usize, run: &mut usize) {
+    *run += 1;
+    if members.get(i + 1).is_none_or(|next| next.left != members[i].left) {
+        // Sound: the member's owner keeps `left` in place until it is zero.
+        unsafe { &*members[i].left }.fetch_sub(*run, Ordering::Release);
+        *run = 0;
     }
 }
 
@@ -1129,9 +1145,10 @@ impl Task {
             (self.flags, crate::CHUNK_START, crate::CHUNK_END | crate::ROOT)
         };
         platform.hash_many::<N>(&table, &self.key, 0, crate::IncrementCounter::No, flags, start, end, digests[..members.len()].as_flattened_mut());
-        for (m, digest) in members.iter().zip(&digests) {
+        let mut run = 0;
+        for (i, (m, digest)) in members.iter().zip(&digests).enumerate() {
             unsafe { core::ptr::copy_nonoverlapping(digest.as_ptr(), m.out, crate::OUT_LEN) };
-            unsafe { &*m.left }.fetch_sub(1, Ordering::Release);
+            count_down(members, i, &mut run);
         }
     }
 }
@@ -1271,6 +1288,19 @@ impl Tasks {
         let task = list.pop_front()?;
         self.queued.store(list.len(), Ordering::SeqCst);
         Some(task)
+    }
+}
+
+/// Run one task waiting in the pool's list on this thread, as a worker
+/// would: whether there was one (a program waiting on its stream helps).
+pub(crate) fn run_one_task() -> bool {
+    match TASKS.pop() {
+        Some(task) => {
+            task.run(pool_platform());
+            TASKS.in_flight.fetch_sub(1, Ordering::SeqCst);
+            true
+        }
+        None => false,
     }
 }
 

@@ -269,6 +269,10 @@ mod many;
 mod queue;
 #[cfg(feature = "std")]
 pub use queue::{FixedHandler, MessageHandler, PieceHandler, Queue, shape};
+#[cfg(feature = "std")]
+mod stream;
+#[cfg(feature = "std")]
+pub use stream::{stream, Stream};
 mod pair;
 mod self_test;
 
