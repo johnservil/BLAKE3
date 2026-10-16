@@ -173,6 +173,11 @@ fn hash_path(args: &Args, path: &Path) -> anyhow::Result<blake3::OutputReader> {
         update_from(&mut hasher, io::stdin())?;
     } else {
         let file = File::open(path)?;
+        // A regular file's size and modification time when opened: if
+        // either has changed once it is hashed, another program wrote it
+        // meanwhile, and the digest describes neither version.
+        let opened = file.metadata()?;
+        let hashed_len;
         #[cfg(unix)]
         if let Some(map) = mapped(&file) {
             // Beside other files, a file in the page cache takes the pool only
@@ -180,12 +185,26 @@ fn hash_path(args: &Args, path: &Path) -> anyhow::Result<blake3::OutputReader> {
             // POOL_LEN.
             let pool_from = if args.file_args.len() > 1 && resident(&map) { SHARED_POOL_LEN } else { POOL_LEN };
             update(&mut hasher, &map, pool_from);
+            hashed_len = map.len() as u64;
             hold(map);
         } else {
-            update_from(&mut hasher, file)?;
+            hashed_len = update_from(&mut hasher, &file)?;
         }
         #[cfg(not(unix))]
-        update_from(&mut hasher, file)?;
+        {
+            hashed_len = update_from(&mut hasher, &file)?;
+        }
+        if opened.is_file() {
+            let now = file.metadata()?;
+            ensure!(
+                hashed_len == opened.len() && now.len() == opened.len() && now.modified().ok() == opened.modified().ok(),
+                "the file changed while b3sum hashed it: {} bytes when opened, {} hashed, {} now{}. Another program was writing it, so this digest would describe neither version; hash it again once nothing writes to it",
+                opened.len(),
+                hashed_len,
+                now.len(),
+                if now.modified().ok() != opened.modified().ok() { ", and its modification time moved" } else { "" },
+            );
+        }
     }
     let mut output_reader = hasher.finalize_xof();
     output_reader.set_position(args.seek());
@@ -327,12 +346,12 @@ fn fill(reader: &mut impl Read, buffer: &mut [u8]) -> io::Result<usize> {
 /// than a piece has the rest read on a second thread into the other
 /// buffer while this one hashes the last piece over the pool
 /// (`bench-hashes b3sum`; NOTES-servil.md, "b3sum, measured").
-fn update_from(hasher: &mut blake3::Hasher, mut reader: impl Read + Send) -> io::Result<()> {
+fn update_from(hasher: &mut blake3::Hasher, mut reader: impl Read + Send) -> io::Result<u64> {
     BUFFERS.with_borrow_mut(|[first, second]| {
         let len = fill(&mut reader, first)?;
         if len < PIECE {
             update(hasher, &first[..len], POOL_LEN);
-            return Ok(());
+            return Ok(len as u64);
         }
         std::thread::scope(|scope| {
             let (free_tx, free_rx) = std::sync::mpsc::sync_channel::<&mut [u8]>(1);
@@ -350,13 +369,15 @@ fn update_from(hasher: &mut blake3::Hasher, mut reader: impl Read + Send) -> io:
             });
             free_tx.send(&mut second[..]).expect("the reader waits for a buffer");
             let mut current: &mut [u8] = &mut first[..];
+            let mut total = 0u64;
             loop {
                 update(hasher, current, POOL_LEN);
+                total += current.len() as u64;
                 let (next, read) = full_rx.recv().expect("the reader sends every piece");
                 let len = read?;
                 if len < next.len() {
                     update(hasher, &next[..len], POOL_LEN);
-                    return Ok(());
+                    return Ok(total + len as u64);
                 }
                 free_tx.send(current).expect("the reader waits for a buffer");
                 current = next;
@@ -742,7 +763,36 @@ fn check_one_checkfile(path: &Path, args: &Args, files_failed: &mut u64) -> anyh
     }
 }
 
+/// A mapped file that another program truncates while b3sum reads it
+/// raises SIGBUS at the first page past its new end: say so and stop,
+/// rather than die unexplained. (Only write and _exit here: a signal
+/// handler may call nothing else.)
+#[cfg(unix)]
+fn explain_sigbus() {
+    static SAID: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    extern "C" fn on_sigbus(_: libc::c_int) {
+        // Once, whichever threads fault (an atomic swap is signal-safe).
+        if SAID.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            loop {
+                // Sound: pause is async-signal-safe; the first thread exits.
+                unsafe { libc::pause() };
+            }
+        }
+        const MESSAGE: &[u8] = b"b3sum: a file shrank while b3sum read it (another program truncated it), so no digest of it would be right; b3sum stops here. Hash the files again once nothing writes to them.\n";
+        // Sound: write and _exit are async-signal-safe.
+        unsafe {
+            libc::write(2, MESSAGE.as_ptr().cast(), MESSAGE.len());
+            libc::_exit(1);
+        }
+    }
+    // Sound: a handler that calls only async-signal-safe functions.
+    let handler: extern "C" fn(libc::c_int) = on_sigbus;
+    unsafe { libc::signal(libc::SIGBUS, handler as libc::sighandler_t) };
+}
+
 fn main() -> anyhow::Result<()> {
+    #[cfg(unix)]
+    explain_sigbus();
     blake3::initialize();
     let args = Args::parse()?;
     if args.num_threads().is_some() {
