@@ -83,7 +83,7 @@ use crate::{CHUNK_LEN, Hash};
 #[cfg(test)]
 use crate::{Hasher, KEY_LEN};
 use std::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Condvar, Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock};
 
 /// Inputs below this length are hashed on the calling thread. Every call
 /// meets sleeping workers (nothing keeps them awake between calls), and a
@@ -120,23 +120,6 @@ pub(crate) fn poll_pause(yielded: &mut std::time::Instant) {
     }
 }
 
-/// Lock `mutex`, polling for it first: its holders keep it for well under
-/// a microsecond, and a waiter the std mutex parks costs both sides a
-/// system call (the waiter's sleep, the holder's wake: microseconds in a
-/// VM, 50000 of them per million 64-byte messages through the queue).
-/// Parks only after about LOCK_POLLS failed tries.
-pub(crate) fn lock_polling<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    for _ in 0..LOCK_POLLS {
-        match mutex.try_lock() {
-            Ok(guard) => return guard,
-            Err(std::sync::TryLockError::WouldBlock) => std::hint::spin_loop(),
-            Err(std::sync::TryLockError::Poisoned(_)) => panic!("a panic while hashing aborts, so no lock is poisoned"),
-        }
-    }
-    mutex.lock().expect("a panic while hashing aborts, so no lock is poisoned")
-}
-
-const LOCK_POLLS: usize = 256;
 
 /// How long a caller polls for its last pieces before sleeping.
 pub(crate) const SPIN_BEFORE_SLEEP: std::time::Duration = std::time::Duration::from_micros(200);
@@ -195,15 +178,6 @@ fn hash_over_pool(input: &[u8], key: &crate::CVWords, flags: u8) -> Hash {
     pool.run_job(work, pieces.len(), own, turn.platform());
     drop(turn);
     merge_root(&pieces, &mut cvs, key, flags)
-}
-
-/// Whether the pool has a thread that takes queue tasks: a worker, or the
-/// SME2 thread. With one CPU to the process (`available_parallelism`, which
-/// counts its affinity and quota) and no SME2 it has none, and a queue
-/// hashes everything on its delivery thread.
-pub(crate) fn takes_tasks() -> bool {
-    let pool = pool();
-    pool.cpus > 1 || pool.sme2
 }
 
 /// The two child chaining values of the subtree `input` at chunk
@@ -662,8 +636,6 @@ pub(crate) fn initialize() {
         threads: (0..cpus).map(|_| OnceLock::new()).collect(),
         owed: AtomicUsize::new(0),
     };
-    prepare(&TASKS.sme2_asleep, &TASKS.sme2_wake);
-    drop(TASKS.list.lock());
     assert!(POOL.set(pool).is_ok(), "initialize_multithreaded creates the pool once");
     if sme2 {
         std::thread::Builder::new().name("blake3-sme2".into()).spawn(sme2_main).expect("spawning the SME2 thread");
@@ -685,7 +657,7 @@ pub(crate) fn initialize() {
         .expect("spawning a BLAKE3 worker");
 }
 
-/// The contract's check at every multithreaded call and queue: a call
+/// The contract's check at every multithreaded call and stream: a call
 /// before [`crate::initialize_multithreaded`] panics, in every build. It
 /// costs one load and a branch the CPU predicts.
 #[inline]
@@ -695,15 +667,6 @@ pub(crate) fn require() {
 
 /// The pool, once [`initialize`] has created it.
 static POOL: OnceLock<Pool> = OnceLock::new();
-
-/// Make `mutex` and `condvar` ready now: on Apple's systems the standard
-/// library allocates each on its first use, which the pool's threads would
-/// otherwise reach at their first sleep, after `initialize_multithreaded`
-/// returned (the SME2 thread's: 64 and 48 bytes, probe/lazy-sync, job 987).
-pub(crate) fn prepare<T>(mutex: &Mutex<T>, condvar: &Condvar) {
-    drop(mutex.lock());
-    condvar.notify_one();
-}
 
 /// The pool. The caller must have called
 /// [`crate::initialize_multithreaded`] before; a call before it panics. The
@@ -728,7 +691,7 @@ fn no_pool() -> &'static Pool {
         POOL.get().expect("initialize_multithreaded created the pool")
     }
     #[cfg(not(test))]
-    panic!("blake3-servil: call blake3_servil::initialize_multithreaded() once, before any multithreaded call or Queue: it starts the threads they use")
+    panic!("blake3-servil: call blake3_servil::initialize_multithreaded() once, before any multithreaded call or stream: it starts the threads they use")
 }
 
 impl Pool {
@@ -807,18 +770,13 @@ impl Pool {
         self.parked.iter().any(|w| w.load(Ordering::Relaxed) != 0)
     }
 
-    /// Worker `me`'s loop: the sources' tasks and pieces, then the queues'
-    /// tasks; spinning a while when a stream is open (more is coming),
-    /// else parked, whenever it finds nothing.
+    /// Worker `me`'s loop: the sources' tasks and pieces; spinning a while
+    /// when a stream is open (more is coming), else parked, whenever it
+    /// finds nothing.
     fn serve(&self, me: usize) -> ! {
         let (word, bit) = (&self.parked[me / 64], 1u64 << (me % 64));
         loop {
             if sources::run_one() {
-                continue;
-            }
-            if let Some(task) = TASKS.pop() {
-                task.run(pool_platform());
-                TASKS.in_flight.fetch_sub(1, Ordering::SeqCst);
                 continue;
             }
             if sources::open() && spin_for_work(self) {
@@ -847,9 +805,9 @@ impl Pool {
         }
     }
 
-    /// Whether a stream, the queues, or a job has work (a look, no take).
+    /// Whether a source has work (a look, no take).
     fn work_visible(&self) -> bool {
-        sources::visible() || TASKS.queued.load(Ordering::SeqCst) > 0
+        sources::visible()
     }
 }
 
@@ -890,8 +848,8 @@ pub(crate) mod sources {
     use core::cell::UnsafeCell;
     use core::mem::MaybeUninit;
 
-    /// Sources registered at once. A stream that finds none free hands
-    /// its tasks to the queues' list; a job, its caller hashes alone.
+    /// Sources registered at once. A stream or a job that finds none free
+    /// is hashed on its own thread.
     const SLOTS: usize = 64;
 
     /// Each slot holds a source's address, tagged: a stream's even, a
@@ -951,6 +909,9 @@ pub(crate) mod sources {
             self.published.store(p + 1, Ordering::Release);
             core::sync::atomic::fence(Ordering::SeqCst);
             let pool = pool();
+            if pool.sme2 {
+                wake_sme2();
+            }
             if pool.any_parked() && p + 1 - self.claimed.load(Ordering::Relaxed) >= 2 {
                 pool.wake_one();
             }
@@ -1193,6 +1154,27 @@ pub(crate) mod sources {
         })
     }
 
+    /// A task from any stream (the SME2 thread takes these alone).
+    pub(crate) fn take_stream_task() -> Option<Task> {
+        let mut found = None;
+        each(|registered| match registered {
+            Registered::Stream(source) => {
+                found = source.take();
+                found.is_some()
+            }
+            Registered::Job(_) => false,
+        });
+        found
+    }
+
+    /// Whether any stream has a task waiting.
+    pub(crate) fn stream_visible() -> bool {
+        each(|registered| match registered {
+            Registered::Stream(source) => source.waiting() > 0,
+            Registered::Job(_) => false,
+        })
+    }
+
     /// Whether any source has work waiting.
     pub(crate) fn visible() -> bool {
         each(|found| match found {
@@ -1202,16 +1184,16 @@ pub(crate) mod sources {
     }
 }
 
-/// The longest part of a queue's input planned as tasks
+/// The longest part of a stream's input planned as tasks
 /// ([`crate::plan_subtrees`]): a task is a whole subtree within one part.
 pub(crate) const TASK_LEN: usize = 64 * CHUNK_LEN;
 
-/// One piece of a queue's work (crate::queue), hashed by whichever thread
-/// pops it from [`TASKS`]: a whole subtree at chunk `counter` of a message,
+/// One piece of a stream's work (crate::stream), hashed by whichever thread
+/// takes it from the stream's source: a whole subtree at chunk `counter` of a message,
 /// as [`crate::plan_subtrees`] cuts it, its result a 64-byte block at `out`;
 /// or, with `batch` the messages' length, a range of a batch's messages in
 /// their slots, their digests at `out`. Then it counts down `left`; the
-/// queue keeps the bytes, `out`, and `left` in place until `left` is zero.
+/// stream keeps the bytes, `out`, and `left` in place until `left` is zero.
 pub(crate) struct Task {
     pub(crate) input: *const u8,
     pub(crate) len: usize,
@@ -1268,7 +1250,7 @@ impl Task {
         if self.members > 0 {
             return self.run_members(platform);
         }
-        // Sound: the queue keeps these in place until `left` is zero.
+        // Sound: the stream keeps these in place until `left` is zero.
         let bytes = unsafe { core::slice::from_raw_parts(self.input, self.len) };
         if let Some(message_len) = self.batch {
             let count = self.len / crate::many::slot_len(message_len);
@@ -1299,7 +1281,7 @@ impl Task {
         if let Some(message_len) = self.batch {
             let mut run = 0;
             for (i, m) in members.iter().enumerate() {
-                // Sound: the queue keeps each batch's bytes, digest space,
+                // Sound: the stream keeps each batch's bytes, digest space,
                 // and `left` in place until its `left` is zero.
                 let bytes = unsafe { core::slice::from_raw_parts(m.input, m.len) };
                 let count = m.len / crate::many::slot_len(message_len);
@@ -1309,7 +1291,7 @@ impl Task {
             }
             return;
         }
-        // Sound: the queue keeps every member's bytes, `out`, and `left` in
+        // Sound: the stream keeps every member's bytes, `out`, and `left` in
         // place until its `left` is zero.
         if members.len() >= 2 && members.iter().all(|m| m.len == members[0].len) {
             match members[0].len {
@@ -1354,7 +1336,7 @@ impl Task {
     /// kernel from a table of pointers.
     fn run_equal_members<const N: usize>(self, platform: Platform) {
         let members = &self.member[..self.members];
-        // Sound: the queue keeps every member's N bytes, `out`, and `left`
+        // Sound: the stream keeps every member's N bytes, `out`, and `left`
         // in place until its `left` is zero.
         let table: arrayvec::ArrayVec<&[u8; N], MEMBERS> = members.iter().map(|m| unsafe { &*(m.input as *const [u8; N]) }).collect();
         let mut digests = [[0u8; crate::OUT_LEN]; MEMBERS];
@@ -1377,160 +1359,57 @@ impl Task {
     }
 }
 
-/// Every queue's tasks waiting for a worker, in the order pushed.
-pub(crate) struct Tasks {
-    /// Each on a line of its own: threads read `queued`, every finishing
-    /// thread writes `in_flight`, and pushers and poppers take the lock.
-    list: OwnLine<Mutex<std::collections::VecDeque<Task>>>,
-    /// The list's length, read without the lock.
-    queued: OwnLine<AtomicUsize>,
-    /// Tasks pushed and not yet finished: what pushes wake threads for.
-    in_flight: OwnLine<AtomicUsize>,
-    /// The room the queues made in the list (make_room), under its lock.
-    room: AtomicUsize,
-    /// Whether the SME2 thread sleeps (read without the lock), and its wake.
-    sme2_asleep: Mutex<bool>,
-    sme2_sleeps: std::sync::atomic::AtomicBool,
-    sme2_wake: Condvar,
-}
-
-pub(crate) static TASKS: Tasks = Tasks {
-    list: OwnLine(Mutex::new(std::collections::VecDeque::new())),
-    queued: OwnLine(AtomicUsize::new(0)),
-    in_flight: OwnLine(AtomicUsize::new(0)),
-    room: AtomicUsize::new(0),
-    sme2_asleep: Mutex::new(false),
-    sme2_sleeps: std::sync::atomic::AtomicBool::new(false),
-    sme2_wake: Condvar::new(),
-};
-
 /// The SME2 thread, on CPUs with SME2: it hashes tasks only, on SME2 (the
 /// SME unit hashes a 64 KiB piece in 14 us where a NEON worker takes 22,
 /// Mac, probe/queue-timeline), under the process's turn so that a caller of
 /// hash() elsewhere keeps the unit; without the turn, on NEON. It takes
-/// tasks while any wait, and sleeps as soon as none does; every push wakes
-/// it first.
+/// streams' tasks while any wait, and parks as soon as none does; every
+/// publish wakes it first.
 fn sme2_main() {
+    assert!(SME2_THREAD.set(std::thread::current()).is_ok(), "one SME2 thread");
     loop {
-        {
-            let mut asleep = TASKS.sme2_asleep.lock().unwrap();
-            while TASKS.queued.load(Ordering::SeqCst) == 0 {
-                *asleep = true;
-                TASKS.sme2_sleeps.store(true, Ordering::SeqCst);
-                // A push between the check above and this store sees the
-                // flag, takes the lock after the wait releases it, and wakes.
-                if TASKS.queued.load(Ordering::SeqCst) > 0 {
-                    break;
-                }
-                asleep = TASKS.sme2_wake.wait(asleep).unwrap();
+        if let Some(task) = sources::take_stream_task() {
+            if task.members > 0 {
+                // Short messages and small batches, gathered, run faster
+                // on NEON than through an SME2 session per task (Mac:
+                // 64-byte messages 14-15% faster, batches of 16 and 64
+                // 10-15%); below 16 KiB the other members run the NEON
+                // kernels on either platform.
+                task.run(pool_platform());
+            } else {
+                let turn = crate::platform::Sme2Turn::take(Platform::detect(), true);
+                task.run(turn.platform());
+                drop(turn);
             }
-            *asleep = false;
-            TASKS.sme2_sleeps.store(false, Ordering::SeqCst);
+            continue;
         }
-        let mut yielded = std::time::Instant::now();
-        while TASKS.queued.load(Ordering::SeqCst) > 0 {
-            match TASKS.pop() {
-                Some(task) if task.members > 0 => {
-                    // Short messages and small batches, gathered, run
-                    // faster on NEON than through an SME2 session per task
-                    // (Mac: 64-byte messages 14-15% faster, batches of 16
-                    // and 64 10-15%); below 16 KiB the other members run
-                    // the NEON kernels on either platform.
-                    task.run(pool_platform());
-                    TASKS.in_flight.fetch_sub(1, Ordering::SeqCst);
-                }
-                Some(task) => {
-                    let turn = crate::platform::Sme2Turn::take(Platform::detect(), true);
-                    task.run(turn.platform());
-                    drop(turn);
-                    TASKS.in_flight.fetch_sub(1, Ordering::SeqCst);
-                }
-                // Another thread is taking a task: poll on.
-                None => poll_pause(&mut yielded),
-            }
+        // Park as a worker does: the flag, one more look, the token.
+        SME2_PARKED.store(true, Ordering::SeqCst);
+        if sources::stream_visible() {
+            SME2_PARKED.store(false, Ordering::SeqCst);
+            continue;
+        }
+        while SME2_PARKED.load(Ordering::SeqCst) {
+            std::thread::park();
         }
     }
 }
 
-impl Tasks {
-    /// Add `tasks`, and wake sleeping threads so that one per task in
-    /// flight (waiting or being hashed) is awake or on its way: the SME2
-    /// thread first, then workers.
-    pub(crate) fn push(&self, tasks: impl ExactSizeIterator<Item = Task>) {
-        let pool = pool();
-        // The count, which every finishing thread writes, outside the lock
-        // (inside, it held pushers and pollers up: two programs' 16 KiB
-        // messages 2.0 -> 1.65 us each on the Mac, probe/submit-16k).
-        let pushed = tasks.len();
-        let in_flight = self.in_flight.fetch_add(pushed, Ordering::SeqCst) + pushed;
-        let mut list = lock_polling(&self.list);
-        list.extend(tasks);
-        let queued = list.len();
-        // The queues made room for every task their entries can have in
-        // flight (make_room): no growth here, whatever the threads' timing.
-        debug_assert!(queued <= self.room.load(Ordering::Relaxed), "the queues made room for every task");
-        self.queued.store(queued, Ordering::SeqCst);
-        drop(list);
-        if pool.sme2 && self.sme2_sleeps.load(Ordering::SeqCst) && *self.sme2_asleep.lock().unwrap() {
-            self.sme2_wake.notify_one();
+/// The SME2 thread, and whether it is parked: every publish wakes it first.
+static SME2_THREAD: OnceLock<std::thread::Thread> = OnceLock::new();
+static SME2_PARKED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+fn wake_sme2() {
+    if SME2_PARKED.swap(false, Ordering::SeqCst) {
+        if let Some(thread) = SME2_THREAD.get() {
+            thread.unpark();
         }
-        // Half as many workers awake as tasks in flight: each drains two
-        // back to back where it would sleep and be woken between them (a
-        // woken worker arrives 15-45 us after its wake, which its waker
-        // pays a system call for). Mac jobs 1385-1396: the queue's 64 B to
-        // 64 MiB messages and batches 15-45% faster, 1 KiB 20% slower.
-        pool.wake_for(in_flight.div_ceil(2).saturating_sub(usize::from(pool.sme2)));
-    }
-
-    /// Make room in the list for `more` tasks: a queue makes room for the
-    /// most tasks its entries can have waiting (its slots times the most
-    /// tasks a submission has had), so that the list grows with what the
-    /// programs keep in flight, never with the threads' timing (a room of
-    /// "every task in flight" counted tasks finished but not yet counted
-    /// down, and grew the list after warm-up once in a hundred runs of
-    /// tests/queue_no_alloc.rs).
-    pub(crate) fn make_room(&self, more: usize) {
-        let mut list = lock_polling(&self.list);
-        let room = self.room.fetch_add(more, Ordering::Relaxed) + more;
-        let len = list.len();
-        list.reserve(room.saturating_sub(len));
-    }
-
-    /// Give back room a queue made (its capacity stays).
-    pub(crate) fn give_room(&self, less: usize) {
-        let _list = lock_polling(&self.list);
-        self.room.fetch_sub(less, Ordering::Relaxed);
-    }
-
-    /// A waiting task, unless none waits or another thread is taking one.
-    fn pop(&self) -> Option<Task> {
-        if self.queued.load(Ordering::SeqCst) == 0 {
-            return None;
-        }
-        // Another thread popping means this one would wait for it: poll on.
-        let mut list = self.list.try_lock().ok()?;
-        let task = list.pop_front()?;
-        self.queued.store(list.len(), Ordering::SeqCst);
-        Some(task)
     }
 }
 
 /// Run `task` on this thread, as a worker would.
 pub(crate) fn run_task(task: Task) {
     task.run(pool_platform());
-}
-
-/// Run one task waiting in the pool's list on this thread, as a worker
-/// would: whether there was one (a program waiting on its stream helps).
-pub(crate) fn run_one_task() -> bool {
-    match TASKS.pop() {
-        Some(task) => {
-            task.run(pool_platform());
-            TASKS.in_flight.fetch_sub(1, Ordering::SeqCst);
-            true
-        }
-        None => false,
-    }
 }
 
 fn worker_main(me: usize) {

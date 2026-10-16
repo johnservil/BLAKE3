@@ -43,8 +43,10 @@ Rust, and its x86 kernels, and adds code of its own:
   `tools/gen_neon_hybrid.py` and `tools/gen_sme2_hybrid.py`;
 - a pool of worker threads for multithreaded hashing (`src/lanes.rs`);
 - batches of many messages in one call (`hash_many`, `src/many.rs`);
-- the queue, which hashes the program's buffers behind it and hands
-  each back to a handler (`Queue`, `src/queue.rs`).
+- the stream, which hashes the program's messages behind it, each digest
+  into the place the program names (`stream`, `src/stream.rs`). (The
+  queue it replaced, `src/queue.rs`, retired on October 16, 2026; the
+  records below that name it describe its time.)
 
 Everything below aims at this new code. Much of it is `unsafe`: assembly,
 pointer tables, uninitialised scratch buffers, and threads that share

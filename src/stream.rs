@@ -5,7 +5,7 @@
 //! How it runs:
 //! - Each message of up to [`PIECE`] bytes is one entry in a ring of
 //!   entries; entries gather into tasks of up to [`MEMBERS`] messages (or
-//!   TASK_LEN / 4 bytes), hashed as the queue's members are: messages of
+//!   TASK_LEN / 4 bytes), hashed as members of a task: messages of
 //!   one length side by side, the rest one at a time.
 //! - A longer message is split into pieces of PIECE bytes, each a whole
 //!   subtree at its offset and a task of its own; the program's thread
@@ -27,7 +27,7 @@
 //! every task before it returns, also when its body panics: no thread
 //! reads a message after the scope ends.
 
-use crate::lanes::{MEMBERS, Member, OwnLine, TASK_LEN, TASKS, Task};
+use crate::lanes::{MEMBERS, Member, OwnLine, TASK_LEN, Task};
 use crate::platform::Platform;
 use crate::{CHUNK_LEN, CVBytes, CVWords, Hash, Mode, OUT_LEN};
 use core::cell::UnsafeCell;
@@ -207,9 +207,6 @@ impl Storage {
     }
 
     fn new() -> Storage {
-        // Every entry may be a task in flight at once (in the queues' list
-        // when a stream finds no source slot free).
-        TASKS.make_room(ENTRIES);
         Storage {
             source: crate::lanes::sources::Source::new(ENTRIES),
             entries: std::vec![Entry { len: 0, kind: Kind::Abandoned, first: 0, ring_end: 0 }; ENTRIES].into_boxed_slice(),
@@ -242,7 +239,7 @@ pub struct Stream<'env, D> {
     flags: u8,
     /// Its own until the stream ends (then the thread's spare).
     s: &'static mut Storage,
-    /// The source's registration, or None (tasks to the queues' list).
+    /// The source's registration, or None (this thread hashes every task).
     slot: Option<usize>,
     /// The handler that takes each place back.
     done: D,
@@ -483,7 +480,7 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
         open.len += len;
         // Messages longer than a block hash one at a time: a task of them
         // stops at a quarter of a task's bytes, to spread over more threads
-        // (the queue's rule); batches fill a task's bytes.
+        // (spread over more threads); batches fill a task's bytes.
         if open.members == MEMBERS || open.len >= if batch.is_some() { TASK_LEN } else { TASK_LEN / 4 } {
             self.publish();
         }
@@ -533,15 +530,15 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
         }
     }
 
-    /// Hash a task no thread has taken, the stream's own first: whether
-    /// there was one.
+    /// Hash one of the stream's tasks no thread has taken: whether there
+    /// was one.
     fn run_waiting(&mut self) -> bool {
         match self.s.source.take() {
             Some(task) => {
                 crate::lanes::run_task(task);
                 true
             }
-            None => crate::lanes::run_one_task(),
+            None => false,
         }
     }
 
@@ -578,12 +575,12 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
         }
     }
 
-    /// Give `task` to the workers: through the stream's source, or the
-    /// queues' list when it has no slot.
+    /// Give `task` to the workers through the stream's source; with no
+    /// slot, hash it on this thread now.
     fn hand_over(&mut self, task: Task) {
         match self.slot {
             Some(_) => self.s.source.publish(task),
-            None => TASKS.push(core::iter::once(task)),
+            None => crate::lanes::run_task(task),
         }
     }
 
@@ -659,7 +656,7 @@ impl<D> Drop for Stream<'_, D> {
             self.s.lefts[self.open_first].store(task.members, Ordering::Relaxed);
             match self.slot {
                 Some(_) => self.s.source.publish(task),
-                None => TASKS.push(core::iter::once(task)),
+                None => crate::lanes::run_task(task),
             }
         }
         for i in self.delivered..self.next {
@@ -669,7 +666,7 @@ impl<D> Drop for Stream<'_, D> {
                         crate::lanes::run_task(task);
                         true
                     }
-                    None => crate::lanes::run_one_task(),
+                    None => false,
                 };
                 if !ran {
                     core::hint::spin_loop();

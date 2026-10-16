@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **Breaking: `Queue` is gone, and `stream()` takes its place** (Zooko,
+  October 16, 2026). A stream borrows the program's messages (or has them
+  written or read into its ring), writes each digest into the place the
+  program names, and hands the places back in order to one handler.
+  `Queue::messages` becomes `submit` or `submit_with`; `Queue::pieces`,
+  `submit_reader` or `submit_with`; `Queue::fixed`, `submit_batch` with a
+  place of one digest per message. The queue's delivery thread is gone.
+- **One scheduler**: the pool's workers take every multithreaded call's
+  work, and every stream's, from sources each call or stream publishes
+  (a ring and two counters, no lock), and park each on its own token. On
+  an i7-12700K against the stream on the earlier pool: no cell slower,
+  messages 5-49% faster, collections 12-20%, `hash_multithreaded` on
+  1 MiB 7%.
 - The startup self-test checks the build and the machine, leaving what
   the code computes to the tests and proofs: on x86-64 and the other
   non-AArch64 targets it runs each kernel once in 9 small cases (from 40),

@@ -3,7 +3,7 @@
 For the servil team. Users read the crate docs: `src/lib.rs`, "Which call
 to use" (four questions and a table that lead to one call), and each
 call's own documentation (its speed and rules; the batch layout
-in `hash_many`; the handler rules in `Queue`). This file holds the reasons
+in `hash_many`; the places and the handler in `stream`). This file holds the reasons
 behind them, the decisions with their dates, the open questions (each
 marked **Q**), and how the benchmark measures each call. bench-hashes'
 `FROZEN.md` turns it into measurements.
@@ -57,7 +57,8 @@ a faster hash saves CPU time and energy rather than waiting.
   helps only pieces of 512 KiB and more, the stream's use case done less
   well; if the stream lands, it likely goes (Simplicity, a second
   solution), and b3sum's read path moves to the stream.
-- The `Queue`, in its three shapes (kept: item 3 below).
+- The stream, which replaced the `Queue` and its three shapes (item 3
+  below).
 
 ### APIs added, and the one still considered
 
@@ -85,8 +86,17 @@ a faster hash saves CPU time and energy rather than waiting.
    Next: items of one chunk or less (a quarter of git's objects) still
    hash one at a time; a multithreaded form for collections larger than
    a core's share.
-3. **The stream does not replace the queue** (decided October 5, 2026,
-   on Zooko's request to evaluate and judge). The queue pays most where
+3. **The stream replaces the queue** (decided October 16, 2026, Zooko,
+   reversing October 5). The stream now covers the queue's three shapes
+   (`submit` and `submit_with` for messages, `submit_reader` for pieces,
+   `submit_batch` with the program's places for fixed-length batches), and
+   its cells beat the queue's on the i7-12700K (streaming batches x0.62,
+   messages x0.82 against servil beb9abe's queue, bench-hashes'
+   default run, three pairs). Retiring the queue removes its 980 lines, its
+   task list and its delivery thread, and leaves one scheduler: every
+   call and stream publishes its work as a source the workers take from
+   (fork #59). The October 5 decision, for the record: **the stream does
+   not replace the queue** (on Zooko's request to evaluate and judge). The queue pays most where
    pipelining matters most, and the stream has no form there: on the Mac
    (job 1213) pipelined 1 KiB messages take 0.121 ns/B against 0.683
    waiting for each call (5.6x), 64 KiB 0.061 against 0.229, batches of 16

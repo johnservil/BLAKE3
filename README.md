@@ -16,9 +16,9 @@ This is my fork of BLAKE3, for faster hashing on 64-bit Arm, and above all on Ap
 chips; on other CPUs it runs upstream's code. It computes the same digests as the official
 crate, and adds calls for the ways programs hash: one large message over every core
 (`hash_multithreaded`), batches and collections of messages (`hash_many`, `hash_each_with`),
-many messages arriving at once (`Hasher::update_each`), a stream of buffers hashed on other
-threads while your program reads the next (`Queue`), and verified streaming in iroh-blobs'
-format (`outboard_with`, `Verifier`).
+many messages arriving at once (`Hasher::update_each`), a stream of messages hashed on other
+threads while your program reads or makes the next (`stream`), and verified streaming in
+iroh-blobs' format (`outboard_with`, `Verifier`).
 
 To use it, add
 

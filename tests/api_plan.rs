@@ -6,8 +6,7 @@
 //! reference implementation (reference_impl/). Nothing here computes an
 //! expected answer with this crate.
 
-use blake3_servil::{FixedHandler, Hash, MessageHandler, Mode, PieceHandler, Queue};
-use std::sync::mpsc;
+use blake3_servil::{Hash, Mode};
 
 const KEY: &[u8; 32] = b"whats the Elvish word for friend";
 const CONTEXT: &str = "BLAKE3 2019-12-27 16:29:52 test vectors context";
@@ -177,319 +176,181 @@ fn a_batch_whose_buffer_is_not_whole_slots_is_refused() {
     blake3_servil::hash_many(&[0u8; 100], 64, &mut out);
 }
 
-// ---------- The queue: handlers that report to the test ----------
+// ---------- The stream ----------
 
-/// Records each call and forwards it to the test thread, which may block on
-/// the channel (the test's choice; the queue never blocks).
-struct Messages(mpsc::Sender<(Vec<u8>, Hash)>);
-impl MessageHandler for Messages {
-    type Buffer = Vec<u8>;
-    fn hashed(&mut self, buffer: Vec<u8>, hash: Hash) {
-        self.0.send((buffer, hash)).unwrap();
-    }
+fn zeros(n: usize) -> Vec<Hash> {
+    vec![Hash::from_bytes([0; 32]); n]
 }
 
-enum PieceEvent {
-    Piece(Vec<u8>),
-    Finished(Hash),
-}
-struct Pieces(mpsc::Sender<PieceEvent>);
-impl PieceHandler for Pieces {
-    type Buffer = Vec<u8>;
-    fn piece_done(&mut self, buffer: Vec<u8>) {
-        self.0.send(PieceEvent::Piece(buffer)).unwrap();
-    }
-    fn finished(&mut self, hash: Hash) {
-        self.0.send(PieceEvent::Finished(hash)).unwrap();
-    }
-}
-
-struct Fixed(mpsc::Sender<(Vec<u8>, Vec<[u8; 32]>)>);
-impl FixedHandler for Fixed {
-    type Buffer = Vec<u8>;
-    type Digests = Vec<[u8; 32]>;
-    fn hashed(&mut self, buffer: Vec<u8>, digests: Vec<[u8; 32]>) {
-        self.0.send((buffer, digests)).unwrap();
-    }
-}
-
-/// Messages of many lengths, the vectors' and larger, each its own buffer:
-/// every buffer comes back once, in submission order, with its digest.
+/// Messages of many lengths, the vectors' and larger, borrowed, written in
+/// place, and read: each digest in its place, every place handed back
+/// once, in submission order, in every mode.
 #[test]
-#[cfg_attr(target_family = "wasm", ignore = "a queue needs threads, which this target lacks")]
-fn queue_of_messages_returns_every_buffer_in_order_with_its_digest() {
+#[cfg_attr(target_family = "wasm", ignore = "a stream needs threads, which this target lacks")]
+fn a_stream_puts_every_digest_in_its_place_and_hands_the_places_back_in_order() {
     blake3_servil::initialize_multithreaded();
-    let mut lengths: Vec<usize> = vectors().iter().map(|(len, _)| *len).collect();
-    lengths.extend(LARGE);
+    let lens: Vec<usize> = vectors().iter().map(|(len, _)| *len).chain(LARGE).collect();
+    let messages: Vec<Vec<u8>> = lens.iter().map(|&len| input(len)).collect();
     for (m, mode) in modes().into_iter().enumerate() {
-        {
-            let (tx, rx) = mpsc::channel();
-            let queue = Queue::messages(mode, Messages(tx));
-            for &len in &lengths {
-                queue.submit(input(len));
+        let mut places = zeros(messages.len());
+        let want_order: Vec<usize> = places.iter().map(|p| p as *const Hash as usize).collect();
+        let mut order = Vec::new();
+        blake3_servil::stream(mode, |done: &mut [Hash]| order.extend(done.iter().map(|p| p as *const Hash as usize)), |s| {
+            for (i, (message, place)) in messages.iter().zip(&mut places).enumerate() {
+                match i % 3 {
+                    0 => s.submit(message, place),
+                    1 => s.submit_with(message.len(), |at, room| room.copy_from_slice(&message[at..][..room.len()]), place),
+                    _ => assert_eq!(s.submit_reader(&message[..], Some(message.len() as u64), place).unwrap(), message.len() as u64),
+                }
             }
-            for &len in &lengths {
-                let (buffer, hash) = rx.recv().expect("every buffer comes back");
-                assert_eq!(buffer.len(), len, "submission order, mode {m}");
-                assert_eq!(buffer, input(len), "the buffer comes back unchanged");
-                assert_eq!(hash, Hash::from(reference(m, &buffer)), "mode {m}, {len} bytes");
-            }
-            drop(queue);
-            assert!(rx.try_recv().is_err(), "one call per buffer");
+            s.finish();
+        });
+        assert!(order == want_order, "every place handed back once, in order (mode {m})");
+        for (i, message) in messages.iter().enumerate() {
+            assert_eq!(*places[i].as_bytes(), reference(m, message), "message {i}, {} bytes, mode {m}", message.len());
         }
     }
 }
 
-/// One long message in pieces of odd sizes: each piece comes back, and one
-/// digest arrives after finish, equal to the whole message's.
+/// Batches of fixed-length messages, borrowed and written in place: one
+/// digest per message in the caller's place, the place handed back whole.
 #[test]
-#[cfg_attr(target_family = "wasm", ignore = "a queue needs threads, which this target lacks")]
-fn queue_of_pieces_returns_each_piece_and_one_digest() {
+#[cfg_attr(target_family = "wasm", ignore = "a stream needs threads, which this target lacks")]
+fn a_streams_batches_fill_the_callers_places() {
     blake3_servil::initialize_multithreaded();
-    for total in [0usize, 1, 1024, 1025, 100_000, 1 << 20, (3 << 20) + 12345] {
-        let data = input(total);
-        for piece_len in [1usize, 63, 64, 1000, 4096, 65536, 1 << 20] {
-            if total / piece_len > 5000 {
-                continue;
-            }
-            for (m, mode) in modes().into_iter().enumerate() {
-                {
-                    let (tx, rx) = mpsc::channel();
-                    let queue = Queue::pieces(mode, Pieces(tx));
-                    let pieces: Vec<Vec<u8>> = data.chunks(piece_len).map(<[u8]>::to_vec).collect();
-                    for piece in &pieces {
-                        queue.submit(piece.clone());
-                    }
-                    queue.finish();
-                    for piece in &pieces {
-                        match rx.recv().unwrap() {
-                            PieceEvent::Piece(buffer) => assert_eq!(&buffer, piece, "pieces return in order"),
-                            PieceEvent::Finished(_) => panic!("finished before every piece returned"),
-                        }
-                    }
-                    match rx.recv().unwrap() {
-                        PieceEvent::Finished(hash) => assert_eq!(hash, Hash::from(reference(m, &data)), "{total} bytes in {piece_len}-byte pieces, mode {m}"),
-                        PieceEvent::Piece(_) => panic!("a piece after the last"),
-                    }
+    let cases = [(64, 1), (64, 4096), (100, 7), (1024, 300), (1500, 33)];
+    let batches: Vec<(Vec<u8>, Vec<Vec<u8>>)> = cases.iter().map(|&(len, count)| padded_batch(count, len)).collect();
+    for (m, mode) in modes().into_iter().enumerate() {
+        let mut places: Vec<Vec<Hash>> = cases.iter().map(|&(_, count)| zeros(count)).collect();
+        let mut handed = Vec::new();
+        blake3_servil::stream(mode, |done: &mut [Hash]| handed.push(done.len()), |s| {
+            for (k, ((&(len, _), (buffer, _)), place)) in cases.iter().zip(&batches).zip(&mut places).enumerate() {
+                if k % 2 == 0 {
+                    s.submit_batch(buffer, len, place);
+                } else {
+                    s.submit_batch_with(len, |at, room| room.copy_from_slice(&buffer[at..][..room.len()]), place);
                 }
+            }
+            s.finish();
+        });
+        assert_eq!(handed, cases.iter().map(|&(_, count)| count).collect::<Vec<_>>(), "each batch's place back whole, in order");
+        for (k, (_, messages)) in batches.iter().enumerate() {
+            for (i, message) in messages.iter().enumerate() {
+                assert_eq!(*places[k][i].as_bytes(), reference(m, message), "batch {k} message {i}, mode {m}");
             }
         }
     }
 }
 
-/// Fixed-length messages back to back, several buffers: each buffer comes
-/// back with its digests, written into the space the caller handed over.
+/// Bursts of large batches with pauses between them, long enough for the
+/// pool's workers to park: every batch completes (a queue once hung here:
+/// fork NOTES, "The queue hung without SME2").
 #[test]
-#[cfg_attr(target_family = "wasm", ignore = "a queue needs threads, which this target lacks")]
-fn queue_of_fixed_length_messages_fills_the_callers_digest_space() {
-    blake3_servil::initialize_multithreaded();
-    for (len, per_buffer) in [(64usize, 1usize), (64, 4), (64, 16), (64, 1000), (64, 16384), (256, 50), (1024, 9), (100, 7)] {
-        for (m, mode) in modes().into_iter().enumerate() {
-            {
-                let (tx, rx) = mpsc::channel();
-                let queue = Queue::fixed(len, mode, Fixed(tx));
-                let batches: Vec<(Vec<u8>, Vec<Vec<u8>>)> = (0..3).map(|b| {
-                    let (buffer, messages) = padded_batch(per_buffer + b, len);
-                    (buffer, messages)
-                }).collect();
-                for (buffer, messages) in &batches {
-                    queue.submit(buffer.clone(), vec![[0u8; 32]; messages.len()]);
-                }
-                for (buffer, messages) in &batches {
-                    let (returned, digests) = rx.recv().unwrap();
-                    assert_eq!(&returned, buffer, "buffers return in order");
-                    let expected: Vec<[u8; 32]> = messages.iter().map(|message| reference(m, message)).collect();
-                    assert_eq!(digests, expected, "{} x {len} B, mode {m}", messages.len());
-                }
-            }
-        }
-    }
-}
-
-/// Bursts of large batches (4096 messages, 256 KiB, hashed as tasks of
-/// their own), each burst drained and followed by a pause long enough for
-/// the queue to go idle and the pool's workers to sleep: every batch comes
-/// back with its digests. Without SME2 a worker could once sleep on tasks
-/// pushed before the queue's delivery thread held the pool again, and the
-/// burst hung (fork NOTES, "The queue hung without SME2").
-#[test]
-#[cfg_attr(target_family = "wasm", ignore = "a queue needs threads, which this target lacks")]
+#[cfg_attr(target_family = "wasm", ignore = "a stream needs threads, which this target lacks")]
 fn bursts_of_large_batches_after_pauses_complete() {
     blake3_servil::initialize_multithreaded();
     let (buffer, messages) = padded_batch(4096, 64);
     let expected: Vec<[u8; 32]> = messages.iter().map(|message| reference(0, message)).collect();
-    let (tx, rx) = mpsc::channel();
-    let queue = Queue::fixed(64, Mode::Hash, Fixed(tx));
-    let mut buffers = vec![buffer; 4];
+    let mut places = vec![zeros(4096); 4];
     for burst in 0..400 {
-        for buffer in buffers.drain(..) {
-            queue.submit(buffer, vec![[0u8; 32]; 4096]);
-        }
-        for _ in 0..4 {
-            let (returned, digests) = rx.recv().unwrap();
-            assert!(digests == expected, "burst {burst}");
-            buffers.push(returned);
+        blake3_servil::stream(Mode::Hash, |_: &mut [Hash]| {}, |s| {
+            for place in places.iter_mut() {
+                s.submit_batch(&buffer, 64, place);
+            }
+            s.finish();
+        });
+        for place in &places {
+            assert!(place.iter().map(|h| *h.as_bytes()).eq(expected.iter().copied()), "burst {burst}");
         }
         std::thread::sleep(std::time::Duration::from_micros(200));
     }
 }
 
-// ---------- The handler contract ----------
-
-/// A handler may submit from inside its call (refill and resubmit): a fixed
-/// set of four buffers cycles through the queue until 1000 messages are hashed.
+/// A stream that runs on reuses a fixed set of places: four cycle through
+/// the handler (a free list the handler fills and the body takes from)
+/// until 1000 messages are hashed, each digest read as its place comes back.
 #[test]
-#[cfg_attr(target_family = "wasm", ignore = "a queue needs threads, which this target lacks")]
-fn a_handler_may_resubmit_its_buffer() {
+#[cfg_attr(target_family = "wasm", ignore = "a stream needs threads, which this target lacks")]
+fn a_stream_cycles_a_fixed_set_of_places() {
     blake3_servil::initialize_multithreaded();
-    struct Cycle {
-        queue: std::sync::Arc<std::sync::OnceLock<Queue<Cycle>>>,
-        left: usize,
-        seen: Vec<Hash>,
-        done: mpsc::Sender<Vec<Hash>>,
-    }
-    impl MessageHandler for Cycle {
-        type Buffer = Vec<u8>;
-        fn hashed(&mut self, mut buffer: Vec<u8>, hash: Hash) {
-            self.seen.push(hash);
-            if self.left == 0 {
-                if self.seen.len() == 1000 {
-                    self.done.send(std::mem::take(&mut self.seen)).unwrap();
-                }
-                return;
+    let messages: Vec<Vec<u8>> = (0..1000).map(|i| input(1 + i * 7 % 3000)).collect();
+    let mut places = zeros(4);
+    let free = std::cell::RefCell::new(places.iter_mut().collect::<Vec<_>>());
+    let got = std::cell::RefCell::new(Vec::new());
+    blake3_servil::stream(
+        Mode::Hash,
+        |done: &mut [Hash]| {
+            got.borrow_mut().push(*done[0].as_bytes());
+            free.borrow_mut().push(&mut done[0]);
+        },
+        |s| {
+            for message in &messages {
+                let place = loop {
+                    if let Some(place) = free.borrow_mut().pop() {
+                        break place;
+                    }
+                    s.collect();
+                };
+                s.submit(message, place);
             }
-            self.left -= 1;
-            buffer[0] = buffer[0].wrapping_add(1);
-            self.queue.get().unwrap().submit(buffer);
-        }
-    }
-    let (tx, rx) = mpsc::channel();
-    let cell = std::sync::Arc::new(std::sync::OnceLock::new());
-    let queue = Queue::messages(Mode::Hash, Cycle { queue: cell.clone(), left: 996, seen: Vec::new(), done: tx });
-    let _ = cell.set(queue);
-    for b in 0..4u8 {
-        cell.get().unwrap().submit(vec![b; 1000]);
-    }
-    let seen = rx.recv_timeout(std::time::Duration::from_secs(60)).expect("1000 digests");
-    assert_eq!(seen.len(), 1000);
-    assert!(seen.iter().all(|hash| *hash != Hash::from([0u8; 32])));
-}
-
-/// Dropping a queue cancels nothing: every buffer in flight still comes back.
-#[test]
-#[cfg_attr(target_family = "wasm", ignore = "a queue needs threads, which this target lacks")]
-fn dropping_a_queue_cancels_nothing() {
-    blake3_servil::initialize_multithreaded();
-    let (tx, rx) = mpsc::channel();
-    let queue = Queue::messages(Mode::Hash, Messages(tx));
-    for i in 0..200 {
-        queue.submit(input(1000 + i));
-    }
-    drop(queue);
-    for i in 0..200 {
-        let (buffer, hash) = rx.recv_timeout(std::time::Duration::from_secs(60)).expect("buffers come back after the drop");
-        assert_eq!(buffer.len(), 1000 + i);
-        assert_eq!(hash, Hash::from(reference(0, &buffer)));
+            s.finish();
+        },
+    );
+    let got = got.into_inner();
+    assert_eq!(got.len(), messages.len());
+    for (i, message) in messages.iter().enumerate() {
+        assert_eq!(got[i], reference(0, message), "message {i}");
     }
 }
 
-/// Queues on several threads at once, of every shape, share the engine and
-/// each keeps its own order and results.
+/// Streams on several threads at once, in different modes, share the
+/// workers and keep their own order.
 #[test]
-#[cfg_attr(target_family = "wasm", ignore = "a queue needs threads, which this target lacks")]
-fn queues_on_several_threads_keep_their_own_order() {
+#[cfg_attr(target_family = "wasm", ignore = "a stream needs threads, which this target lacks")]
+fn streams_on_several_threads_keep_their_own_order() {
     blake3_servil::initialize_multithreaded();
     std::thread::scope(|scope| {
-        for t in 0..6usize {
+        for t in 0..4usize {
             scope.spawn(move || {
-                let (tx, rx) = mpsc::channel();
-                let queue = Queue::messages(if t % 2 == 0 { Mode::Hash } else { Mode::Keyed(KEY) }, Messages(tx));
-                let lengths: Vec<usize> = (0..300).map(|i| (i * 7919 + t * 104729) % 300_000).collect();
-                for &len in &lengths {
-                    queue.submit(input(len));
-                }
-                for &len in &lengths {
-                    let (buffer, hash) = rx.recv().unwrap();
-                    assert_eq!(buffer.len(), len, "thread {t}: its own order");
-                    assert_eq!(hash, Hash::from(reference(t % 2, &buffer)), "thread {t}, {len} bytes");
+                let messages: Vec<Vec<u8>> = (0..300).map(|i| input((i * 131 + t * 17) % 70_000)).collect();
+                let m = t % 3;
+                let mut places = zeros(messages.len());
+                blake3_servil::stream(modes()[m], |_: &mut [Hash]| {}, |s| {
+                    for (message, place) in messages.iter().zip(&mut places) {
+                        s.submit(message, place);
+                    }
+                    s.finish();
+                });
+                for (i, message) in messages.iter().enumerate() {
+                    assert_eq!(*places[i].as_bytes(), reference(m, message), "thread {t} message {i}");
                 }
             });
         }
     });
 }
 
-/// Several threads submitting to one queue at once (a queue is `Sync`):
-/// every buffer comes back once, with its digest, and each thread's own
-/// submissions in its order.
+/// A handler that panics unwinds on the caller's thread, after the threads
+/// are done with the stream's messages; the pool goes on serving.
 #[test]
-#[cfg_attr(target_family = "wasm", ignore = "a queue needs threads, which this target lacks")]
-fn one_queue_shared_by_several_submitting_threads() {
+#[cfg_attr(target_family = "wasm", ignore = "a stream needs threads, which this target lacks")]
+fn a_panicking_handler_unwinds_and_the_pool_goes_on() {
     blake3_servil::initialize_multithreaded();
-    let (tx, rx) = mpsc::channel();
-    let queue = Queue::messages(Mode::Hash, Messages(tx));
-    const THREADS: usize = 4;
-    const EACH: usize = 3000;
-    std::thread::scope(|scope| {
-        for t in 0..THREADS {
-            let queue = &queue;
-            scope.spawn(move || {
-                for i in 0..EACH {
-                    // The first byte and the length name the thread and the index.
-                    let len = [64usize, 1000, 20_000][i % 3];
-                    let mut buffer = input(len);
-                    buffer[0] = t as u8;
-                    buffer[1..9].copy_from_slice(&(i as u64).to_le_bytes());
-                    queue.submit(buffer);
-                }
-            });
-        }
-    });
-    let mut next = [0u64; THREADS];
-    for _ in 0..THREADS * EACH {
-        let (buffer, hash) = rx.recv().unwrap();
-        let t = buffer[0] as usize;
-        let i = u64::from_le_bytes(buffer[1..9].try_into().unwrap());
-        assert_eq!(i, next[t], "thread {t}'s submissions come back in its order");
-        next[t] += 1;
-        assert_eq!(hash, Hash::from(reference(0, &buffer)), "thread {t}, submission {i}");
-    }
-    assert_eq!(next, [EACH as u64; THREADS], "every buffer came back once");
-}
-
-/// A panic in a handler aborts the process (fail stop). Run in a child
-/// process: the test binary reruns itself with only the panicking test.
-#[cfg(unix)]
-#[test]
-#[cfg_attr(target_family = "wasm", ignore = "a queue needs threads, which this target lacks")]
-fn a_panicking_handler_aborts_the_process() {
-    blake3_servil::initialize_multithreaded();
-    if std::env::var_os("API_PLAN_PANIC_CHILD").is_some() {
-        struct Panics;
-        impl MessageHandler for Panics {
-            type Buffer = Vec<u8>;
-            fn hashed(&mut self, _: Vec<u8>, _: Hash) {
-                panic!("a handler's panic");
+    let message = input(100_000);
+    let result = std::panic::catch_unwind(|| {
+        let mut places = zeros(8);
+        blake3_servil::stream(Mode::Hash, |_: &mut [Hash]| panic!("a handler's panic"), |s| {
+            for place in places.iter_mut() {
+                s.submit(&message, place);
             }
-        }
-        let queue = Queue::messages(Mode::Hash, Panics);
-        queue.submit(vec![1u8; 100]);
-        std::thread::sleep(std::time::Duration::from_secs(30));
-        std::process::exit(0); // reached only if the panic did not abort
-    }
-    let status = std::process::Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", "a_panicking_handler_aborts_the_process", "--nocapture"])
-        .env("API_PLAN_PANIC_CHILD", "1")
-        .status()
-        .unwrap();
-    use std::os::unix::process::ExitStatusExt;
-    // Under a target's runner (cross runs its targets on qemu, named by a
-    // CARGO_TARGET_<triple>_RUNNER variable), the child's abort arrives as
-    // the runner's own exit status; the child still must not have run on
-    // to its exit(0).
-    let emulated = std::env::vars().any(|(name, value)| name.starts_with("CARGO_TARGET_") && name.ends_with("_RUNNER") && !value.is_empty());
-    if emulated {
-        assert!(!status.success(), "the child ended without success under emulation, status {status:?}");
-    } else {
-        assert_eq!(status.signal(), Some(6), "the child aborted (SIGABRT), status {status:?}");
-    }
+            s.finish();
+        });
+    });
+    assert!(result.is_err(), "the handler's panic reaches the caller");
+    let mut place = Hash::from_bytes([0; 32]);
+    blake3_servil::stream(Mode::Hash, |_: &mut [Hash]| {}, |s| {
+        s.submit(&message, &mut place);
+        s.finish();
+    });
+    assert_eq!(*place.as_bytes(), reference(0, &message));
+    assert_eq!(*blake3_servil::hash_multithreaded(&input(3 << 20)).as_bytes(), reference(0, &input(3 << 20)));
 }
