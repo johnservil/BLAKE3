@@ -764,9 +764,11 @@ fn check_one_checkfile(path: &Path, args: &Args, files_failed: &mut u64) -> anyh
 }
 
 /// A mapped file that another program truncates while b3sum reads it
-/// raises SIGBUS at the first page past its new end: say so and stop,
-/// rather than die unexplained. (Only write and _exit here: a signal
-/// handler may call nothing else.)
+/// raises SIGBUS at the first page past its new end, and that is by far
+/// the likeliest SIGBUS here; but a hardware memory error raises it too,
+/// so the message says what b3sum knows, then stops, rather than die
+/// unexplained. (Only write and _exit here: a signal handler may call
+/// nothing else.)
 #[cfg(unix)]
 fn explain_sigbus() {
     static SAID: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -778,7 +780,7 @@ fn explain_sigbus() {
                 unsafe { libc::pause() };
             }
         }
-        const MESSAGE: &[u8] = b"b3sum: a file shrank while b3sum read it (another program truncated it), so no digest of it would be right; b3sum stops here. Hash the files again once nothing writes to them.\n";
+        const MESSAGE: &[u8] = b"b3sum: a bus error while reading a mapped file; most likely another program truncated it, so no digest of it would be right. Hash the files again once nothing writes to them.\n";
         // Sound: write and _exit are async-signal-safe.
         unsafe {
             libc::write(2, MESSAGE.as_ptr().cast(), MESSAGE.len());
