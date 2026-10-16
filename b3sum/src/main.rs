@@ -180,6 +180,7 @@ fn hash_path(args: &Args, path: &Path) -> anyhow::Result<blake3::OutputReader> {
             // POOL_LEN.
             let pool_from = if args.file_args.len() > 1 && resident(&map) { SHARED_POOL_LEN } else { POOL_LEN };
             update(&mut hasher, &map, pool_from);
+            hold(map);
         } else {
             update_from(&mut hasher, file)?;
         }
@@ -189,6 +190,39 @@ fn hash_path(args: &Args, path: &Path) -> anyhow::Result<blake3::OutputReader> {
     let mut output_reader = hasher.finalize_xof();
     output_reader.set_position(args.seek());
     Ok(output_reader)
+}
+
+/// The most pages b3sum leaves mapped to the process's exit, each kept by
+/// one page-table entry (8 bytes, kernel memory, until exit): 262144 pages,
+/// about 2 MiB of entries, which map 1 GiB of files with 4 KiB pages (4 GiB
+/// with Apple's 16 KiB). The file's own pages are page cache, as after any
+/// read, and stay reclaimable while mapped.
+#[cfg(unix)]
+const HOLD_PAGES: u64 = 1 << 18;
+
+/// A hashed file's mapping, left to the process's exit while the pages
+/// held stay within HOLD_PAGES, else unmapped now. Unmapping tears down
+/// the file's page-table entries, about 65 ns a page with cross-core TLB
+/// flushes (i7-12700K: 23-25 ms of a 56 ms run for a cached 1 GiB file),
+/// while entries that merely exist cost
+/// nothing measured beside their memory (NOTES-servil.md, "Mappings and
+/// page tables"); exit reclaims them (crash-only). The cap bounds what a
+/// run over many large files holds (John, #56: holding every file of a
+/// 10 TB run would hold 20 GB of page tables). Measured against unmapping
+/// every file (servil), at a 1 GiB cap: 16 files of 64 MiB x0.82-0.93, the
+/// mixed tree x0.87-0.90; holding only the last file lost the gain (x1.00).
+#[cfg(unix)]
+fn hold(map: memmap2::Mmap) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static HELD: AtomicU64 = AtomicU64::new(0);
+    // Sound: a plain query.
+    let page = u64::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) }).expect("the page size is positive");
+    let pages = (map.len() as u64).div_ceil(page);
+    if HELD.fetch_add(pages, Ordering::Relaxed) + pages <= HOLD_PAGES {
+        std::mem::forget(map);
+    } else {
+        HELD.fetch_sub(pages, Ordering::Relaxed);
+    }
 }
 
 /// `file` mapped, when it is at least MAP_LEN long and, outside Linux, in the page cache
