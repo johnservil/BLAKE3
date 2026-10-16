@@ -11,7 +11,7 @@ import os
 import shutil
 import subprocess
 import sys
-import tempfile
+import results
 import time
 
 sys.path.insert(0, os.path.dirname(__file__))
@@ -28,9 +28,7 @@ CLANG = next(c for c in ("clang-19", "clang-18", "clang-17", "clang") if shutil.
 
 
 def assemble():
-    obj = os.path.join(tempfile.mkdtemp(), "sme2.o")
-    subprocess.run([CLANG, "-c", "-march=armv9-a+sme2", os.path.join(ROOT_DIR, "c/blake3_sme2_aarch64.S"), "-o", obj], check=True)
-    return obj
+    return results.assembled([CLANG, "-c", "-march=armv9-a+sme2"], open(os.path.join(ROOT_DIR, "c/blake3_sme2_aarch64.S")).read(), ".o")
 
 
 class SmeSetup(Setup):
@@ -609,9 +607,7 @@ HYBRID_GROUP = 18
 
 
 def assemble_hybrid():
-    obj = os.path.join(tempfile.mkdtemp(), "sme2_hybrid.o")
-    subprocess.run([CLANG, "-c", "-march=armv9-a+sme2", os.path.join(ROOT_DIR, "c/blake3_sme2_hybrid_aarch64.S"), "-o", obj], check=True)
-    return obj
+    return results.assembled([CLANG, "-c", "-march=armv9-a+sme2"], open(os.path.join(ROOT_DIR, "c/blake3_sme2_hybrid_aarch64.S")).read(), ".o")
 
 
 class HybridSetup(Setup):

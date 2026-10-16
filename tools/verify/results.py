@@ -26,6 +26,23 @@ def blake3(paths=(), data=None):
     return out.stdout.decode().split()
 
 
+def assembled(command, source, suffix):
+    """`source`, assembly text, built by `command` (a compiler and its
+    flags; the input and `-o` follow) into a file named for the BLAKE3 of
+    both, in /tmp: each content built once and reused, so runs leave a
+    file per content, not per call."""
+    key = blake3(data="\0".join([*command, source]).encode())[0][:32]
+    out = f"/tmp/verify-build/{key}{suffix}"
+    if not os.path.exists(out):
+        os.makedirs("/tmp/verify-build", exist_ok=True)
+        part = f"{out}.{os.getpid()}"
+        with open(part + ".S", "w") as f:
+            f.write(source)
+        subprocess.run([*command, part + ".S", "-o", part], check=True)
+        os.replace(part, out)
+    return out
+
+
 def _key(library):
     """BLAKE3 of the library's and the verify tools' hashes, in order."""
     tools = sorted(os.path.join(HERE, n) for n in os.listdir(HERE) if n.endswith(".py"))

@@ -15,7 +15,7 @@ back unchanged. Exits nonzero on the first failure.
 import os
 import subprocess
 import sys
-import tempfile
+import results
 import time
 
 sys.path.insert(0, os.path.dirname(__file__))
@@ -30,9 +30,7 @@ STACK = 1 << 16
 
 
 def assemble():
-    obj = os.path.join(tempfile.mkdtemp(), "hybrid.o")
-    subprocess.run(["cc", "-c", os.path.join(ROOT_DIR, "c/blake3_neon_hybrid_aarch64.S"), "-o", obj], check=True)
-    return obj
+    return results.assembled(["cc", "-c"], open(os.path.join(ROOT_DIR, "c/blake3_neon_hybrid_aarch64.S")).read(), ".o")
 
 
 def same(a, b):

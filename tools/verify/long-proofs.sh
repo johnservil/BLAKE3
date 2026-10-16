@@ -30,7 +30,8 @@ git -C "$root" worktree prune
 git -C "$root" worktree add -q --detach "$tree" "$commit"
 status pending "running on the fork's VM"
 cd "$tree"
-export ELAN_HOME=${ELAN_HOME:-/root/.elan} PATH=/root/.elan/bin:$PATH
+# Temporary files on /tmp, the large tmpfs (the root filesystem is small).
+export ELAN_HOME=${ELAN_HOME:-/root/.elan} PATH=/root/.elan/bin:$PATH TMPDIR=/tmp
 verdict=passed state=success
 run() {  # name, command...: its log in $logs/name.txt; a failure ends the run
 	name=$1; shift

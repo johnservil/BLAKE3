@@ -15,7 +15,7 @@ import random
 import re
 import subprocess
 import sys
-import tempfile
+import results
 
 sys.path.insert(0, os.path.dirname(__file__))
 from z3 import BitVecVal
@@ -90,13 +90,7 @@ def build(fl):
                 src += [f"  mov w12, #{row}", f"  st1w {{za{t}h.s[w12, 0]}}, p0, [x17]", "  add x17, x17, #64"]
         src += ["  str x9, [x16, #4352]", "  add x17, x16, #4000", "  add x17, x17, #384", "  str p1, [x17]", "  smstop",
                 "  ldp d10, d11, [sp, #16]", "  ldp d12, d13, [sp, #32]", "  ldp d14, d15, [sp, #48]", "  ldp d8, d9, [sp], #64", "  ret"]
-    d = tempfile.mkdtemp()
-    path = os.path.join(d, "f.S")
-    with open(path, "w") as f:
-        f.write("\n".join(src) + "\n")
-    lib = os.path.join(d, "f.so")
-    subprocess.run([prove_sme2.CLANG, "-shared", "-march=armv9-a+sme2", path, "-o", lib], check=True)
-    return ctypes.CDLL(lib)
+    return ctypes.CDLL(results.assembled([prove_sme2.CLANG, "-shared", "-march=armv9-a+sme2"], "\n".join(src) + "\n", ".so"))
 
 
 def model(mnem, text, z, za, x9, mem, ws, p1):

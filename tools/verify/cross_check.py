@@ -18,7 +18,7 @@ import random
 import re
 import subprocess
 import sys
-import tempfile
+import results
 
 sys.path.insert(0, os.path.dirname(__file__))
 from z3 import BitVecVal
@@ -68,7 +68,6 @@ def forms(instructions):
 def build(form_list):
     """A shared library with one function per form: load x9-x12 from
     xs and v0-v3 from vs, run the instruction, store them back."""
-    d = tempfile.mkdtemp()
     src = [".text"]
     for i, (mnem, text) in enumerate(form_list):
         src += [f".global f{i}", f"f{i}:",
@@ -77,12 +76,7 @@ def build(form_list):
                 f"  {mnem} {text}",
                 "  stp x9, x10, [x0]", "  stp x11, x12, [x0, #16]",
                 "  st1 {v0.16b, v1.16b, v2.16b, v3.16b}, [x1]", "  ret"]
-    path = os.path.join(d, "forms.S")
-    with open(path, "w") as f:
-        f.write("\n".join(src) + "\n")
-    lib = os.path.join(d, "forms.so")
-    subprocess.run(["cc", "-shared", "-march=armv8.2-a+sha3", path, "-o", lib], check=True)
-    return ctypes.CDLL(lib)
+    return ctypes.CDLL(results.assembled(["cc", "-shared", "-march=armv8.2-a+sha3"], "\n".join(src) + "\n", ".so"))
 
 
 def model(mnem, text, xs, vs):
