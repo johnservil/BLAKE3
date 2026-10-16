@@ -24,16 +24,7 @@ pub unsafe fn hash_many<const N: usize>(
         let shape_covered = crate::neon_hybrid::covers(N, increment_counter);
         if shape_covered && crate::neon_hybrid::sha3_detected() {
             unsafe {
-                crate::neon_hybrid::hash_many(
-                    inputs,
-                    key,
-                    counter,
-                    increment_counter,
-                    flags,
-                    flags_start,
-                    flags_end,
-                    out,
-                );
+                crate::neon_hybrid::hash_many(inputs, key, counter, increment_counter, flags, flags_start, flags_end, out);
             }
             return;
         }
@@ -59,22 +50,8 @@ pub unsafe fn hash_many<const N: usize>(
 // implementation for 1x compression. However, we expose the portable Rust
 // implementation here instead, to avoid linking in unnecessary code.
 #[unsafe(export_name = "blake3_sme2_compress_in_place_portable")]
-pub extern "C" fn blake3_compress_in_place_portable(
-    cv: *mut u32,
-    block: *const u8,
-    block_len: u8,
-    counter: u64,
-    flags: u8,
-) {
-    unsafe {
-        crate::portable::compress_in_place(
-            &mut *(cv as *mut [u32; 8]),
-            &*(block as *const [u8; 64]),
-            block_len,
-            counter,
-            flags,
-        )
-    }
+pub extern "C" fn blake3_compress_in_place_portable(cv: *mut u32, block: *const u8, block_len: u8, counter: u64, flags: u8) {
+    unsafe { crate::portable::compress_in_place(&mut *(cv as *mut [u32; 8]), &*(block as *const [u8; 64]), block_len, counter, flags) }
 }
 
 pub mod ffi {

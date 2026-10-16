@@ -9,12 +9,7 @@ impl ChunkState {
     // Currently this type only supports the regular hash mode. If an
     // incremental user needs keyed_hash or derive_key, we can add that.
     pub fn new(chunk_counter: u64) -> Self {
-        Self(crate::ChunkState::new(
-            crate::IV,
-            chunk_counter,
-            0,
-            crate::platform::Platform::detect(),
-        ))
+        Self(crate::ChunkState::new(crate::IV, chunk_counter, 0, crate::platform::Platform::detect()))
     }
 
     #[inline]
@@ -30,31 +25,13 @@ impl ChunkState {
 
     pub fn finalize(&self, is_root: bool) -> crate::Hash {
         let output = self.0.output();
-        if is_root {
-            output.root_hash()
-        } else {
-            output.chaining_value().into()
-        }
+        if is_root { output.root_hash() } else { output.chaining_value().into() }
     }
 }
 
 // As above, this currently assumes the regular hash mode. If an incremental
 // user needs keyed_hash or derive_key, we can add that.
-pub fn parent_cv(
-    left_child: &crate::Hash,
-    right_child: &crate::Hash,
-    is_root: bool,
-) -> crate::Hash {
-    let output = crate::hasher::parent_output(
-        left_child.as_bytes(),
-        right_child.as_bytes(),
-        crate::IV,
-        0,
-        crate::platform::Platform::detect(),
-    );
-    if is_root {
-        output.root_hash()
-    } else {
-        output.chaining_value().into()
-    }
+pub fn parent_cv(left_child: &crate::Hash, right_child: &crate::Hash, is_root: bool) -> crate::Hash {
+    let output = crate::hasher::parent_output(left_child.as_bytes(), right_child.as_bytes(), crate::IV, 0, crate::platform::Platform::detect());
+    if is_root { output.root_hash() } else { output.chaining_value().into() }
 }

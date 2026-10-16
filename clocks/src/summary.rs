@@ -47,7 +47,11 @@ pub fn median_permille(ratios: &[u64]) -> u64 {
     let mut sorted = ratios.to_vec();
     sorted.sort_unstable();
     let n = sorted.len();
-    if n % 2 == 1 { sorted[n / 2] } else { (sorted[n / 2 - 1] + sorted[n / 2]).div_ceil(2) }
+    if n % 2 == 1 {
+        sorted[n / 2]
+    } else {
+        (sorted[n / 2 - 1] + sorted[n / 2]).div_ceil(2)
+    }
 }
 
 /// The least number of `pairs` that must agree for the sign test to call a
@@ -61,9 +65,7 @@ pub fn least_count(pairs: usize) -> usize {
         choose[j] = choose[j - 1] * (pairs - j + 1) as u128 / j as u128;
     }
     let total = 1u128 << pairs;
-    (0..=pairs + 1)
-        .find(|&k| k <= pairs && choose[k..].iter().sum::<u128>() * 20 <= total)
-        .unwrap_or(pairs + 1)
+    (0..=pairs + 1).find(|&k| k <= pairs && choose[k..].iter().sum::<u128>() * 20 <= total).unwrap_or(pairs + 1)
 }
 
 /// What the pairs say of one cell.

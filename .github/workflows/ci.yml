@@ -19,6 +19,17 @@ env:
   RUST_BACKTRACE: "1"
 
 jobs:
+  # Every crate in the tree formatted by rustfmt.toml at the root.
+  rustfmt:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        components: rustfmt
+    - name: cargo fmt --check, in each crate
+      run: for d in $(git ls-files '*Cargo.toml' | xargs -n1 dirname); do (cd "$d" && cargo fmt --all -- --check) || exit 1; done
+
   library_tests:
     # A pull request from a branch of this repository: its push runs CI already.
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository

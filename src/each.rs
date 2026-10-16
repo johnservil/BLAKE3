@@ -9,7 +9,7 @@
 //! then merge into its root as BLAKE3's tree places them.
 
 use crate::platform::Platform;
-use crate::{CVBytes, CVWords, ChunkState, Hash, Hasher, IncrementCounter, Mode, CHUNK_END, CHUNK_LEN, CHUNK_START, OUT_LEN};
+use crate::{CHUNK_END, CHUNK_LEN, CHUNK_START, CVBytes, CVWords, ChunkState, Hash, Hasher, IncrementCounter, Mode, OUT_LEN};
 
 /// [`hash_each_with`], using other CPU cores where that is faster: the
 /// same hashes, never slower. Collections of 512 KiB and more in all use
@@ -141,7 +141,8 @@ fn hash_held(hashers: &mut [Hasher], held: &[usize]) {
     let per = crate::STAGE_LEN / CHUNK_LEN;
     let chunks = n * per;
     let mut level = vec![0u8; chunks * OUT_LEN];
-    let refs: Vec<&[u8; CHUNK_LEN]> = alike.iter().flat_map(|&i| hashers[i].held_group().expect("a held group").1.chunks_exact(CHUNK_LEN)).map(|c| c.try_into().unwrap()).collect();
+    let refs: Vec<&[u8; CHUNK_LEN]> =
+        alike.iter().flat_map(|&i| hashers[i].held_group().expect("a held group").1.chunks_exact(CHUNK_LEN)).map(|c| c.try_into().unwrap()).collect();
     let counters: Vec<u64> = alike.iter().map(|&i| hashers[i].held_group().unwrap().0).collect();
     // On SME2, every group in one kernel call, each at its own counter;
     // elsewhere a call per group.
@@ -152,10 +153,21 @@ fn hash_held(hashers: &mut [Hasher], held: &[usize]) {
     if on_sme2 {
         // Sound: the turn's platform is SME2 only where detect() found it.
         #[cfg(blake3_sme2)]
-        unsafe { crate::sme2::hash_groups_at(&refs, &counters, &key, flags, CHUNK_START, CHUNK_END, &mut level) };
+        unsafe {
+            crate::sme2::hash_groups_at(&refs, &counters, &key, flags, CHUNK_START, CHUNK_END, &mut level)
+        };
     } else {
         for (k, &counter) in counters.iter().enumerate() {
-            platform.hash_many(&refs[k * per..(k + 1) * per], &key, counter, IncrementCounter::Yes, flags, CHUNK_START, CHUNK_END, &mut level[k * per * OUT_LEN..(k + 1) * per * OUT_LEN]);
+            platform.hash_many(
+                &refs[k * per..(k + 1) * per],
+                &key,
+                counter,
+                IncrementCounter::Yes,
+                flags,
+                CHUNK_START,
+                CHUNK_END,
+                &mut level[k * per * OUT_LEN..(k + 1) * per * OUT_LEN],
+            );
         }
     }
     // Three levels of parents to each group's two halves, then a fourth to
@@ -317,7 +329,12 @@ mod test {
         let mut input = vec![0u8; 3 << 20];
         crate::test::paint_test_input(&mut input);
         let lens = [0, 1, 1024, 1025, 3000, 15 * 1024, 16 * 1024, 100_000, 511 * 1024, 512 * 1024, 700_000];
-        let items: Vec<&[u8]> = (0..400).map(|k| { let n = lens[k * 7 % lens.len()].min(input.len() - k); &input[k..k + n] }).collect();
+        let items: Vec<&[u8]> = (0..400)
+            .map(|k| {
+                let n = lens[k * 7 % lens.len()].min(input.len() - k);
+                &input[k..k + n]
+            })
+            .collect();
         let key = [9u8; 32];
         for mode in [Mode::Hash, Mode::Keyed(&key), Mode::DeriveKey("each mt")] {
             let (mut a, mut b) = (vec![[0u8; OUT_LEN]; items.len()], vec![[0u8; OUT_LEN]; items.len()]);
@@ -341,7 +358,14 @@ mod test {
         // (offset, length): subtrees within what their offsets allow.
         let subtrees = [(64 * CHUNK_LEN, 64 * CHUNK_LEN), (16 * CHUNK_LEN, 16 * CHUNK_LEN), (CHUNK_LEN, CHUNK_LEN), (128 * CHUNK_LEN, 100_000)];
         let whole = [70_000usize, 300_000];
-        let mut hashers: Vec<Hasher> = subtrees.iter().map(|&(offset, _)| { let mut h = Hasher::new(); h.set_input_offset(offset as u64); h }).collect();
+        let mut hashers: Vec<Hasher> = subtrees
+            .iter()
+            .map(|&(offset, _)| {
+                let mut h = Hasher::new();
+                h.set_input_offset(offset as u64);
+                h
+            })
+            .collect();
         hashers.extend(whole.iter().map(|_| Hasher::new()));
         let lens: Vec<usize> = subtrees.iter().map(|&(_, len)| len).chain(whole).collect();
         let mut done = vec![0usize; lens.len()];
@@ -414,7 +438,28 @@ mod test {
     fn test_hash_each_matches_hash_with() {
         let mut input = vec![0u8; 40 * CHUNK_LEN];
         crate::test::paint_test_input(&mut input);
-        let mut lens = vec![0, 1, 63, 64, 65, 1023, 1024, 1025, 2047, 2048, 2049, 3000, 4096, 5000, 15 * CHUNK_LEN, 15 * CHUNK_LEN + 1, 16 * CHUNK_LEN - 1, 16 * CHUNK_LEN, 16 * CHUNK_LEN + 1, 40 * CHUNK_LEN];
+        let mut lens = vec![
+            0,
+            1,
+            63,
+            64,
+            65,
+            1023,
+            1024,
+            1025,
+            2047,
+            2048,
+            2049,
+            3000,
+            4096,
+            5000,
+            15 * CHUNK_LEN,
+            15 * CHUNK_LEN + 1,
+            16 * CHUNK_LEN - 1,
+            16 * CHUNK_LEN,
+            16 * CHUNK_LEN + 1,
+            40 * CHUNK_LEN,
+        ];
         for n in 2..16 {
             lens.push(n * CHUNK_LEN);
             lens.push(n * CHUNK_LEN - 7);

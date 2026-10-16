@@ -5,7 +5,11 @@ fn main() {
         for count in [4usize, 6, 8, 16, 64] {
             let slot = len.div_ceil(64) * 64;
             let mut input = vec![0u8; slot * count];
-            for (i, b) in input.iter_mut().enumerate() { if i % slot < len { *b = (i % 251) as u8; } }
+            for (i, b) in input.iter_mut().enumerate() {
+                if i % slot < len {
+                    *b = (i % 251) as u8;
+                }
+            }
             let mut out = vec![[0u8; 32]; count];
             let b = clocks::measure(32, 2_000_000, || blake3_servil::hash_many(std::hint::black_box(&input), len, &mut out));
             let m = clocks::summary::mean(b.iter().map(|x| (x.wall_ns, x.calls * count as u64)));

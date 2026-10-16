@@ -86,7 +86,11 @@ mod rusage {
 
     pub fn max_rss_bytes(w: &Words) -> u64 {
         // Linux counts KiB, macOS bytes.
-        if cfg!(target_vendor = "apple") { w[4] as u64 } else { w[4] as u64 * 1024 }
+        if cfg!(target_vendor = "apple") {
+            w[4] as u64
+        } else {
+            w[4] as u64 * 1024
+        }
     }
 
     pub fn major_faults(w: &Words) -> u64 {
@@ -101,7 +105,7 @@ mod rusage {
 
 #[cfg(all(unix, not(target_vendor = "apple")))]
 mod imp {
-    use super::{Run, rusage};
+    use super::{rusage, Run};
 
     pub fn finish(child: std::process::Child, started: std::time::Instant, started_ns: u64) -> Run {
         let (status, words) = rusage::reap(child.id() as i32);
@@ -121,7 +125,7 @@ mod imp {
 
 #[cfg(target_vendor = "apple")]
 mod imp {
-    use super::{Run, rusage};
+    use super::{rusage, Run};
     use crate::{Counts, Level};
 
     unsafe extern "C" {

@@ -306,22 +306,10 @@ pub fn max_subtree_len(input_offset: u64) -> Option<u64> {
 fn test_max_subtree_len() {
     assert_eq!(max_subtree_len(0), None);
     // (chunk index, max chunks)
-    let cases = [
-        (1, 1),
-        (2, 2),
-        (3, 1),
-        (4, 4),
-        (5, 1),
-        (6, 2),
-        (7, 1),
-        (8, 8),
-    ];
+    let cases = [(1, 1), (2, 2), (3, 1), (4, 4), (5, 1), (6, 2), (7, 1), (8, 8)];
     for (chunk_index, max_chunks) in cases {
         let input_offset = chunk_index * CHUNK_LEN as u64;
-        assert_eq!(
-            max_subtree_len(input_offset),
-            Some(max_chunks * CHUNK_LEN as u64),
-        );
+        assert_eq!(max_subtree_len(input_offset), Some(max_chunks * CHUNK_LEN as u64),);
     }
 }
 
@@ -431,18 +419,8 @@ impl<'a> Mode<'a> {
 /// (root/final) hashes and (non-root/non-final) chaining values.
 pub type ChainingValue = [u8; OUT_LEN];
 
-fn merge_subtrees_inner(
-    left_child: &ChainingValue,
-    right_child: &ChainingValue,
-    mode: Mode,
-) -> crate::Output {
-    crate::hasher::parent_output(
-        &left_child,
-        &right_child,
-        &mode.key_words(),
-        mode.flags_byte(),
-        Platform::detect(),
-    )
+fn merge_subtrees_inner(left_child: &ChainingValue, right_child: &ChainingValue, mode: Mode) -> crate::Output {
+    crate::hasher::parent_output(&left_child, &right_child, &mode.key_words(), mode.flags_byte(), Platform::detect())
 }
 
 /// Compute a non-root parent node chaining value from two child chaining values.
@@ -452,11 +430,7 @@ fn merge_subtrees_inner(
 /// [`Hasher::finalize_non_root`](HasherExt::finalize_non_root) or other calls to
 /// `merge_subtrees_non_root`. "Chaining value" is the academic term for a non-root or non-final
 /// hash.
-pub fn merge_subtrees_non_root(
-    left_child: &ChainingValue,
-    right_child: &ChainingValue,
-    mode: Mode,
-) -> ChainingValue {
+pub fn merge_subtrees_non_root(left_child: &ChainingValue, right_child: &ChainingValue, mode: Mode) -> ChainingValue {
     merge_subtrees_inner(left_child, right_child, mode).chaining_value()
 }
 
@@ -470,11 +444,7 @@ pub fn merge_subtrees_non_root(
 /// Note that inputs of [`CHUNK_LEN`] or less don't produce any parent nodes and can't be hashed
 /// using this function. In that case you must get the root hash from [`Hasher::finalize`] (or just
 /// [`blake3_servil::hash`](crate::hash)).
-pub fn merge_subtrees_root(
-    left_child: &ChainingValue,
-    right_child: &ChainingValue,
-    mode: Mode,
-) -> crate::Hash {
+pub fn merge_subtrees_root(left_child: &ChainingValue, right_child: &ChainingValue, mode: Mode) -> crate::Hash {
     merge_subtrees_inner(left_child, right_child, mode).root_hash()
 }
 
@@ -521,11 +491,7 @@ pub fn merge_subtrees_root(
 /// hasher.finalize_xof().fill(&mut expected);
 /// assert_eq!(output_bytes, expected);
 /// ```
-pub fn merge_subtrees_root_xof(
-    left_child: &ChainingValue,
-    right_child: &ChainingValue,
-    mode: Mode,
-) -> crate::OutputReader {
+pub fn merge_subtrees_root_xof(left_child: &ChainingValue, right_child: &ChainingValue, mode: Mode) -> crate::OutputReader {
     crate::OutputReader::new(merge_subtrees_inner(left_child, right_child, mode))
 }
 
@@ -584,9 +550,7 @@ mod test {
     #[test]
     #[should_panic]
     fn test_too_much_input_should_panic() {
-        Hasher::new()
-            .set_input_offset(CHUNK_LEN as u64)
-            .update(&[0; CHUNK_LEN + 1]);
+        Hasher::new().set_input_offset(CHUNK_LEN as u64).update(&[0; CHUNK_LEN + 1]);
     }
 
     #[test]
@@ -598,9 +562,7 @@ mod test {
     #[test]
     #[should_panic]
     fn test_set_input_offset_cant_finalize_xof() {
-        Hasher::new()
-            .set_input_offset(CHUNK_LEN as u64)
-            .finalize_xof();
+        Hasher::new().set_input_offset(CHUNK_LEN as u64).finalize_xof();
     }
 
     #[test]
@@ -627,10 +589,7 @@ mod test {
                 while subtree_offset < input.len() {
                     let take = core::cmp::min(subtree_len, input.len() - subtree_offset);
                     let subtree_input = &input[subtree_offset..][..take];
-                    let subtree_cv = Hasher::new()
-                        .set_input_offset(subtree_offset as u64)
-                        .update(subtree_input)
-                        .finalize_non_root();
+                    let subtree_cv = Hasher::new().set_input_offset(subtree_offset as u64).update(subtree_input).finalize_non_root();
                     chaining_values.push(subtree_cv);
                     subtree_offset += take;
                 }
@@ -642,11 +601,7 @@ mod test {
                     // Merge each side-by-side pair in place, overwriting the front half of the
                     // array with the merged results. This moves us "up one level" in the tree.
                     for i in 0..(n / 2) {
-                        chaining_values[i] = merge_subtrees_non_root(
-                            &chaining_values[2 * i],
-                            &chaining_values[2 * i + 1],
-                            Mode::Hash,
-                        );
+                        chaining_values[i] = merge_subtrees_non_root(&chaining_values[2 * i], &chaining_values[2 * i + 1], Mode::Hash);
                     }
                     // If there's an odd CV out, it moves up.
                     if n % 2 == 1 {
@@ -655,8 +610,7 @@ mod test {
                     chaining_values.truncate(n / 2 + n % 2);
                 }
                 assert_eq!(chaining_values.len(), 2);
-                let root_hash =
-                    merge_subtrees_root(&chaining_values[0], &chaining_values[1], Mode::Hash);
+                let root_hash = merge_subtrees_root(&chaining_values[0], &chaining_values[1], Mode::Hash);
                 assert_eq!(expected_hash, root_hash);
             }
         }
@@ -672,17 +626,11 @@ mod test {
         let key = &[44; 32];
 
         let mut expected_output = [0; 100];
-        Hasher::new_keyed(&key)
-            .update(&input)
-            .finalize_xof()
-            .fill(&mut expected_output);
+        Hasher::new_keyed(&key).update(&input).finalize_xof().fill(&mut expected_output);
 
         let mut hazmat_output = [0; 100];
         let left = Hasher::new_keyed(key).update(group0).finalize_non_root();
-        let right = Hasher::new_keyed(key)
-            .set_input_offset(group0.len() as u64)
-            .update(group1)
-            .finalize_non_root();
+        let right = Hasher::new_keyed(key).set_input_offset(group0.len() as u64).update(group1).finalize_non_root();
         merge_subtrees_root_xof(&left, &right, Mode::KeyedHash(&key)).fill(&mut hazmat_output);
         assert_eq!(expected_output, hazmat_output);
     }
@@ -695,13 +643,8 @@ mod test {
         let expected = crate::derive_key(context, &input);
 
         let cx_key = hash_derive_key_context(context);
-        let left = Hasher::new_from_context_key(&cx_key)
-            .update(&input[..1024])
-            .finalize_non_root();
-        let right = Hasher::new_from_context_key(&cx_key)
-            .set_input_offset(1024)
-            .update(&input[1024..])
-            .finalize_non_root();
+        let left = Hasher::new_from_context_key(&cx_key).update(&input[..1024]).finalize_non_root();
+        let right = Hasher::new_from_context_key(&cx_key).set_input_offset(1024).update(&input[1024..]).finalize_non_root();
         let derived_key = merge_subtrees_root(&left, &right, Mode::DeriveKeyMaterial(&cx_key)).0;
         assert_eq!(expected, derived_key);
     }

@@ -75,9 +75,9 @@
 
 use crate::hazmat::ChainingValue;
 #[cfg(test)]
-use crate::hazmat::{self, Mode};
-#[cfg(test)]
 use crate::hazmat::HasherExt;
+#[cfg(test)]
+use crate::hazmat::{self, Mode};
 use crate::platform::Platform;
 use crate::{CHUNK_LEN, Hash};
 #[cfg(test)]
@@ -184,14 +184,7 @@ fn hash_over_pool(input: &[u8], key: &crate::CVWords, flags: u8) -> Hash {
     let turn = crate::platform::Sme2Turn::take(Platform::detect(), true);
     let (pieces, own) = cut_with_prefix(input.len(), threads, prefix_for(&turn, input.len(), threads));
     let mut cvs = vec![ChainingValue::default(); pieces.len()];
-    let work = Work::Tree {
-        input,
-        pieces: &pieces,
-        cvs: cvs.as_mut_ptr(),
-        key: *key,
-        counter: 0,
-        flags,
-    };
+    let work = Work::Tree { input, pieces: &pieces, cvs: cvs.as_mut_ptr(), key: *key, counter: 0, flags };
     pool.run_job(work, pieces.len(), own, turn.platform());
     drop(turn);
     merge_root(&pieces, &mut cvs, key, flags)
@@ -212,12 +205,7 @@ pub(crate) fn takes_tasks() -> bool {
 /// Requires a power-of-two number of chunks, at least MIN_SPLIT_LEN
 /// bytes, and `counter` a multiple
 /// of that number, as `Hasher::update` hands out.
-pub(crate) fn subtree_children(
-    input: &[u8],
-    key: &crate::CVWords,
-    counter: u64,
-    flags: u8,
-) -> [u8; 2 * crate::OUT_LEN] {
+pub(crate) fn subtree_children(input: &[u8], key: &crate::CVWords, counter: u64, flags: u8) -> [u8; 2 * crate::OUT_LEN] {
     assert!(input.len().is_power_of_two() && input.len() >= MIN_SPLIT_LEN, "a whole subtree of at least MIN_SPLIT_LEN bytes");
     assert_eq!(counter % (input.len() / CHUNK_LEN) as u64, 0, "a subtree starts at a multiple of its chunk count");
     let pool = pool();
@@ -376,34 +364,14 @@ enum Work<'a> {
     /// Ranges of a message's 16 KiB groups, wherever each lies (`offset`
     /// and `len` count groups, from `first_group`); one chaining value each
     /// (crate::outboard).
-    Groups {
-        groups: &'a [&'a [u8]],
-        first_group: u64,
-        pieces: &'a [Piece],
-        key: crate::CVWords,
-        flags: u8,
-        cvs: *mut ChainingValue,
-    },
+    Groups { groups: &'a [&'a [u8]], first_group: u64, pieces: &'a [Piece], key: crate::CVWords, flags: u8, cvs: *mut ChainingValue },
     /// Ranges of a batch of messages of one length, each in its slot of
     /// whole blocks in `input` (`offset` and `len` count messages); one
     /// digest each.
-    Messages {
-        input: &'a [u8],
-        message_len: usize,
-        key: crate::CVWords,
-        flags: u8,
-        pieces: &'a [Piece],
-        outputs: *mut [u8; crate::OUT_LEN],
-    },
+    Messages { input: &'a [u8], message_len: usize, key: crate::CVWords, flags: u8, pieces: &'a [Piece], outputs: *mut [u8; crate::OUT_LEN] },
     /// Ranges of a collection's items (`offset` and `len` count items),
     /// each under MIN_SPLIT_LEN; one digest each.
-    Each {
-        items: &'a [&'a [u8]],
-        key: crate::CVWords,
-        flags: u8,
-        pieces: &'a [Piece],
-        outputs: *mut [u8; crate::OUT_LEN],
-    },
+    Each { items: &'a [&'a [u8]], key: crate::CVWords, flags: u8, pieces: &'a [Piece], outputs: *mut [u8; crate::OUT_LEN] },
 }
 
 /// An atomic counter on its own cache line: `cursor` and `active` are
@@ -602,8 +570,7 @@ fn merge_to_children(pieces: &[Piece], cvs: &mut [ChainingValue], key: &crate::C
     debug_assert_eq!(pieces[0].offset, 0);
     debug_assert!(pieces.last().unwrap().len > 0);
     debug_assert!(pieces[..pieces.len() - 1].iter().all(|p| p.len >= MIN_PIECE_LEN));
-    debug_assert!(pieces.windows(2).all(|w| w[0].len.is_power_of_two()
-        && w[0].len >= w[1].len && w[0].offset + w[0].len == w[1].offset));
+    debug_assert!(pieces.windows(2).all(|w| w[0].len.is_power_of_two() && w[0].len >= w[1].len && w[0].offset + w[0].len == w[1].offset));
     let platform = pool_platform();
     let mut count = cvs.len();
     let mut width = MIN_PIECE_LEN;
@@ -615,9 +582,7 @@ fn merge_to_children(pieces: &[Piece], cvs: &mut [ChainingValue], key: &crate::C
         let mut write = prefix;
         while read + 1 < count {
             let children = (count - read).min(2 * crate::MAX_SIMD_DEGREE_OR_2);
-            let parents = crate::compress_parents_parallel(
-                cvs[read..read + children].as_flattened(), key, flags, platform, &mut out,
-            );
+            let parents = crate::compress_parents_parallel(cvs[read..read + children].as_flattened(), key, flags, platform, &mut out);
             cvs[write..write + parents].as_flattened_mut().copy_from_slice(&out[..parents * crate::OUT_LEN]);
             read += children;
             write += parents;
@@ -717,10 +682,7 @@ pub(crate) fn initialize() {
         .name("blake3-worker-1".into())
         .spawn(move || {
             for worker in 2..cpus {
-                std::thread::Builder::new()
-                    .name(format!("blake3-worker-{worker}"))
-                    .spawn(worker_main)
-                    .expect("spawning a BLAKE3 worker");
+                std::thread::Builder::new().name(format!("blake3-worker-{worker}")).spawn(worker_main).expect("spawning a BLAKE3 worker");
             }
             worker_main()
         })
@@ -780,12 +742,7 @@ impl Pool {
     /// back (the SME2 thread's prefix; the workers' cursor starts after
     /// it), then takes pieces as the workers do.
     fn run_job(&self, work: Work, pieces: usize, own: usize, own_platform: Platform) {
-        let job = Job {
-            work,
-            pieces,
-            cursor: Line(AtomicUsize::new(own)),
-            active: Line(AtomicUsize::new(1)),
-        };
+        let job = Job { work, pieces, cursor: Line(AtomicUsize::new(own)), active: Line(AtomicUsize::new(1)) };
         let slot = self.register(&job);
         for index in 0..own {
             // Sound: the cursor starts past these, so this thread alone
@@ -821,9 +778,7 @@ impl Pool {
         // The caller keeps this erased lifetime valid by unregistering,
         // draining readers, and waiting for active == 0 before returning.
         let ptr = job as *const Job as *mut Job<'static>;
-        let slot = (0..MAX_JOBS).find(|&i| {
-            self.slots[i].job.compare_exchange(std::ptr::null_mut(), ptr, Ordering::SeqCst, Ordering::Relaxed).is_ok()
-        })?;
+        let slot = (0..MAX_JOBS).find(|&i| self.slots[i].job.compare_exchange(std::ptr::null_mut(), ptr, Ordering::SeqCst, Ordering::Relaxed).is_ok())?;
         self.wake_for(job.pieces - 1);
         Some(slot)
     }
@@ -1026,7 +981,18 @@ impl Task {
     /// A task over `input` at chunk `counter`, its mode, kind, and
     /// destinations still to fill in.
     pub(crate) fn of(input: &[u8], counter: u64) -> Task {
-        Task { input: input.as_ptr(), len: input.len(), counter, batch: None, key: [0; 8], flags: 0, out: core::ptr::null_mut(), left: core::ptr::null(), members: 0, member: [NO_MEMBER; MEMBERS] }
+        Task {
+            input: input.as_ptr(),
+            len: input.len(),
+            counter,
+            batch: None,
+            key: [0; 8],
+            flags: 0,
+            out: core::ptr::null_mut(),
+            left: core::ptr::null(),
+            members: 0,
+            member: [NO_MEMBER; MEMBERS],
+        }
     }
 
     /// An empty task of short messages (with `batch`, batches of messages
@@ -1306,7 +1272,11 @@ mod test {
         let key = [0x5Au8; crate::KEY_LEN];
         let context = "equal queue members";
         let context_key = crate::hazmat::hash_derive_key_context(context);
-        let modes = [(*crate::IV, 0), (crate::platform::words_from_le_bytes_32(&key), crate::KEYED_HASH), (crate::platform::words_from_le_bytes_32(&context_key), crate::DERIVE_KEY_MATERIAL)];
+        let modes = [
+            (*crate::IV, 0),
+            (crate::platform::words_from_le_bytes_32(&key), crate::KEYED_HASH),
+            (crate::platform::words_from_le_bytes_32(&context_key), crate::DERIVE_KEY_MATERIAL),
+        ];
         let counts: &[usize] = if cfg!(miri) { &[2, 3] } else { &[2, 3, 4, 7, 8, 15, 16, 17, 63, MEMBERS] };
         let offsets: &[usize] = if cfg!(miri) { &[0, 1] } else { &[0, 1, 7, 63] };
         for len in [64, 128, 192, 256, 512, 1024] {
@@ -1397,7 +1367,9 @@ mod test {
                 assert_eq!(offset, len);
                 let mut cvs: Vec<ChainingValue> = pieces
                     .iter()
-                    .map(|p| crate::hash_all_at_once(&input[p.offset..][..p.len], crate::IV, (p.offset / CHUNK_LEN) as u64, 0, Platform::detect()).chaining_value())
+                    .map(|p| {
+                        crate::hash_all_at_once(&input[p.offset..][..p.len], crate::IV, (p.offset / CHUNK_LEN) as u64, 0, Platform::detect()).chaining_value()
+                    })
                     .collect();
                 assert_eq!(merge_root(&pieces, &mut cvs, crate::IV, 0), crate::hash(&input[..len]), "{len} {threads}");
             }

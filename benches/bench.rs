@@ -30,12 +30,7 @@ impl RandomInput {
         rng.fill_bytes(&mut buf);
         let mut offsets: Vec<usize> = (0..page_size).collect();
         offsets.shuffle(&mut rng);
-        Self {
-            buf,
-            len,
-            offsets,
-            offset_index: 0,
-        }
+        Self { buf, len, offsets, offset_index: 0 }
     }
 
     pub fn get(&mut self) -> &[u8] {
@@ -95,22 +90,10 @@ fn bench_many_chunks_fn(b: &mut Bencher, platform: Platform) {
         inputs.push(RandomInput::new(b, CHUNK_LEN));
     }
     b.iter(|| {
-        let input_arrays: ArrayVec<&[u8; CHUNK_LEN], MAX_SIMD_DEGREE> = inputs
-            .iter_mut()
-            .take(degree)
-            .map(|i| (&i.get()[..CHUNK_LEN]).try_into().unwrap())
-            .collect();
+        let input_arrays: ArrayVec<&[u8; CHUNK_LEN], MAX_SIMD_DEGREE> =
+            inputs.iter_mut().take(degree).map(|i| (&i.get()[..CHUNK_LEN]).try_into().unwrap()).collect();
         let mut out = [0; MAX_SIMD_DEGREE * OUT_LEN];
-        platform.hash_many(
-            &input_arrays[..],
-            &[0; 8],
-            0,
-            blake3_servil::IncrementCounter::Yes,
-            0,
-            0,
-            0,
-            &mut out,
-        );
+        platform.hash_many(&input_arrays[..], &[0; 8], 0, blake3_servil::IncrementCounter::Yes, 0, 0, 0, &mut out);
     });
 }
 
@@ -181,22 +164,10 @@ fn bench_many_parents_fn(b: &mut Bencher, platform: Platform) {
         inputs.push(RandomInput::new(b, BLOCK_LEN));
     }
     b.iter(|| {
-        let input_arrays: ArrayVec<&[u8; BLOCK_LEN], MAX_SIMD_DEGREE> = inputs
-            .iter_mut()
-            .take(degree)
-            .map(|i| (&i.get()[..BLOCK_LEN]).try_into().unwrap())
-            .collect();
+        let input_arrays: ArrayVec<&[u8; BLOCK_LEN], MAX_SIMD_DEGREE> =
+            inputs.iter_mut().take(degree).map(|i| (&i.get()[..BLOCK_LEN]).try_into().unwrap()).collect();
         let mut out = [0; MAX_SIMD_DEGREE * OUT_LEN];
-        platform.hash_many(
-            &input_arrays[..],
-            &[0; 8],
-            0,
-            blake3_servil::IncrementCounter::No,
-            0,
-            0,
-            0,
-            &mut out,
-        );
+        platform.hash_many(&input_arrays[..], &[0; 8], 0, blake3_servil::IncrementCounter::No, 0, 0, 0, &mut out);
     });
 }
 

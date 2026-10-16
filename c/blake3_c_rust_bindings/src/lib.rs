@@ -67,11 +67,7 @@ impl Hasher {
     pub fn new_derive_key_raw(context: &[u8]) -> Self {
         let mut c_state = MaybeUninit::uninit();
         unsafe {
-            ffi::blake3_hasher_init_derive_key_raw(
-                c_state.as_mut_ptr(),
-                context.as_ptr() as *const _,
-                context.len(),
-            );
+            ffi::blake3_hasher_init_derive_key_raw(c_state.as_mut_ptr(), context.as_ptr() as *const _, context.len());
             Self(c_state.assume_init())
         }
     }
@@ -85,11 +81,7 @@ impl Hasher {
     #[cfg(feature = "tbb")]
     pub fn update_tbb(&mut self, input: &[u8]) {
         unsafe {
-            ffi::blake3_hasher_update_tbb(
-                &mut self.0,
-                input.as_ptr() as *const c_void,
-                input.len(),
-            );
+            ffi::blake3_hasher_update_tbb(&mut self.0, input.as_ptr() as *const c_void, input.len());
         }
     }
 
@@ -137,51 +129,18 @@ pub mod ffi {
         // public interface
         pub fn blake3_hasher_init(self_: *mut blake3_hasher);
         pub fn blake3_hasher_init_keyed(self_: *mut blake3_hasher, key: *const u8);
-        pub fn blake3_hasher_init_derive_key(
-            self_: *mut blake3_hasher,
-            context: *const ::std::os::raw::c_char,
-        );
-        pub fn blake3_hasher_init_derive_key_raw(
-            self_: *mut blake3_hasher,
-            context: *const ::std::os::raw::c_void,
-            context_len: usize,
-        );
-        pub fn blake3_hasher_update(
-            self_: *mut blake3_hasher,
-            input: *const ::std::os::raw::c_void,
-            input_len: usize,
-        );
+        pub fn blake3_hasher_init_derive_key(self_: *mut blake3_hasher, context: *const ::std::os::raw::c_char);
+        pub fn blake3_hasher_init_derive_key_raw(self_: *mut blake3_hasher, context: *const ::std::os::raw::c_void, context_len: usize);
+        pub fn blake3_hasher_update(self_: *mut blake3_hasher, input: *const ::std::os::raw::c_void, input_len: usize);
         #[cfg(feature = "tbb")]
-        pub fn blake3_hasher_update_tbb(
-            self_: *mut blake3_hasher,
-            input: *const ::std::os::raw::c_void,
-            input_len: usize,
-        );
+        pub fn blake3_hasher_update_tbb(self_: *mut blake3_hasher, input: *const ::std::os::raw::c_void, input_len: usize);
         pub fn blake3_hasher_finalize(self_: *const blake3_hasher, out: *mut u8, out_len: usize);
-        pub fn blake3_hasher_finalize_seek(
-            self_: *const blake3_hasher,
-            seek: u64,
-            out: *mut u8,
-            out_len: usize,
-        );
+        pub fn blake3_hasher_finalize_seek(self_: *const blake3_hasher, seek: u64, out: *mut u8, out_len: usize);
         pub fn blake3_hasher_reset(self_: *mut blake3_hasher);
 
         // portable low-level functions
-        pub fn blake3_compress_in_place_portable(
-            cv: *mut u32,
-            block: *const u8,
-            block_len: u8,
-            counter: u64,
-            flags: u8,
-        );
-        pub fn blake3_compress_xof_portable(
-            cv: *const u32,
-            block: *const u8,
-            block_len: u8,
-            counter: u64,
-            flags: u8,
-            out: *mut u8,
-        );
+        pub fn blake3_compress_in_place_portable(cv: *mut u32, block: *const u8, block_len: u8, counter: u64, flags: u8);
+        pub fn blake3_compress_xof_portable(cv: *const u32, block: *const u8, block_len: u8, counter: u64, flags: u8, out: *mut u8);
         pub fn blake3_hash_many_portable(
             inputs: *const *const u8,
             num_inputs: usize,
@@ -200,21 +159,8 @@ pub mod ffi {
     pub mod x86 {
         unsafe extern "C" {
             // SSE2 low level functions
-            pub fn blake3_compress_in_place_sse2(
-                cv: *mut u32,
-                block: *const u8,
-                block_len: u8,
-                counter: u64,
-                flags: u8,
-            );
-            pub fn blake3_compress_xof_sse2(
-                cv: *const u32,
-                block: *const u8,
-                block_len: u8,
-                counter: u64,
-                flags: u8,
-                out: *mut u8,
-            );
+            pub fn blake3_compress_in_place_sse2(cv: *mut u32, block: *const u8, block_len: u8, counter: u64, flags: u8);
+            pub fn blake3_compress_xof_sse2(cv: *const u32, block: *const u8, block_len: u8, counter: u64, flags: u8, out: *mut u8);
             pub fn blake3_hash_many_sse2(
                 inputs: *const *const u8,
                 num_inputs: usize,
@@ -229,21 +175,8 @@ pub mod ffi {
             );
 
             // SSE4.1 low level functions
-            pub fn blake3_compress_in_place_sse41(
-                cv: *mut u32,
-                block: *const u8,
-                block_len: u8,
-                counter: u64,
-                flags: u8,
-            );
-            pub fn blake3_compress_xof_sse41(
-                cv: *const u32,
-                block: *const u8,
-                block_len: u8,
-                counter: u64,
-                flags: u8,
-                out: *mut u8,
-            );
+            pub fn blake3_compress_in_place_sse41(cv: *mut u32, block: *const u8, block_len: u8, counter: u64, flags: u8);
+            pub fn blake3_compress_xof_sse41(cv: *const u32, block: *const u8, block_len: u8, counter: u64, flags: u8, out: *mut u8);
             pub fn blake3_hash_many_sse41(
                 inputs: *const *const u8,
                 num_inputs: usize,
@@ -272,21 +205,8 @@ pub mod ffi {
             );
 
             // AVX-512 low level functions
-            pub fn blake3_compress_xof_avx512(
-                cv: *const u32,
-                block: *const u8,
-                block_len: u8,
-                counter: u64,
-                flags: u8,
-                out: *mut u8,
-            );
-            pub fn blake3_compress_in_place_avx512(
-                cv: *mut u32,
-                block: *const u8,
-                block_len: u8,
-                counter: u64,
-                flags: u8,
-            );
+            pub fn blake3_compress_xof_avx512(cv: *const u32, block: *const u8, block_len: u8, counter: u64, flags: u8, out: *mut u8);
+            pub fn blake3_compress_in_place_avx512(cv: *mut u32, block: *const u8, block_len: u8, counter: u64, flags: u8);
             pub fn blake3_hash_many_avx512(
                 inputs: *const *const u8,
                 num_inputs: usize,
@@ -300,15 +220,7 @@ pub mod ffi {
                 out: *mut u8,
             );
             #[cfg(unix)]
-            pub fn blake3_xof_many_avx512(
-                cv: *const u32,
-                block: *const u8,
-                block_len: u8,
-                counter: u64,
-                flags: u8,
-                out: *mut u8,
-                outblocks: usize,
-            );
+            pub fn blake3_xof_many_avx512(cv: *const u32, block: *const u8, block_len: u8, counter: u64, flags: u8, out: *mut u8, outblocks: usize);
         }
     }
 

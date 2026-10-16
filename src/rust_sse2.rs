@@ -3,10 +3,7 @@ use core::arch::x86::*;
 #[cfg(target_arch = "x86_64")]
 use core::arch::x86_64::*;
 
-use crate::{
-    BLOCK_LEN, CVBytes, CVWords, IV, IncrementCounter, MSG_SCHEDULE, OUT_LEN, counter_high,
-    counter_low,
-};
+use crate::{BLOCK_LEN, CVBytes, CVWords, IV, IncrementCounter, MSG_SCHEDULE, OUT_LEN, counter_high, counter_low};
 
 pub const DEGREE: usize = 4;
 
@@ -71,13 +68,7 @@ unsafe fn rot7(a: __m128i) -> __m128i {
 }
 
 #[inline(always)]
-unsafe fn g1(
-    row0: &mut __m128i,
-    row1: &mut __m128i,
-    row2: &mut __m128i,
-    row3: &mut __m128i,
-    m: __m128i,
-) {
+unsafe fn g1(row0: &mut __m128i, row1: &mut __m128i, row2: &mut __m128i, row3: &mut __m128i, m: __m128i) {
     unsafe {
         *row0 = add(add(*row0, m), *row1);
         *row3 = xor(*row3, *row0);
@@ -89,13 +80,7 @@ unsafe fn g1(
 }
 
 #[inline(always)]
-unsafe fn g2(
-    row0: &mut __m128i,
-    row1: &mut __m128i,
-    row2: &mut __m128i,
-    row3: &mut __m128i,
-    m: __m128i,
-) {
+unsafe fn g2(row0: &mut __m128i, row1: &mut __m128i, row2: &mut __m128i, row3: &mut __m128i, m: __m128i) {
     unsafe {
         *row0 = add(add(*row0, m), *row1);
         *row3 = xor(*row3, *row0);
@@ -115,11 +100,7 @@ macro_rules! _MM_SHUFFLE {
 
 macro_rules! shuffle2 {
     ($a:expr, $b:expr, $c:expr) => {
-        _mm_castps_si128(_mm_shuffle_ps(
-            _mm_castsi128_ps($a),
-            _mm_castsi128_ps($b),
-            $c,
-        ))
+        _mm_castps_si128(_mm_shuffle_ps(_mm_castsi128_ps($a), _mm_castsi128_ps($b), $c))
     };
 }
 
@@ -156,23 +137,12 @@ unsafe fn blend_epi16(a: __m128i, b: __m128i, imm8: i32) -> __m128i {
 }
 
 #[inline(always)]
-unsafe fn compress_pre(
-    cv: &CVWords,
-    block: &[u8; BLOCK_LEN],
-    block_len: u8,
-    counter: u64,
-    flags: u8,
-) -> [__m128i; 4] {
+unsafe fn compress_pre(cv: &CVWords, block: &[u8; BLOCK_LEN], block_len: u8, counter: u64, flags: u8) -> [__m128i; 4] {
     unsafe {
         let row0 = &mut loadu(cv.as_ptr().add(0) as *const u8);
         let row1 = &mut loadu(cv.as_ptr().add(4) as *const u8);
         let row2 = &mut set4(IV[0], IV[1], IV[2], IV[3]);
-        let row3 = &mut set4(
-            counter_low(counter),
-            counter_high(counter),
-            block_len as u32,
-            flags as u32,
-        );
+        let row3 = &mut set4(counter_low(counter), counter_high(counter), block_len as u32, flags as u32);
 
         let mut m0 = loadu(block.as_ptr().add(0 * 4 * DEGREE));
         let mut m1 = loadu(block.as_ptr().add(1 * 4 * DEGREE));
@@ -344,13 +314,7 @@ unsafe fn compress_pre(
 }
 
 #[target_feature(enable = "sse2")]
-pub unsafe fn compress_in_place(
-    cv: &mut CVWords,
-    block: &[u8; BLOCK_LEN],
-    block_len: u8,
-    counter: u64,
-    flags: u8,
-) {
+pub unsafe fn compress_in_place(cv: &mut CVWords, block: &[u8; BLOCK_LEN], block_len: u8, counter: u64, flags: u8) {
     unsafe {
         let [row0, row1, row2, row3] = compress_pre(cv, block, block_len, counter, flags);
         storeu(xor(row0, row2), cv.as_mut_ptr().add(0) as *mut u8);
@@ -359,16 +323,9 @@ pub unsafe fn compress_in_place(
 }
 
 #[target_feature(enable = "sse2")]
-pub unsafe fn compress_xof(
-    cv: &CVWords,
-    block: &[u8; BLOCK_LEN],
-    block_len: u8,
-    counter: u64,
-    flags: u8,
-) -> [u8; 64] {
+pub unsafe fn compress_xof(cv: &CVWords, block: &[u8; BLOCK_LEN], block_len: u8, counter: u64, flags: u8) -> [u8; 64] {
     unsafe {
-        let [mut row0, mut row1, mut row2, mut row3] =
-            compress_pre(cv, block, block_len, counter, flags);
+        let [mut row0, mut row1, mut row2, mut row3] = compress_pre(cv, block, block_len, counter, flags);
         row0 = xor(row0, row2);
         row1 = xor(row1, row3);
         row2 = xor(row2, loadu(cv.as_ptr().add(0) as *const u8));
@@ -542,10 +499,7 @@ unsafe fn transpose_msg_vecs(inputs: &[*const u8; DEGREE], block_offset: usize) 
             loadu(inputs[3].add(block_offset + 3 * 4 * DEGREE)),
         ];
         for i in 0..DEGREE {
-            _mm_prefetch(
-                inputs[i].wrapping_add(block_offset + 256) as *const i8,
-                _MM_HINT_T0,
-            );
+            _mm_prefetch(inputs[i].wrapping_add(block_offset + 256) as *const i8, _MM_HINT_T0);
         }
         let (square0, rest) = vecs.split_at_mut(DEGREE);
         let (square1, rest) = rest.split_at_mut(DEGREE);
@@ -563,12 +517,7 @@ unsafe fn load_counters(counter: u64, increment_counter: IncrementCounter) -> (_
     let mask = if increment_counter.yes() { !0 } else { 0 };
     unsafe {
         (
-            set4(
-                counter_low(counter + (mask & 0)),
-                counter_low(counter + (mask & 1)),
-                counter_low(counter + (mask & 2)),
-                counter_low(counter + (mask & 3)),
-            ),
+            set4(counter_low(counter + (mask & 0)), counter_low(counter + (mask & 1)), counter_low(counter + (mask & 2)), counter_low(counter + (mask & 3))),
             set4(
                 counter_high(counter + (mask & 0)),
                 counter_high(counter + (mask & 1)),
@@ -592,16 +541,7 @@ pub unsafe fn hash4(
     out: &mut [u8; DEGREE * OUT_LEN],
 ) {
     unsafe {
-        let mut h_vecs = [
-            set1(key[0]),
-            set1(key[1]),
-            set1(key[2]),
-            set1(key[3]),
-            set1(key[4]),
-            set1(key[5]),
-            set1(key[6]),
-            set1(key[7]),
-        ];
+        let mut h_vecs = [set1(key[0]), set1(key[1]), set1(key[2]), set1(key[3]), set1(key[4]), set1(key[5]), set1(key[6]), set1(key[7])];
         let (counter_low_vec, counter_high_vec) = load_counters(counter, increment_counter);
         let mut block_flags = flags | flags_start;
 
@@ -671,15 +611,7 @@ pub unsafe fn hash4(
 }
 
 #[target_feature(enable = "sse2")]
-unsafe fn hash1<const N: usize>(
-    input: &[u8; N],
-    key: &CVWords,
-    counter: u64,
-    flags: u8,
-    flags_start: u8,
-    flags_end: u8,
-    out: &mut CVBytes,
-) {
+unsafe fn hash1<const N: usize>(input: &[u8; N], key: &CVWords, counter: u64, flags: u8, flags_start: u8, flags_end: u8, out: &mut CVBytes) {
     debug_assert_eq!(N % BLOCK_LEN, 0, "uneven blocks");
     let mut cv = *key;
     let mut block_flags = flags | flags_start;
@@ -689,13 +621,7 @@ unsafe fn hash1<const N: usize>(
             block_flags |= flags_end;
         }
         unsafe {
-            compress_in_place(
-                &mut cv,
-                (&slice[..BLOCK_LEN]).try_into().unwrap(),
-                BLOCK_LEN as u8,
-                counter,
-                block_flags,
-            );
+            compress_in_place(&mut cv, (&slice[..BLOCK_LEN]).try_into().unwrap(), BLOCK_LEN as u8, counter, block_flags);
         }
         block_flags = flags;
         slice = &slice[BLOCK_LEN..];
@@ -718,21 +644,10 @@ pub unsafe fn hash_many<const N: usize>(
     while inputs.len() >= DEGREE && out.len() >= DEGREE * OUT_LEN {
         // Safe because the layout of arrays is guaranteed, and because the
         // `blocks` count is determined statically from the argument type.
-        let input_ptrs: &[*const u8; DEGREE] =
-            unsafe { &*(inputs.as_ptr() as *const [*const u8; DEGREE]) };
+        let input_ptrs: &[*const u8; DEGREE] = unsafe { &*(inputs.as_ptr() as *const [*const u8; DEGREE]) };
         let blocks = N / BLOCK_LEN;
         unsafe {
-            hash4(
-                input_ptrs,
-                blocks,
-                key,
-                counter,
-                increment_counter,
-                flags,
-                flags_start,
-                flags_end,
-                (&mut out[..DEGREE * OUT_LEN]).try_into().unwrap(),
-            );
+            hash4(input_ptrs, blocks, key, counter, increment_counter, flags, flags_start, flags_end, (&mut out[..DEGREE * OUT_LEN]).try_into().unwrap());
         }
         if increment_counter.yes() {
             counter += DEGREE as u64;
@@ -742,15 +657,7 @@ pub unsafe fn hash_many<const N: usize>(
     }
     for (&input, output) in inputs.iter().zip(out.chunks_exact_mut(OUT_LEN)) {
         unsafe {
-            hash1(
-                input,
-                key,
-                counter,
-                flags,
-                flags_start,
-                flags_end,
-                (&mut output[..OUT_LEN]).try_into().unwrap(),
-            );
+            hash1(input, key, counter, flags, flags_start, flags_end, (&mut output[..OUT_LEN]).try_into().unwrap());
         }
         if increment_counter.yes() {
             counter += 1;

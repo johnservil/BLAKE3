@@ -2,17 +2,11 @@ use std::process::Command;
 
 fn main() {
     // Print the rustc version.
-    Command::new(env!("CARGO"))
-        .args(&["rustc", "--quiet", "--", "--version"])
-        .status()
-        .unwrap();
+    Command::new(env!("CARGO")).args(&["rustc", "--quiet", "--", "--version"]).status().unwrap();
     println!();
 
     // Print the Cargo version.
-    Command::new(env!("CARGO"))
-        .args(&["--version"])
-        .status()
-        .unwrap();
+    Command::new(env!("CARGO")).args(&["--version"]).status().unwrap();
     println!();
 
     // Print the C compiler version. This relies on C compiler detection done

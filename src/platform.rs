@@ -334,77 +334,43 @@ impl Platform {
         degree
     }
 
-    pub fn compress_in_place(
-        &self,
-        cv: &mut CVWords,
-        block: &[u8; BLOCK_LEN],
-        block_len: u8,
-        counter: u64,
-        flags: u8,
-    ) {
+    pub fn compress_in_place(&self, cv: &mut CVWords, block: &[u8; BLOCK_LEN], block_len: u8, counter: u64, flags: u8) {
         match self {
             Platform::Portable => portable::compress_in_place(cv, block, block_len, counter, flags),
             // Safe because detect() checked for platform support.
             #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-            Platform::SSE2 => unsafe {
-                crate::sse2::compress_in_place(cv, block, block_len, counter, flags)
-            },
+            Platform::SSE2 => unsafe { crate::sse2::compress_in_place(cv, block, block_len, counter, flags) },
             // Safe because detect() checked for platform support.
             #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-            Platform::SSE41 | Platform::AVX2 => unsafe {
-                crate::sse41::compress_in_place(cv, block, block_len, counter, flags)
-            },
+            Platform::SSE41 | Platform::AVX2 => unsafe { crate::sse41::compress_in_place(cv, block, block_len, counter, flags) },
             // Safe because detect() checked for platform support.
             #[cfg(blake3_avx512_ffi)]
             #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-            Platform::AVX512 => unsafe {
-                crate::avx512::compress_in_place(cv, block, block_len, counter, flags)
-            },
+            Platform::AVX512 => unsafe { crate::avx512::compress_in_place(cv, block, block_len, counter, flags) },
             // The scalar kernel k1 keeps the state in registers; it runs on
             // every AArch64 core, so the NEON and SME2 platforms share it.
             #[cfg(all(blake3_neon, blake3_neon_hybrid))]
-            Platform::NEON => {
-                crate::neon_hybrid::compress_in_place(cv, block, block_len, counter, flags)
-            }
+            Platform::NEON => crate::neon_hybrid::compress_in_place(cv, block, block_len, counter, flags),
             #[cfg(all(blake3_neon, not(blake3_neon_hybrid)))]
             Platform::NEON => portable::compress_in_place(cv, block, block_len, counter, flags),
             #[cfg(blake3_sme2)]
-            Platform::SME2 => {
-                crate::neon_hybrid::compress_in_place(cv, block, block_len, counter, flags)
-            }
+            Platform::SME2 => crate::neon_hybrid::compress_in_place(cv, block, block_len, counter, flags),
             #[cfg(blake3_wasm32_simd)]
-            Platform::WASM32_SIMD => {
-                crate::wasm32_simd::compress_in_place(cv, block, block_len, counter, flags)
-            }
+            Platform::WASM32_SIMD => crate::wasm32_simd::compress_in_place(cv, block, block_len, counter, flags),
         }
     }
 
     /// Compress `count` whole blocks of one chunk into `cv`: the first block
     /// with `flags | flags_start`, the rest with `flags`, all with `counter`.
     /// `blocks` holds at least `count * BLOCK_LEN` bytes; `count` is 1..=16.
-    pub fn compress_blocks(
-        &self,
-        cv: &mut CVWords,
-        blocks: &[u8],
-        count: usize,
-        counter: u64,
-        flags: u8,
-        flags_start: u8,
-    ) {
+    pub fn compress_blocks(&self, cv: &mut CVWords, blocks: &[u8], count: usize, counter: u64, flags: u8, flags_start: u8) {
         assert!((1..=16).contains(&count));
         assert!(blocks.len() >= count * BLOCK_LEN);
         // The integer-only kernel runs on every AArch64 core.
         #[cfg(blake3_neon_hybrid)]
         {
             unsafe {
-                crate::neon_hybrid::compress_blocks(
-                    cv,
-                    blocks.as_ptr(),
-                    count,
-                    counter,
-                    flags,
-                    flags_start,
-                );
+                crate::neon_hybrid::compress_blocks(cv, blocks.as_ptr(), count, counter, flags, flags_start);
             }
             return;
         }
@@ -412,53 +378,32 @@ impl Platform {
         {
             let mut block_flags = flags | flags_start;
             for block in blocks[..count * BLOCK_LEN].chunks_exact(BLOCK_LEN) {
-                self.compress_in_place(
-                    cv,
-                    block.try_into().unwrap(),
-                    BLOCK_LEN as u8,
-                    counter,
-                    block_flags,
-                );
+                self.compress_in_place(cv, block.try_into().unwrap(), BLOCK_LEN as u8, counter, block_flags);
                 block_flags = flags;
             }
         }
     }
 
-    pub fn compress_xof(
-        &self,
-        cv: &CVWords,
-        block: &[u8; BLOCK_LEN],
-        block_len: u8,
-        counter: u64,
-        flags: u8,
-    ) -> [u8; 64] {
+    pub fn compress_xof(&self, cv: &CVWords, block: &[u8; BLOCK_LEN], block_len: u8, counter: u64, flags: u8) -> [u8; 64] {
         match self {
             Platform::Portable => portable::compress_xof(cv, block, block_len, counter, flags),
             // Safe because detect() checked for platform support.
             #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-            Platform::SSE2 => unsafe {
-                crate::sse2::compress_xof(cv, block, block_len, counter, flags)
-            },
+            Platform::SSE2 => unsafe { crate::sse2::compress_xof(cv, block, block_len, counter, flags) },
             // Safe because detect() checked for platform support.
             #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-            Platform::SSE41 | Platform::AVX2 => unsafe {
-                crate::sse41::compress_xof(cv, block, block_len, counter, flags)
-            },
+            Platform::SSE41 | Platform::AVX2 => unsafe { crate::sse41::compress_xof(cv, block, block_len, counter, flags) },
             // Safe because detect() checked for platform support.
             #[cfg(blake3_avx512_ffi)]
             #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-            Platform::AVX512 => unsafe {
-                crate::avx512::compress_xof(cv, block, block_len, counter, flags)
-            },
+            Platform::AVX512 => unsafe { crate::avx512::compress_xof(cv, block, block_len, counter, flags) },
             // No NEON compress_xof() implementation yet.
             #[cfg(blake3_neon)]
             Platform::NEON => portable::compress_xof(cv, block, block_len, counter, flags),
             #[cfg(blake3_sme2)]
             Platform::SME2 => portable::compress_xof(cv, block, block_len, counter, flags),
             #[cfg(blake3_wasm32_simd)]
-            Platform::WASM32_SIMD => {
-                crate::wasm32_simd::compress_xof(cv, block, block_len, counter, flags)
-            }
+            Platform::WASM32_SIMD => crate::wasm32_simd::compress_xof(cv, block, block_len, counter, flags),
         }
     }
 
@@ -487,127 +432,33 @@ impl Platform {
         // would lose its tail, so it cannot compile.
         const { assert!(N > 0 && N % BLOCK_LEN == 0, "hash_many inputs are whole blocks") };
         match self {
-            Platform::Portable => portable::hash_many(
-                inputs,
-                key,
-                counter,
-                increment_counter,
-                flags,
-                flags_start,
-                flags_end,
-                out,
-            ),
+            Platform::Portable => portable::hash_many(inputs, key, counter, increment_counter, flags, flags_start, flags_end, out),
             // Safe because detect() checked for platform support.
             #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-            Platform::SSE2 => unsafe {
-                crate::sse2::hash_many(
-                    inputs,
-                    key,
-                    counter,
-                    increment_counter,
-                    flags,
-                    flags_start,
-                    flags_end,
-                    out,
-                )
-            },
+            Platform::SSE2 => unsafe { crate::sse2::hash_many(inputs, key, counter, increment_counter, flags, flags_start, flags_end, out) },
             // Safe because detect() checked for platform support.
             #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-            Platform::SSE41 => unsafe {
-                crate::sse41::hash_many(
-                    inputs,
-                    key,
-                    counter,
-                    increment_counter,
-                    flags,
-                    flags_start,
-                    flags_end,
-                    out,
-                )
-            },
+            Platform::SSE41 => unsafe { crate::sse41::hash_many(inputs, key, counter, increment_counter, flags, flags_start, flags_end, out) },
             // Safe because detect() checked for platform support.
             #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-            Platform::AVX2 => unsafe {
-                crate::avx2::hash_many(
-                    inputs,
-                    key,
-                    counter,
-                    increment_counter,
-                    flags,
-                    flags_start,
-                    flags_end,
-                    out,
-                )
-            },
+            Platform::AVX2 => unsafe { crate::avx2::hash_many(inputs, key, counter, increment_counter, flags, flags_start, flags_end, out) },
             // Safe because detect() checked for platform support.
             #[cfg(blake3_avx512_ffi)]
             #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-            Platform::AVX512 => unsafe {
-                crate::avx512::hash_many(
-                    inputs,
-                    key,
-                    counter,
-                    increment_counter,
-                    flags,
-                    flags_start,
-                    flags_end,
-                    out,
-                )
-            },
+            Platform::AVX512 => unsafe { crate::avx512::hash_many(inputs, key, counter, increment_counter, flags, flags_start, flags_end, out) },
             // Assumed to be safe if the "neon" feature is on.
             #[cfg(blake3_neon)]
-            Platform::NEON => unsafe {
-                crate::neon::hash_many(
-                    inputs,
-                    key,
-                    counter,
-                    increment_counter,
-                    flags,
-                    flags_start,
-                    flags_end,
-                    out,
-                )
-            },
+            Platform::NEON => unsafe { crate::neon::hash_many(inputs, key, counter, increment_counter, flags, flags_start, flags_end, out) },
             // Safe because detect() checked for SME2 with a 512-bit vector length.
             #[cfg(blake3_sme2)]
-            Platform::SME2 => unsafe {
-                crate::sme2::hash_many(
-                    inputs,
-                    key,
-                    counter,
-                    increment_counter,
-                    flags,
-                    flags_start,
-                    flags_end,
-                    out,
-                )
-            },
+            Platform::SME2 => unsafe { crate::sme2::hash_many(inputs, key, counter, increment_counter, flags, flags_start, flags_end, out) },
             // Assumed to be safe if the "wasm32_simd" feature is on.
             #[cfg(blake3_wasm32_simd)]
-            Platform::WASM32_SIMD => unsafe {
-                crate::wasm32_simd::hash_many(
-                    inputs,
-                    key,
-                    counter,
-                    increment_counter,
-                    flags,
-                    flags_start,
-                    flags_end,
-                    out,
-                )
-            },
+            Platform::WASM32_SIMD => unsafe { crate::wasm32_simd::hash_many(inputs, key, counter, increment_counter, flags, flags_start, flags_end, out) },
         }
     }
 
-    pub fn xof_many(
-        &self,
-        cv: &CVWords,
-        block: &[u8; BLOCK_LEN],
-        block_len: u8,
-        mut counter: u64,
-        flags: u8,
-        out: &mut [u8],
-    ) {
+    pub fn xof_many(&self, cv: &CVWords, block: &[u8; BLOCK_LEN], block_len: u8, mut counter: u64, flags: u8, out: &mut [u8]) {
         debug_assert_eq!(0, out.len() % BLOCK_LEN, "whole blocks only");
         if out.is_empty() {
             // The current assembly implementation always outputs at least 1 block.
@@ -618,9 +469,7 @@ impl Platform {
             #[cfg(blake3_avx512_ffi)]
             #[cfg(unix)]
             #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-            Platform::AVX512 => unsafe {
-                crate::avx512::xof_many(cv, block, block_len, counter, flags, out)
-            },
+            Platform::AVX512 => unsafe { crate::avx512::xof_many(cv, block, block_len, counter, flags, out) },
             _ => {
                 // On SME2, whole groups of sixteen blocks on the extended-
                 // output kernel, under the process's turn (M4 Max: 0.70 ns/B
@@ -667,39 +516,23 @@ impl Platform {
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     pub fn sse2() -> Option<Self> {
-        if sse2_detected() {
-            Some(Self::SSE2)
-        } else {
-            None
-        }
+        if sse2_detected() { Some(Self::SSE2) } else { None }
     }
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     pub fn sse41() -> Option<Self> {
-        if sse41_detected() {
-            Some(Self::SSE41)
-        } else {
-            None
-        }
+        if sse41_detected() { Some(Self::SSE41) } else { None }
     }
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     pub fn avx2() -> Option<Self> {
-        if avx2_detected() {
-            Some(Self::AVX2)
-        } else {
-            None
-        }
+        if avx2_detected() { Some(Self::AVX2) } else { None }
     }
 
     #[cfg(blake3_avx512_ffi)]
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     pub fn avx512() -> Option<Self> {
-        if avx512_detected() {
-            Some(Self::AVX512)
-        } else {
-            None
-        }
+        if avx512_detected() { Some(Self::AVX512) } else { None }
     }
 
     #[cfg(blake3_neon)]
@@ -710,11 +543,7 @@ impl Platform {
 
     #[cfg(blake3_sme2)]
     pub fn sme2() -> Option<Self> {
-        if sme2_detected() {
-            Some(Self::SME2)
-        } else {
-            None
-        }
+        if sme2_detected() { Some(Self::SME2) } else { None }
     }
 
     #[cfg(blake3_wasm32_simd)]
@@ -889,7 +718,6 @@ pub fn words_from_le_bytes_64(bytes: &[u8; 64]) -> [u32; 16] {
     out
 }
 
-
 #[inline(always)]
 pub fn le_bytes_from_words_64(words: &[u32; 16]) -> [u8; 64] {
     let mut out = [0; 64];
@@ -957,16 +785,7 @@ fn sme2_detect_uncached() -> bool {
 
     // Vector length check: the kernel reports it without doing any work
     // when asked for zero groups.
-    let lanes = unsafe {
-        crate::sme2::ffi::blake3_sme2_hash16_chunks_512(
-            core::ptr::null(),
-            core::ptr::null(),
-            0,
-            0,
-            core::ptr::null_mut(),
-            0,
-        )
-    };
+    let lanes = unsafe { crate::sme2::ffi::blake3_sme2_hash16_chunks_512(core::ptr::null(), core::ptr::null(), 0, 0, core::ptr::null_mut(), 0) };
     lanes == crate::sme2::GROUP as u64
 }
 
@@ -974,15 +793,8 @@ fn sme2_detect_uncached() -> bool {
 fn sme2_reported() -> bool {
     let mut value: u32 = 0;
     let mut size = core::mem::size_of::<u32>();
-    let rc = unsafe {
-        libc::sysctlbyname(
-            c"hw.optional.arm.FEAT_SME2".as_ptr(),
-            &mut value as *mut u32 as *mut libc::c_void,
-            &mut size,
-            core::ptr::null_mut(),
-            0,
-        )
-    };
+    let rc =
+        unsafe { libc::sysctlbyname(c"hw.optional.arm.FEAT_SME2".as_ptr(), &mut value as *mut u32 as *mut libc::c_void, &mut size, core::ptr::null_mut(), 0) };
     rc == 0 && value != 0
 }
 

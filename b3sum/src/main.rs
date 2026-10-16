@@ -103,11 +103,7 @@ impl Args {
         // wild::args_os() is equivalent to std::env::args_os() on Unix,
         // but on Windows it adds support for globbing.
         let inner = Inner::parse_from(wild::args_os());
-        let file_args = if !inner.file.is_empty() {
-            inner.file.clone()
-        } else {
-            vec!["-".into()]
-        };
+        let file_args = if !inner.file.is_empty() { inner.file.clone() } else { vec!["-".into()] };
         if inner.raw && file_args.len() > 1 {
             bail!("Only one filename can be provided when using --raw");
         }
@@ -120,11 +116,7 @@ impl Args {
         } else {
             blake3::Hasher::new()
         };
-        Ok(Self {
-            inner,
-            file_args,
-            base_hasher,
-        })
+        Ok(Self { inner, file_args, base_hasher })
     }
 
     fn num_threads(&self) -> Option<usize> {
@@ -336,16 +328,9 @@ fn write_raw_output(output: blake3::OutputReader, args: &Args) -> anyhow::Result
 
 fn read_key_from_stdin() -> anyhow::Result<[u8; blake3::KEY_LEN]> {
     let mut bytes = Vec::with_capacity(blake3::KEY_LEN + 1);
-    let n = std::io::stdin()
-        .lock()
-        .take(blake3::KEY_LEN as u64 + 1)
-        .read_to_end(&mut bytes)?;
+    let n = std::io::stdin().lock().take(blake3::KEY_LEN as u64 + 1).read_to_end(&mut bytes)?;
     if n < blake3::KEY_LEN {
-        bail!(
-            "expected {} key bytes from stdin, found {}",
-            blake3::KEY_LEN,
-            n,
-        )
+        bail!("expected {} key bytes from stdin, found {}", blake3::KEY_LEN, n,)
     } else if n > blake3::KEY_LEN {
         bail!("read more than {} key bytes from stdin", blake3::KEY_LEN)
     } else {
@@ -373,16 +358,10 @@ fn filepath_to_string(filepath: &Path) -> FilepathString {
     }
     let mut is_escaped = false;
     if filepath_string.contains(['\\', '\n', '\r']) {
-        filepath_string = filepath_string
-            .replace('\\', "\\\\")
-            .replace('\n', "\\n")
-            .replace('\r', "\\r");
+        filepath_string = filepath_string.replace('\\', "\\\\").replace('\n', "\\n").replace('\r', "\\r");
         is_escaped = true;
     }
-    FilepathString {
-        filepath_string,
-        is_escaped,
-    }
+    FilepathString { filepath_string, is_escaped }
 }
 
 fn hex_half_byte(c: char) -> anyhow::Result<u8> {
@@ -512,20 +491,11 @@ fn parse_check_line(mut line: &str) -> anyhow::Result<ParsedCheckLine> {
     let expected_hash: blake3::Hash = hash_bytes.into();
 
     // Unescape and validate the filepath.
-    let file_path_string = if is_escaped {
-        unescape(file_str)?
-    } else {
-        file_str.to_string()
-    };
+    let file_path_string = if is_escaped { unescape(file_str)? } else { file_str.to_string() };
     ensure!(!file_path_string.is_empty(), "empty file path");
     check_for_invalid_characters(&file_path_string)?;
 
-    Ok(ParsedCheckLine {
-        file_string: file_str.to_string(),
-        is_escaped,
-        file_path: file_path_string.into(),
-        expected_hash,
-    })
+    Ok(ParsedCheckLine { file_string: file_str.to_string(), is_escaped, file_path: file_path_string.into(), expected_hash })
 }
 
 /// Hash every input and print each line in the inputs' order; how many
@@ -591,10 +561,7 @@ fn print_output(output: blake3::OutputReader, path: &Path, args: &Args) -> anyho
         println!();
         return Ok(());
     }
-    let FilepathString {
-        filepath_string,
-        is_escaped,
-    } = filepath_to_string(path);
+    let FilepathString { filepath_string, is_escaped } = filepath_to_string(path);
     if is_escaped {
         print!("\\");
     }
@@ -614,23 +581,14 @@ fn print_output(output: blake3::OutputReader, path: &Path, args: &Args) -> anyho
 // forget to set it in some error condition.
 fn check_one_line(line: &str, args: &Args) -> bool {
     let parse_result = parse_check_line(&line);
-    let ParsedCheckLine {
-        file_string,
-        is_escaped,
-        file_path,
-        expected_hash,
-    } = match parse_result {
+    let ParsedCheckLine { file_string, is_escaped, file_path, expected_hash } = match parse_result {
         Ok(parsed) => parsed,
         Err(e) => {
             eprintln!("{}: {}", NAME, e);
             return false;
         }
     };
-    let file_string = if is_escaped {
-        "\\".to_string() + &file_string
-    } else {
-        file_string
-    };
+    let file_string = if is_escaped { "\\".to_string() + &file_string } else { file_string };
     let found_hash: blake3::Hash;
     match hash_path(args, &file_path) {
         Ok(mut output) => {
@@ -702,12 +660,7 @@ fn main() -> anyhow::Result<()> {
         files_failed = hash_inputs(&args);
     }
     if args.check() && files_failed > 0 {
-        eprintln!(
-            "{}: WARNING: {} computed checksum{} did NOT match",
-            NAME,
-            files_failed,
-            if files_failed == 1 { "" } else { "s" },
-        );
+        eprintln!("{}: WARNING: {} computed checksum{} did NOT match", NAME, files_failed, if files_failed == 1 { "" } else { "s" },);
     }
     std::process::exit(if files_failed > 0 { 1 } else { 0 });
 }

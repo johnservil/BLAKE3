@@ -379,9 +379,7 @@ mod imp {
     fn levels() -> Option<[ThscTimeCpi; 2]> {
         let mut levels = [ThscTimeCpi::default(); 2];
         // Sound: `levels` is writable for the size passed.
-        let rc = unsafe {
-            thread_selfcounts(THSC_TIME_CPI_PER_PERF_LEVEL, levels.as_mut_ptr().cast(), std::mem::size_of_val(&levels))
-        };
+        let rc = unsafe { thread_selfcounts(THSC_TIME_CPI_PER_PERF_LEVEL, levels.as_mut_ptr().cast(), std::mem::size_of_val(&levels)) };
         (rc == 0).then_some(levels)
     }
 
@@ -395,11 +393,7 @@ mod imp {
             ok.then_some((u64::from(info.numer), u64::from(info.denom)))
         }))?;
         let levels = levels().expect("thread_selfcounts failed after succeeding once");
-        let level = |l: ThscTimeCpi| Level {
-            cycles: l.cycles,
-            instructions: l.instructions,
-            time_ns: (l.user_time_mach + l.system_time_mach) * numer / denom,
-        };
+        let level = |l: ThscTimeCpi| Level { cycles: l.cycles, instructions: l.instructions, time_ns: (l.user_time_mach + l.system_time_mach) * numer / denom };
         Some(Counts { p: level(levels[0]), e: level(levels[1]) })
     }
 
@@ -457,9 +451,20 @@ mod tests {
         let mut input = 0;
         let mut observed = Vec::new();
         let started = now();
-        let measured = measure_after_gaps_prepared(3, Gap::Busy(&[7; 128]), 1_000_000, &mut input,
-            |input| { *input += 1; busy_work(100_000); },
-            |input| { observed.push(*input); busy_work(50_000); });
+        let measured = measure_after_gaps_prepared(
+            3,
+            Gap::Busy(&[7; 128]),
+            1_000_000,
+            &mut input,
+            |input| {
+                *input += 1;
+                busy_work(100_000);
+            },
+            |input| {
+                observed.push(*input);
+                busy_work(50_000);
+            },
+        );
         assert_eq!(observed, [1, 2, 3, 4], "one untimed call, then the three timed");
         assert_eq!(measured.calls.calls, 3);
         assert_eq!(measured.preparation.calls, 3);
@@ -483,5 +488,4 @@ mod tests {
         assert!(since_ns(started) >= 6_000_000, "each gap sleeps its length");
         assert!(measured.calls.wall_ns < 5_000_000, "the sleeps stay out of the sum: {measured:?}");
     }
-
 }

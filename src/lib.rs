@@ -194,10 +194,10 @@ pub use each::{hash_each_multithreaded_with, hash_each_with};
 #[cfg(feature = "std")]
 mod outboard;
 #[cfg(feature = "std")]
-pub use outboard::{outboard_multithreaded_with, outboard_with, verify_range_with, Verifier, GROUP_LEN};
-#[cfg(feature = "std")]
 #[doc(hidden)]
 pub use outboard::test_encoding;
+#[cfg(feature = "std")]
+pub use outboard::{GROUP_LEN, Verifier, outboard_multithreaded_with, outboard_with, verify_range_with};
 
 #[doc(hidden)]
 #[deprecated(since = "1.8.0", note = "use the hazmat module instead")]
@@ -234,6 +234,9 @@ mod neon_hybrid;
 #[cfg(all(blake3_neon, target_arch = "aarch64"))]
 mod neon_xof;
 mod portable;
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[cfg_attr(not(blake3_sse41_rust), allow(dead_code))]
+mod rust_sse41;
 #[cfg(blake3_sme2)]
 #[path = "ffi_sme2.rs"]
 mod sme2;
@@ -243,9 +246,6 @@ mod sse2;
 #[cfg(blake3_sse2_ffi)]
 #[path = "ffi_sse2.rs"]
 mod sse2;
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-#[cfg_attr(not(blake3_sse41_rust), allow(dead_code))]
-mod rust_sse41;
 #[cfg(blake3_sse41_rust)]
 use rust_sse41 as sse41;
 #[cfg(blake3_sse41_ffi)]
@@ -261,12 +261,12 @@ pub mod traits;
 
 #[cfg(feature = "std")]
 mod io;
-mod tree;
 #[cfg(feature = "std")]
 mod lanes;
 mod many;
 #[cfg(feature = "std")]
 mod queue;
+mod tree;
 #[cfg(feature = "std")]
 pub use queue::{FixedHandler, MessageHandler, PieceHandler, Queue, shape};
 mod pair;
@@ -316,9 +316,7 @@ const MAX_DEPTH: usize = 54; // 2^54 * CHUNK_LEN = 2^64
 type CVWords = [u32; 8];
 type CVBytes = [u8; 32]; // little-endian
 
-const IV: &CVWords = &[
-    0x6A09E667, 0xBB67AE85, 0x3C6EF372, 0xA54FF53A, 0x510E527F, 0x9B05688C, 0x1F83D9AB, 0x5BE0CD19,
-];
+const IV: &CVWords = &[0x6A09E667, 0xBB67AE85, 0x3C6EF372, 0xA54FF53A, 0x510E527F, 0x9B05688C, 0x1F83D9AB, 0x5BE0CD19];
 
 const MSG_SCHEDULE: [[usize; 16]; 7] = [
     [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
@@ -593,13 +591,7 @@ impl Output {
     }
 
     fn root_output_block(&self) -> [u8; 2 * OUT_LEN] {
-        self.platform.compress_xof(
-            &self.input_chaining_value,
-            &self.block,
-            self.block_len,
-            self.counter,
-            self.flags | ROOT,
-        )
+        self.platform.compress_xof(&self.input_chaining_value, &self.block, self.block_len, self.counter, self.flags | ROOT)
     }
 }
 
@@ -607,14 +599,7 @@ impl Output {
 impl Zeroize for Output {
     fn zeroize(&mut self) {
         // Destructuring to trigger compile error as a reminder to update this impl.
-        let Self {
-            input_chaining_value,
-            block,
-            block_len,
-            counter,
-            flags,
-            platform: _,
-        } = self;
+        let Self { input_chaining_value, block, block_len, counter, flags, platform: _ } = self;
 
         input_chaining_value.zeroize();
         block.zeroize();
@@ -661,7 +646,6 @@ impl ChunkState {
         debug_assert!(self.count() <= CHUNK_LEN);
         self
     }
-
 }
 
 // Don't derive(Debug), because the state may be secret.
@@ -680,15 +664,7 @@ impl fmt::Debug for ChunkState {
 impl Zeroize for ChunkState {
     fn zeroize(&mut self) {
         // Destructuring to trigger compile error as a reminder to update this impl.
-        let Self {
-            cv,
-            chunk_counter,
-            buf,
-            buf_len,
-            blocks_compressed,
-            flags,
-            platform: _,
-        } = self;
+        let Self { cv, chunk_counter, buf, buf_len, blocks_compressed, flags, platform: _ } = self;
 
         cv.zeroize();
         chunk_counter.zeroize();
@@ -718,7 +694,6 @@ impl IncrementCounter {
         }
     }
 }
-
 
 /// Where a stream stands for [`plan_subtrees`]: its chunk counter and the
 /// bytes in its partial chunk (0 to CHUNK_LEN), as a [`Hasher`]'s chunk
@@ -787,14 +762,7 @@ fn spare_lane(platform: Platform, whole: usize, partial: usize) -> Option<usize>
 // on a single thread. Write out the chunk chaining values and return the
 // number of chunks hashed. These chunks are never the root and never empty;
 // those cases use a different codepath.
-fn compress_chunks_parallel(
-    input: &[u8],
-    key: &CVWords,
-    chunk_counter: u64,
-    flags: u8,
-    platform: Platform,
-    out: &mut [u8],
-) -> usize {
+fn compress_chunks_parallel(input: &[u8], key: &CVWords, chunk_counter: u64, flags: u8, platform: Platform, out: &mut [u8]) -> usize {
     debug_assert!(!input.is_empty(), "empty chunks below the root");
     debug_assert!(input.len() <= MAX_SIMD_DEGREE * CHUNK_LEN);
 
@@ -838,22 +806,11 @@ fn compress_chunks_parallel(
     {
         // Safe: the kernel exists for this count and the CPU has SHA-3.
         unsafe {
-            neon_hybrid::hash_chunks_with_partial(
-                &chunks_array, chunks_exact.remainder(), key, chunk_counter, flags, CHUNK_START, CHUNK_END, out,
-            );
+            neon_hybrid::hash_chunks_with_partial(&chunks_array, chunks_exact.remainder(), key, chunk_counter, flags, CHUNK_START, CHUNK_END, out);
         }
         return chunks_array.len() + 1;
     }
-    platform.hash_many(
-        &chunks_array,
-        key,
-        chunk_counter,
-        IncrementCounter::Yes,
-        flags,
-        CHUNK_START,
-        CHUNK_END,
-        out,
-    );
+    platform.hash_many(&chunks_array, key, chunk_counter, IncrementCounter::Yes, flags, CHUNK_START, CHUNK_END, out);
 
     // Hash the remaining partial chunk, if there is one. Note that the empty
     // chunk (meaning the empty message) is a different codepath.
@@ -862,8 +819,7 @@ fn compress_chunks_parallel(
         let counter = chunk_counter + chunks_so_far as u64;
         let mut chunk_state = ChunkState::new(key, counter, flags, platform);
         chunk_state.update(chunks_exact.remainder());
-        *<&mut [u8; OUT_LEN]>::try_from(&mut out[chunks_so_far * OUT_LEN..][..OUT_LEN]).unwrap() =
-            chunk_state.output().chaining_value();
+        *<&mut [u8; OUT_LEN]>::try_from(&mut out[chunks_so_far * OUT_LEN..][..OUT_LEN]).unwrap() = chunk_state.output().chaining_value();
         chunks_so_far + 1
     } else {
         chunks_so_far
@@ -875,13 +831,7 @@ fn compress_chunks_parallel(
 // number of parents hashed. (If there's an odd input chaining value left over,
 // return it as an additional output.) These parents are never the root and
 // never empty; those cases use a different codepath.
-fn compress_parents_parallel(
-    child_chaining_values: &[u8],
-    key: &CVWords,
-    flags: u8,
-    platform: Platform,
-    out: &mut [u8],
-) -> usize {
+fn compress_parents_parallel(child_chaining_values: &[u8], key: &CVWords, flags: u8, platform: Platform, out: &mut [u8]) -> usize {
     debug_assert_eq!(child_chaining_values.len() % OUT_LEN, 0, "wacky hash bytes");
     let num_children = child_chaining_values.len() / OUT_LEN;
     debug_assert!(num_children >= 2, "not enough children");
@@ -926,14 +876,7 @@ fn compress_parents_parallel(
 // This function is not used on inputs of 1 chunk or less. That's a
 // different codepath. Its arrays live in tree::root_children, out of line.
 #[inline]
-fn compress_subtree_to_parent_node(
-    input: &[u8],
-    ahead: usize,
-    key: &CVWords,
-    chunk_counter: u64,
-    flags: u8,
-    platform: Platform,
-) -> [u8; BLOCK_LEN] {
+fn compress_subtree_to_parent_node(input: &[u8], ahead: usize, key: &CVWords, chunk_counter: u64, flags: u8, platform: Platform) -> [u8; BLOCK_LEN] {
     debug_assert!(input.len() > CHUNK_LEN);
     let kernels = tree::PlatformKernels { key, flags, platform };
     let [left, right] = tree::root_children(&kernels, input, ahead, chunk_counter);
@@ -973,18 +916,7 @@ fn hash_one_chunk_root(input: &[u8], key: &CVWords, flags: u8) -> Hash {
     let mut out = [0u8; OUT_LEN];
     // Safe: `input` holds `whole` bytes before `tail`, and blocks is 1..=16.
     unsafe {
-        neon_hybrid::hash_chunk(
-            input.as_ptr(),
-            blocks,
-            last,
-            tail.len() as u8,
-            key,
-            0,
-            flags,
-            CHUNK_START,
-            CHUNK_END | ROOT,
-            &mut out,
-        );
+        neon_hybrid::hash_chunk(input.as_ptr(), blocks, last, tail.len() as u8, key, 0, flags, CHUNK_START, CHUNK_END | ROOT, &mut out);
     }
     Hash(out)
 }
@@ -995,20 +927,15 @@ fn hash_one_chunk_root(input: &[u8], key: &CVWords, flags: u8) -> Hash {
 // tree::hash.
 #[cfg(feature = "std")]
 #[inline]
-fn hash_all_at_once(
-    input: &[u8], key: &CVWords, chunk_counter: u64, flags: u8, platform: Platform,
-) -> Output {
+fn hash_all_at_once(input: &[u8], key: &CVWords, chunk_counter: u64, flags: u8, platform: Platform) -> Output {
     // The input is a complete subtree at chunk_counter, or the whole
     // input (including empty) at counter zero. Its byte offset fits u64.
     debug_assert!(chunk_counter <= u64::MAX / CHUNK_LEN as u64);
-    debug_assert!(chunk_counter == 0 || (!input.is_empty()
-        && input.len() as u64 <= hazmat::max_subtree_len(chunk_counter * CHUNK_LEN as u64).unwrap()));
+    debug_assert!(chunk_counter == 0 || (!input.is_empty() && input.len() as u64 <= hazmat::max_subtree_len(chunk_counter * CHUNK_LEN as u64).unwrap()));
 
     // If the whole subtree is one chunk, hash it directly with a ChunkState.
     if input.len() <= CHUNK_LEN {
-        return ChunkState::new(key, chunk_counter, flags, platform)
-            .update(input)
-            .output();
+        return ChunkState::new(key, chunk_counter, flags, platform).update(input).output();
     }
 
     // Otherwise construct an Output object from the parent node returned by
@@ -1585,11 +1512,7 @@ pub fn kernel_report_many(message_len: usize) -> KernelReport {
     if blocks == 0 {
         let one = kernel_report();
         let kernel = one.kernels.iter().rev().find(|kernel| kernel.from_len <= message_len).expect("a kernel from 0");
-        kernels.push(Kernel {
-            from_len: 0,
-            name: kernel.name,
-            why: "Messages of this length are hashed one call each, as one input of that length.",
-        });
+        kernels.push(Kernel { from_len: 0, name: kernel.name, why: "Messages of this length are hashed one call each, as one input of that length." });
         #[cfg(blake3_neon_hybrid)]
         if (CHUNK_LEN + 1..=2 * CHUNK_LEN).contains(&message_len) && neon_hybrid::sha3_detected() {
             kernels.push(Kernel {
@@ -1793,7 +1716,6 @@ pub fn derive_key(context: &str, key_material: &[u8]) -> [u8; OUT_LEN] {
     hash_serial(key_material, &context_key_words, DERIVE_KEY_MATERIAL).0
 }
 
-
 /// A message's hash, fed in pieces: [`update`](Hasher::update) with each
 /// piece, in order, then [`finalize`](Hasher::finalize). The pieces may be
 /// of any lengths; the hash is the same as [`hash`] of them all at once.
@@ -1864,8 +1786,8 @@ pub(crate) struct HasherCore {
 /// The Hasher's stack, loop, chunk state, and nodes (src/stack_core.rs,
 /// src/hasher_core.rs, src/chunk_core.rs, proved in tools/verify/tree).
 pub(crate) mod hasher {
-    use crate::{CVBytes as Cv, MAX_DEPTH};
     use crate::{BLOCK_LEN, CHUNK_END, CHUNK_LEN, CHUNK_START, PARENT, ROOT};
+    use crate::{CVBytes as Cv, MAX_DEPTH};
     const DEPTH: usize = MAX_DEPTH + 1;
     include!("stack_core.rs");
     include!("hasher_core.rs");
@@ -2140,10 +2062,7 @@ impl Hasher {
     /// This method is idempotent. Calling it twice will give the same result.
     /// You can also add more input and finalize again.
     pub fn finalize(&self) -> Hash {
-        assert_eq!(
-            self.core.initial_chunk_counter, 0,
-            "set_input_offset must be used with finalize_non_root",
-        );
+        assert_eq!(self.core.initial_chunk_counter, 0, "set_input_offset must be used with finalize_non_root",);
         self.final_output().root_hash()
     }
 
@@ -2155,10 +2074,7 @@ impl Hasher {
     ///
     /// [`OutputReader`]: struct.OutputReader.html
     pub fn finalize_xof(&self) -> OutputReader {
-        assert_eq!(
-            self.core.initial_chunk_counter, 0,
-            "set_input_offset must be used with finalize_non_root",
-        );
+        assert_eq!(self.core.initial_chunk_counter, 0, "set_input_offset must be used with finalize_non_root",);
         OutputReader::new(self.final_output())
     }
 
@@ -2275,27 +2191,12 @@ impl HasherCore {
     /// [`HasherCore::new_internal`] on `platform` (the self-test's way in,
     /// as [`hash_serial_from`]).
     pub(crate) fn new_from(key: &CVWords, flags: u8, platform: Platform) -> Self {
-        Self {
-            key: *key,
-            chunk_state: ChunkState::new(key, 0, flags, platform),
-            initial_chunk_counter: 0,
-            cv_stack: CvStack::new(),
-        }
+        Self { key: *key, chunk_state: ChunkState::new(key, 0, flags, platform), initial_chunk_counter: 0, cv_stack: CvStack::new() }
     }
-
-
-
-
-
 
     /// Back to the empty message, with the same key, flags, and platform.
     pub(crate) fn reset(&mut self) -> &mut Self {
-        self.chunk_state = ChunkState::new(
-            &self.key,
-            0,
-            self.chunk_state.flags,
-            self.chunk_state.platform,
-        );
+        self.chunk_state = ChunkState::new(&self.key, 0, self.chunk_state.flags, self.chunk_state.platform);
         self.cv_stack.clear();
         self
     }
@@ -2365,8 +2266,6 @@ impl HasherCore {
         self.merge_cv_stack(chunk_counter);
         self.cv_stack.push(*new_cv);
     }
-
-
 
     /// [`update`](Hasher::update) with every whole subtree's result taken
     /// from `results`, in the order [`plan_subtrees`] gave them (in the same
@@ -2445,13 +2344,7 @@ impl HasherCore {
     pub(crate) fn assert_room(&self, count: u64, len: usize) {
         let input_offset = self.initial_chunk_counter * CHUNK_LEN as u64;
         if let Some(max) = hazmat::max_subtree_len(input_offset) {
-            assert!(
-                len as u64 <= max - count,
-                "the subtree starting at {} contains at most {} bytes (found {})",
-                input_offset,
-                max,
-                count + len as u64,
-            );
+            assert!(len as u64 <= max - count, "the subtree starting at {} contains at most {} bytes (found {})", input_offset, max, count + len as u64,);
         }
     }
 
@@ -2459,11 +2352,7 @@ impl HasherCore {
     /// set_input_offset, on a fresh core).
     pub(crate) fn set_input_offset(&mut self, offset: u64) -> &mut Self {
         assert_eq!(self.count(), 0, "hasher has already accepted input");
-        assert_eq!(
-            offset % CHUNK_LEN as u64,
-            0,
-            "offset ({offset}) must be a chunk boundary (divisible by {CHUNK_LEN})",
-        );
+        assert_eq!(offset % CHUNK_LEN as u64, 0, "offset ({offset}) must be a chunk boundary (divisible by {CHUNK_LEN})",);
         let counter = offset / CHUNK_LEN as u64;
         self.chunk_state.chunk_counter = counter;
         self.initial_chunk_counter = counter;
@@ -2472,18 +2361,14 @@ impl HasherCore {
 
     /// Bytes so far, counted from the input offset.
     pub(crate) fn count(&self) -> u64 {
-        (self.chunk_state.chunk_counter - self.initial_chunk_counter) * CHUNK_LEN as u64
-            + self.chunk_state.count() as u64
+        (self.chunk_state.chunk_counter - self.initial_chunk_counter) * CHUNK_LEN as u64 + self.chunk_state.count() as u64
     }
 }
 
 // Don't derive(Debug), because the state may be secret.
 impl fmt::Debug for Hasher {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("Hasher")
-            .field("flags", &self.core.chunk_state.flags)
-            .field("platform", &self.core.chunk_state.platform)
-            .finish()
+        f.debug_struct("Hasher").field("flags", &self.core.chunk_state.flags).field("platform", &self.core.chunk_state.platform).finish()
     }
 }
 
@@ -2522,12 +2407,7 @@ impl Zeroize for Hasher {
 impl Zeroize for HasherCore {
     fn zeroize(&mut self) {
         // Destructuring to trigger compile error as a reminder to update this impl.
-        let Self {
-            key,
-            chunk_state,
-            initial_chunk_counter,
-            cv_stack,
-        } = self;
+        let Self { key, chunk_state, initial_chunk_counter, cv_stack } = self;
 
         key.zeroize();
         chunk_state.zeroize();
@@ -2567,10 +2447,7 @@ pub struct OutputReader {
 
 impl OutputReader {
     fn new(inner: Output) -> Self {
-        Self {
-            inner,
-            position_within_block: 0,
-        }
+        Self { inner, position_within_block: 0 }
     }
 
     // This helper function handles both the case where the output buffer is
@@ -2666,9 +2543,7 @@ impl OutputReader {
 // Don't derive(Debug), because the state may be secret.
 impl fmt::Debug for OutputReader {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("OutputReader")
-            .field("position", &self.position())
-            .finish()
+        f.debug_struct("OutputReader").field("position", &self.position()).finish()
     }
 }
 
@@ -2689,17 +2564,11 @@ impl std::io::Seek for OutputReader {
             std::io::SeekFrom::Start(x) => x as i128,
             std::io::SeekFrom::Current(x) => self.position() as i128 + x as i128,
             std::io::SeekFrom::End(_) => {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    "seek from end not supported",
-                ));
+                return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "seek from end not supported"));
             }
         };
         if target_position < 0 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "seek before start",
-            ));
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "seek before start"));
         }
         self.set_position(cmp::min(target_position, max_position) as u64);
         Ok(self.position())
@@ -2710,10 +2579,7 @@ impl std::io::Seek for OutputReader {
 impl Zeroize for OutputReader {
     fn zeroize(&mut self) {
         // Destructuring to trigger compile error as a reminder to update this impl.
-        let Self {
-            inner,
-            position_within_block,
-        } = self;
+        let Self { inner, position_within_block } = self;
 
         inner.zeroize();
         position_within_block.zeroize();

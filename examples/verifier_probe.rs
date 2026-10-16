@@ -13,7 +13,17 @@ fn main() {
         let mut v = blake3_servil::Verifier::new(blake3_servil::Mode::Hash, &hash, len as u64);
         let mut at = 0;
         for p in encoding.chunks(piece) {
-            let ok = if pooled { v.update_multithreaded(p, |b| { out[at..at + b.len()].copy_from_slice(b); at += b.len(); }) } else { v.update(p, |b| { out[at..at + b.len()].copy_from_slice(b); at += b.len(); }) };
+            let ok = if pooled {
+                v.update_multithreaded(p, |b| {
+                    out[at..at + b.len()].copy_from_slice(b);
+                    at += b.len();
+                })
+            } else {
+                v.update(p, |b| {
+                    out[at..at + b.len()].copy_from_slice(b);
+                    at += b.len();
+                })
+            };
             assert!(ok);
         }
     });

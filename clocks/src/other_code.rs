@@ -23,21 +23,61 @@ macro_rules! round {
 
 #[inline(never)]
 fn block<const N: u64>(mut x: u64) -> u64 {
-    round!(x, N, 1); round!(x, N, 2); round!(x, N, 3); round!(x, N, 4);
-    round!(x, N, 5); round!(x, N, 6); round!(x, N, 7); round!(x, N, 8);
-    round!(x, N, 9); round!(x, N, 10); round!(x, N, 11); round!(x, N, 12);
-    round!(x, N, 13); round!(x, N, 14); round!(x, N, 15); round!(x, N, 16);
-    round!(x, N, 17); round!(x, N, 18); round!(x, N, 19); round!(x, N, 20);
-    round!(x, N, 21); round!(x, N, 22); round!(x, N, 23); round!(x, N, 24);
-    round!(x, N, 25); round!(x, N, 26); round!(x, N, 27); round!(x, N, 28);
-    round!(x, N, 29); round!(x, N, 30); round!(x, N, 31); round!(x, N, 32);
+    round!(x, N, 1);
+    round!(x, N, 2);
+    round!(x, N, 3);
+    round!(x, N, 4);
+    round!(x, N, 5);
+    round!(x, N, 6);
+    round!(x, N, 7);
+    round!(x, N, 8);
+    round!(x, N, 9);
+    round!(x, N, 10);
+    round!(x, N, 11);
+    round!(x, N, 12);
+    round!(x, N, 13);
+    round!(x, N, 14);
+    round!(x, N, 15);
+    round!(x, N, 16);
+    round!(x, N, 17);
+    round!(x, N, 18);
+    round!(x, N, 19);
+    round!(x, N, 20);
+    round!(x, N, 21);
+    round!(x, N, 22);
+    round!(x, N, 23);
+    round!(x, N, 24);
+    round!(x, N, 25);
+    round!(x, N, 26);
+    round!(x, N, 27);
+    round!(x, N, 28);
+    round!(x, N, 29);
+    round!(x, N, 30);
+    round!(x, N, 31);
+    round!(x, N, 32);
     x
 }
 
-macro_rules! table4 { ($b:expr) => { [block::<{ $b }>, block::<{ $b + 1 }>, block::<{ $b + 2 }>, block::<{ $b + 3 }>] }; }
-macro_rules! table16 { ($b:expr) => { concat4::<4, 16>(table4!($b), table4!($b + 4), table4!($b + 8), table4!($b + 12)) }; }
-macro_rules! table64 { ($b:expr) => { concat4::<16, 64>(table16!($b), table16!($b + 16), table16!($b + 32), table16!($b + 48)) }; }
-macro_rules! table256 { ($b:expr) => { concat4::<64, 256>(table64!($b), table64!($b + 64), table64!($b + 128), table64!($b + 192)) }; }
+macro_rules! table4 {
+    ($b:expr) => {
+        [block::<{ $b }>, block::<{ $b + 1 }>, block::<{ $b + 2 }>, block::<{ $b + 3 }>]
+    };
+}
+macro_rules! table16 {
+    ($b:expr) => {
+        concat4::<4, 16>(table4!($b), table4!($b + 4), table4!($b + 8), table4!($b + 12))
+    };
+}
+macro_rules! table64 {
+    ($b:expr) => {
+        concat4::<16, 64>(table16!($b), table16!($b + 16), table16!($b + 32), table16!($b + 48))
+    };
+}
+macro_rules! table256 {
+    ($b:expr) => {
+        concat4::<64, 256>(table64!($b), table64!($b + 64), table64!($b + 128), table64!($b + 192))
+    };
+}
 
 type Block = fn(u64) -> u64;
 

@@ -207,8 +207,29 @@ fn hash_two_chunks(input: &[u8], len: usize, key: &CVWords, flags: u8, outputs: 
         // the SHA-3 extension (neon_plans).
         unsafe {
             let firsts = core::slice::from_raw_parts(firsts.as_ptr() as *const &[u8; CHUNK_LEN], count);
-            crate::neon_hybrid::hash_many_last_len(firsts, key, 0, IncrementCounter::No, flags, CHUNK_START, CHUNK_END, BLOCK_LEN, cvs[..count].as_flattened_mut());
-            crate::neon_hybrid::hash_messages_raw(seconds.as_ptr() as *const *const u8, count, second_blocks, key, 1, flags, CHUNK_START, CHUNK_END, last_len, cvs[count..2 * count].as_flattened_mut());
+            crate::neon_hybrid::hash_many_last_len(
+                firsts,
+                key,
+                0,
+                IncrementCounter::No,
+                flags,
+                CHUNK_START,
+                CHUNK_END,
+                BLOCK_LEN,
+                cvs[..count].as_flattened_mut(),
+            );
+            crate::neon_hybrid::hash_messages_raw(
+                seconds.as_ptr() as *const *const u8,
+                count,
+                second_blocks,
+                key,
+                1,
+                flags,
+                CHUNK_START,
+                CHUNK_END,
+                last_len,
+                cvs[count..2 * count].as_flattened_mut(),
+            );
         }
         for (i, pair) in pairs[..count].iter_mut().enumerate() {
             pair[..OUT_LEN].copy_from_slice(&cvs[i]);
@@ -216,7 +237,9 @@ fn hash_two_chunks(input: &[u8], len: usize, key: &CVWords, flags: u8, outputs: 
         }
         let parents: arrayvec::ArrayVec<&[u8; BLOCK_LEN], GROUP> = pairs[..count].iter().collect();
         // Sound: as above.
-        unsafe { crate::neon_hybrid::hash_many_last_len(&parents, key, 0, IncrementCounter::No, flags | PARENT, 0, ROOT, BLOCK_LEN, digests.as_flattened_mut()) };
+        unsafe {
+            crate::neon_hybrid::hash_many_last_len(&parents, key, 0, IncrementCounter::No, flags | PARENT, 0, ROOT, BLOCK_LEN, digests.as_flattened_mut())
+        };
     }
 }
 
@@ -284,7 +307,10 @@ pub(crate) fn hash_group_across(messages: &[&[u8]], len: usize, key: &CVWords, f
     const GROUP: usize = ACROSS_GROUP;
     let (full, chunks) = (len / CHUNK_LEN, len.div_ceil(CHUNK_LEN));
     assert!(full >= 1 && chunks >= 2 && chunks < ACROSS_CHUNKS, "messages of 2 chunks to under ACROSS_CHUNKS");
-    assert!(messages.len() <= GROUP && messages.len() == digests.len() && messages.iter().all(|m| m.len() == len), "up to ACROSS_GROUP messages of len bytes, a digest each");
+    assert!(
+        messages.len() <= GROUP && messages.len() == digests.len() && messages.iter().all(|m| m.len() == len),
+        "up to ACROSS_GROUP messages of len bytes, a digest each"
+    );
     {
         let count = digests.len();
         let message = |m: usize| messages[m];
@@ -301,7 +327,20 @@ pub(crate) fn hash_group_across(messages: &[&[u8]], len: usize, key: &CVWords, f
             if before_last > 0 {
                 // Sound: each pointer reaches before_last whole blocks of its message.
                 let ptrs: arrayvec::ArrayVec<*const u8, GROUP> = (0..count).map(|m| message(m)[full * CHUNK_LEN..].as_ptr()).collect();
-                unsafe { crate::pair::hash_many_blocks(platform, &ptrs, before_last, key, full as u64, false, flags, CHUNK_START, 0, so_far[..count].as_flattened_mut()) };
+                unsafe {
+                    crate::pair::hash_many_blocks(
+                        platform,
+                        &ptrs,
+                        before_last,
+                        key,
+                        full as u64,
+                        false,
+                        flags,
+                        CHUNK_START,
+                        0,
+                        so_far[..count].as_flattened_mut(),
+                    )
+                };
             }
             for m in 0..count {
                 let mut cv = if before_last > 0 { crate::platform::words_from_le_bytes_32(&so_far[m]) } else { *key };
@@ -324,7 +363,16 @@ pub(crate) fn hash_group_across(messages: &[&[u8]], len: usize, key: &CVWords, f
 /// messages.
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[allow(clippy::too_many_arguments)]
-fn subtree_across(cvs: &mut [[[u8; OUT_LEN]; 16]; ACROSS_CHUNKS], first: usize, n: usize, count: usize, key: &CVWords, flags: u8, platform: Platform, top: bool) {
+fn subtree_across(
+    cvs: &mut [[[u8; OUT_LEN]; 16]; ACROSS_CHUNKS],
+    first: usize,
+    n: usize,
+    count: usize,
+    key: &CVWords,
+    flags: u8,
+    platform: Platform,
+    top: bool,
+) {
     if n == 1 {
         return;
     }
@@ -493,7 +541,13 @@ fn hash_blocks<const N: usize>(messages: &[u8], key: &CVWords, flags: u8, output
     let left = count % GROUP;
     let padded = sme2 && left >= if count > GROUP { SME2_TAIL_MIN_AFTER_GROUPS } else { SME2_TAIL_MIN };
     // Messages hashed on SME2 (the first `on_sme2`), and the table's lanes.
-    let on_sme2 = if padded { count } else if sme2 { count - left } else { 0 };
+    let on_sme2 = if padded {
+        count
+    } else if sme2 {
+        count - left
+    } else {
+        0
+    };
     let lanes = if padded { count.next_multiple_of(GROUP) } else { count };
     let mut slots: Slots<N> = [core::mem::MaybeUninit::uninit(); TABLE + 16];
     let table = fill_table(&mut slots, messages, count, lanes);
@@ -583,7 +637,20 @@ mod test {
     #[test]
     fn test_chunks_across_messages() {
         let key = [9u8; 32];
-        let lens = [CHUNK_LEN + 1, CHUNK_LEN + 64, 1500, 2 * CHUNK_LEN - 1, 2 * CHUNK_LEN + 1, 3 * CHUNK_LEN, 3000, 5 * CHUNK_LEN + 700, 8 * CHUNK_LEN - 1, 8 * CHUNK_LEN, 9 * CHUNK_LEN + 3, 15 * CHUNK_LEN + 1023];
+        let lens = [
+            CHUNK_LEN + 1,
+            CHUNK_LEN + 64,
+            1500,
+            2 * CHUNK_LEN - 1,
+            2 * CHUNK_LEN + 1,
+            3 * CHUNK_LEN,
+            3000,
+            5 * CHUNK_LEN + 700,
+            8 * CHUNK_LEN - 1,
+            8 * CHUNK_LEN,
+            9 * CHUNK_LEN + 3,
+            15 * CHUNK_LEN + 1023,
+        ];
         for mode in [crate::Mode::Hash, crate::Mode::Keyed(&key), crate::Mode::DeriveKey("chunks across")] {
             for len in lens {
                 for count in [1, 2, 3, 4, 5, 15, 16, 17, 33] {
@@ -693,7 +760,28 @@ mod test {
     /// chunks, in their slots.
     #[test]
     fn test_hash_many_other_lengths() {
-        for len in [0, 1, 2, 63, 65, 100, 127, 129, 191, 255, 257, 1000, 1023, 1025, 2000, 3000, 3 * CHUNK_LEN + 7, 15 * CHUNK_LEN - 1, 15 * CHUNK_LEN + 1, 16 * CHUNK_LEN + 5] {
+        for len in [
+            0,
+            1,
+            2,
+            63,
+            65,
+            100,
+            127,
+            129,
+            191,
+            255,
+            257,
+            1000,
+            1023,
+            1025,
+            2000,
+            3000,
+            3 * CHUNK_LEN + 7,
+            15 * CHUNK_LEN - 1,
+            15 * CHUNK_LEN + 1,
+            16 * CHUNK_LEN + 5,
+        ] {
             for count in [0, 1, 2, 3, 5, 9, 10, 15, 16, 17, 21, 129] {
                 check(len, count);
             }
@@ -723,8 +811,15 @@ mod test {
         for chunks in 1..=16 {
             lengths.extend([chunks * CHUNK_LEN, chunks * CHUNK_LEN + BLOCK_LEN]);
         }
-        let mut thresholds = vec![GROUP, TABLE, SME2_TAIL_MIN, GROUP + SME2_TAIL_MIN_AFTER_GROUPS, ONE_BLOCK_PAD_MIN,
-            GROUP + ONE_BLOCK_PAD_AFTER_GROUPS, crate::SME2_SIZED_BATCH];
+        let mut thresholds = vec![
+            GROUP,
+            TABLE,
+            SME2_TAIL_MIN,
+            GROUP + SME2_TAIL_MIN_AFTER_GROUPS,
+            ONE_BLOCK_PAD_MIN,
+            GROUP + ONE_BLOCK_PAD_AFTER_GROUPS,
+            crate::SME2_SIZED_BATCH,
+        ];
         for chunks in 2..=15 {
             let min = sme2_chunked_min(chunks * CHUNK_LEN);
             thresholds.extend([min, GROUP + min - 2]);
@@ -769,7 +864,11 @@ mod test {
         let key = [0x5Au8; crate::KEY_LEN];
         let context = "Linux whole-block batch dispatch";
         let context_key = crate::hazmat::hash_derive_key_context(context);
-        let modes = [(*crate::IV, 0), (crate::platform::words_from_le_bytes_32(&key), crate::KEYED_HASH), (crate::platform::words_from_le_bytes_32(&context_key), crate::DERIVE_KEY_MATERIAL)];
+        let modes = [
+            (*crate::IV, 0),
+            (crate::platform::words_from_le_bytes_32(&key), crate::KEYED_HASH),
+            (crate::platform::words_from_le_bytes_32(&context_key), crate::DERIVE_KEY_MATERIAL),
+        ];
         for len in [128, 256, 512, CHUNK_LEN, 2047, 2048, 2049, 4095, 4096, 4097] {
             for count in (0..=33).chain([63, 64, 127, 128, 129, 255]) {
                 let bytes = messages(len, count);
@@ -778,15 +877,21 @@ mod test {
                     allocation[offset..].copy_from_slice(&bytes);
                     let input = &allocation[offset..];
                     for (key_words, flags) in modes {
-                        let want: Vec<_> = (0..count).map(|i| {
-                            let mut h = if flags == 0 { reference_impl::Hasher::new() }
-                                else if flags == crate::KEYED_HASH { reference_impl::Hasher::new_keyed(&key) }
-                                else { reference_impl::Hasher::new_derive_key(context) };
-                            h.update(message(input, len, i));
-                            let mut digest = [0; OUT_LEN];
-                            h.finalize(&mut digest);
-                            digest
-                        }).collect();
+                        let want: Vec<_> = (0..count)
+                            .map(|i| {
+                                let mut h = if flags == 0 {
+                                    reference_impl::Hasher::new()
+                                } else if flags == crate::KEYED_HASH {
+                                    reference_impl::Hasher::new_keyed(&key)
+                                } else {
+                                    reference_impl::Hasher::new_derive_key(context)
+                                };
+                                h.update(message(input, len, i));
+                                let mut digest = [0; OUT_LEN];
+                                h.finalize(&mut digest);
+                                digest
+                            })
+                            .collect();
                         for &platform in &platforms {
                             let mut out = vec![[0xAA; OUT_LEN]; count + 1];
                             hash_many_on(input, len, &key_words, flags, &mut out[..count], platform);
@@ -810,12 +915,36 @@ mod test {
         let key = b"whats the Elvish word for friend";
         let context = "BLAKE3 2019-12-27 16:29:52 test vectors context";
         let context_key = crate::hazmat::hash_derive_key_context(context);
-        let modes = [(*crate::IV, 0), (crate::platform::words_from_le_bytes_32(key), crate::KEYED_HASH),
-            (crate::platform::words_from_le_bytes_32(&context_key), crate::DERIVE_KEY_MATERIAL)];
+        let modes = [
+            (*crate::IV, 0),
+            (crate::platform::words_from_le_bytes_32(key), crate::KEYED_HASH),
+            (crate::platform::words_from_le_bytes_32(&context_key), crate::DERIVE_KEY_MATERIAL),
+        ];
         let cases = [
-            (1025, ["d00278ae47eb27b34faecf67b4fe263f82d5412916c1ffd97c8cb7fb814b8444", "357dc55de0c7e382c900fd6e320acc04146be01db6a8ce7210b7189bd664ea69", "effaa245f065fbf82ac186839a249707c3bddf6d3fdda22d1b95a3c970379bcb"]),
-            (3073, ["7124b49501012f81cc7f11ca069ec9226cecb8a2c850cfe644e327d22d3e1cd3", "68dede9bef00ba89e43f31a6825f4cf433389fedae75c04ee9f0cf16a427c95a", "72613c9ec9ff7e40f8f5c173784c532ad852e827dba2bf85b2ab4b76f7079081"]),
-            (7169, ["a003fc7a51754a9b3c7fae0367ab3d782dccf28855a03d435f8cfe74605e7817", "ed9b1a922c046fdb3d423ae34e143b05ca1bf28b710432857bf738bcedbfa511", "554b0a5efea9ef183f2f9b931b7497995d9eb26f5c5c6dad2b97d62fc5ac31d9"]),
+            (
+                1025,
+                [
+                    "d00278ae47eb27b34faecf67b4fe263f82d5412916c1ffd97c8cb7fb814b8444",
+                    "357dc55de0c7e382c900fd6e320acc04146be01db6a8ce7210b7189bd664ea69",
+                    "effaa245f065fbf82ac186839a249707c3bddf6d3fdda22d1b95a3c970379bcb",
+                ],
+            ),
+            (
+                3073,
+                [
+                    "7124b49501012f81cc7f11ca069ec9226cecb8a2c850cfe644e327d22d3e1cd3",
+                    "68dede9bef00ba89e43f31a6825f4cf433389fedae75c04ee9f0cf16a427c95a",
+                    "72613c9ec9ff7e40f8f5c173784c532ad852e827dba2bf85b2ab4b76f7079081",
+                ],
+            ),
+            (
+                7169,
+                [
+                    "a003fc7a51754a9b3c7fae0367ab3d782dccf28855a03d435f8cfe74605e7817",
+                    "ed9b1a922c046fdb3d423ae34e143b05ca1bf28b710432857bf738bcedbfa511",
+                    "554b0a5efea9ef183f2f9b931b7497995d9eb26f5c5c6dad2b97d62fc5ac31d9",
+                ],
+            ),
         ];
         for (len, anchors) in cases {
             let slot = slot_len(len);
@@ -844,8 +973,11 @@ mod test {
         let key = b"whats the Elvish word for friend";
         let context = "BLAKE3 2019-12-27 16:29:52 test vectors context";
         let context_key = crate::hazmat::hash_derive_key_context(context);
-        let modes = [(*crate::IV, 0), (crate::platform::words_from_le_bytes_32(key), crate::KEYED_HASH),
-            (crate::platform::words_from_le_bytes_32(&context_key), crate::DERIVE_KEY_MATERIAL)];
+        let modes = [
+            (*crate::IV, 0),
+            (crate::platform::words_from_le_bytes_32(key), crate::KEYED_HASH),
+            (crate::platform::words_from_le_bytes_32(&context_key), crate::DERIVE_KEY_MATERIAL),
+        ];
         // test_vectors/test_vectors.json: 2048 bytes, byte i = i % 251.
         let anchors = [
             "e776b6028c7cd22a4d0ba182a8bf62205d2ef576467e838ed6f2529b85fba24a",
@@ -870,8 +1002,11 @@ mod test {
         let key = b"whats the Elvish word for friend";
         let context = "BLAKE3 2019-12-27 16:29:52 test vectors context";
         let context_key = crate::hazmat::hash_derive_key_context(context);
-        let modes = [(*crate::IV, 0), (crate::platform::words_from_le_bytes_32(key), crate::KEYED_HASH),
-            (crate::platform::words_from_le_bytes_32(&context_key), crate::DERIVE_KEY_MATERIAL)];
+        let modes = [
+            (*crate::IV, 0),
+            (crate::platform::words_from_le_bytes_32(key), crate::KEYED_HASH),
+            (crate::platform::words_from_le_bytes_32(&context_key), crate::DERIVE_KEY_MATERIAL),
+        ];
         // Published test_vectors/test_vectors.json, 4096 bytes, i % 251.
         let anchors = [
             "015094013f57a5277b59d8475c0501042c0b642e531b0a1c8f58d2163229e969",

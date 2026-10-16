@@ -1,7 +1,7 @@
 //! One exported function per code path the proofs cover, each a call of
 //! blake3-servil's own `Platform` method, unchanged.
-use blake3_servil::IncrementCounter;
 use blake3_servil::platform::Platform;
+use blake3_servil::IncrementCounter;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn verify_portable_compress_in_place(cv: &mut [u32; 8], block: &[u8; 64], len: u8, counter: u64, flags: u8) {

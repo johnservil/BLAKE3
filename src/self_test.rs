@@ -190,10 +190,7 @@ pub(crate) fn fold(bytes: &[u8]) -> u64 {
 /// the key a keyed case takes; so every output depends on every earlier
 /// one. `outputs` hashes one case into its buffer and returns how many
 /// bytes it wrote; `check` sees each case's fold as it comes.
-pub(crate) fn chain(
-    mut outputs: impl FnMut(Case, &[u8], &[u8; 32], &mut [u8]) -> usize,
-    mut check: impl FnMut(usize, u64),
-) {
+pub(crate) fn chain(mut outputs: impl FnMut(Case, &[u8], &[u8; 32], &mut [u8]) -> usize, mut check: impl FnMut(usize, u64)) {
     let mut input = [0u8; INPUT_LEN];
     fill(&mut input);
     let mut out = [0u8; OUTPUT_LEN];
@@ -365,16 +362,7 @@ fn chunk_values(platform: Platform, input: &[u8], key: &[u8; 32], out: &mut [u8]
             return out.len();
         }
     }
-    platform.hash_many(
-        &chunks,
-        &key,
-        1,
-        crate::IncrementCounter::Yes,
-        crate::KEYED_HASH,
-        crate::CHUNK_START,
-        crate::CHUNK_END,
-        out,
-    );
+    platform.hash_many(&chunks, &key, 1, crate::IncrementCounter::Yes, crate::KEYED_HASH, crate::CHUNK_START, crate::CHUNK_END, out);
     out.len()
 }
 
@@ -415,7 +403,9 @@ fn compiled_features_present() {
         #[allow(unused_unsafe)]
         let cpuid = |leaf, sub| unsafe { __cpuid_count(leaf, sub) };
         let lacks = |feature: &str| -> ! {
-            panic!("blake3-servil: this binary was compiled for CPUs with {feature}, which this CPU lacks, and here it would compute wrong digests; build it for this CPU")
+            panic!(
+                "blake3-servil: this binary was compiled for CPUs with {feature}, which this CPU lacks, and here it would compute wrong digests; build it for this CPU"
+            )
         };
         if cfg!(target_feature = "lzcnt") && cpuid(0x8000_0001, 0).ecx & (1 << 5) == 0 {
             lacks("LZCNT");
@@ -485,9 +475,7 @@ mod test {
     use super::*;
 
     /// `outputs` as `chain` takes it: the bytes written into its buffer.
-    fn into(
-        mut outputs: impl FnMut(Case, &[u8], &[u8; 32]) -> std::vec::Vec<u8>,
-    ) -> impl FnMut(Case, &[u8], &[u8; 32], &mut [u8]) -> usize {
+    fn into(mut outputs: impl FnMut(Case, &[u8], &[u8; 32]) -> std::vec::Vec<u8>) -> impl FnMut(Case, &[u8], &[u8; 32], &mut [u8]) -> usize {
         move |case, input, previous, out| {
             let output = outputs(case, input, previous);
             out[..output.len()].copy_from_slice(&output);
@@ -505,25 +493,14 @@ mod test {
         };
         match case {
             Hash { offset, len } => digest(reference_impl::Hasher::new(), &input[offset..][..len], 0, 32),
-            Many { len, count, .. } => {
-                (0..count).flat_map(|i| digest(reference_impl::Hasher::new(), &input[i * len..][..len], 0, 32)).collect()
-            }
+            Many { len, count, .. } => (0..count).flat_map(|i| digest(reference_impl::Hasher::new(), &input[i * len..][..len], 0, 32)).collect(),
             ChunkValues { chunks } => {
                 // The portable Rust kernel, which shares no code with the assembly.
                 let key = crate::platform::words_from_le_bytes_32(previous);
                 let table: std::vec::Vec<&[u8; crate::CHUNK_LEN]> =
                     input[..chunks * crate::CHUNK_LEN].chunks_exact(crate::CHUNK_LEN).map(|c| c.try_into().unwrap()).collect();
                 let mut out = std::vec![0u8; chunks * crate::OUT_LEN];
-                crate::portable::hash_many(
-                    &table,
-                    &key,
-                    1,
-                    crate::IncrementCounter::Yes,
-                    crate::KEYED_HASH,
-                    crate::CHUNK_START,
-                    crate::CHUNK_END,
-                    &mut out,
-                );
+                crate::portable::hash_many(&table, &key, 1, crate::IncrementCounter::Yes, crate::KEYED_HASH, crate::CHUNK_START, crate::CHUNK_END, &mut out);
                 out
             }
             Keyed { len } => digest(reference_impl::Hasher::new_keyed(previous), &input[..len], 0, 32),
@@ -549,7 +526,10 @@ mod test {
     #[test]
     fn self_test_passes() {
         let platform = Platform::detect();
-        chain(|case, input, previous, out| outputs(platform, case, input, previous, out), |index, folded| assert_eq!(folded, EXPECTED[index], "case {index}, {}", CASES[index].1));
+        chain(
+            |case, input, previous, out| outputs(platform, case, input, previous, out),
+            |index, folded| assert_eq!(folded, EXPECTED[index], "case {index}, {}", CASES[index].1),
+        );
     }
 
     /// Chaining carries a difference forward: a wrong first output changes

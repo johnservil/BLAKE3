@@ -95,22 +95,13 @@ pub fn generate_json() -> String {
         paint_test_input(&mut input);
 
         let mut hash_out = [0; OUTPUT_LEN];
-        blake3::Hasher::new()
-            .update(&input)
-            .finalize_xof()
-            .fill(&mut hash_out);
+        blake3::Hasher::new().update(&input).finalize_xof().fill(&mut hash_out);
 
         let mut keyed_hash_out = [0; OUTPUT_LEN];
-        blake3::Hasher::new_keyed(TEST_KEY)
-            .update(&input)
-            .finalize_xof()
-            .fill(&mut keyed_hash_out);
+        blake3::Hasher::new_keyed(TEST_KEY).update(&input).finalize_xof().fill(&mut keyed_hash_out);
 
         let mut derive_key_out = [0; OUTPUT_LEN];
-        blake3::Hasher::new_derive_key(TEST_CONTEXT)
-            .update(&input)
-            .finalize_xof()
-            .fill(&mut derive_key_out);
+        blake3::Hasher::new_derive_key(TEST_CONTEXT).update(&input).finalize_xof().fill(&mut derive_key_out);
 
         cases.push(Case {
             input_len,
@@ -199,13 +190,7 @@ mod tests {
         assert_eq!(expected_derive_key, &out[..]);
     }
 
-    fn test_incremental_all_at_once(
-        key: &[u8; blake3::KEY_LEN],
-        input: &[u8],
-        expected_hash: &[u8],
-        expected_keyed_hash: &[u8],
-        expected_derive_key: &[u8],
-    ) {
+    fn test_incremental_all_at_once(key: &[u8; blake3::KEY_LEN], input: &[u8], expected_hash: &[u8], expected_keyed_hash: &[u8], expected_derive_key: &[u8]) {
         let mut out = vec![0; expected_hash.len()];
         let mut hasher = blake3::Hasher::new();
         hasher.update(input);
@@ -228,13 +213,7 @@ mod tests {
         assert_eq!(&expected_derive_key[..32], hasher.finalize().as_bytes());
     }
 
-    fn test_incremental_one_at_a_time(
-        key: &[u8; blake3::KEY_LEN],
-        input: &[u8],
-        expected_hash: &[u8],
-        expected_keyed_hash: &[u8],
-        expected_derive_key: &[u8],
-    ) {
+    fn test_incremental_one_at_a_time(key: &[u8; blake3::KEY_LEN], input: &[u8], expected_hash: &[u8], expected_keyed_hash: &[u8], expected_derive_key: &[u8]) {
         let mut out = vec![0; expected_hash.len()];
         let mut hasher = blake3::Hasher::new();
         for i in 0..input.len() {
@@ -266,22 +245,10 @@ mod tests {
         assert_eq!(&expected_derive_key[..32], hasher.finalize().as_bytes());
     }
 
-    fn test_recursive(
-        key: &[u8; blake3::KEY_LEN],
-        input: &[u8],
-        expected_hash: &[u8],
-        expected_keyed_hash: &[u8],
-        expected_derive_key: &[u8],
-    ) {
+    fn test_recursive(key: &[u8; blake3::KEY_LEN], input: &[u8], expected_hash: &[u8], expected_keyed_hash: &[u8], expected_derive_key: &[u8]) {
         assert_eq!(&expected_hash[..32], blake3::hash(input).as_bytes());
-        assert_eq!(
-            &expected_keyed_hash[..32],
-            blake3::keyed_hash(key, input).as_bytes(),
-        );
-        assert_eq!(
-            expected_derive_key[..32],
-            blake3::derive_key(TEST_CONTEXT, input)
-        );
+        assert_eq!(&expected_keyed_hash[..32], blake3::keyed_hash(key, input).as_bytes(),);
+        assert_eq!(expected_derive_key[..32], blake3::derive_key(TEST_CONTEXT, input));
     }
 
     #[test]
@@ -297,45 +264,15 @@ mod tests {
             let expected_keyed_hash = hex::decode(&case.keyed_hash).unwrap();
             let expected_derive_key = hex::decode(&case.derive_key).unwrap();
 
-            test_reference_impl_all_at_once(
-                key,
-                &input,
-                &expected_hash,
-                &expected_keyed_hash,
-                &expected_derive_key,
-            );
+            test_reference_impl_all_at_once(key, &input, &expected_hash, &expected_keyed_hash, &expected_derive_key);
 
-            test_reference_impl_one_at_a_time(
-                key,
-                &input,
-                &expected_hash,
-                &expected_keyed_hash,
-                &expected_derive_key,
-            );
+            test_reference_impl_one_at_a_time(key, &input, &expected_hash, &expected_keyed_hash, &expected_derive_key);
 
-            test_incremental_all_at_once(
-                key,
-                &input,
-                &expected_hash,
-                &expected_keyed_hash,
-                &expected_derive_key,
-            );
+            test_incremental_all_at_once(key, &input, &expected_hash, &expected_keyed_hash, &expected_derive_key);
 
-            test_incremental_one_at_a_time(
-                key,
-                &input,
-                &expected_hash,
-                &expected_keyed_hash,
-                &expected_derive_key,
-            );
+            test_incremental_one_at_a_time(key, &input, &expected_hash, &expected_keyed_hash, &expected_derive_key);
 
-            test_recursive(
-                key,
-                &input,
-                &expected_hash,
-                &expected_keyed_hash,
-                &expected_derive_key,
-            );
+            test_recursive(key, &input, &expected_hash, &expected_keyed_hash, &expected_derive_key);
         }
     }
 
@@ -346,9 +283,7 @@ mod tests {
         // newlines when files are checked out.
         let json = TEST_VECTORS_JSON.replace("\r\n", "\n");
         if generate_json() != json {
-            panic!(
-                "Checked-in test_vectors.json is not up to date. Regenerate with `cargo run --bin generate > ./test_vectors.json`."
-            );
+            panic!("Checked-in test_vectors.json is not up to date. Regenerate with `cargo run --bin generate > ./test_vectors.json`.");
         }
     }
 }

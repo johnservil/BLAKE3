@@ -20,10 +20,7 @@ fn test_hash_one() {
 fn test_hash_one_tag() {
     blake3::initialize();
     let expected = format!("BLAKE3 (-) = {}", blake3::hash(b"foo").to_hex());
-    let output = cmd!(b3sum_exe(), "--tag")
-        .stdin_bytes("foo")
-        .read()
-        .unwrap();
+    let output = cmd!(b3sum_exe(), "--tag").stdin_bytes("foo").read().unwrap();
     assert_eq!(&*expected, output);
 }
 
@@ -31,12 +28,7 @@ fn test_hash_one_tag() {
 fn test_hash_one_raw() {
     blake3::initialize();
     let expected = blake3::hash(b"foo").as_bytes().to_owned();
-    let output = cmd!(b3sum_exe(), "--raw")
-        .stdin_bytes("foo")
-        .stdout_capture()
-        .run()
-        .unwrap()
-        .stdout;
+    let output = cmd!(b3sum_exe(), "--raw").stdin_bytes("foo").stdout_capture().run().unwrap().stdout;
     assert_eq!(expected, output.as_slice());
 }
 
@@ -62,9 +54,7 @@ fn test_hash_many() {
     );
     assert_eq!(expected, output);
 
-    let output_no_names = cmd!(b3sum_exe(), "--no-names", &file1, &file2)
-        .read()
-        .unwrap();
+    let output_no_names = cmd!(b3sum_exe(), "--no-names", &file1, &file2).read().unwrap();
     let expected_no_names = format!("{}\n{}", foo_hash.to_hex(), bar_hash.to_hex(),);
     assert_eq!(expected_no_names, output_no_names);
 }
@@ -101,22 +91,12 @@ fn test_missing_files() {
     let file2 = dir.path().join("file2");
     fs::write(&file2, b"bar").unwrap();
 
-    let output = cmd!(b3sum_exe(), "file1", "missing_file", "file2")
-        .dir(dir.path())
-        .stdout_capture()
-        .stderr_capture()
-        .unchecked()
-        .run()
-        .unwrap();
+    let output = cmd!(b3sum_exe(), "file1", "missing_file", "file2").dir(dir.path()).stdout_capture().stderr_capture().unchecked().run().unwrap();
     assert!(!output.status.success());
 
     let foo_hash = blake3::hash(b"foo");
     let bar_hash = blake3::hash(b"bar");
-    let expected_stdout = format!(
-        "{}  file1\n{}  file2\n",
-        foo_hash.to_hex(),
-        bar_hash.to_hex(),
-    );
+    let expected_stdout = format!("{}  file1\n{}  file2\n", foo_hash.to_hex(), bar_hash.to_hex(),);
     assert_eq!(expected_stdout.as_bytes(), &output.stdout[..]);
 
     let bing_error = fs::File::open(dir.path().join("missing_file")).unwrap_err();
@@ -128,40 +108,17 @@ fn test_missing_files() {
 fn test_hash_length_and_seek() {
     blake3::initialize();
     let mut expected = [0; 100];
-    blake3::Hasher::new()
-        .update(b"foo")
-        .finalize_xof()
-        .fill(&mut expected);
-    let output = cmd!(b3sum_exe(), "--raw", "--length=100")
-        .stdin_bytes("foo")
-        .stdout_capture()
-        .run()
-        .unwrap()
-        .stdout;
+    blake3::Hasher::new().update(b"foo").finalize_xof().fill(&mut expected);
+    let output = cmd!(b3sum_exe(), "--raw", "--length=100").stdin_bytes("foo").stdout_capture().run().unwrap().stdout;
     assert_eq!(expected[..], output);
 
-    let short_output = cmd!(b3sum_exe(), "--raw", "--length=99")
-        .stdin_bytes("foo")
-        .stdout_capture()
-        .run()
-        .unwrap()
-        .stdout;
+    let short_output = cmd!(b3sum_exe(), "--raw", "--length=99").stdin_bytes("foo").stdout_capture().run().unwrap().stdout;
     assert_eq!(expected[..99], short_output);
 
-    let seek1_output = cmd!(b3sum_exe(), "--raw", "--length=99", "--seek=1")
-        .stdin_bytes("foo")
-        .stdout_capture()
-        .run()
-        .unwrap()
-        .stdout;
+    let seek1_output = cmd!(b3sum_exe(), "--raw", "--length=99", "--seek=1").stdin_bytes("foo").stdout_capture().run().unwrap().stdout;
     assert_eq!(expected[1..], seek1_output);
 
-    let seek99_output = cmd!(b3sum_exe(), "--raw", "--length=1", "--seek=99")
-        .stdin_bytes("foo")
-        .stdout_capture()
-        .run()
-        .unwrap()
-        .stdout;
+    let seek99_output = cmd!(b3sum_exe(), "--raw", "--length=1", "--seek=99").stdin_bytes("foo").stdout_capture().run().unwrap().stdout;
     assert_eq!(expected[99..], seek99_output);
 }
 
@@ -173,22 +130,13 @@ fn test_keyed() {
     f.as_file().write_all(b"foo").unwrap();
     f.as_file().flush().unwrap();
     let expected = blake3::keyed_hash(&key, b"foo").to_hex();
-    let output = cmd!(b3sum_exe(), "--keyed", "--no-names", f.path())
-        .stdin_bytes(&key[..])
-        .read()
-        .unwrap();
+    let output = cmd!(b3sum_exe(), "--keyed", "--no-names", f.path()).stdin_bytes(&key[..]).read().unwrap();
     assert_eq!(&*expected, &*output);
 
     // Make sure that keys of the wrong length lead to errors.
     for bad_length in [0, 1, blake3::KEY_LEN - 1, blake3::KEY_LEN + 1] {
         dbg!(bad_length);
-        let output = cmd!(b3sum_exe(), "--keyed", f.path())
-            .stdin_bytes(vec![0; bad_length])
-            .stdout_capture()
-            .stderr_capture()
-            .unchecked()
-            .run()
-            .unwrap();
+        let output = cmd!(b3sum_exe(), "--keyed", f.path()).stdin_bytes(vec![0; bad_length]).stdout_capture().stderr_capture().unchecked().run().unwrap();
         assert!(!output.status.success());
         assert!(output.stdout.is_empty());
         // Make sure the error message is relevant.
@@ -205,9 +153,7 @@ fn test_derive_key() {
     f.as_file().write_all(b"key material").unwrap();
     f.as_file().flush().unwrap();
     let expected = hex::encode(blake3::derive_key(context, b"key material"));
-    let output = cmd!(b3sum_exe(), "--derive-key", context, "--no-names", f.path())
-        .read()
-        .unwrap();
+    let output = cmd!(b3sum_exe(), "--derive-key", context, "--no-names", f.path()).read().unwrap();
     assert_eq!(&*expected, &*output);
 }
 
@@ -219,9 +165,7 @@ fn test_no_mmap() {
     f.as_file().flush().unwrap();
 
     let expected = blake3::hash(b"foo").to_hex();
-    let output = cmd!(b3sum_exe(), "--no-mmap", "--no-names", f.path())
-        .read()
-        .unwrap();
+    let output = cmd!(b3sum_exe(), "--no-mmap", "--no-names", f.path()).read().unwrap();
     assert_eq!(&*expected, &*output);
 }
 
@@ -232,19 +176,14 @@ fn test_null_device_on_windows() {
     let expected = blake3::hash(b"").to_hex();
     let output = cmd!(b3sum_exe(), "--no-names", "NUL").read().unwrap();
     assert_eq!(&*expected, output);
-    let output = cmd!(b3sum_exe(), "--no-names", "--no-mmap", "NUL")
-        .read()
-        .unwrap();
+    let output = cmd!(b3sum_exe(), "--no-names", "--no-mmap", "NUL").read().unwrap();
     assert_eq!(&*expected, output);
 }
 
 #[test]
 fn test_length_without_value_is_an_error() {
     blake3::initialize();
-    let result = cmd!(b3sum_exe(), "--length")
-        .stdin_bytes("foo")
-        .stderr_capture()
-        .run();
+    let result = cmd!(b3sum_exe(), "--length").stdin_bytes("foo").stderr_capture().run();
     assert!(result.is_err());
 }
 
@@ -259,9 +198,7 @@ fn test_raw_with_multi_files_is_an_error() {
     assert!(result.is_ok());
 
     // Make sure it errors when both file are passed
-    let result = cmd!(b3sum_exe(), "--raw", f1.path(), f2.path())
-        .stderr_capture()
-        .run();
+    let result = cmd!(b3sum_exe(), "--raw", f1.path(), f2.path()).stderr_capture().run();
     assert!(result.is_err());
 }
 
@@ -272,14 +209,7 @@ fn test_newline_and_backslash_escaping_on_unix() {
     let empty_hash = blake3::hash(b"").to_hex();
     let dir = tempfile::tempdir().unwrap();
     fs::create_dir(dir.path().join("subdir")).unwrap();
-    let names = [
-        "abcdef",
-        "abc\ndef",
-        "abc\\def",
-        "abc\rdef",
-        "abc\r\ndef",
-        "subdir/foo",
-    ];
+    let names = ["abcdef", "abc\ndef", "abc\\def", "abc\rdef", "abc\r\ndef", "subdir/foo"];
     let mut paths = Vec::new();
     for name in &names {
         let path = dir.path().join(name);
@@ -398,15 +328,7 @@ fn test_invalid_unicode_on_windows() {
     let empty_hash = blake3::hash(b"").to_hex();
     let dir = tempfile::tempdir().unwrap();
     let surrogate_char = 0xDC00;
-    let bad_unicode_wchars = [
-        'a' as u16,
-        'b' as u16,
-        'c' as u16,
-        surrogate_char,
-        'd' as u16,
-        'e' as u16,
-        'f' as u16,
-    ];
+    let bad_unicode_wchars = ['a' as u16, 'b' as u16, 'c' as u16, surrogate_char, 'd' as u16, 'e' as u16, 'f' as u16];
     let bad_osstring = OsString::from_wide(&bad_unicode_wchars);
     let names = ["abcdef".into(), bad_osstring];
     let mut paths = Vec::new();
@@ -453,12 +375,7 @@ fn test_check() {
         if tagged {
             args.push("--tag");
         }
-        let output = cmd(b3sum_exe(), args)
-            .dir(dir.path())
-            .stdout_capture()
-            .stderr_capture()
-            .run()
-            .unwrap();
+        let output = cmd(b3sum_exe(), args).dir(dir.path()).stdout_capture().stderr_capture().run().unwrap();
         let stdout = std::str::from_utf8(&output.stdout).unwrap();
         let stderr = std::str::from_utf8(&output.stderr).unwrap();
         let expected_checkfile = if tagged {
@@ -481,13 +398,7 @@ fn test_check() {
         assert_eq!("", stderr);
 
         // Now use the output we just validated as a checkfile, passed to stdin.
-        let output = cmd!(b3sum_exe(), "--check")
-            .stdin_bytes(expected_checkfile.as_bytes())
-            .dir(dir.path())
-            .stdout_capture()
-            .stderr_capture()
-            .run()
-            .unwrap();
+        let output = cmd!(b3sum_exe(), "--check").stdin_bytes(expected_checkfile.as_bytes()).dir(dir.path()).stdout_capture().stderr_capture().run().unwrap();
         let stdout = std::str::from_utf8(&output.stdout).unwrap();
         let stderr = std::str::from_utf8(&output.stderr).unwrap();
         let expected_check_output = "\
@@ -499,13 +410,7 @@ fn test_check() {
 
         // Check the same file, but with Windows-style newlines.
         let windows_style = expected_checkfile.replace("\n", "\r\n");
-        let output = cmd!(b3sum_exe(), "--check")
-            .stdin_bytes(windows_style.as_bytes())
-            .dir(dir.path())
-            .stdout_capture()
-            .stderr_capture()
-            .run()
-            .unwrap();
+        let output = cmd!(b3sum_exe(), "--check").stdin_bytes(windows_style.as_bytes()).dir(dir.path()).stdout_capture().stderr_capture().run().unwrap();
         let stdout = std::str::from_utf8(&output.stdout).unwrap();
         let stderr = std::str::from_utf8(&output.stderr).unwrap();
         let expected_check_output = "\
@@ -518,12 +423,7 @@ fn test_check() {
         // Now pass the same checkfile twice on the command line just for fun.
         let checkfile_path = dir.path().join("checkfile");
         fs::write(&checkfile_path, &expected_checkfile).unwrap();
-        let output = cmd!(b3sum_exe(), "--check", &checkfile_path, &checkfile_path)
-            .dir(dir.path())
-            .stdout_capture()
-            .stderr_capture()
-            .run()
-            .unwrap();
+        let output = cmd!(b3sum_exe(), "--check", &checkfile_path, &checkfile_path).dir(dir.path()).stdout_capture().stderr_capture().run().unwrap();
         let stdout = std::str::from_utf8(&output.stdout).unwrap();
         let stderr = std::str::from_utf8(&output.stderr).unwrap();
         let mut double_check_output = String::new();
@@ -534,13 +434,7 @@ fn test_check() {
 
         // Corrupt one of the files and check again.
         fs::write(dir.path().join("b"), b"CORRUPTION").unwrap();
-        let output = cmd!(b3sum_exe(), "--check", &checkfile_path)
-            .dir(dir.path())
-            .stdout_capture()
-            .stderr_capture()
-            .unchecked()
-            .run()
-            .unwrap();
+        let output = cmd!(b3sum_exe(), "--check", &checkfile_path).dir(dir.path()).stdout_capture().stderr_capture().unchecked().run().unwrap();
         let stdout = std::str::from_utf8(&output.stdout).unwrap();
         let stderr = std::str::from_utf8(&output.stderr).unwrap();
         let expected_check_failure = "\
@@ -549,21 +443,12 @@ fn test_check() {
         c/d: OK\n";
         assert!(!output.status.success());
         assert_eq!(expected_check_failure, stdout);
-        assert_eq!(
-            "b3sum: WARNING: 1 computed checksum did NOT match\n",
-            stderr,
-        );
+        assert_eq!("b3sum: WARNING: 1 computed checksum did NOT match\n", stderr,);
 
         // Delete one of the files and check again.
         fs::remove_file(dir.path().join("b")).unwrap();
         let open_file_error = fs::File::open(dir.path().join("b")).unwrap_err();
-        let output = cmd!(b3sum_exe(), "--check", &checkfile_path)
-            .dir(dir.path())
-            .stdout_capture()
-            .stderr_capture()
-            .unchecked()
-            .run()
-            .unwrap();
+        let output = cmd!(b3sum_exe(), "--check", &checkfile_path).dir(dir.path()).stdout_capture().stderr_capture().unchecked().run().unwrap();
         let stdout = std::str::from_utf8(&output.stdout).unwrap();
         let stderr = std::str::from_utf8(&output.stderr).unwrap();
         let expected_check_failure = format!(
@@ -574,28 +459,16 @@ fn test_check() {
         );
         assert!(!output.status.success());
         assert_eq!(expected_check_failure, stdout);
-        assert_eq!(
-            "b3sum: WARNING: 1 computed checksum did NOT match\n",
-            stderr,
-        );
+        assert_eq!("b3sum: WARNING: 1 computed checksum did NOT match\n", stderr,);
 
         // Confirm that --quiet suppresses the OKs but not the FAILEDs.
-        let output = cmd!(b3sum_exe(), "--check", "--quiet", &checkfile_path)
-            .dir(dir.path())
-            .stdout_capture()
-            .stderr_capture()
-            .unchecked()
-            .run()
-            .unwrap();
+        let output = cmd!(b3sum_exe(), "--check", "--quiet", &checkfile_path).dir(dir.path()).stdout_capture().stderr_capture().unchecked().run().unwrap();
         let stdout = std::str::from_utf8(&output.stdout).unwrap();
         let stderr = std::str::from_utf8(&output.stderr).unwrap();
         let expected_check_failure = format!("b: FAILED ({})\n", open_file_error);
         assert!(!output.status.success());
         assert_eq!(expected_check_failure, stdout);
-        assert_eq!(
-            "b3sum: WARNING: 1 computed checksum did NOT match\n",
-            stderr,
-        );
+        assert_eq!("b3sum: WARNING: 1 computed checksum did NOT match\n", stderr,);
     }
 }
 
@@ -699,15 +572,8 @@ fn test_globbing() {
     let expected = format!("{}  file1\n{}  file2", foo_hash.to_hex(), bar_hash.to_hex());
 
     let star_command = format!("{} *", b3sum_exe().to_str().unwrap());
-    let (exe, c_flag) = if cfg!(windows) {
-        ("cmd.exe", "/C")
-    } else {
-        ("/bin/sh", "-c")
-    };
-    let output = cmd!(exe, c_flag, star_command)
-        .dir(dir.path())
-        .read()
-        .unwrap();
+    let (exe, c_flag) = if cfg!(windows) { ("cmd.exe", "/C") } else { ("/bin/sh", "-c") };
+    let output = cmd!(exe, c_flag, star_command).dir(dir.path()).read().unwrap();
     assert_eq!(expected, output);
 }
 
@@ -715,12 +581,7 @@ fn test_globbing() {
 fn test_num_threads_is_ignored_with_a_warning() {
     blake3::initialize();
     let expected = format!("{}  -", blake3::hash(b"foo").to_hex());
-    let output = cmd!(b3sum_exe(), "--num-threads", "3")
-        .stdin_bytes("foo")
-        .stdout_capture()
-        .stderr_capture()
-        .run()
-        .unwrap();
+    let output = cmd!(b3sum_exe(), "--num-threads", "3").stdin_bytes("foo").stdout_capture().stderr_capture().run().unwrap();
     assert_eq!(expected, std::str::from_utf8(&output.stdout).unwrap().trim_end());
     let stderr = std::str::from_utf8(&output.stderr).unwrap();
     assert!(stderr.contains("--num-threads is no longer supported"), "stderr: {stderr}");

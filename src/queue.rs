@@ -235,7 +235,8 @@ struct State<I> {
     /// stands past the delivered ones).
     plan: crate::PlanState,
     /// Short messages gathered into one task, not yet handed to the pool.
-    open: Option<Task>,    /// Whether this queue hands tasks to the pool, and the room it made in
+    open: Option<Task>,
+    /// Whether this queue hands tasks to the pool, and the room it made in
     /// the pool's task list for them (lanes::Tasks::make_room).
     tasks_room: Option<usize>,
 }
@@ -269,7 +270,13 @@ impl<I> State<I> {
     /// `free` and `returned`.
     fn add_block(&mut self, returned: &mut Slots<I>) {
         let most = self.most.max(1);
-        let block = Box::into_raw(Box::new(std::array::from_fn(|_| Slot { item: None, results: Vec::with_capacity(most), left: AtomicUsize::new(0), digest: false, next: AtomicPtr::new(core::ptr::null_mut()) })));
+        let block = Box::into_raw(Box::new(std::array::from_fn(|_| Slot {
+            item: None,
+            results: Vec::with_capacity(most),
+            left: AtomicUsize::new(0),
+            digest: false,
+            next: AtomicPtr::new(core::ptr::null_mut()),
+        })));
         self.blocks.push(block);
         if let Some(room) = &mut self.tasks_room {
             TASKS.make_room(SLOT_BLOCK * most);
@@ -380,7 +387,16 @@ impl<H: Send + 'static, S: 'static> Queue<H, S> {
         let (key, flags) = mode.key_and_flags();
         let tasks = crate::lanes::takes_tasks();
         let mut returned = Slots(Vec::new());
-        let mut state = State { blocks: Vec::new(), free: Slots(Vec::new()), tail: core::ptr::null_mut(), tasks: Vec::new(), most: 0, plan: Default::default(), open: None, tasks_room: tasks.then_some(0) };
+        let mut state = State {
+            blocks: Vec::new(),
+            free: Slots(Vec::new()),
+            tail: core::ptr::null_mut(),
+            tasks: Vec::new(),
+            most: 0,
+            plan: Default::default(),
+            open: None,
+            tasks_room: tasks.then_some(0),
+        };
         state.add_block(&mut returned);
         DELIVERY.make_room();
         // The chain starts at a slot delivered already.
@@ -473,7 +489,13 @@ where
     /// that length) in flight as a member of the queue's open task: `member`
     /// gives its bytes and, for a batch, its digest space, from the item,
     /// which stays in its slot.
-    fn submit_member(&self, owner: &Arc<dyn Any + Send + Sync>, item: I, batch: Option<usize>, member: impl FnOnce(&mut I) -> (*const u8, usize, Option<*mut u8>)) {
+    fn submit_member(
+        &self,
+        owner: &Arc<dyn Any + Send + Sync>,
+        item: I,
+        batch: Option<usize>,
+        member: impl FnOnce(&mut I) -> (*const u8, usize, Option<*mut u8>),
+    ) {
         let mut guard = crate::lanes::lock_polling(&self.state);
         let state = &mut *guard;
         let slot = state.take_slot(&self.returned);
@@ -737,7 +759,9 @@ impl<H: FixedHandler> Queue<H, shape::Fixed> {
         let len = buffer.as_ref().len();
         if tasks && len > 0 && len < MEMBER_BELOW {
             // Small batches go several to a task, as short messages do.
-            return inner.submit_member(owner, (buffer, digests), Some(message_len), |(buffer, digests)| (buffer.as_ref().as_ptr(), buffer.as_ref().len(), Some(digests.as_mut().as_mut_ptr() as *mut u8)));
+            return inner.submit_member(owner, (buffer, digests), Some(message_len), |(buffer, digests)| {
+                (buffer.as_ref().as_ptr(), buffer.as_ref().len(), Some(digests.as_mut().as_mut_ptr() as *mut u8))
+            });
         }
         inner.submit(owner, (buffer, digests), |(buffer, digests), _, out| {
             let bytes = buffer.as_ref();
@@ -777,10 +801,7 @@ static DELIVERY: Delivery = Delivery { queues: Mutex::new((Vec::new(), false, 0)
 /// entry in flight.
 pub(crate) fn start_delivery() {
     crate::lanes::prepare(&DELIVERY.queues, &DELIVERY.wake);
-    std::thread::Builder::new()
-        .name("blake3-servil-queue".into())
-        .spawn(|| DELIVERY.run())
-        .expect("the queue's delivery thread starts");
+    std::thread::Builder::new().name("blake3-servil-queue".into()).spawn(|| DELIVERY.run()).expect("the queue's delivery thread starts");
 }
 
 impl Delivery {
@@ -938,7 +959,22 @@ mod test {
     /// chunk), in batches of every size.
     #[test]
     fn planned_pieces_match_update() {
-        let lens: [usize; 14] = [CHUNK_LEN + 1, 1, 1000, CHUNK_LEN, 0, 2 * CHUNK_LEN, 3 * CHUNK_LEN, 4096 + 17, 16 * CHUNK_LEN, 64 * CHUNK_LEN, 65 * CHUNK_LEN, 100_000, 128 * CHUNK_LEN, 3 * 65536];
+        let lens: [usize; 14] = [
+            CHUNK_LEN + 1,
+            1,
+            1000,
+            CHUNK_LEN,
+            0,
+            2 * CHUNK_LEN,
+            3 * CHUNK_LEN,
+            4096 + 17,
+            16 * CHUNK_LEN,
+            64 * CHUNK_LEN,
+            65 * CHUNK_LEN,
+            100_000,
+            128 * CHUNK_LEN,
+            3 * 65536,
+        ];
         let input: Vec<u8> = (0..4 << 20).map(|i: u32| (i.wrapping_mul(0x9E37_79B1) >> 24) as u8).collect();
         let key = [9u32; 8];
         for start in [0, 500, CHUNK_LEN, 3 * CHUNK_LEN] {
@@ -952,11 +988,14 @@ mod test {
                 crate::plan_subtrees(&mut plan, &input[..start], &mut Vec::new());
                 let mut offset = start;
                 for group in pieces.chunks(batch) {
-                    let slices: Vec<&[u8]> = group.iter().map(|&len| {
-                        let piece = &input[offset..offset + len];
-                        offset += len;
-                        piece
-                    }).collect();
+                    let slices: Vec<&[u8]> = group
+                        .iter()
+                        .map(|&len| {
+                            let piece = &input[offset..offset + len];
+                            offset += len;
+                            piece
+                        })
+                        .collect();
                     let mut tasks = Vec::new();
                     for piece in &slices {
                         crate::plan_subtrees(&mut plan, piece, &mut tasks);
@@ -972,7 +1011,11 @@ mod test {
                         got.update_with_results(piece, &mut replay);
                     }
                     assert!(replay.as_slice().is_empty(), "every result replayed");
-                    assert_eq!(got.final_output().root_hash(), want.final_output().root_hash(), "start {start}, pieces {pieces:?}, batches of {batch}, after {offset} bytes");
+                    assert_eq!(
+                        got.final_output().root_hash(),
+                        want.final_output().root_hash(),
+                        "start {start}, pieces {pieces:?}, batches of {batch}, after {offset} bytes"
+                    );
                 }
             }
         }

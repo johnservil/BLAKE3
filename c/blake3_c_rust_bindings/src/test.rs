@@ -56,9 +56,7 @@ pub const TEST_CASES_MAX: usize = 100 * CHUNK_LEN;
 
 // There's a test to make sure these two are equal below.
 pub const TEST_KEY: [u8; 32] = *b"whats the Elvish word for friend";
-pub const TEST_KEY_WORDS: [u32; 8] = [
-    1952540791, 1752440947, 1816469605, 1752394102, 1919907616, 1868963940, 1919295602, 1684956521,
-];
+pub const TEST_KEY_WORDS: [u32; 8] = [1952540791, 1752440947, 1816469605, 1752394102, 1919907616, 1868963940, 1919295602, 1684956521];
 
 // Paint the input with a repeating byte pattern. We use a cycle length of 251,
 // because that's the largest prime number less than 256. This makes it
@@ -84,17 +82,9 @@ fn le_bytes_from_words_32(words: &[u32; 8]) -> [u8; 32] {
     out
 }
 
-type CompressInPlaceFn =
-    unsafe extern "C" fn(cv: *mut u32, block: *const u8, block_len: u8, counter: u64, flags: u8);
+type CompressInPlaceFn = unsafe extern "C" fn(cv: *mut u32, block: *const u8, block_len: u8, counter: u64, flags: u8);
 
-type CompressXofFn = unsafe extern "C" fn(
-    cv: *const u32,
-    block: *const u8,
-    block_len: u8,
-    counter: u64,
-    flags: u8,
-    out: *mut u8,
-);
+type CompressXofFn = unsafe extern "C" fn(cv: *const u32, block: *const u8, block_len: u8, counter: u64, flags: u8, out: *mut u8);
 
 // A shared helper function for platform-specific tests.
 pub fn test_compress_fn(compress_in_place_fn: CompressInPlaceFn, compress_xof_fn: CompressXofFn) {
@@ -108,38 +98,14 @@ pub fn test_compress_fn(compress_in_place_fn: CompressInPlaceFn, compress_xof_fn
 
     let mut portable_out = [0; 64];
     unsafe {
-        crate::ffi::blake3_compress_xof_portable(
-            initial_state.as_ptr(),
-            block.as_ptr(),
-            block_len,
-            counter,
-            flags,
-            portable_out.as_mut_ptr(),
-        );
+        crate::ffi::blake3_compress_xof_portable(initial_state.as_ptr(), block.as_ptr(), block_len, counter, flags, portable_out.as_mut_ptr());
     }
 
     let mut test_state = initial_state;
-    unsafe {
-        compress_in_place_fn(
-            test_state.as_mut_ptr(),
-            block.as_ptr(),
-            block_len,
-            counter,
-            flags,
-        )
-    };
+    unsafe { compress_in_place_fn(test_state.as_mut_ptr(), block.as_ptr(), block_len, counter, flags) };
     let test_state_bytes = le_bytes_from_words_32(&test_state);
     let mut test_xof = [0; 64];
-    unsafe {
-        compress_xof_fn(
-            initial_state.as_ptr(),
-            block.as_ptr(),
-            block_len,
-            counter,
-            flags,
-            test_xof.as_mut_ptr(),
-        )
-    };
+    unsafe { compress_xof_fn(initial_state.as_ptr(), block.as_ptr(), block_len, counter, flags, test_xof.as_mut_ptr()) };
 
     assert_eq!(&portable_out[..32], &test_state_bytes[..]);
     assert_eq!(&portable_out[..], &test_xof[..]);
@@ -148,10 +114,7 @@ pub fn test_compress_fn(compress_in_place_fn: CompressInPlaceFn, compress_xof_fn
 // Testing the portable implementation against itself is circular, but why not.
 #[test]
 fn test_compress_portable() {
-    test_compress_fn(
-        crate::ffi::blake3_compress_in_place_portable,
-        crate::ffi::blake3_compress_xof_portable,
-    );
+    test_compress_fn(crate::ffi::blake3_compress_in_place_portable, crate::ffi::blake3_compress_xof_portable);
 }
 
 #[test]
@@ -160,10 +123,7 @@ fn test_compress_sse2() {
     if !crate::sse2_detected() {
         return;
     }
-    test_compress_fn(
-        crate::ffi::x86::blake3_compress_in_place_sse2,
-        crate::ffi::x86::blake3_compress_xof_sse2,
-    );
+    test_compress_fn(crate::ffi::x86::blake3_compress_in_place_sse2, crate::ffi::x86::blake3_compress_xof_sse2);
 }
 
 #[test]
@@ -172,10 +132,7 @@ fn test_compress_sse41() {
     if !crate::sse41_detected() {
         return;
     }
-    test_compress_fn(
-        crate::ffi::x86::blake3_compress_in_place_sse41,
-        crate::ffi::x86::blake3_compress_xof_sse41,
-    );
+    test_compress_fn(crate::ffi::x86::blake3_compress_in_place_sse41, crate::ffi::x86::blake3_compress_xof_sse41);
 }
 
 #[test]
@@ -184,10 +141,7 @@ fn test_compress_avx512() {
     if !crate::avx512_detected() {
         return;
     }
-    test_compress_fn(
-        crate::ffi::x86::blake3_compress_in_place_avx512,
-        crate::ffi::x86::blake3_compress_xof_avx512,
-    );
+    test_compress_fn(crate::ffi::x86::blake3_compress_in_place_avx512, crate::ffi::x86::blake3_compress_xof_avx512);
 }
 
 type HashManyFn = unsafe extern "C" fn(
@@ -222,11 +176,7 @@ pub fn test_hash_many_fn(hash_many_fn: HashManyFn) {
         // First hash chunks.
         let mut chunks = ArrayVec::<&[u8; CHUNK_LEN], NUM_INPUTS>::new();
         for i in 0..NUM_INPUTS {
-            chunks.push(
-                (&input_buf[i * CHUNK_LEN..][..CHUNK_LEN])
-                    .try_into()
-                    .unwrap(),
-            );
+            chunks.push((&input_buf[i * CHUNK_LEN..][..CHUNK_LEN]).try_into().unwrap());
         }
         let mut portable_chunks_out = [0; NUM_INPUTS * OUT_LEN];
         unsafe {
@@ -261,20 +211,13 @@ pub fn test_hash_many_fn(hash_many_fn: HashManyFn) {
         }
         for n in 0..NUM_INPUTS {
             dbg!(n);
-            assert_eq!(
-                &portable_chunks_out[n * OUT_LEN..][..OUT_LEN],
-                &test_chunks_out[n * OUT_LEN..][..OUT_LEN]
-            );
+            assert_eq!(&portable_chunks_out[n * OUT_LEN..][..OUT_LEN], &test_chunks_out[n * OUT_LEN..][..OUT_LEN]);
         }
 
         // Then hash parents.
         let mut parents = ArrayVec::<&[u8; 2 * OUT_LEN], NUM_INPUTS>::new();
         for i in 0..NUM_INPUTS {
-            parents.push(
-                (&input_buf[i * 2 * OUT_LEN..][..2 * OUT_LEN])
-                    .try_into()
-                    .unwrap(),
-            );
+            parents.push((&input_buf[i * 2 * OUT_LEN..][..2 * OUT_LEN]).try_into().unwrap());
         }
         let mut portable_parents_out = [0; NUM_INPUTS * OUT_LEN];
         unsafe {
@@ -309,10 +252,7 @@ pub fn test_hash_many_fn(hash_many_fn: HashManyFn) {
         }
         for n in 0..NUM_INPUTS {
             dbg!(n);
-            assert_eq!(
-                &portable_parents_out[n * OUT_LEN..][..OUT_LEN],
-                &test_parents_out[n * OUT_LEN..][..OUT_LEN]
-            );
+            assert_eq!(&portable_parents_out[n * OUT_LEN..][..OUT_LEN], &test_parents_out[n * OUT_LEN..][..OUT_LEN]);
         }
     }
 }
@@ -366,15 +306,7 @@ fn test_hash_many_neon() {
 }
 
 #[allow(unused)]
-type XofManyFunction = unsafe extern "C" fn(
-    cv: *const u32,
-    block: *const u8,
-    block_len: u8,
-    counter: u64,
-    flags: u8,
-    out: *mut u8,
-    outblocks: usize,
-);
+type XofManyFunction = unsafe extern "C" fn(cv: *const u32, block: *const u8, block_len: u8, counter: u64, flags: u8, out: *mut u8, outblocks: usize);
 
 // A shared helper function for platform-specific tests.
 #[allow(unused)]
@@ -400,28 +332,13 @@ pub fn test_xof_many_fn(xof_many_function: XofManyFunction) {
         let mut portable_out = [0u8; OUTPUT_SIZE];
         for (i, out_block) in portable_out.chunks_exact_mut(BLOCK_LEN).enumerate() {
             unsafe {
-                crate::ffi::blake3_compress_xof_portable(
-                    cv.as_ptr(),
-                    block.as_ptr(),
-                    block_len as u8,
-                    counter + i as u64,
-                    flags,
-                    out_block.as_mut_ptr(),
-                );
+                crate::ffi::blake3_compress_xof_portable(cv.as_ptr(), block.as_ptr(), block_len as u8, counter + i as u64, flags, out_block.as_mut_ptr());
             }
         }
 
         let mut test_out = [0u8; OUTPUT_SIZE];
         unsafe {
-            xof_many_function(
-                cv.as_ptr(),
-                block.as_ptr(),
-                block_len as u8,
-                counter,
-                flags,
-                test_out.as_mut_ptr(),
-                OUTPUT_SIZE / BLOCK_LEN,
-            );
+            xof_many_function(cv.as_ptr(), block.as_ptr(), block_len as u8, counter, flags, test_out.as_mut_ptr(), OUTPUT_SIZE / BLOCK_LEN);
         }
 
         assert_eq!(portable_out, test_out);
@@ -436,15 +353,7 @@ pub fn test_xof_many_fn(xof_many_function: XofManyFunction) {
         let output_end = output_start + output_len;
         let output = &mut array[output_start..output_end];
         unsafe {
-            xof_many_function(
-                cv.as_ptr(),
-                block.as_ptr(),
-                block_len as u8,
-                0,
-                flags,
-                output.as_mut_ptr(),
-                block_count,
-            );
+            xof_many_function(cv.as_ptr(), block.as_ptr(), block_len as u8, 0, flags, output.as_mut_ptr(), block_count);
         }
         for i in 0..array.len() {
             if i < output_start || output_end <= i {

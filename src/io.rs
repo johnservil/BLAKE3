@@ -157,12 +157,7 @@ mod test {
             assert!(maybe_mmap_file(f.as_file_mut())?.is_none());
             // Check that the file cursor remains at start-of-file.
             assert_eq!(f.stream_position()?, 0);
-            assert_eq!(
-                crate::hash(&input),
-                crate::Hasher::new()
-                    .update_reader(f.as_file_mut())?
-                    .finalize(),
-            );
+            assert_eq!(crate::hash(&input), crate::Hasher::new().update_reader(f.as_file_mut())?.finalize(),);
         }
         Ok(())
     }
@@ -189,12 +184,7 @@ mod test {
             f.rewind()?;
             assert_eq!(mmap[..], input[..]);
             assert_eq!(crate::hash(&input), crate::hash(&mmap));
-            assert_eq!(
-                crate::hash(&input),
-                crate::Hasher::new()
-                    .update_reader(f.as_file_mut())?
-                    .finalize(),
-            );
+            assert_eq!(crate::hash(&input), crate::Hasher::new().update_reader(f.as_file_mut())?.finalize(),);
         }
         Ok(())
     }
@@ -211,10 +201,7 @@ mod test {
         // make sure it doesn't bus fault or anything like that. `maybe_mmap_file` doesn't `rewind`
         // the file in this case, so we need to do that ourselves.
         exe_file.rewind()?;
-        assert_eq!(
-            crate::hash(&mmap),
-            crate::Hasher::new().update_reader(&exe_file)?.finalize(),
-        );
+        assert_eq!(crate::hash(&mmap), crate::Hasher::new().update_reader(&exe_file)?.finalize(),);
         Ok(())
     }
 

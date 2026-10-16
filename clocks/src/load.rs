@@ -210,8 +210,8 @@ fn seconds(ns: u64) -> String {
 /// "other programs kept 1.40 CPUs busy from 12.0 s to 13.0 s" (with the
 /// hypervisor's share where it took any).
 pub fn describe_window(window: &Window) -> String {
-    let mut line = format!("other programs kept {} CPUs busy from {} s to {} s",
-        cpus(window.other_milli_cpus), seconds(window.start_ns), seconds(window.end_ns));
+    let mut line =
+        format!("other programs kept {} CPUs busy from {} s to {} s", cpus(window.other_milli_cpus), seconds(window.start_ns), seconds(window.end_ns));
     if window.steal_milli_cpus > 0 {
         line += &format!(", the hypervisor withheld {} CPUs", cpus(window.steal_milli_cpus));
     }
@@ -226,7 +226,12 @@ pub fn describe_window(window: &Window) -> String {
 /// half a second at the least).
 pub fn describe(windows: &[Window]) -> String {
     let Some(first) = windows.first() else {
-        return if cfg!(any(target_os = "linux", target_vendor = "apple")) { "not measured: the run lasted under half a second" } else { "not measured on this platform" }.to_owned();
+        return if cfg!(any(target_os = "linux", target_vendor = "apple")) {
+            "not measured: the run lasted under half a second"
+        } else {
+            "not measured on this platform"
+        }
+        .to_owned();
     };
     let span = windows.last().unwrap().end_ns - first.start_ns;
     let weighted = |pick: fn(&Window) -> u64| {
@@ -234,10 +239,12 @@ pub fn describe(windows: &[Window]) -> String {
         u64::try_from((sum + u128::from(span) / 2) / u128::from(span)).expect("load fits in u64")
     };
     let busy: Vec<&Window> = windows.iter().filter(|w| w.busy()).collect();
-    let mut line = format!("{}: other programs kept {} CPUs busy on average, {} in the busiest window",
+    let mut line = format!(
+        "{}: other programs kept {} CPUs busy on average, {} in the busiest window",
         if busy.is_empty() { "quiet" } else { "busy" },
         cpus(weighted(|w| w.other_milli_cpus)),
-        cpus(windows.iter().map(|w| w.other_milli_cpus).max().unwrap()));
+        cpus(windows.iter().map(|w| w.other_milli_cpus).max().unwrap())
+    );
     let steal = windows.iter().map(|w| w.steal_milli_cpus).max().unwrap();
     if steal > 0 {
         line += &format!("; the hypervisor withheld {} CPUs on average, {} at most", cpus(weighted(|w| w.steal_milli_cpus)), cpus(steal));
@@ -270,8 +277,8 @@ mod imp {
 
     pub fn read() -> Option<CpuTimes> {
         let stat = std::fs::read_to_string("/proc/stat").ok()?;
-        let fields: Vec<u64> = stat.lines().next()?.strip_prefix("cpu ")?.split_whitespace()
-            .map(|field| field.parse().expect("/proc/stat counts are integers")).collect();
+        let fields: Vec<u64> =
+            stat.lines().next()?.strip_prefix("cpu ")?.split_whitespace().map(|field| field.parse().expect("/proc/stat counts are integers")).collect();
         // user nice system idle iowait irq softirq steal (guest time is inside user).
         assert!(fields.len() >= 8, "/proc/stat's cpu line has at least eight fields");
         Some(CpuTimes { busy: fields[0] + fields[1] + fields[2] + fields[5] + fields[6], steal: fields[7] })
@@ -352,13 +359,20 @@ mod tests {
 
     #[test]
     fn descriptions_weigh_windows_by_length_and_name_busy_ones() {
-        let none = if cfg!(any(target_os = "linux", target_vendor = "apple")) { "not measured: the run lasted under half a second" } else { "not measured on this platform" };
+        let none = if cfg!(any(target_os = "linux", target_vendor = "apple")) {
+            "not measured: the run lasted under half a second"
+        } else {
+            "not measured on this platform"
+        };
         assert_eq!(describe(&[]), none);
         let quiet = [window(0, 1_000_000_000, 100, 0), window(1_000_000_000, 4_000_000_000, 500, 0)];
         assert_eq!(describe(&quiet), "quiet: other programs kept 0.40 CPUs busy on average, 0.50 in the busiest window");
         let busy = [window(0, 1_000_000_000, 1400, 0), window(1_000_000_000, 2_000_000_000, 200, 300)];
-        assert_eq!(describe(&busy), "busy: other programs kept 0.80 CPUs busy on average, 1.40 in the busiest window; \
-            the hypervisor withheld 0.15 CPUs on average, 0.30 at most; busy in 1 of 2 windows (0.0-1.0 s)");
+        assert_eq!(
+            describe(&busy),
+            "busy: other programs kept 0.80 CPUs busy on average, 1.40 in the busiest window; \
+            the hypervisor withheld 0.15 CPUs on average, 0.30 at most; busy in 1 of 2 windows (0.0-1.0 s)"
+        );
     }
 
     #[cfg(target_os = "linux")]
@@ -444,7 +458,9 @@ mod tests {
 #[test]
 #[ignore]
 fn reading_cost() {
-    for batch in crate::measure(9, 20_000_000, || { std::hint::black_box(Reading::take()); }) {
+    for batch in crate::measure(9, 20_000_000, || {
+        std::hint::black_box(Reading::take());
+    }) {
         println!("a machine reading: {}", batch.show());
     }
     for batch in crate::measure(9, 20_000_000, tick) {

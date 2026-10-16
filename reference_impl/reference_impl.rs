@@ -32,9 +32,7 @@ const KEYED_HASH: u32 = 1 << 4;
 const DERIVE_KEY_CONTEXT: u32 = 1 << 5;
 const DERIVE_KEY_MATERIAL: u32 = 1 << 6;
 
-const IV: [u32; 8] = [
-    0x6A09E667, 0xBB67AE85, 0x3C6EF372, 0xA54FF53A, 0x510E527F, 0x9B05688C, 0x1F83D9AB, 0x5BE0CD19,
-];
+const IV: [u32; 8] = [0x6A09E667, 0xBB67AE85, 0x3C6EF372, 0xA54FF53A, 0x510E527F, 0x9B05688C, 0x1F83D9AB, 0x5BE0CD19];
 
 const MSG_PERMUTATION: [usize; 16] = [2, 6, 3, 10, 7, 0, 4, 13, 1, 11, 12, 5, 9, 14, 15, 8];
 
@@ -71,13 +69,7 @@ fn permute(m: &mut [u32; 16]) {
     *m = permuted;
 }
 
-fn compress(
-    chaining_value: &[u32; 8],
-    block_words: &[u32; 16],
-    counter: u64,
-    block_len: u32,
-    flags: u32,
-) -> [u32; 16] {
+fn compress(chaining_value: &[u32; 8], block_words: &[u32; 16], counter: u64, block_len: u32, flags: u32) -> [u32; 16] {
     let counter_low = counter as u32;
     let counter_high = (counter >> 32) as u32;
     #[rustfmt::skip]
@@ -134,25 +126,13 @@ struct Output {
 
 impl Output {
     fn chaining_value(&self) -> [u32; 8] {
-        first_8_words(compress(
-            &self.input_chaining_value,
-            &self.block_words,
-            self.counter,
-            self.block_len,
-            self.flags,
-        ))
+        first_8_words(compress(&self.input_chaining_value, &self.block_words, self.counter, self.block_len, self.flags))
     }
 
     fn root_output_bytes(&self, out_slice: &mut [u8]) {
         let mut output_block_counter = 0;
         for out_block in out_slice.chunks_mut(2 * OUT_LEN) {
-            let words = compress(
-                &self.input_chaining_value,
-                &self.block_words,
-                output_block_counter,
-                self.block_len,
-                self.flags | ROOT,
-            );
+            let words = compress(&self.input_chaining_value, &self.block_words, output_block_counter, self.block_len, self.flags | ROOT);
             // The output length might not be a multiple of 4.
             for (word, out_word) in words.iter().zip(out_block.chunks_mut(4)) {
                 out_word.copy_from_slice(&word.to_le_bytes()[..out_word.len()]);
@@ -173,14 +153,7 @@ struct ChunkState {
 
 impl ChunkState {
     fn new(key_words: [u32; 8], chunk_counter: u64, flags: u32) -> Self {
-        Self {
-            chaining_value: key_words,
-            chunk_counter,
-            block: [0; BLOCK_LEN],
-            block_len: 0,
-            blocks_compressed: 0,
-            flags,
-        }
+        Self { chaining_value: key_words, chunk_counter, block: [0; BLOCK_LEN], block_len: 0, blocks_compressed: 0, flags }
     }
 
     fn len(&self) -> usize {
@@ -188,11 +161,7 @@ impl ChunkState {
     }
 
     fn start_flag(&self) -> u32 {
-        if self.blocks_compressed == 0 {
-            CHUNK_START
-        } else {
-            0
-        }
+        if self.blocks_compressed == 0 { CHUNK_START } else { 0 }
     }
 
     fn update(&mut self, mut input: &[u8]) {
@@ -202,13 +171,8 @@ impl ChunkState {
             if self.block_len as usize == BLOCK_LEN {
                 let mut block_words = [0; 16];
                 words_from_little_endian_bytes(&self.block, &mut block_words);
-                self.chaining_value = first_8_words(compress(
-                    &self.chaining_value,
-                    &block_words,
-                    self.chunk_counter,
-                    BLOCK_LEN as u32,
-                    self.flags | self.start_flag(),
-                ));
+                self.chaining_value =
+                    first_8_words(compress(&self.chaining_value, &block_words, self.chunk_counter, BLOCK_LEN as u32, self.flags | self.start_flag()));
                 self.blocks_compressed += 1;
                 self.block = [0; BLOCK_LEN];
                 self.block_len = 0;
@@ -236,12 +200,7 @@ impl ChunkState {
     }
 }
 
-fn parent_output(
-    left_child_cv: [u32; 8],
-    right_child_cv: [u32; 8],
-    key_words: [u32; 8],
-    flags: u32,
-) -> Output {
+fn parent_output(left_child_cv: [u32; 8], right_child_cv: [u32; 8], key_words: [u32; 8], flags: u32) -> Output {
     let mut block_words = [0; 16];
     block_words[..8].copy_from_slice(&left_child_cv);
     block_words[8..].copy_from_slice(&right_child_cv);
@@ -254,12 +213,7 @@ fn parent_output(
     }
 }
 
-fn parent_cv(
-    left_child_cv: [u32; 8],
-    right_child_cv: [u32; 8],
-    key_words: [u32; 8],
-    flags: u32,
-) -> [u32; 8] {
+fn parent_cv(left_child_cv: [u32; 8], right_child_cv: [u32; 8], key_words: [u32; 8], flags: u32) -> [u32; 8] {
     parent_output(left_child_cv, right_child_cv, key_words, flags).chaining_value()
 }
 
@@ -274,13 +228,7 @@ pub struct Hasher {
 
 impl Hasher {
     fn new_internal(key_words: [u32; 8], flags: u32) -> Self {
-        Self {
-            chunk_state: ChunkState::new(key_words, 0, flags),
-            key_words,
-            cv_stack: [[0; 8]; 54],
-            cv_stack_len: 0,
-            flags,
-        }
+        Self { chunk_state: ChunkState::new(key_words, 0, flags), key_words, cv_stack: [[0; 8]; 54], cv_stack_len: 0, flags }
     }
 
     /// Construct a new `Hasher` for the regular hash function.
@@ -362,12 +310,7 @@ impl Hasher {
         let mut parent_nodes_remaining = self.cv_stack_len as usize;
         while parent_nodes_remaining > 0 {
             parent_nodes_remaining -= 1;
-            output = parent_output(
-                self.cv_stack[parent_nodes_remaining],
-                output.chaining_value(),
-                self.key_words,
-                self.flags,
-            );
+            output = parent_output(self.cv_stack[parent_nodes_remaining], output.chaining_value(), self.key_words, self.flags);
         }
         output.root_output_bytes(out_slice);
     }

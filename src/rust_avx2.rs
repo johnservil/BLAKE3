@@ -3,9 +3,7 @@ use core::arch::x86::*;
 #[cfg(target_arch = "x86_64")]
 use core::arch::x86_64::*;
 
-use crate::{
-    BLOCK_LEN, CVWords, IV, IncrementCounter, MSG_SCHEDULE, OUT_LEN, counter_high, counter_low,
-};
+use crate::{BLOCK_LEN, CVWords, IV, IncrementCounter, MSG_SCHEDULE, OUT_LEN, counter_high, counter_low};
 
 pub const DEGREE: usize = 8;
 
@@ -38,11 +36,7 @@ unsafe fn set1(x: u32) -> __m256i {
 
 #[inline(always)]
 unsafe fn set8(a: u32, b: u32, c: u32, d: u32, e: u32, f: u32, g: u32, h: u32) -> __m256i {
-    unsafe {
-        _mm256_setr_epi32(
-            a as i32, b as i32, c as i32, d as i32, e as i32, f as i32, g as i32, h as i32,
-        )
-    }
+    unsafe { _mm256_setr_epi32(a as i32, b as i32, c as i32, d as i32, e as i32, f as i32, g as i32, h as i32) }
 }
 
 // These rotations are the "simple/shifts version". For the
@@ -194,12 +188,7 @@ unsafe fn round(v: &mut [__m256i; 16], m: &[__m256i; 16], r: usize) {
 
 #[inline(always)]
 unsafe fn interleave128(a: __m256i, b: __m256i) -> (__m256i, __m256i) {
-    unsafe {
-        (
-            _mm256_permute2x128_si256(a, b, 0x20),
-            _mm256_permute2x128_si256(a, b, 0x31),
-        )
-    }
+    unsafe { (_mm256_permute2x128_si256(a, b, 0x20), _mm256_permute2x128_si256(a, b, 0x31)) }
 }
 
 // There are several ways to do a transposition. We could do it naively, with 8 separate
@@ -270,10 +259,7 @@ unsafe fn transpose_msg_vecs(inputs: &[*const u8; DEGREE], block_offset: usize) 
             loadu(inputs[7].add(block_offset + 1 * 4 * DEGREE)),
         ];
         for i in 0..DEGREE {
-            _mm_prefetch(
-                inputs[i].wrapping_add(block_offset + 256) as *const i8,
-                _MM_HINT_T0,
-            );
+            _mm_prefetch(inputs[i].wrapping_add(block_offset + 256) as *const i8, _MM_HINT_T0);
         }
         let (square0, square1) = vecs.split_at_mut(DEGREE);
         transpose_vecs(square0.try_into().unwrap());
@@ -324,16 +310,7 @@ pub unsafe fn hash8(
     out: &mut [u8; DEGREE * OUT_LEN],
 ) {
     unsafe {
-        let mut h_vecs = [
-            set1(key[0]),
-            set1(key[1]),
-            set1(key[2]),
-            set1(key[3]),
-            set1(key[4]),
-            set1(key[5]),
-            set1(key[6]),
-            set1(key[7]),
-        ];
+        let mut h_vecs = [set1(key[0]), set1(key[1]), set1(key[2]), set1(key[3]), set1(key[4]), set1(key[5]), set1(key[6]), set1(key[7])];
         let (counter_low_vec, counter_high_vec) = load_counters(counter, increment_counter);
         let mut block_flags = flags | flags_start;
 
@@ -413,21 +390,10 @@ pub unsafe fn hash_many<const N: usize>(
     while inputs.len() >= DEGREE && out.len() >= DEGREE * OUT_LEN {
         // Safe because the layout of arrays is guaranteed, and because the
         // `blocks` count is determined statically from the argument type.
-        let input_ptrs: &[*const u8; DEGREE] =
-            unsafe { &*(inputs.as_ptr() as *const [*const u8; DEGREE]) };
+        let input_ptrs: &[*const u8; DEGREE] = unsafe { &*(inputs.as_ptr() as *const [*const u8; DEGREE]) };
         let blocks = N / BLOCK_LEN;
         unsafe {
-            hash8(
-                input_ptrs,
-                blocks,
-                key,
-                counter,
-                increment_counter,
-                flags,
-                flags_start,
-                flags_end,
-                (&mut out[..DEGREE * OUT_LEN]).try_into().unwrap(),
-            );
+            hash8(input_ptrs, blocks, key, counter, increment_counter, flags, flags_start, flags_end, (&mut out[..DEGREE * OUT_LEN]).try_into().unwrap());
         }
         if increment_counter.yes() {
             counter += DEGREE as u64;
@@ -436,16 +402,7 @@ pub unsafe fn hash_many<const N: usize>(
         out = &mut out[DEGREE * OUT_LEN..];
     }
     unsafe {
-        crate::sse41::hash_many(
-            inputs,
-            key,
-            counter,
-            increment_counter,
-            flags,
-            flags_start,
-            flags_end,
-            out,
-        );
+        crate::sse41::hash_many(inputs, key, counter, increment_counter, flags, flags_start, flags_end, out);
     }
 }
 
@@ -504,14 +461,7 @@ mod test {
 /// Writes `(whole.len() + 1) * OUT_LEN` bytes of `out`. Requires 1 to 7
 /// whole chunks and a CPU with AVX2.
 #[target_feature(enable = "avx2")]
-pub unsafe fn hash_chunks_with_partial(
-    whole: &[&[u8; crate::CHUNK_LEN]],
-    partial: &[u8],
-    key: &CVWords,
-    counter: u64,
-    flags: u8,
-    out: &mut [u8],
-) {
+pub unsafe fn hash_chunks_with_partial(whole: &[&[u8; crate::CHUNK_LEN]], partial: &[u8], key: &CVWords, counter: u64, flags: u8, out: &mut [u8]) {
     let n = whole.len();
     assert!((1..DEGREE).contains(&n) && (1..crate::CHUNK_LEN).contains(&partial.len()) && out.len() >= (n + 1) * OUT_LEN);
     // The partial chunk zero-padded to a whole one, so its lane reads
@@ -552,9 +502,22 @@ pub unsafe fn hash_chunks_with_partial(
             };
             let msg_vecs = transpose_msg_vecs(&inputs, block * BLOCK_LEN);
             let mut v = [
-                h_vecs[0], h_vecs[1], h_vecs[2], h_vecs[3], h_vecs[4], h_vecs[5], h_vecs[6], h_vecs[7],
-                set1(IV[0]), set1(IV[1]), set1(IV[2]), set1(IV[3]),
-                counter_low_vec, counter_high_vec, block_len_vec, block_flags_vec,
+                h_vecs[0],
+                h_vecs[1],
+                h_vecs[2],
+                h_vecs[3],
+                h_vecs[4],
+                h_vecs[5],
+                h_vecs[6],
+                h_vecs[7],
+                set1(IV[0]),
+                set1(IV[1]),
+                set1(IV[2]),
+                set1(IV[3]),
+                counter_low_vec,
+                counter_high_vec,
+                block_len_vec,
+                block_flags_vec,
             ];
             round(&mut v, &msg_vecs, 0);
             round(&mut v, &msg_vecs, 1);

@@ -69,236 +69,37 @@ mod asm {
         /// k1 entered with the input pointer itself in place of a table,
         /// and the address of the last block as a seventh argument: blocks
         /// 0..blocks-1 come from `input`, the last from `last`.
-        pub fn blake3_hybrid_c1(
-            input: *const u8,
-            blocks: u64,
-            key: *const u32,
-            counter: u64,
-            packed_flags: u64,
-            out: *mut u8,
-            last: *const u8,
-        );
-        pub fn blake3_hybrid_k1(
-            inputs: *const *const u8,
-            blocks: u64,
-            key: *const u32,
-            counter: u64,
-            packed_flags: u64,
-            out: *mut u8,
-        );
-        pub fn blake3_hybrid_k2(
-            inputs: *const *const u8,
-            blocks: u64,
-            key: *const u32,
-            counter: u64,
-            packed_flags: u64,
-            out: *mut u8,
-        );
-        pub fn blake3_hybrid_k3(
-            inputs: *const *const u8,
-            blocks: u64,
-            key: *const u32,
-            counter: u64,
-            packed_flags: u64,
-            out: *mut u8,
-        );
-        pub fn blake3_hybrid_k4(
-            inputs: *const *const u8,
-            blocks: u64,
-            key: *const u32,
-            counter: u64,
-            packed_flags: u64,
-            out: *mut u8,
-        );
-        pub fn blake3_hybrid_k5(
-            inputs: *const *const u8,
-            blocks: u64,
-            key: *const u32,
-            counter: u64,
-            packed_flags: u64,
-            out: *mut u8,
-        );
-        pub fn blake3_hybrid_k6(
-            inputs: *const *const u8,
-            blocks: u64,
-            key: *const u32,
-            counter: u64,
-            packed_flags: u64,
-            out: *mut u8,
-        );
-        pub fn blake3_hybrid_k7(
-            inputs: *const *const u8,
-            blocks: u64,
-            key: *const u32,
-            counter: u64,
-            packed_flags: u64,
-            out: *mut u8,
-        );
-        pub fn blake3_hybrid_k8(
-            inputs: *const *const u8,
-            blocks: u64,
-            key: *const u32,
-            counter: u64,
-            packed_flags: u64,
-            out: *mut u8,
-        );
-        pub fn blake3_hybrid_k9(
-            inputs: *const *const u8,
-            blocks: u64,
-            key: *const u32,
-            counter: u64,
-            packed_flags: u64,
-            out: *mut u8,
-        );
-        pub fn blake3_hybrid_k10(
-            inputs: *const *const u8,
-            blocks: u64,
-            key: *const u32,
-            counter: u64,
-            packed_flags: u64,
-            out: *mut u8,
-        );
+        pub fn blake3_hybrid_c1(input: *const u8, blocks: u64, key: *const u32, counter: u64, packed_flags: u64, out: *mut u8, last: *const u8);
+        pub fn blake3_hybrid_k1(inputs: *const *const u8, blocks: u64, key: *const u32, counter: u64, packed_flags: u64, out: *mut u8);
+        pub fn blake3_hybrid_k2(inputs: *const *const u8, blocks: u64, key: *const u32, counter: u64, packed_flags: u64, out: *mut u8);
+        pub fn blake3_hybrid_k3(inputs: *const *const u8, blocks: u64, key: *const u32, counter: u64, packed_flags: u64, out: *mut u8);
+        pub fn blake3_hybrid_k4(inputs: *const *const u8, blocks: u64, key: *const u32, counter: u64, packed_flags: u64, out: *mut u8);
+        pub fn blake3_hybrid_k5(inputs: *const *const u8, blocks: u64, key: *const u32, counter: u64, packed_flags: u64, out: *mut u8);
+        pub fn blake3_hybrid_k6(inputs: *const *const u8, blocks: u64, key: *const u32, counter: u64, packed_flags: u64, out: *mut u8);
+        pub fn blake3_hybrid_k7(inputs: *const *const u8, blocks: u64, key: *const u32, counter: u64, packed_flags: u64, out: *mut u8);
+        pub fn blake3_hybrid_k8(inputs: *const *const u8, blocks: u64, key: *const u32, counter: u64, packed_flags: u64, out: *mut u8);
+        pub fn blake3_hybrid_k9(inputs: *const *const u8, blocks: u64, key: *const u32, counter: u64, packed_flags: u64, out: *mut u8);
+        pub fn blake3_hybrid_k10(inputs: *const *const u8, blocks: u64, key: *const u32, counter: u64, packed_flags: u64, out: *mut u8);
         /// q<n>: n whole chunks and a partial chunk, `n + 1` inputs. The
         /// partial chunk is the last input, read as `blocks` whole blocks
         /// (zero-padded), its final block recording `last_len` bytes;
         /// `partial` is `blocks | last_len << 8`.
-        pub fn blake3_hybrid_q1(
-            inputs: *const *const u8,
-            blocks: u64,
-            key: *const u32,
-            counter: u64,
-            packed_flags: u64,
-            out: *mut u8,
-            partial: u64,
-        );
-        pub fn blake3_hybrid_q2(
-            inputs: *const *const u8,
-            blocks: u64,
-            key: *const u32,
-            counter: u64,
-            packed_flags: u64,
-            out: *mut u8,
-            partial: u64,
-        );
-        pub fn blake3_hybrid_q3(
-            inputs: *const *const u8,
-            blocks: u64,
-            key: *const u32,
-            counter: u64,
-            packed_flags: u64,
-            out: *mut u8,
-            partial: u64,
-        );
-        pub fn blake3_hybrid_q4(
-            inputs: *const *const u8,
-            blocks: u64,
-            key: *const u32,
-            counter: u64,
-            packed_flags: u64,
-            out: *mut u8,
-            partial: u64,
-        );
-        pub fn blake3_hybrid_q7(
-            inputs: *const *const u8,
-            blocks: u64,
-            key: *const u32,
-            counter: u64,
-            packed_flags: u64,
-            out: *mut u8,
-            partial: u64,
-        );
-        pub fn blake3_hybrid_q5(
-            inputs: *const *const u8,
-            blocks: u64,
-            key: *const u32,
-            counter: u64,
-            packed_flags: u64,
-            out: *mut u8,
-            partial: u64,
-        );
-        pub fn blake3_hybrid_q6(
-            inputs: *const *const u8,
-            blocks: u64,
-            key: *const u32,
-            counter: u64,
-            packed_flags: u64,
-            out: *mut u8,
-            partial: u64,
-        );
-        pub fn blake3_hybrid_q8(
-            inputs: *const *const u8,
-            blocks: u64,
-            key: *const u32,
-            counter: u64,
-            packed_flags: u64,
-            out: *mut u8,
-            partial: u64,
-        );
-        pub fn blake3_hybrid_q9(
-            inputs: *const *const u8,
-            blocks: u64,
-            key: *const u32,
-            counter: u64,
-            packed_flags: u64,
-            out: *mut u8,
-            partial: u64,
-        );
-        pub fn blake3_hybrid_p2(
-            inputs: *const *const u8,
-            blocks: u64,
-            key: *const u32,
-            counter: u64,
-            packed_flags: u64,
-            out: *mut u8,
-        );
-        pub fn blake3_hybrid_p3(
-            inputs: *const *const u8,
-            blocks: u64,
-            key: *const u32,
-            counter: u64,
-            packed_flags: u64,
-            out: *mut u8,
-        );
-        pub fn blake3_hybrid_p5(
-            inputs: *const *const u8,
-            blocks: u64,
-            key: *const u32,
-            counter: u64,
-            packed_flags: u64,
-            out: *mut u8,
-        );
-        pub fn blake3_hybrid_p7(
-            inputs: *const *const u8,
-            blocks: u64,
-            key: *const u32,
-            counter: u64,
-            packed_flags: u64,
-            out: *mut u8,
-        );
-        pub fn blake3_hybrid_p9(
-            inputs: *const *const u8,
-            blocks: u64,
-            key: *const u32,
-            counter: u64,
-            packed_flags: u64,
-            out: *mut u8,
-        );
-        pub fn blake3_hybrid_p4(
-            inputs: *const *const u8,
-            blocks: u64,
-            key: *const u32,
-            counter: u64,
-            packed_flags: u64,
-            out: *mut u8,
-        );
-        pub fn blake3_hybrid_p8(
-            inputs: *const *const u8,
-            blocks: u64,
-            key: *const u32,
-            counter: u64,
-            packed_flags: u64,
-            out: *mut u8,
-        );
+        pub fn blake3_hybrid_q1(inputs: *const *const u8, blocks: u64, key: *const u32, counter: u64, packed_flags: u64, out: *mut u8, partial: u64);
+        pub fn blake3_hybrid_q2(inputs: *const *const u8, blocks: u64, key: *const u32, counter: u64, packed_flags: u64, out: *mut u8, partial: u64);
+        pub fn blake3_hybrid_q3(inputs: *const *const u8, blocks: u64, key: *const u32, counter: u64, packed_flags: u64, out: *mut u8, partial: u64);
+        pub fn blake3_hybrid_q4(inputs: *const *const u8, blocks: u64, key: *const u32, counter: u64, packed_flags: u64, out: *mut u8, partial: u64);
+        pub fn blake3_hybrid_q7(inputs: *const *const u8, blocks: u64, key: *const u32, counter: u64, packed_flags: u64, out: *mut u8, partial: u64);
+        pub fn blake3_hybrid_q5(inputs: *const *const u8, blocks: u64, key: *const u32, counter: u64, packed_flags: u64, out: *mut u8, partial: u64);
+        pub fn blake3_hybrid_q6(inputs: *const *const u8, blocks: u64, key: *const u32, counter: u64, packed_flags: u64, out: *mut u8, partial: u64);
+        pub fn blake3_hybrid_q8(inputs: *const *const u8, blocks: u64, key: *const u32, counter: u64, packed_flags: u64, out: *mut u8, partial: u64);
+        pub fn blake3_hybrid_q9(inputs: *const *const u8, blocks: u64, key: *const u32, counter: u64, packed_flags: u64, out: *mut u8, partial: u64);
+        pub fn blake3_hybrid_p2(inputs: *const *const u8, blocks: u64, key: *const u32, counter: u64, packed_flags: u64, out: *mut u8);
+        pub fn blake3_hybrid_p3(inputs: *const *const u8, blocks: u64, key: *const u32, counter: u64, packed_flags: u64, out: *mut u8);
+        pub fn blake3_hybrid_p5(inputs: *const *const u8, blocks: u64, key: *const u32, counter: u64, packed_flags: u64, out: *mut u8);
+        pub fn blake3_hybrid_p7(inputs: *const *const u8, blocks: u64, key: *const u32, counter: u64, packed_flags: u64, out: *mut u8);
+        pub fn blake3_hybrid_p9(inputs: *const *const u8, blocks: u64, key: *const u32, counter: u64, packed_flags: u64, out: *mut u8);
+        pub fn blake3_hybrid_p4(inputs: *const *const u8, blocks: u64, key: *const u32, counter: u64, packed_flags: u64, out: *mut u8);
+        pub fn blake3_hybrid_p8(inputs: *const *const u8, blocks: u64, key: *const u32, counter: u64, packed_flags: u64, out: *mut u8);
     }
 }
 
@@ -325,25 +126,8 @@ const CHUNK_KERNELS: [Option<Kernel>; 11] = [
 ];
 
 /// Kernel sizes per chunk count 1..=16, largest first.
-const CHUNK_PLANS: [&[usize]; 17] = [
-    &[],
-    &[1],
-    &[2],
-    &[3],
-    &[4],
-    &[5],
-    &[6],
-    &[7],
-    &[8],
-    &[9],
-    &[10],
-    &[8, 3],
-    &[9, 3],
-    &[10, 3],
-    &[10, 4],
-    &[10, 5],
-    &[10, 6],
-];
+const CHUNK_PLANS: [&[usize]; 17] =
+    [&[], &[1], &[2], &[3], &[4], &[5], &[6], &[7], &[8], &[9], &[10], &[8, 3], &[9, 3], &[10, 3], &[10, 4], &[10, 5], &[10, 6]];
 
 /// Parent kernel per exact input count.
 const PARENT_KERNELS: [Option<Kernel>; 10] = [
@@ -373,25 +157,8 @@ const PARENT_KERNELS: [Option<Kernel>; 10] = [
 /// September 27, 2026): hash_many is built for top speed, P-cores do most
 /// of this machine's work, and four messages were the last batch where
 /// BLAKE3 official led (P -12%, E +30% in cycles per call).
-const PARENT_PLANS: [&[usize]; 17] = [
-    &[],
-    &[1],
-    &[2],
-    &[3],
-    &[4],
-    &[5],
-    &[3, 3],
-    &[7],
-    &[8],
-    &[9],
-    &[7, 3],
-    &[9, 2],
-    &[9, 3],
-    &[9, 4],
-    &[9, 5],
-    &[8, 7],
-    &[8, 8],
-];
+const PARENT_PLANS: [&[usize]; 17] =
+    [&[], &[1], &[2], &[3], &[4], &[5], &[3, 3], &[7], &[8], &[9], &[7, 3], &[9, 2], &[9, 3], &[9, 4], &[9, 5], &[8, 7], &[8, 8]];
 
 #[cfg(feature = "std")]
 /// Where each kernel's code ends (labels the generator puts after each).
@@ -555,14 +322,7 @@ pub fn sha3_detected() -> bool {
 ///
 /// The kernel uses only integer instructions. Unsafe because `blocks` must
 /// hold `count * 64` readable bytes and `count` must be in 1..=16.
-pub unsafe fn compress_blocks(
-    cv: &mut CVWords,
-    blocks: *const u8,
-    count: usize,
-    counter: u64,
-    flags: u8,
-    flags_start: u8,
-) {
+pub unsafe fn compress_blocks(cv: &mut CVWords, blocks: *const u8, count: usize, counter: u64, flags: u8, flags_start: u8) {
     debug_assert!((1..=16).contains(&count));
     let packed = flags as u64 | (flags_start as u64) << 8 | (BLOCK_LEN as u64) << 24;
     // The kernel reads the whole key in its prologue and stores the output
@@ -585,13 +345,7 @@ pub unsafe fn compress_blocks(
 /// The kernel uses only integer instructions and runs on every AArch64
 /// core. `block_len` is at most 64; the block is 64 bytes, zero-padded
 /// past `block_len` by the caller as the portable compressor requires.
-pub fn compress_in_place(
-    cv: &mut CVWords,
-    block: &[u8; BLOCK_LEN],
-    block_len: u8,
-    counter: u64,
-    flags: u8,
-) {
+pub fn compress_in_place(cv: &mut CVWords, block: &[u8; BLOCK_LEN], block_len: u8, counter: u64, flags: u8) {
     debug_assert!(block_len as usize <= BLOCK_LEN);
     // The one block is both first and last: the kernel ORs flags_start
     // into the first block and flags_end into the last, so the flags go
@@ -632,20 +386,9 @@ pub unsafe fn hash_chunk(
 ) {
     debug_assert!((1..=16).contains(&blocks));
     debug_assert!(last_len as usize <= BLOCK_LEN);
-    let packed = flags as u64
-        | (flags_start as u64) << 8
-        | (flags_end as u64) << 16
-        | (last_len as u64) << 24;
+    let packed = flags as u64 | (flags_start as u64) << 8 | (flags_end as u64) << 16 | (last_len as u64) << 24;
     unsafe {
-        asm::blake3_hybrid_c1(
-            input,
-            blocks as u64,
-            key.as_ptr(),
-            counter,
-            packed,
-            out.as_mut_ptr(),
-            last.as_ptr(),
-        );
+        asm::blake3_hybrid_c1(input, blocks as u64, key.as_ptr(), counter, packed, out.as_mut_ptr(), last.as_ptr());
     }
 }
 
@@ -715,17 +458,7 @@ pub unsafe fn hash_chunks_with_partial(
     if lead > 0 {
         let packed = flags as u64 | (flags_start as u64) << 8 | (flags_end as u64) << 16 | (BLOCK_LEN as u64) << 24;
         unsafe {
-            run_plan(
-                CHUNK_PLANS[lead],
-                &CHUNK_KERNELS,
-                chunks.as_ptr() as *const *const u8,
-                CHUNK_LEN / BLOCK_LEN,
-                key,
-                counter,
-                1,
-                packed,
-                out,
-            );
+            run_plan(CHUNK_PLANS[lead], &CHUNK_KERNELS, chunks.as_ptr() as *const *const u8, CHUNK_LEN / BLOCK_LEN, key, counter, 1, packed, out);
         }
     }
     let (chunks, counter, out) = (&chunks[lead..], counter + lead as u64, &mut out[lead * OUT_LEN..]);
@@ -742,15 +475,7 @@ pub unsafe fn hash_chunks_with_partial(
         let mut cvs = [0u8; 3 * OUT_LEN];
         let packed = flags as u64 | (flags_start as u64) << 8 | (flags_end as u64) << 16 | (BLOCK_LEN as u64) << 24;
         unsafe {
-            kernel(
-                table.as_ptr(),
-                (CHUNK_LEN / BLOCK_LEN) as u64,
-                key.as_ptr(),
-                counter,
-                packed,
-                cvs.as_mut_ptr(),
-                blocks as u64 | (last_len as u64) << 8,
-            );
+            kernel(table.as_ptr(), (CHUNK_LEN / BLOCK_LEN) as u64, key.as_ptr(), counter, packed, cvs.as_mut_ptr(), blocks as u64 | (last_len as u64) << 8);
         }
         out[..2 * OUT_LEN].copy_from_slice(&cvs[..2 * OUT_LEN]);
         return;
@@ -768,15 +493,7 @@ pub unsafe fn hash_chunks_with_partial(
     table[n] = padded.as_ptr();
     let packed = flags as u64 | (flags_start as u64) << 8 | (flags_end as u64) << 16 | (BLOCK_LEN as u64) << 24;
     unsafe {
-        kernel(
-            table.as_ptr(),
-            (CHUNK_LEN / BLOCK_LEN) as u64,
-            key.as_ptr(),
-            counter,
-            packed,
-            out.as_mut_ptr(),
-            blocks as u64 | (last_len as u64) << 8,
-        );
+        kernel(table.as_ptr(), (CHUNK_LEN / BLOCK_LEN) as u64, key.as_ptr(), counter, packed, out.as_mut_ptr(), blocks as u64 | (last_len as u64) << 8);
     }
 }
 
@@ -825,14 +542,7 @@ unsafe fn run_plan(
     for &size in plan {
         let kernel = kernels[size].expect("plan names an existing kernel");
         unsafe {
-            kernel(
-                inputs.add(done),
-                blocks as u64,
-                key.as_ptr(),
-                counter + done as u64 * counter_step,
-                packed_flags,
-                out[done * OUT_LEN..].as_mut_ptr(),
-            );
+            kernel(inputs.add(done), blocks as u64, key.as_ptr(), counter + done as u64 * counter_step, packed_flags, out[done * OUT_LEN..].as_mut_ptr());
         }
         done += size;
     }
@@ -882,19 +592,12 @@ pub unsafe fn hash_many_last_len<const N: usize>(
 ) {
     assert!(out.len() >= inputs.len() * OUT_LEN);
     assert!((1..=BLOCK_LEN).contains(&last_len), "a last block of 1 to 64 bytes");
-    let (plans, kernels, counter_step): (&[&[usize]; 17], &[Option<Kernel>], u64) =
-        match (N, increment_counter.yes()) {
-            (CHUNK_LEN, true) => (&CHUNK_PLANS, &CHUNK_KERNELS, 1),
-            _ if covers(N, increment_counter) => (&PARENT_PLANS, &PARENT_KERNELS, 0),
-            _ => panic!(
-                "hash_many shape the NEON kernels do not cover: N = {N}, increment = {}",
-                increment_counter.yes()
-            ),
-        };
-    let packed = flags as u64
-        | (flags_start as u64) << 8
-        | (flags_end as u64) << 16
-        | (last_len as u64) << 24;
+    let (plans, kernels, counter_step): (&[&[usize]; 17], &[Option<Kernel>], u64) = match (N, increment_counter.yes()) {
+        (CHUNK_LEN, true) => (&CHUNK_PLANS, &CHUNK_KERNELS, 1),
+        _ if covers(N, increment_counter) => (&PARENT_PLANS, &PARENT_KERNELS, 0),
+        _ => panic!("hash_many shape the NEON kernels do not cover: N = {N}, increment = {}", increment_counter.yes()),
+    };
+    let packed = flags as u64 | (flags_start as u64) << 8 | (flags_end as u64) << 16 | (last_len as u64) << 24;
     let blocks = N / BLOCK_LEN;
     // `&[&[u8; N]]` is a table of pointers, which is what the kernels take.
     let table = inputs.as_ptr() as *const *const u8;
@@ -925,7 +628,18 @@ pub unsafe fn hash_many_last_len<const N: usize>(
 /// for inputs of a const length, `flags` on every block. Unsafe because the CPU must have NEON and
 /// the SHA-3 extension and every pointer must reach `blocks` blocks.
 #[allow(clippy::too_many_arguments)]
-pub unsafe fn hash_messages_raw(table: *const *const u8, count: usize, blocks: usize, key: &CVWords, counter: u64, flags: u8, flags_start: u8, flags_end: u8, last_len: usize, out: &mut [u8]) {
+pub unsafe fn hash_messages_raw(
+    table: *const *const u8,
+    count: usize,
+    blocks: usize,
+    key: &CVWords,
+    counter: u64,
+    flags: u8,
+    flags_start: u8,
+    flags_end: u8,
+    last_len: usize,
+    out: &mut [u8],
+) {
     assert!(out.len() >= count * OUT_LEN, "room for every digest");
     assert!((1..=16).contains(&blocks) && (1..=BLOCK_LEN).contains(&last_len), "1 to 16 blocks, the last of 1 to 64 bytes");
     let packed = flags as u64 | (flags_start as u64) << 8 | (flags_end as u64) << 16 | (last_len as u64) << 24;
@@ -940,8 +654,8 @@ pub unsafe fn hash_messages_raw(table: *const *const u8, count: usize, blocks: u
 #[cfg(test)]
 mod test {
     use super::*;
-    use std::vec::Vec;
     use crate::{CHUNK_END, CHUNK_START, IV, KEYED_HASH, PARENT};
+    use std::vec::Vec;
 
     #[test]
     #[cfg(feature = "std")]
@@ -984,73 +698,17 @@ mod test {
         let mut input = [0u8; 16 * CHUNK_LEN];
         crate::test::paint_test_input(&mut input);
         for n in 1..=16 {
-            let chunks: arrayvec::ArrayVec<&[u8; CHUNK_LEN], 16> = input
-                .chunks_exact(CHUNK_LEN)
-                .take(n)
-                .map(|c| c.try_into().unwrap())
-                .collect();
-            let parents: arrayvec::ArrayVec<&[u8; BLOCK_LEN], 16> = input
-                .chunks_exact(BLOCK_LEN)
-                .take(n)
-                .map(|c| c.try_into().unwrap())
-                .collect();
+            let chunks: arrayvec::ArrayVec<&[u8; CHUNK_LEN], 16> = input.chunks_exact(CHUNK_LEN).take(n).map(|c| c.try_into().unwrap()).collect();
+            let parents: arrayvec::ArrayVec<&[u8; BLOCK_LEN], 16> = input.chunks_exact(BLOCK_LEN).take(n).map(|c| c.try_into().unwrap()).collect();
             for counter in [0u64, u32::MAX as u64, i32::MAX as u64, 1 << 40] {
                 let mut want = [0u8; 16 * OUT_LEN];
                 let mut got = [0u8; 16 * OUT_LEN];
-                crate::portable::hash_many(
-                    &chunks,
-                    IV,
-                    counter,
-                    IncrementCounter::Yes,
-                    KEYED_HASH,
-                    CHUNK_START,
-                    CHUNK_END,
-                    &mut want,
-                );
-                unsafe {
-                    hash_many(
-                        &chunks,
-                        IV,
-                        counter,
-                        IncrementCounter::Yes,
-                        KEYED_HASH,
-                        CHUNK_START,
-                        CHUNK_END,
-                        &mut got,
-                    )
-                };
-                assert_eq!(
-                    &want[..n * OUT_LEN],
-                    &got[..n * OUT_LEN],
-                    "chunks n = {n}, counter = {counter}"
-                );
-                crate::portable::hash_many(
-                    &parents,
-                    IV,
-                    counter,
-                    IncrementCounter::No,
-                    KEYED_HASH | PARENT,
-                    0,
-                    0,
-                    &mut want,
-                );
-                unsafe {
-                    hash_many(
-                        &parents,
-                        IV,
-                        counter,
-                        IncrementCounter::No,
-                        KEYED_HASH | PARENT,
-                        0,
-                        0,
-                        &mut got,
-                    )
-                };
-                assert_eq!(
-                    &want[..n * OUT_LEN],
-                    &got[..n * OUT_LEN],
-                    "parents n = {n}, counter = {counter}"
-                );
+                crate::portable::hash_many(&chunks, IV, counter, IncrementCounter::Yes, KEYED_HASH, CHUNK_START, CHUNK_END, &mut want);
+                unsafe { hash_many(&chunks, IV, counter, IncrementCounter::Yes, KEYED_HASH, CHUNK_START, CHUNK_END, &mut got) };
+                assert_eq!(&want[..n * OUT_LEN], &got[..n * OUT_LEN], "chunks n = {n}, counter = {counter}");
+                crate::portable::hash_many(&parents, IV, counter, IncrementCounter::No, KEYED_HASH | PARENT, 0, 0, &mut want);
+                unsafe { hash_many(&parents, IV, counter, IncrementCounter::No, KEYED_HASH | PARENT, 0, 0, &mut got) };
+                assert_eq!(&want[..n * OUT_LEN], &got[..n * OUT_LEN], "parents n = {n}, counter = {counter}");
             }
         }
     }
@@ -1063,35 +721,11 @@ mod test {
         let mut input = [0u8; 8 * CHUNK_LEN];
         crate::test::paint_test_input(&mut input);
         // Chunks in reverse order: contiguous in memory, scattered as inputs.
-        let chunks: arrayvec::ArrayVec<&[u8; CHUNK_LEN], 8> = input
-            .chunks_exact(CHUNK_LEN)
-            .rev()
-            .map(|c| c.try_into().unwrap())
-            .collect();
+        let chunks: arrayvec::ArrayVec<&[u8; CHUNK_LEN], 8> = input.chunks_exact(CHUNK_LEN).rev().map(|c| c.try_into().unwrap()).collect();
         let mut want = [0u8; 8 * OUT_LEN];
         let mut got = [0u8; 8 * OUT_LEN];
-        crate::portable::hash_many(
-            &chunks,
-            IV,
-            3,
-            IncrementCounter::Yes,
-            0,
-            CHUNK_START,
-            CHUNK_END,
-            &mut want,
-        );
-        unsafe {
-            hash_many(
-                &chunks,
-                IV,
-                3,
-                IncrementCounter::Yes,
-                0,
-                CHUNK_START,
-                CHUNK_END,
-                &mut got,
-            )
-        };
+        crate::portable::hash_many(&chunks, IV, 3, IncrementCounter::Yes, 0, CHUNK_START, CHUNK_END, &mut want);
+        unsafe { hash_many(&chunks, IV, 3, IncrementCounter::Yes, 0, CHUNK_START, CHUNK_END, &mut got) };
         assert_eq!(want, got);
     }
 
@@ -1103,34 +737,11 @@ mod test {
         let mut input = [0u8; 8 * CHUNK_LEN];
         crate::test::paint_test_input(&mut input);
         // Parent blocks spaced a chunk apart.
-        let parents: arrayvec::ArrayVec<&[u8; BLOCK_LEN], 8> = input
-            .chunks_exact(CHUNK_LEN)
-            .map(|c| c[..BLOCK_LEN].try_into().unwrap())
-            .collect();
+        let parents: arrayvec::ArrayVec<&[u8; BLOCK_LEN], 8> = input.chunks_exact(CHUNK_LEN).map(|c| c[..BLOCK_LEN].try_into().unwrap()).collect();
         let mut want = [0u8; 8 * OUT_LEN];
         let mut got = [0u8; 8 * OUT_LEN];
-        crate::portable::hash_many(
-            &parents,
-            IV,
-            7,
-            IncrementCounter::No,
-            PARENT,
-            0,
-            0,
-            &mut want,
-        );
-        unsafe {
-            hash_many(
-                &parents,
-                IV,
-                7,
-                IncrementCounter::No,
-                PARENT,
-                0,
-                0,
-                &mut got,
-            )
-        };
+        crate::portable::hash_many(&parents, IV, 7, IncrementCounter::No, PARENT, 0, 0, &mut want);
+        unsafe { hash_many(&parents, IV, 7, IncrementCounter::No, PARENT, 0, 0, &mut got) };
         assert_eq!(want, got);
     }
 
@@ -1140,18 +751,12 @@ mod test {
     #[cfg(feature = "std")]
     fn test_assembly_matches_generator() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-        let output = match std::process::Command::new("python3")
-            .arg(root.join("tools/gen_neon_hybrid.py"))
-            .output()
-        {
+        let output = match std::process::Command::new("python3").arg(root.join("tools/gen_neon_hybrid.py")).output() {
             Ok(output) if output.status.success() => output.stdout,
             _ => return,
         };
         let committed = std::fs::read(root.join("c/blake3_neon_hybrid_aarch64.S")).unwrap();
-        assert!(
-            output == committed,
-            "c/blake3_neon_hybrid_aarch64.S is stale; run tools/gen_neon_hybrid.py"
-        );
+        assert!(output == committed, "c/blake3_neon_hybrid_aarch64.S is stale; run tools/gen_neon_hybrid.py");
     }
 
     /// Every block length 0..=64, every flag bit, and several counters:
@@ -1175,19 +780,10 @@ mod test {
             ] {
                 for counter in [0u64, 1, u32::MAX as u64, 1 << 40, u64::MAX] {
                     let mut want = *IV;
-                    crate::portable::compress_in_place(
-                        &mut want,
-                        &block,
-                        block_len as u8,
-                        counter,
-                        flags,
-                    );
+                    crate::portable::compress_in_place(&mut want, &block, block_len as u8, counter, flags);
                     let mut got = *IV;
                     compress_in_place(&mut got, &block, block_len as u8, counter, flags);
-                    assert_eq!(
-                        want, got,
-                        "block_len = {block_len}, flags = {flags:#x}, counter = {counter}"
-                    );
+                    assert_eq!(want, got, "block_len = {block_len}, flags = {flags:#x}, counter = {counter}");
                 }
             }
         }
@@ -1226,8 +822,7 @@ mod test {
             crate::hasher::le_bytes(&cv)
         };
         for n in (1..16).filter(|&n| partial_covers(n)) {
-            let chunks: Vec<&[u8; CHUNK_LEN]> =
-                input[..n * CHUNK_LEN].chunks_exact(CHUNK_LEN).map(|c| c.try_into().unwrap()).collect();
+            let chunks: Vec<&[u8; CHUNK_LEN]> = input[..n * CHUNK_LEN].chunks_exact(CHUNK_LEN).map(|c| c.try_into().unwrap()).collect();
             for len in crate::test::block_cases(CHUNK_LEN - 1) {
                 let partial = &input[n * CHUNK_LEN..][..len];
                 for (key, flags, counter) in [(*IV, 0u8, 0u64), (key, KEYED_HASH, (1u64 << 32) - 2)] {
@@ -1254,11 +849,9 @@ mod test {
             let whole = (blocks - 1) * BLOCK_LEN;
             let mut last = [0u8; BLOCK_LEN];
             last[..len - whole].copy_from_slice(&input[whole..len]);
-            for (flags, flags_end, counter) in [
-                (0, CHUNK_END | crate::ROOT, 0u64),
-                (KEYED_HASH, CHUNK_END, 5),
-                (crate::DERIVE_KEY_MATERIAL, CHUNK_END | crate::ROOT, 1 << 40),
-            ] {
+            for (flags, flags_end, counter) in
+                [(0, CHUNK_END | crate::ROOT, 0u64), (KEYED_HASH, CHUNK_END, 5), (crate::DERIVE_KEY_MATERIAL, CHUNK_END | crate::ROOT, 1 << 40)]
+            {
                 let mut want = *IV;
                 for b in 0..blocks {
                     let mut block_flags = flags;
@@ -1271,34 +864,11 @@ mod test {
                     } else {
                         (input[b * BLOCK_LEN..][..BLOCK_LEN].try_into().unwrap(), BLOCK_LEN as u8)
                     };
-                    crate::portable::compress_in_place(
-                        &mut want,
-                        block,
-                        block_len,
-                        counter,
-                        block_flags,
-                    );
+                    crate::portable::compress_in_place(&mut want, block, block_len, counter, block_flags);
                 }
                 let mut got = [0u8; OUT_LEN];
-                unsafe {
-                    hash_chunk(
-                        input.as_ptr(),
-                        blocks,
-                        &last,
-                        (len - whole) as u8,
-                        IV,
-                        counter,
-                        flags,
-                        CHUNK_START,
-                        flags_end,
-                        &mut got,
-                    )
-                };
-                assert_eq!(
-                    crate::hasher::le_bytes(&want),
-                    got,
-                    "len = {len}, flags = {flags:#x}, counter = {counter}"
-                );
+                unsafe { hash_chunk(input.as_ptr(), blocks, &last, (len - whole) as u8, IV, counter, flags, CHUNK_START, flags_end, &mut got) };
+                assert_eq!(crate::hasher::le_bytes(&want), got, "len = {len}, flags = {flags:#x}, counter = {counter}");
             }
         }
     }
@@ -1312,26 +882,11 @@ mod test {
                 let mut want = *IV;
                 let mut flags = KEYED_HASH | CHUNK_START;
                 for b in 0..count {
-                    crate::portable::compress_in_place(
-                        &mut want,
-                        input[b * BLOCK_LEN..][..BLOCK_LEN].try_into().unwrap(),
-                        BLOCK_LEN as u8,
-                        counter,
-                        flags,
-                    );
+                    crate::portable::compress_in_place(&mut want, input[b * BLOCK_LEN..][..BLOCK_LEN].try_into().unwrap(), BLOCK_LEN as u8, counter, flags);
                     flags = KEYED_HASH;
                 }
                 let mut got = *IV;
-                unsafe {
-                    compress_blocks(
-                        &mut got,
-                        input.as_ptr(),
-                        count,
-                        counter,
-                        KEYED_HASH,
-                        CHUNK_START,
-                    )
-                };
+                unsafe { compress_blocks(&mut got, input.as_ptr(), count, counter, KEYED_HASH, CHUNK_START) };
                 assert_eq!(want, got, "count = {count}, counter = {counter}");
             }
         }

@@ -50,8 +50,10 @@ fn modes() -> [Mode<'static>; 3] {
 }
 
 /// Each one-shot call's two full forms, single-threaded and multithreaded.
-const HASH_WITH: [(&str, fn(Mode, &[u8]) -> Hash); 2] = [("hash_with", blake3_servil::hash_with), ("hash_multithreaded_with", blake3_servil::hash_multithreaded_with)];
-const HASH_MANY_WITH: [(&str, fn(Mode, &[u8], usize, &mut [[u8; 32]])); 2] = [("hash_many_with", blake3_servil::hash_many_with), ("hash_many_multithreaded_with", blake3_servil::hash_many_multithreaded_with)];
+const HASH_WITH: [(&str, fn(Mode, &[u8]) -> Hash); 2] =
+    [("hash_with", blake3_servil::hash_with), ("hash_multithreaded_with", blake3_servil::hash_multithreaded_with)];
+const HASH_MANY_WITH: [(&str, fn(Mode, &[u8], usize, &mut [[u8; 32]])); 2] =
+    [("hash_many_with", blake3_servil::hash_many_with), ("hash_many_multithreaded_with", blake3_servil::hash_many_multithreaded_with)];
 
 /// Lengths past the official vectors, around the multithreaded split (512 KiB) and a subtree edge.
 const LARGE: [usize; 5] = [(512 << 10) - 1, 512 << 10, 1 << 20, (1 << 20) + 1, (3 << 20) + 12345];
@@ -110,7 +112,11 @@ fn a_message_in_pieces_matches_the_reference() {
             // Alternating with update, a piece at a time.
             let mut hasher = hashers(m);
             for (k, part) in data.chunks(piece).enumerate() {
-                if k % 3 == 1 { hasher.update(part); } else { hasher.update_multithreaded(part); }
+                if k % 3 == 1 {
+                    hasher.update(part);
+                } else {
+                    hasher.update_multithreaded(part);
+                }
             }
             assert_eq!(hasher.finalize(), expected, "update and update_multithreaded, {len} B in {piece} B pieces, mode {m}");
         }
@@ -150,7 +156,26 @@ fn padded_batch(count: usize, len: usize) -> (Vec<u8>, Vec<Vec<u8>>) {
 #[test]
 fn batches_every_form_match_the_reference() {
     blake3_servil::initialize_multithreaded();
-    for (count, len) in [(1, 64), (2, 64), (4, 64), (12, 64), (16, 64), (17, 64), (1000, 64), (12288, 64), (13000, 64), (5, 0), (7, 1), (9, 63), (33, 100), (20, 1024), (3, 1025), (40, 4000), (2, 70000), (20, 60000)] {
+    for (count, len) in [
+        (1, 64),
+        (2, 64),
+        (4, 64),
+        (12, 64),
+        (16, 64),
+        (17, 64),
+        (1000, 64),
+        (12288, 64),
+        (13000, 64),
+        (5, 0),
+        (7, 1),
+        (9, 63),
+        (33, 100),
+        (20, 1024),
+        (3, 1025),
+        (40, 4000),
+        (2, 70000),
+        (20, 60000),
+    ] {
         let (buffer, messages) = padded_batch(count, len);
         let expected: Vec<Vec<[u8; 32]>> = (0..3).map(|m| messages.iter().map(|message| reference(m, message)).collect()).collect();
         let mut out = vec![[0u8; 32]; count];
@@ -288,10 +313,12 @@ fn queue_of_fixed_length_messages_fills_the_callers_digest_space() {
             {
                 let (tx, rx) = mpsc::channel();
                 let queue = Queue::fixed(len, mode, Fixed(tx));
-                let batches: Vec<(Vec<u8>, Vec<Vec<u8>>)> = (0..3).map(|b| {
-                    let (buffer, messages) = padded_batch(per_buffer + b, len);
-                    (buffer, messages)
-                }).collect();
+                let batches: Vec<(Vec<u8>, Vec<Vec<u8>>)> = (0..3)
+                    .map(|b| {
+                        let (buffer, messages) = padded_batch(per_buffer + b, len);
+                        (buffer, messages)
+                    })
+                    .collect();
                 for (buffer, messages) in &batches {
                     queue.submit(buffer.clone(), vec![[0u8; 32]; messages.len()]);
                 }

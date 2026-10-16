@@ -36,9 +36,7 @@ fn use_msvc_asm() -> bool {
         // We are cross-compiling to Windows with the MSVC toolchain.
         let target_arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
         let target_vendor = env::var("CARGO_CFG_TARGET_VENDOR").unwrap_or_default();
-        let cc = env::var(format!("CC_{target_arch}_{target_vendor}_windows_msvc"))
-            .unwrap_or_default()
-            .to_ascii_lowercase();
+        let cc = env::var(format!("CC_{target_arch}_{target_vendor}_windows_msvc")).unwrap_or_default().to_ascii_lowercase();
         // Check if we are using the MSVC compiler.
         MSVC_NAMES.contains(&&*cc)
     }
@@ -63,9 +61,7 @@ fn is_aarch64() -> bool {
 // disabled by old compilers.)
 fn is_windows_msvc() -> bool {
     // Some targets are only two components long, so check in steps.
-    target_components()[1] == "pc"
-        && target_components()[2] == "windows"
-        && target_components()[3] == "msvc"
+    target_components()[1] == "pc" && target_components()[2] == "windows" && target_components()[3] == "msvc"
 }
 
 fn new_build() -> cc::Build {
@@ -95,11 +91,7 @@ fn c_dir_path(filename: &str) -> String {
     // The `cross` tool doesn't support reading files in parent directories. As a hacky workaround
     // in `cross_test.sh`, we move the c/ directory around and set BLAKE3_C_DIR_OVERRIDE. Regular
     // building and testing doesn't require this.
-    if let Ok(c_dir_override) = env::var("BLAKE3_C_DIR_OVERRIDE") {
-        c_dir_override + "/" + filename
-    } else {
-        "../".to_string() + filename
-    }
+    if let Ok(c_dir_override) = env::var("BLAKE3_C_DIR_OVERRIDE") { c_dir_override + "/" + filename } else { "../".to_string() + filename }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

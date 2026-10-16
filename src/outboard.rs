@@ -10,7 +10,7 @@
 //! 16 KiB blocks, as iroh-blobs stores it.
 
 use crate::platform::Platform;
-use crate::{CVBytes, CVWords, Hash, IncrementCounter, Mode, CHUNK_END, CHUNK_LEN, CHUNK_START, PARENT};
+use crate::{CHUNK_END, CHUNK_LEN, CHUNK_START, CVBytes, CVWords, Hash, IncrementCounter, Mode, PARENT};
 
 /// The length of a group: 16 chunks, 16 KiB.
 pub const GROUP_LEN: usize = 16 * CHUNK_LEN;
@@ -317,7 +317,19 @@ pub fn test_encoding(mode: Mode, input: &[u8]) -> Vec<u8> {
 /// against `hash`), then each child the range reaches; at a group, its
 /// chaining value against the range's.
 #[allow(clippy::too_many_arguments)]
-fn check(outboard: &[u8], at: usize, g0: u64, size: u64, expected: Option<CVBytes>, range: &std::ops::Range<u64>, cvs: &[CVBytes], hash: &Hash, key: &CVWords, flags: u8, platform: Platform) -> bool {
+fn check(
+    outboard: &[u8],
+    at: usize,
+    g0: u64,
+    size: u64,
+    expected: Option<CVBytes>,
+    range: &std::ops::Range<u64>,
+    cvs: &[CVBytes],
+    hash: &Hash,
+    key: &CVWords,
+    flags: u8,
+    platform: Platform,
+) -> bool {
     if size <= GROUP_CHUNKS {
         return expected == Some(cvs[(g0 - range.start) as usize]);
     }
@@ -400,7 +412,16 @@ pub(crate) fn groups_cvs_into(groups: &[&[u8]], first_group: u64, key: &CVWords,
         chunk_refs.clear();
         chunk_refs.extend(groups[first..first + n].iter().flat_map(|g| g.chunks_exact(CHUNK_LEN)).map(|c| <&[u8; CHUNK_LEN]>::try_from(c).unwrap()));
         let mut values = chunk_refs.len();
-        platform.hash_many(&chunk_refs, key, (first_group + first as u64) * GROUP_CHUNKS, IncrementCounter::Yes, flags, CHUNK_START, CHUNK_END, &mut level[..values * 32]);
+        platform.hash_many(
+            &chunk_refs,
+            key,
+            (first_group + first as u64) * GROUP_CHUNKS,
+            IncrementCounter::Yes,
+            flags,
+            CHUNK_START,
+            CHUNK_END,
+            &mut level[..values * 32],
+        );
         // Four levels of parents: a group's 16 chunk values down to one.
         while values > n {
             let blocks: Vec<&[u8; 64]> = level[..values * 32].chunks_exact(64).map(|b| <&[u8; 64]>::try_from(b).unwrap()).collect();
@@ -478,7 +499,20 @@ mod test {
         let mut input = vec![0u8; 37 * GROUP_LEN + 5];
         crate::test::paint_test_input(&mut input);
         let key = [3u8; 32];
-        let lens = [0, 1, CHUNK_LEN, GROUP_LEN - 1, GROUP_LEN, GROUP_LEN + 1, 2 * GROUP_LEN, 3 * GROUP_LEN - 7, 4 * GROUP_LEN, 5 * GROUP_LEN + CHUNK_LEN, 17 * GROUP_LEN + 1, input.len()];
+        let lens = [
+            0,
+            1,
+            CHUNK_LEN,
+            GROUP_LEN - 1,
+            GROUP_LEN,
+            GROUP_LEN + 1,
+            2 * GROUP_LEN,
+            3 * GROUP_LEN - 7,
+            4 * GROUP_LEN,
+            5 * GROUP_LEN + CHUNK_LEN,
+            17 * GROUP_LEN + 1,
+            input.len(),
+        ];
         for mode in [Mode::Hash, Mode::Keyed(&key), Mode::DeriveKey("verifier test")] {
             for &len in &lens {
                 let message = &input[..len];
@@ -493,7 +527,11 @@ mod test {
                         pieces.push(&[]);
                     }
                     for p in pieces {
-                        let ok = if pooled { verifier.update_multithreaded(p, |b| received.extend_from_slice(b)) } else { verifier.update(p, |b| received.extend_from_slice(b)) };
+                        let ok = if pooled {
+                            verifier.update_multithreaded(p, |b| received.extend_from_slice(b))
+                        } else {
+                            verifier.update(p, |b| received.extend_from_slice(b))
+                        };
                         if !ok {
                             return None;
                         }
@@ -531,7 +569,20 @@ mod test {
         let mut input = vec![0u8; 70 * GROUP_LEN + 5];
         crate::test::paint_test_input(&mut input);
         let key = [3u8; 32];
-        let lens = [0, 1, CHUNK_LEN, GROUP_LEN - 1, GROUP_LEN, GROUP_LEN + 1, 2 * GROUP_LEN, 3 * GROUP_LEN - 7, 4 * GROUP_LEN, 5 * GROUP_LEN + CHUNK_LEN, 17 * GROUP_LEN + 1, input.len()];
+        let lens = [
+            0,
+            1,
+            CHUNK_LEN,
+            GROUP_LEN - 1,
+            GROUP_LEN,
+            GROUP_LEN + 1,
+            2 * GROUP_LEN,
+            3 * GROUP_LEN - 7,
+            4 * GROUP_LEN,
+            5 * GROUP_LEN + CHUNK_LEN,
+            17 * GROUP_LEN + 1,
+            input.len(),
+        ];
         for mode in [Mode::Hash, Mode::Keyed(&key), Mode::DeriveKey("outboard test")] {
             for &len in &lens {
                 let message = &input[..len];

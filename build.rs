@@ -75,9 +75,7 @@ fn use_msvc_asm() -> bool {
         // We are cross-compiling to Windows with the MSVC toolchain.
         let target_arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
         let target_vendor = env::var("CARGO_CFG_TARGET_VENDOR").unwrap_or_default();
-        let cc = env::var(format!("CC_{target_arch}_{target_vendor}_windows_msvc"))
-            .unwrap_or_default()
-            .to_ascii_lowercase();
+        let cc = env::var(format!("CC_{target_arch}_{target_vendor}_windows_msvc")).unwrap_or_default().to_ascii_lowercase();
         // Check if we are using the MSVC compiler.
         MSVC_NAMES.contains(&&*cc)
     }
@@ -125,9 +123,7 @@ fn is_big_endian() -> bool {
 fn is_windows_msvc() -> bool {
     // Some targets are only two components long, so check in steps.
     let second_component = &target_components()[1];
-    (second_component == "pc" || second_component == "win7")
-        && target_components()[2] == "windows"
-        && target_components()[3] == "msvc"
+    (second_component == "pc" || second_component == "win7") && target_components()[2] == "windows" && target_components()[3] == "msvc"
 }
 
 // MinGW toolchain uses 2 different targets depending on the main compiler.
@@ -137,9 +133,7 @@ fn is_windows_msvc() -> bool {
 fn is_windows_gnu() -> bool {
     // Some targets are only two components long, so check in steps.
     let second_component = &target_components()[1];
-    (second_component == "pc" || second_component == "win7")
-        && target_components()[2] == "windows"
-        && target_components()[3] != "msvc"
+    (second_component == "pc" || second_component == "win7") && target_components()[2] == "windows" && target_components()[3] != "msvc"
 }
 
 fn new_build() -> cc::Build {
@@ -181,19 +175,12 @@ fn c_compiler_support() -> CCompilerSupport {
     match support_result {
         Ok(true) => YesAVX512,
         Ok(false) => {
-            warn(&format!(
-                "The C compiler {:?} does not support {}.",
-                build.get_compiler().path(),
-                flags_checked,
-            ));
+            warn(&format!("The C compiler {:?} does not support {}.", build.get_compiler().path(), flags_checked,));
             NoAVX512
         }
         Err(e) => {
             println!("{:?}", e);
-            warn(&format!(
-                "No C compiler {:?} detected.",
-                build.get_compiler().path()
-            ));
+            warn(&format!("No C compiler {:?} detected.", build.get_compiler().path()));
             NoCompiler
         }
     }
@@ -368,10 +355,7 @@ fn build_neon_c_intrinsics() {
     // Prefix the two symbols shared with the crates.io blake3 crate, so this
     // benchmark build links beside it.
     build.define("blake3_hash_many_neon", "blake3_sme2_hash_many_neon");
-    build.define(
-        "blake3_compress_in_place_portable",
-        "blake3_sme2_compress_in_place_portable",
-    );
+    build.define("blake3_compress_in_place_portable", "blake3_sme2_compress_in_place_portable");
     // ARMv7 platforms that support NEON generally need the following
     // flags. AArch64 supports NEON by default and does not support -mpfu.
     if is_armv7() {
@@ -455,9 +439,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         panic!("The NEON implementation doesn't support big-endian ARM.")
     }
 
-    if (is_arm() && is_neon())
-        || (!is_no_neon() && !is_pure() && is_aarch64() && is_little_endian())
-    {
+    if (is_arm() && is_neon()) || (!is_no_neon() && !is_pure() && is_aarch64() && is_little_endian()) {
         println!("cargo::rustc-cfg=blake3_neon");
         build_neon_c_intrinsics();
         let hybrid = is_aarch64() && c_compiler_supports_sha3();
@@ -494,10 +476,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Ditto for source files, though these shouldn't change as often.
     for file in std::fs::read_dir("c")? {
-        println!(
-            "cargo::rerun-if-changed={}",
-            file?.path().to_str().expect("utf-8")
-        );
+        println!("cargo::rerun-if-changed={}", file?.path().to_str().expect("utf-8"));
     }
 
     // When compiling with clang-cl for windows, it adds .asm files to the root

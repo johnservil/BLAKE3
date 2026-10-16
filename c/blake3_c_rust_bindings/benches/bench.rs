@@ -32,12 +32,7 @@ impl RandomInput {
         rng.fill_bytes(&mut buf);
         let mut offsets: Vec<usize> = (0..page_size).collect();
         offsets.shuffle(&mut rng);
-        Self {
-            buf,
-            len,
-            offsets,
-            offset_index: 0,
-        }
+        Self { buf, len, offsets, offset_index: 0 }
     }
 
     pub fn get(&mut self) -> &[u8] {
@@ -50,8 +45,7 @@ impl RandomInput {
     }
 }
 
-type CompressInPlaceFn =
-    unsafe extern "C" fn(cv: *mut u32, block: *const u8, block_len: u8, counter: u64, flags: u8);
+type CompressInPlaceFn = unsafe extern "C" fn(cv: *mut u32, block: *const u8, block_len: u8, counter: u64, flags: u8);
 
 fn bench_single_compression_fn(b: &mut Bencher, f: CompressInPlaceFn) {
     let mut state = [1u32; 8];
@@ -62,10 +56,7 @@ fn bench_single_compression_fn(b: &mut Bencher, f: CompressInPlaceFn) {
 
 #[bench]
 fn bench_single_compression_portable(b: &mut Bencher) {
-    bench_single_compression_fn(
-        b,
-        blake3_c_rust_bindings::ffi::blake3_compress_in_place_portable,
-    );
+    bench_single_compression_fn(b, blake3_c_rust_bindings::ffi::blake3_compress_in_place_portable);
 }
 
 #[bench]
@@ -74,10 +65,7 @@ fn bench_single_compression_sse2(b: &mut Bencher) {
     if !blake3_c_rust_bindings::sse2_detected() {
         return;
     }
-    bench_single_compression_fn(
-        b,
-        blake3_c_rust_bindings::ffi::x86::blake3_compress_in_place_sse2,
-    );
+    bench_single_compression_fn(b, blake3_c_rust_bindings::ffi::x86::blake3_compress_in_place_sse2);
 }
 
 #[bench]
@@ -86,10 +74,7 @@ fn bench_single_compression_sse41(b: &mut Bencher) {
     if !blake3_c_rust_bindings::sse41_detected() {
         return;
     }
-    bench_single_compression_fn(
-        b,
-        blake3_c_rust_bindings::ffi::x86::blake3_compress_in_place_sse41,
-    );
+    bench_single_compression_fn(b, blake3_c_rust_bindings::ffi::x86::blake3_compress_in_place_sse41);
 }
 
 #[bench]
@@ -97,10 +82,7 @@ fn bench_single_compression_avx512(b: &mut Bencher) {
     if !blake3_c_rust_bindings::avx512_detected() {
         return;
     }
-    bench_single_compression_fn(
-        b,
-        blake3_c_rust_bindings::ffi::x86::blake3_compress_in_place_avx512,
-    );
+    bench_single_compression_fn(b, blake3_c_rust_bindings::ffi::x86::blake3_compress_in_place_avx512);
 }
 
 type HashManyFn = unsafe extern "C" fn(
@@ -122,26 +104,10 @@ fn bench_many_chunks_fn(b: &mut Bencher, f: HashManyFn, degree: usize) {
         inputs.push(RandomInput::new(b, CHUNK_LEN));
     }
     b.iter(|| {
-        let input_arrays: ArrayVec<&[u8; CHUNK_LEN], MAX_SIMD_DEGREE> = inputs
-            .iter_mut()
-            .take(degree)
-            .map(|i| (&i.get()[..CHUNK_LEN]).try_into().unwrap())
-            .collect();
+        let input_arrays: ArrayVec<&[u8; CHUNK_LEN], MAX_SIMD_DEGREE> =
+            inputs.iter_mut().take(degree).map(|i| (&i.get()[..CHUNK_LEN]).try_into().unwrap()).collect();
         let mut out = [0; MAX_SIMD_DEGREE * OUT_LEN];
-        unsafe {
-            f(
-                input_arrays.as_ptr() as _,
-                input_arrays.len(),
-                CHUNK_LEN / BLOCK_LEN,
-                [0u32; 8].as_ptr(),
-                0,
-                true,
-                0,
-                0,
-                0,
-                out.as_mut_ptr(),
-            )
-        }
+        unsafe { f(input_arrays.as_ptr() as _, input_arrays.len(), CHUNK_LEN / BLOCK_LEN, [0u32; 8].as_ptr(), 0, true, 0, 0, 0, out.as_mut_ptr()) }
     });
 }
 
@@ -151,11 +117,7 @@ fn bench_many_chunks_sse2(b: &mut Bencher) {
     if !blake3_c_rust_bindings::sse2_detected() {
         return;
     }
-    bench_many_chunks_fn(
-        b,
-        blake3_c_rust_bindings::ffi::x86::blake3_hash_many_sse2,
-        4,
-    );
+    bench_many_chunks_fn(b, blake3_c_rust_bindings::ffi::x86::blake3_hash_many_sse2, 4);
 }
 
 #[bench]
@@ -164,11 +126,7 @@ fn bench_many_chunks_sse41(b: &mut Bencher) {
     if !blake3_c_rust_bindings::sse41_detected() {
         return;
     }
-    bench_many_chunks_fn(
-        b,
-        blake3_c_rust_bindings::ffi::x86::blake3_hash_many_sse41,
-        4,
-    );
+    bench_many_chunks_fn(b, blake3_c_rust_bindings::ffi::x86::blake3_hash_many_sse41, 4);
 }
 
 #[bench]
@@ -177,11 +135,7 @@ fn bench_many_chunks_avx2(b: &mut Bencher) {
     if !blake3_c_rust_bindings::avx2_detected() {
         return;
     }
-    bench_many_chunks_fn(
-        b,
-        blake3_c_rust_bindings::ffi::x86::blake3_hash_many_avx2,
-        8,
-    );
+    bench_many_chunks_fn(b, blake3_c_rust_bindings::ffi::x86::blake3_hash_many_avx2, 8);
 }
 
 #[bench]
@@ -189,22 +143,14 @@ fn bench_many_chunks_avx512(b: &mut Bencher) {
     if !blake3_c_rust_bindings::avx512_detected() {
         return;
     }
-    bench_many_chunks_fn(
-        b,
-        blake3_c_rust_bindings::ffi::x86::blake3_hash_many_avx512,
-        16,
-    );
+    bench_many_chunks_fn(b, blake3_c_rust_bindings::ffi::x86::blake3_hash_many_avx512, 16);
 }
 
 #[bench]
 #[cfg(feature = "neon")]
 fn bench_many_chunks_neon(b: &mut Bencher) {
     // When "neon" is on, NEON support is assumed.
-    bench_many_chunks_fn(
-        b,
-        blake3_c_rust_bindings::ffi::neon::blake3_hash_many_neon,
-        4,
-    );
+    bench_many_chunks_fn(b, blake3_c_rust_bindings::ffi::neon::blake3_hash_many_neon, 4);
 }
 
 // TODO: When we get const generics we can unify this with the chunks code.
@@ -214,26 +160,10 @@ fn bench_many_parents_fn(b: &mut Bencher, f: HashManyFn, degree: usize) {
         inputs.push(RandomInput::new(b, BLOCK_LEN));
     }
     b.iter(|| {
-        let input_arrays: ArrayVec<&[u8; BLOCK_LEN], MAX_SIMD_DEGREE> = inputs
-            .iter_mut()
-            .take(degree)
-            .map(|i| (&i.get()[..BLOCK_LEN]).try_into().unwrap())
-            .collect();
+        let input_arrays: ArrayVec<&[u8; BLOCK_LEN], MAX_SIMD_DEGREE> =
+            inputs.iter_mut().take(degree).map(|i| (&i.get()[..BLOCK_LEN]).try_into().unwrap()).collect();
         let mut out = [0; MAX_SIMD_DEGREE * OUT_LEN];
-        unsafe {
-            f(
-                input_arrays.as_ptr() as _,
-                input_arrays.len(),
-                1,
-                [0u32; 8].as_ptr(),
-                0,
-                false,
-                0,
-                0,
-                0,
-                out.as_mut_ptr(),
-            )
-        }
+        unsafe { f(input_arrays.as_ptr() as _, input_arrays.len(), 1, [0u32; 8].as_ptr(), 0, false, 0, 0, 0, out.as_mut_ptr()) }
     });
 }
 
@@ -243,11 +173,7 @@ fn bench_many_parents_sse2(b: &mut Bencher) {
     if !blake3_c_rust_bindings::sse2_detected() {
         return;
     }
-    bench_many_parents_fn(
-        b,
-        blake3_c_rust_bindings::ffi::x86::blake3_hash_many_sse2,
-        4,
-    );
+    bench_many_parents_fn(b, blake3_c_rust_bindings::ffi::x86::blake3_hash_many_sse2, 4);
 }
 
 #[bench]
@@ -256,11 +182,7 @@ fn bench_many_parents_sse41(b: &mut Bencher) {
     if !blake3_c_rust_bindings::sse41_detected() {
         return;
     }
-    bench_many_parents_fn(
-        b,
-        blake3_c_rust_bindings::ffi::x86::blake3_hash_many_sse41,
-        4,
-    );
+    bench_many_parents_fn(b, blake3_c_rust_bindings::ffi::x86::blake3_hash_many_sse41, 4);
 }
 
 #[bench]
@@ -269,11 +191,7 @@ fn bench_many_parents_avx2(b: &mut Bencher) {
     if !blake3_c_rust_bindings::avx2_detected() {
         return;
     }
-    bench_many_parents_fn(
-        b,
-        blake3_c_rust_bindings::ffi::x86::blake3_hash_many_avx2,
-        8,
-    );
+    bench_many_parents_fn(b, blake3_c_rust_bindings::ffi::x86::blake3_hash_many_avx2, 8);
 }
 
 #[bench]
@@ -281,22 +199,14 @@ fn bench_many_parents_avx512(b: &mut Bencher) {
     if !blake3_c_rust_bindings::avx512_detected() {
         return;
     }
-    bench_many_parents_fn(
-        b,
-        blake3_c_rust_bindings::ffi::x86::blake3_hash_many_avx512,
-        16,
-    );
+    bench_many_parents_fn(b, blake3_c_rust_bindings::ffi::x86::blake3_hash_many_avx512, 16);
 }
 
 #[bench]
 #[cfg(feature = "neon")]
 fn bench_many_parents_neon(b: &mut Bencher) {
     // When "neon" is on, NEON support is assumed.
-    bench_many_parents_fn(
-        b,
-        blake3_c_rust_bindings::ffi::neon::blake3_hash_many_neon,
-        4,
-    );
+    bench_many_parents_fn(b, blake3_c_rust_bindings::ffi::neon::blake3_hash_many_neon, 4);
 }
 
 fn bench_incremental(b: &mut Bencher, len: usize) {

@@ -112,10 +112,7 @@ mod test {
         digest::Digest::update(&mut hasher2, b"baz");
         let out2 = digest::Digest::finalize(hasher2.clone());
         let mut xof2 = [0; 301];
-        digest::XofReader::read(
-            &mut digest::ExtendableOutput::finalize_xof(hasher2.clone()),
-            &mut xof2,
-        );
+        digest::XofReader::read(&mut digest::ExtendableOutput::finalize_xof(hasher2.clone()), &mut xof2);
         assert_eq!(out1.as_bytes(), &out2[..]);
         assert_eq!(xof1[..], xof2[..]);
 
@@ -129,16 +126,10 @@ mod test {
         digest::FixedOutputReset::finalize_into_reset(&mut hasher3, out4.as_array_mut());
         digest::Digest::update(&mut hasher3, b"foobarbaz");
         let mut xof3 = [0; 301];
-        digest::XofReader::read(
-            &mut digest::ExtendableOutputReset::finalize_xof_reset(&mut hasher3),
-            &mut xof3,
-        );
+        digest::XofReader::read(&mut digest::ExtendableOutputReset::finalize_xof_reset(&mut hasher3), &mut xof3);
         digest::Digest::update(&mut hasher3, b"foobarbaz");
         let mut xof4 = [0; 301];
-        digest::XofReader::read(
-            &mut digest::ExtendableOutputReset::finalize_xof_reset(&mut hasher3),
-            &mut xof4,
-        );
+        digest::XofReader::read(&mut digest::ExtendableOutputReset::finalize_xof_reset(&mut hasher3), &mut xof4);
         assert_eq!(out1.as_bytes(), &out3[..]);
         assert_eq!(out1.as_bytes(), &out4[..]);
         assert_eq!(xof1[..], xof3[..]);

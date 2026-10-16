@@ -1,8 +1,8 @@
 //! The single-thread tree walk, in safe Rust over its kernels: the walk
 //! `tools/verify/tree` proves computes the C2SP specification's tree.
 
-use crate::platform::{Platform, MAX_SIMD_DEGREE_OR_2};
-use crate::{CVWords, CHUNK_LEN, OUT_LEN};
+use crate::platform::{MAX_SIMD_DEGREE_OR_2, Platform};
+use crate::{CHUNK_LEN, CVWords, OUT_LEN};
 
 /// A chaining value.
 pub(crate) type Cv = [u8; OUT_LEN];
@@ -44,9 +44,7 @@ impl Kernels for PlatformKernels<'_> {
         if matches!(self.platform, Platform::SME2) && crate::sme2::flat_takes(input.len()) {
             // Safe: the SME2 platform is selected only where the CPU has it,
             // and `out` holds simd_degree() values, which is sme2::DEGREE.
-            return Some(unsafe {
-                crate::sme2::compress_subtree_flat(input, ahead, self.key, counter, self.flags, out.as_flattened_mut())
-            });
+            return Some(unsafe { crate::sme2::compress_subtree_flat(input, ahead, self.key, counter, self.flags, out.as_flattened_mut()) });
         }
         None
     }

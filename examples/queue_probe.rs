@@ -50,15 +50,22 @@ fn main() {
             let queue = Queue::messages(Mode::Hash, Back(tx));
             let mut free: Vec<Vec<u8>> = (0..MESSAGES).map(|_| vec![1u8; 64]).collect();
             // Warm: one full cycle outside timing.
-            for b in free.drain(..) { queue.submit(b); }
-            for _ in 0..MESSAGES { free.push(rx.recv().unwrap()); }
+            for b in free.drain(..) {
+                queue.submit(b);
+            }
+            for _ in 0..MESSAGES {
+                free.push(rx.recv().unwrap());
+            }
             // Steady state: buffers stay in flight across calls; a free
             // buffer comes back from the handler when none is kept.
             let before = clocks::threads::snapshot();
             let t0 = clocks::now();
             let batches = clocks::measure(64, 2_000_000, || {
                 for _ in 0..MESSAGES {
-                    let mut b = match free.pop() { Some(b) => b, None => rx.recv().unwrap() };
+                    let mut b = match free.pop() {
+                        Some(b) => b,
+                        None => rx.recv().unwrap(),
+                    };
                     b.clear();
                     b.extend_from_slice(std::hint::black_box(&input));
                     queue.submit(b);
@@ -69,7 +76,10 @@ fn main() {
                 eprintln!("CPU time over wall time: {}", clocks::threads::describe(&clocks::threads::since(before, &after), wall));
             }
             let mut back = 0;
-            while free.len() + back < MESSAGES { rx.recv().unwrap(); back += 1; }
+            while free.len() + back < MESSAGES {
+                rx.recv().unwrap();
+                back += 1;
+            }
             batches
         }
         _ => panic!("batch | channel | queue"),

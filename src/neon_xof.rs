@@ -55,12 +55,7 @@ unsafe fn store_transposed(out: *mut u8, a: uint32x4_t, b: uint32x4_t, c: uint32
         let (t0, t1) = (vtrn1q_u32(a, b), vtrn2q_u32(a, b));
         let (t2, t3) = (vtrn1q_u32(c, d), vtrn2q_u32(c, d));
         let q = |x: uint32x4_t| vreinterpretq_u64_u32(x);
-        let rows = [
-            vtrn1q_u64(q(t0), q(t2)),
-            vtrn1q_u64(q(t1), q(t3)),
-            vtrn2q_u64(q(t0), q(t2)),
-            vtrn2q_u64(q(t1), q(t3)),
-        ];
+        let rows = [vtrn1q_u64(q(t0), q(t2)), vtrn1q_u64(q(t1), q(t3)), vtrn2q_u64(q(t0), q(t2)), vtrn2q_u64(q(t1), q(t3))];
         for (lane, row) in rows.into_iter().enumerate() {
             vst1q_u8(out.add(lane * BLOCK_LEN), vreinterpretq_u8_u64(row));
         }
@@ -75,9 +70,22 @@ unsafe fn initial(key: &[uint32x4_t; 8], counter: u64, block_len: u8, flags: u8)
     let high = at.map(|c| (c >> 32) as u32);
     unsafe {
         [
-            key[0], key[1], key[2], key[3], key[4], key[5], key[6], key[7],
-            vdupq_n_u32(IV[0]), vdupq_n_u32(IV[1]), vdupq_n_u32(IV[2]), vdupq_n_u32(IV[3]),
-            vld1q_u32(low.as_ptr()), vld1q_u32(high.as_ptr()), vdupq_n_u32(block_len as u32), vdupq_n_u32(flags as u32),
+            key[0],
+            key[1],
+            key[2],
+            key[3],
+            key[4],
+            key[5],
+            key[6],
+            key[7],
+            vdupq_n_u32(IV[0]),
+            vdupq_n_u32(IV[1]),
+            vdupq_n_u32(IV[2]),
+            vdupq_n_u32(IV[3]),
+            vld1q_u32(low.as_ptr()),
+            vld1q_u32(high.as_ptr()),
+            vdupq_n_u32(block_len as u32),
+            vdupq_n_u32(flags as u32),
         ]
     }
 }

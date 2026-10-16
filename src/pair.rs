@@ -15,8 +15,8 @@
 // Without the AVX2 and AVX-512 assembly, takes() is false and the rest unused.
 #![cfg_attr(not(any(blake3_avx2_ffi, blake3_avx512_ffi)), allow(unused_variables, dead_code, unreachable_code))]
 
-use crate::platform::{words_from_le_bytes_32, Platform};
-use crate::{CVWords, BLOCK_LEN, CHUNK_END, CHUNK_LEN, CHUNK_START, OUT_LEN};
+use crate::platform::{Platform, words_from_le_bytes_32};
+use crate::{BLOCK_LEN, CHUNK_END, CHUNK_LEN, CHUNK_START, CVWords, OUT_LEN};
 
 /// Whether [`parent`] hashes an input of `len` bytes on `platform`: a whole
 /// chunk and a partial one of two blocks or more, on AVX2 or AVX-512 (whose
@@ -73,8 +73,16 @@ pub(crate) fn parent(input: &[u8], key: &CVWords, chunk_counter: u64, flags: u8,
 /// blocks, and the CPU has the platform.
 #[allow(clippy::too_many_arguments)]
 pub(crate) unsafe fn hash_many_blocks(
-    platform: Platform, inputs: &[*const u8], blocks: usize, key: &CVWords, counter: u64, increment: bool,
-    flags: u8, flags_start: u8, flags_end: u8, out: &mut [u8],
+    platform: Platform,
+    inputs: &[*const u8],
+    blocks: usize,
+    key: &CVWords,
+    counter: u64,
+    increment: bool,
+    flags: u8,
+    flags_start: u8,
+    flags_end: u8,
+    out: &mut [u8],
 ) {
     assert!(out.len() >= inputs.len() * OUT_LEN && (1..=CHUNK_LEN / BLOCK_LEN).contains(&blocks));
     if !takes_platform(platform) {
@@ -95,9 +103,7 @@ pub(crate) unsafe fn hash_many_blocks(
     let (n, input, key, out) = (inputs.len(), inputs.as_ptr(), key.as_ptr(), out.as_mut_ptr());
     match platform {
         #[cfg(blake3_avx2_ffi)]
-        Platform::AVX2 => unsafe {
-            crate::avx2::ffi::blake3_hash_many_avx2(input, n, blocks, key, counter, increment, flags, flags_start, flags_end, out)
-        },
+        Platform::AVX2 => unsafe { crate::avx2::ffi::blake3_hash_many_avx2(input, n, blocks, key, counter, increment, flags, flags_start, flags_end, out) },
         #[cfg(blake3_avx512_ffi)]
         Platform::AVX512 => unsafe {
             crate::avx512::ffi::blake3_hash_many_avx512(input, n, blocks, key, counter, increment, flags, flags_start, flags_end, out)
