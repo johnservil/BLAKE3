@@ -341,22 +341,13 @@ impl Drop for Caller<'_> {
     }
 }
 
-/// One call's work, on the caller's stack. Workers reach it through the
-/// pool's slots while it is registered, and finish the pieces they hold
-/// after. Once the slot is cleared and its readers have drained, no new
-/// reservation can reach this job. The caller waits for `active == 0`, so
-/// every worker access falls inside the caller's frame.
-struct Job<'a> {
+/// One call's work, on the caller's stack, reached by workers through the
+/// caller's job source (`sources::JobSource`) while the call runs: a
+/// worker that took piece `i` hashes it and counts it finished, and the
+/// caller returns only once every piece is, so every worker access falls
+/// inside the caller's frame.
+pub(crate) struct Job<'a> {
     work: Work<'a>,
-    /// How many pieces the work has; `cursor` counts up to it.
-    pieces: usize,
-    /// The next piece to take.
-    cursor: Line,
-    /// The threads holding the job, the caller's included while it takes
-    /// pieces: a worker counts itself in before taking a piece and out
-    /// after it (or after finding none), so the caller returns once it
-    /// reaches zero.
-    active: Line,
 }
 
 /// What a job's pieces are. Piece `i` writes output slot `i` (a chaining
@@ -406,12 +397,6 @@ enum Work<'a> {
     },
 }
 
-/// An atomic counter on its own cache line: `cursor` and `active` are
-/// each hit by every thread of a job, and sharing a line would make
-/// each update evict the others.
-#[repr(align(128))]
-struct Line(AtomicUsize);
-
 /// Any value on a cache line of its own.
 #[repr(align(128))]
 pub(crate) struct OwnLine<T>(pub(crate) T);
@@ -423,12 +408,6 @@ impl<T> std::ops::Deref for OwnLine<T> {
     }
 }
 
-impl std::ops::Deref for Line {
-    type Target = AtomicUsize;
-    fn deref(&self) -> &AtomicUsize {
-        &self.0
-    }
-}
 
 impl Job<'_> {
     /// Hash piece `index` into its slot. The caller has taken `index`
@@ -651,7 +630,6 @@ fn merge_to_children(pieces: &[Piece], cvs: &mut [ChainingValue], key: &crate::C
  * it is about to sleep or knows a sleeper is there.
  */
 struct Pool {
-    slots: [Slot; MAX_JOBS],
     /// Callers inside hash_over_pool.
     callers: AtomicUsize,
     cpus: usize,
@@ -667,20 +645,6 @@ struct Pool {
     threads: Box<[OnceLock<std::thread::Thread>]>,
     /// Wakes still owed: each woken worker pays them before it works.
     owed: AtomicUsize,
-    /// Callers asleep on `finished_signal`.
-    waiters: AtomicUsize,
-    finished: Mutex<()>,
-    finished_signal: Condvar,
-}
-
-/// Jobs registered at once. A caller that finds every slot taken hashes
-/// on its own thread.
-const MAX_JOBS: usize = 64;
-
-struct Slot {
-    job: AtomicPtr<Job<'static>>,
-    /// Workers between loading `job` and finishing their take from it.
-    readers: AtomicUsize,
 }
 
 /// Create the pool and start its threads in the background, once per
@@ -691,18 +655,13 @@ pub(crate) fn initialize() {
     let cpus = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
     let sme2 = cfg!(blake3_sme2) && !matches!(pool_platform(), p if core::mem::discriminant(&p) == core::mem::discriminant(&Platform::detect()));
     let pool = Pool {
-        slots: std::array::from_fn(|_| Slot { job: AtomicPtr::new(std::ptr::null_mut()), readers: AtomicUsize::new(0) }),
         callers: AtomicUsize::new(0),
         cpus,
         sme2,
         parked: (0..cpus.div_ceil(64)).map(|_| OwnLine(AtomicU64::new(0))).collect(),
         threads: (0..cpus).map(|_| OnceLock::new()).collect(),
         owed: AtomicUsize::new(0),
-        waiters: AtomicUsize::new(0),
-        finished: Mutex::new(()),
-        finished_signal: Condvar::new(),
     };
-    prepare(&pool.finished, &pool.finished_signal);
     prepare(&TASKS.sme2_asleep, &TASKS.sme2_wake);
     drop(TASKS.list.lock());
     assert!(POOL.set(pool).is_ok(), "initialize_multithreaded creates the pool once");
@@ -773,58 +732,36 @@ fn no_pool() -> &'static Pool {
 }
 
 impl Pool {
-    /// Register `work` of `pieces` pieces, take pieces on this thread until
-    /// none remain, and return once every piece is finished, on whichever
-    /// thread took it. The caller first hashes pieces `0..own` on `own_platform`, back to
-    /// back (the SME2 thread's prefix; the workers' cursor starts after
-    /// it), then takes pieces as the workers do.
+    /// Publish `work` of `pieces` pieces as this thread's job source, take
+    /// pieces on this thread until none remain, and return once every
+    /// piece is finished, on whichever thread took it. The caller first
+    /// hashes pieces `0..own` on `own_platform`, back to back (the SME2
+    /// thread's prefix; the workers' pieces start after it). A caller that
+    /// finds no source slot free hashes every piece itself.
     fn run_job(&self, work: Work, pieces: usize, own: usize, own_platform: Platform) {
-        let job = Job {
-            work,
-            pieces,
-            cursor: Line(AtomicUsize::new(own)),
-            active: Line(AtomicUsize::new(1)),
-        };
-        let slot = self.register(&job);
+        let job = Job { work };
+        let source = sources::job_source();
+        let slot = source.register();
+        // Sound: the caller's frame outlives every access (it waits below).
+        let ptr = &job as *const Job as *mut Job<'static>;
+        let target = source.publish(ptr, pieces, own);
+        if slot.is_some() && pieces > own + 1 {
+            self.wake_for(pieces - own - 1);
+        }
         for index in 0..own {
-            // Sound: the cursor starts past these, so this thread alone
-            // writes their slots.
+            // Sound: the workers' pieces start past these.
             unsafe { job.hash_piece(index, own_platform) };
         }
-        loop {
-            let index = job.cursor.fetch_add(1, Ordering::SeqCst);
-            if index >= pieces {
-                break;
-            }
-            // Sound: this thread took index through the cursor, so it alone
-            // writes slot index.
+        source.finished_own(own);
+        while let Some((_, index)) = source.take() {
+            // Sound: this thread took `index`, so it alone writes its slot.
             unsafe { job.hash_piece(index, pool_platform()) };
+            source.finish_piece();
         }
-        job.active.fetch_sub(1, Ordering::SeqCst);
-        // Every piece is taken; the slot has nothing more to give from this
-        // job. Unregister drains readers still making a reservation; afterwards
-        // active reaches zero exactly when the last piece has finished.
+        source.wait(target);
         if let Some(slot) = slot {
-            self.unregister(slot);
+            sources::unregister(slot);
         }
-        self.wait_done(&job.active);
-    }
-
-    /// Put the job in a free slot. Returns the slot, or None when every
-    /// slot is taken. When the workers awake are fewer than the call can
-    /// use, the caller wakes one sleeper and leaves the others it needs
-    /// owed: a wake costs the waker about 4 µs on the VM (all fifteen at
-    /// once, 56 µs), and each woken worker wakes owed sleepers before it
-    /// takes a piece, so the wakes spread over the woken.
-    fn register(&self, job: &Job) -> Option<usize> {
-        // The caller keeps this erased lifetime valid by unregistering,
-        // draining readers, and waiting for active == 0 before returning.
-        let ptr = job as *const Job as *mut Job<'static>;
-        let slot = (0..MAX_JOBS).find(|&i| {
-            self.slots[i].job.compare_exchange(std::ptr::null_mut(), ptr, Ordering::SeqCst, Ordering::Relaxed).is_ok()
-        })?;
-        self.wake_for(job.pieces - 1);
-        Some(slot)
     }
 
     /// Make `wanted` workers awake or on their way, waking parked ones as
@@ -870,101 +807,19 @@ impl Pool {
         self.parked.iter().any(|w| w.load(Ordering::Relaxed) != 0)
     }
 
-    /// Clear the slot and wait out any worker mid-take on it.
-    fn unregister(&self, slot: usize) {
-        self.slots[slot].job.store(std::ptr::null_mut(), Ordering::SeqCst);
-        while self.slots[slot].readers.load(Ordering::SeqCst) > 0 {
-            std::hint::spin_loop();
-        }
-    }
-
-    /// Wait for the last active thread. The caller has exhausted the cursor,
-    /// released its reservation, and unregistered the job (including draining
-    /// slot readers), so no new reservations can arrive. Poll first, then
-    /// sleep on the condition variable that finishing workers signal.
-    fn wait_done(&self, active: &AtomicUsize) {
-        let started = std::time::Instant::now();
-        let mut yielded = started;
-        while started.elapsed() < SPIN_BEFORE_SLEEP {
-            if active.load(Ordering::SeqCst) == 0 {
-                return;
-            }
-            poll_pause(&mut yielded);
-        }
-        let mut guard = self.finished.lock().unwrap();
-        self.waiters.fetch_add(1, Ordering::SeqCst);
-        while active.load(Ordering::SeqCst) != 0 {
-            guard = self.finished_signal.wait(guard).unwrap();
-        }
-        self.waiters.fetch_sub(1, Ordering::SeqCst);
-    }
-
-    /// Release a finished piece's reservation, then wake sleeping callers.
-    /// The decrement is this worker's last access to the job.
-    fn piece_done(&self, active: &AtomicUsize) {
-        active.fetch_sub(1, Ordering::SeqCst);
-        if self.waiters.load(Ordering::SeqCst) > 0 {
-            let _guard = self.finished.lock().unwrap();
-            self.finished_signal.notify_all();
-        }
-    }
-
-    /// A worker takes one piece from the first job, scanning the slots
-    /// from `start`, that has one.
-    /// The pointer stays valid until
-    /// this worker's `piece_done` (see the pool's comment).
-    fn take_piece(&self, start: &mut usize) -> Option<(*const Job<'static>, usize)> {
-        for k in 0..MAX_JOBS {
-            let at = (*start + k) % MAX_JOBS;
-            let slot = &self.slots[at];
-            // A load first: an empty slot costs the pollers no writes, so
-            // a caller's registration is not fighting fifteen of them for
-            // the line.
-            if slot.job.load(Ordering::SeqCst).is_null() {
-                continue;
-            }
-            slot.readers.fetch_add(1, Ordering::SeqCst);
-            let ptr = slot.job.load(Ordering::SeqCst);
-            let mut taken = None;
-            if !ptr.is_null() {
-                // Sound: a reader of the slot; the caller waits for readers.
-                let job = unsafe { &*ptr };
-                if job.cursor.load(Ordering::SeqCst) < job.pieces {
-                    job.active.fetch_add(1, Ordering::SeqCst);
-                    let index = job.cursor.fetch_add(1, Ordering::SeqCst);
-                    if index < job.pieces {
-                        taken = Some(index);
-                    } else {
-                        job.active.fetch_sub(1, Ordering::SeqCst);
-                    }
-                }
-            }
-            slot.readers.fetch_sub(1, Ordering::SeqCst);
-            if let Some(index) = taken {
-                *start = at + 1;
-                return Some((ptr, index));
-            }
-        }
-        None
-    }
-
-    /// The next piece for worker `me`, hashing the streams' and the
-    /// queues' tasks it finds on the way; spinning a while when a stream is
-    /// open (more is coming), else parked, whenever it finds nothing.
-    fn next_piece(&self, me: usize, start: &mut usize) -> (*const Job<'static>, usize) {
+    /// Worker `me`'s loop: the sources' tasks and pieces, then the queues'
+    /// tasks; spinning a while when a stream is open (more is coming),
+    /// else parked, whenever it finds nothing.
+    fn serve(&self, me: usize) -> ! {
         let (word, bit) = (&self.parked[me / 64], 1u64 << (me % 64));
         loop {
-            if let Some(task) = crate::lanes::sources::claim() {
-                task.run(pool_platform());
+            if sources::run_one() {
                 continue;
             }
             if let Some(task) = TASKS.pop() {
                 task.run(pool_platform());
                 TASKS.in_flight.fetch_sub(1, Ordering::SeqCst);
                 continue;
-            }
-            if let Some(taken) = self.take_piece(start) {
-                return taken;
             }
             if sources::open() && spin_for_work(self) {
                 continue;
@@ -994,7 +849,7 @@ impl Pool {
 
     /// Whether a stream, the queues, or a job has work (a look, no take).
     fn work_visible(&self) -> bool {
-        sources::visible() || TASKS.queued.load(Ordering::SeqCst) > 0 || self.slots.iter().any(|s| !s.job.load(Ordering::SeqCst).is_null())
+        sources::visible() || TASKS.queued.load(Ordering::SeqCst) > 0
     }
 }
 
@@ -1035,15 +890,35 @@ pub(crate) mod sources {
     use core::cell::UnsafeCell;
     use core::mem::MaybeUninit;
 
-    /// Sources registered at once; a stream that finds none free hands its
-    /// tasks to the queues' list instead.
+    /// Sources registered at once. A stream that finds none free hands
+    /// its tasks to the queues' list; a job, its caller hashes alone.
     const SLOTS: usize = 64;
 
-    static REGISTERED: [AtomicPtr<Source>; SLOTS] = [const { AtomicPtr::new(core::ptr::null_mut()) }; SLOTS];
+    /// Each slot holds a source's address, tagged: a stream's even, a
+    /// job's with its low bit set (both are aligned).
+    static REGISTERED: [AtomicUsize; SLOTS] = [const { AtomicUsize::new(0) }; SLOTS];
     static ACTIVE: AtomicU64 = AtomicU64::new(0);
     /// Streams open: workers spin a while for more work only when some are.
     static OPEN: OwnLine<AtomicUsize> = OwnLine(AtomicUsize::new(0));
 
+    const JOB: usize = 1;
+
+    fn register(tagged: usize) -> Option<usize> {
+        let slot = (0..SLOTS).find(|&i| REGISTERED[i].compare_exchange(0, tagged, Ordering::SeqCst, Ordering::Relaxed).is_ok())?;
+        ACTIVE.fetch_or(1 << slot, Ordering::SeqCst);
+        Some(slot)
+    }
+
+    pub(crate) fn unregister(slot: usize) {
+        ACTIVE.fetch_and(!(1 << slot), Ordering::SeqCst);
+        REGISTERED[slot].store(0, Ordering::SeqCst);
+    }
+
+    /// A stream's tasks: its ring, `published` written by the stream alone
+    /// (one Release store a task), `claimed` advanced by workers by CAS
+    /// below it; both only count up, also across the streams that reuse
+    /// it, so a stale take is impossible, and a slot is written again only
+    /// after its task was taken (copied out).
     pub(crate) struct Source {
         ring: Box<[UnsafeCell<MaybeUninit<Task>>]>,
         published: OwnLine<AtomicUsize>,
@@ -1104,15 +979,150 @@ pub(crate) mod sources {
 
         /// Register for the workers: the slot, or None when all are taken.
         pub(crate) fn register(&'static self) -> Option<usize> {
-            let ptr = self as *const Source as *mut Source;
-            let slot = (0..SLOTS).find(|&i| REGISTERED[i].compare_exchange(core::ptr::null_mut(), ptr, Ordering::SeqCst, Ordering::Relaxed).is_ok())?;
-            ACTIVE.fetch_or(1 << slot, Ordering::SeqCst);
-            Some(slot)
+            register(self as *const Source as usize)
         }
 
         pub(crate) fn unregister(slot: usize) {
-            ACTIVE.fetch_and(!(1 << slot), Ordering::SeqCst);
-            REGISTERED[slot].store(core::ptr::null_mut(), Ordering::SeqCst);
+            unregister(slot)
+        }
+    }
+
+    /// A calling thread's one-shot jobs, one after another: piece numbers
+    /// count up across them all, job k owning [base, base + pieces). The
+    /// caller writes `job` and `base`, then publishes with one Release
+    /// store of `published`; a worker takes a number by CAS on `claimed`
+    /// below `published`, then reads `job` and `base`, which stay the
+    /// taken number's job's until it is finished (the next job starts only
+    /// once `finished` reaches this one's end). Never freed: recycled from
+    /// thread to thread, so a worker may read one after its job ended.
+    #[repr(align(128))]
+    pub(crate) struct JobSource {
+        claimed: OwnLine<AtomicUsize>,
+        published: OwnLine<AtomicUsize>,
+        finished: OwnLine<AtomicUsize>,
+        job: AtomicPtr<Job<'static>>,
+        base: AtomicUsize,
+        /// Whether the caller parked waiting for the last piece, and its
+        /// thread (set as a thread takes the source, before any job).
+        sleeping: core::sync::atomic::AtomicBool,
+        /// Behind a lock: the worker finishing a job's last piece may read
+        /// it just as the record passes to another thread (an unpark that
+        /// reaches the new owner is a harmless spurious wake).
+        owner: Mutex<Option<std::thread::Thread>>,
+    }
+
+    /// Job sources no thread holds.
+    static FREE_JOBS: Mutex<std::vec::Vec<&'static JobSource>> = Mutex::new(std::vec::Vec::new());
+
+    struct Held(&'static JobSource);
+
+    impl Drop for Held {
+        /// A thread's exit gives its source back, never freed.
+        fn drop(&mut self) {
+            FREE_JOBS.lock().unwrap().push(self.0);
+        }
+    }
+
+    std::thread_local! {
+        static MINE: std::cell::OnceCell<Held> = const { std::cell::OnceCell::new() };
+    }
+
+    /// This thread's job source.
+    pub(crate) fn job_source() -> &'static JobSource {
+        MINE.with(|mine| {
+            mine.get_or_init(|| {
+                let source = FREE_JOBS.lock().unwrap().pop().unwrap_or_else(|| {
+                    Box::leak(Box::new(JobSource {
+                        claimed: OwnLine(AtomicUsize::new(0)),
+                        published: OwnLine(AtomicUsize::new(0)),
+                        finished: OwnLine(AtomicUsize::new(0)),
+                        job: AtomicPtr::new(core::ptr::null_mut()),
+                        base: AtomicUsize::new(0),
+                        sleeping: core::sync::atomic::AtomicBool::new(false),
+                        owner: Mutex::new(None),
+                    }))
+                });
+                *source.owner.lock().unwrap() = Some(std::thread::current());
+                Held(source)
+            })
+            .0
+        })
+    }
+
+    impl JobSource {
+        pub(crate) fn register(&'static self) -> Option<usize> {
+            register(self as *const JobSource as usize | JOB)
+        }
+
+        /// Make `job` this source's current job, its pieces `0..own` the
+        /// caller's: the number `finished` must reach when it is done.
+        pub(crate) fn publish(&self, job: *mut Job<'static>, pieces: usize, own: usize) -> usize {
+            let base = self.published.load(Ordering::Relaxed);
+            debug_assert_eq!(self.finished.load(Ordering::Relaxed), base, "the last job is finished");
+            self.job.store(job, Ordering::Relaxed);
+            self.base.store(base, Ordering::Relaxed);
+            // No worker can take a number yet (claimed == published), so
+            // this store alone moves `claimed` past the caller's own pieces.
+            self.claimed.store(base + own, Ordering::Relaxed);
+            self.published.store(base + pieces, Ordering::Release);
+            core::sync::atomic::fence(Ordering::SeqCst);
+            base + pieces
+        }
+
+        /// Take a piece: its job and its index in the job.
+        pub(crate) fn take(&self) -> Option<(*const Job<'static>, usize)> {
+            let mut c = self.claimed.load(Ordering::Acquire);
+            loop {
+                let p = self.published.load(Ordering::Acquire);
+                if c >= p {
+                    return None;
+                }
+                match self.claimed.compare_exchange_weak(c, c + 1, Ordering::AcqRel, Ordering::Acquire) {
+                    Ok(_) => return Some((self.job.load(Ordering::Relaxed), c - self.base.load(Ordering::Relaxed))),
+                    Err(now) => c = now,
+                }
+            }
+        }
+
+        /// Count the caller's own `n` pieces finished.
+        pub(crate) fn finished_own(&self, n: usize) {
+            if n > 0 {
+                self.finished.fetch_add(n, Ordering::Release);
+            }
+        }
+
+        /// Count a piece finished (its output written before); the last one
+        /// wakes a caller that parked waiting for it.
+        pub(crate) fn finish_piece(&self) {
+            let now = self.finished.fetch_add(1, Ordering::SeqCst) + 1;
+            if now == self.published.load(Ordering::SeqCst) && self.sleeping.load(Ordering::SeqCst) {
+                if let Some(owner) = &*self.owner.lock().unwrap() {
+                    owner.unpark();
+                }
+            }
+        }
+
+        fn waiting(&self) -> usize {
+            self.published.load(Ordering::Acquire).saturating_sub(self.claimed.load(Ordering::Acquire))
+        }
+
+        /// Wait until `finished` reaches `target`: polling a while, then
+        /// parked until the worker finishing the last piece unparks this
+        /// thread.
+        pub(crate) fn wait(&self, target: usize) {
+            let started = std::time::Instant::now();
+            let mut yielded = started;
+            while started.elapsed() < SPIN_BEFORE_SLEEP {
+                if self.finished.load(Ordering::Acquire) >= target {
+                    return;
+                }
+                poll_pause(&mut yielded);
+            }
+            self.sleeping.store(true, Ordering::SeqCst);
+            while self.finished.load(Ordering::SeqCst) < target {
+                std::thread::park();
+            }
+            self.sleeping.store(false, Ordering::SeqCst);
         }
     }
 
@@ -1128,37 +1138,67 @@ pub(crate) mod sources {
         OPEN.load(Ordering::Relaxed) > 0
     }
 
-    fn each(mut f: impl FnMut(&'static Source) -> bool) -> bool {
+    /// A registered source, by kind.
+    enum Registered {
+        Stream(&'static Source),
+        Job(&'static JobSource),
+    }
+
+    fn each(mut f: impl FnMut(Registered) -> bool) -> bool {
         let mut active = ACTIVE.load(Ordering::SeqCst);
         while active != 0 {
             let slot = active.trailing_zeros() as usize;
             active &= active - 1;
-            let ptr = REGISTERED[slot].load(Ordering::Acquire);
-            // Sound: sources are never freed (their storage is recycled).
-            if !ptr.is_null() && f(unsafe { &*ptr }) {
+            let tagged = REGISTERED[slot].load(Ordering::Acquire);
+            if tagged == 0 {
+                continue;
+            }
+            // Sound: sources are never freed (they are recycled).
+            let found = if tagged & JOB != 0 { Registered::Job(unsafe { &*((tagged & !JOB) as *const JobSource) }) } else { Registered::Stream(unsafe { &*(tagged as *const Source) }) };
+            if f(found) {
                 return true;
             }
         }
         false
     }
 
-    /// A task from any open stream; when more wait and a worker is
-    /// parked, this worker wakes the next before it hashes (the chain).
-    pub(crate) fn claim() -> Option<Task> {
-        let mut found = None;
-        each(|source| {
-            found = source.take();
-            if found.is_some() && source.waiting() >= 2 && pool().any_parked() {
-                pool().wake_one();
-            }
-            found.is_some()
-        });
-        found
+    /// Run one task or piece from any source: whether there was one. When
+    /// more wait and a worker is parked, this one wakes the next first
+    /// (the chain).
+    pub(crate) fn run_one() -> bool {
+        each(|found| match found {
+            Registered::Stream(source) => match source.take() {
+                Some(task) => {
+                    if source.waiting() >= 2 && pool().any_parked() {
+                        pool().wake_one();
+                    }
+                    task.run(pool_platform());
+                    true
+                }
+                None => false,
+            },
+            Registered::Job(source) => match source.take() {
+                Some((job, index)) => {
+                    if source.waiting() >= 1 && pool().any_parked() {
+                        pool().wake_one();
+                    }
+                    // Sound: the job lives until its pieces are finished,
+                    // this one among them; this thread alone took `index`.
+                    unsafe { (*job).hash_piece(index, pool_platform()) };
+                    source.finish_piece();
+                    true
+                }
+                None => false,
+            },
+        })
     }
 
-    /// Whether any open stream has a task waiting.
+    /// Whether any source has work waiting.
     pub(crate) fn visible() -> bool {
-        each(|source| source.waiting() > 0)
+        each(|found| match found {
+            Registered::Stream(source) => source.waiting() > 0,
+            Registered::Job(source) => source.waiting() > 0,
+        })
     }
 }
 
@@ -1496,14 +1536,7 @@ pub(crate) fn run_one_task() -> bool {
 fn worker_main(me: usize) {
     let pool = pool();
     assert!(pool.threads[me].set(std::thread::current()).is_ok(), "each worker sets its thread once");
-    let mut start = 0;
-    loop {
-        let (job_ptr, index) = pool.next_piece(me, &mut start);
-        // Sound by the pool's contract: our active reservation keeps the job alive.
-        let job = unsafe { &*job_ptr };
-        unsafe { job.hash_piece(index, pool_platform()) };
-        pool.piece_done(&job.active);
-    }
+    pool.serve(me)
 }
 
 #[cfg(test)]
