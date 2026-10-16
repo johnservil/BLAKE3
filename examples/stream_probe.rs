@@ -374,7 +374,7 @@ fn oneshot(api: &str, len: usize) -> Vec<Sample> {
         // One message from a reader (an in-memory one: each read a copy).
         "oneshot-reader-stream" => clocks::measure(64, 2_000_000, || {
             blake3_servil::stream(blake3_servil::Mode::Hash, |s| {
-                s.submit_reader(&input[..], |d| digests[0] = *d[0].as_bytes()).unwrap();
+                s.submit_reader(&input[..], None, |d| digests[0] = *d[0].as_bytes()).unwrap();
                 s.finish(|d| digests[0] = *d[0].as_bytes());
             });
         }),

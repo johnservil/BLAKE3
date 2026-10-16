@@ -274,7 +274,14 @@ impl<'env> Stream<'env> {
     /// reads again) the message gets no digest and the error returns; the
     /// stream goes on with the next message. The length need not be known:
     /// the stream reads one piece ahead to tell the last.
-    pub fn submit_reader(&mut self, mut reader: impl std::io::Read, mut digest: impl FnMut(&[Hash])) -> std::io::Result<u64> {
+    ///
+    /// `size_hint` is the length the caller expects, where it knows one (a
+    /// file's size, a protocol's length field): a scheduling hint, never
+    /// part of the hash, so a wrong one costs nothing but speed. Today the
+    /// stream does not use it; it is here so that a stream that schedules
+    /// by it later changes no caller.
+    pub fn submit_reader(&mut self, mut reader: impl std::io::Read, size_hint: Option<u64>, mut digest: impl FnMut(&[Hash])) -> std::io::Result<u64> {
+        let _ = size_hint;
         let start = self.head;
         let (mut at, mut end, mut n, mut read) = self.read_piece(&mut reader, &mut digest);
         let mut i = 0;
@@ -765,7 +772,7 @@ mod test {
             stream(mode, |s| {
                 for _ in 0..3 {
                     for &len in &lens {
-                        let n = s.submit_reader(Uneven { data: &input[..len], at: 0, calls: 0, fail_at: None }, |h| got.extend_from_slice(h)).unwrap();
+                        let n = s.submit_reader(Uneven { data: &input[..len], at: 0, calls: 0, fail_at: None }, None, |h| got.extend_from_slice(h)).unwrap();
                         assert_eq!(n, len as u64);
                         want.push(crate::hash_with(mode, &input[..len]));
                         s.submit(&input[..100], |h| got.extend_from_slice(h));
@@ -773,7 +780,7 @@ mod test {
                     }
                 }
                 for fail_at in [0, 500, PIECE, PIECE + 3, 2 * PIECE, 3 * PIECE + 1] {
-                    let r = s.submit_reader(Uneven { data: &input, at: 0, calls: 0, fail_at: Some(fail_at) }, |h| got.extend_from_slice(h));
+                    let r = s.submit_reader(Uneven { data: &input, at: 0, calls: 0, fail_at: Some(fail_at) }, None, |h| got.extend_from_slice(h));
                     assert!(r.is_err(), "a failing reader's error comes back (failing at {fail_at})");
                     s.submit(&input[..3 * PIECE + 5], |h| got.extend_from_slice(h));
                     want.push(crate::hash_with(mode, &input[..3 * PIECE + 5]));
@@ -796,8 +803,8 @@ mod test {
                 s.submit(&input[..len], |h| got.extend_from_slice(h));
                 s.submit_with(len, |at, room| room.copy_from_slice(&input[at..][..room.len()]), |h| got.extend_from_slice(h));
             }
-            assert_eq!(s.submit_reader(&input[..2 * PIECE + 1], |h| got.extend_from_slice(h)).unwrap(), 2 * PIECE as u64 + 1);
-            assert!(s.submit_reader(Uneven { data: &input, at: 0, calls: 0, fail_at: Some(PIECE + 1) }, |h| got.extend_from_slice(h)).is_err());
+            assert_eq!(s.submit_reader(&input[..2 * PIECE + 1], None, |h| got.extend_from_slice(h)).unwrap(), 2 * PIECE as u64 + 1);
+            assert!(s.submit_reader(Uneven { data: &input, at: 0, calls: 0, fail_at: Some(PIECE + 1) }, None, |h| got.extend_from_slice(h)).is_err());
             s.submit_batch(&input[..4 * 64], 64, |h| got.extend_from_slice(h));
             s.submit_batch_with(3, 64, |at, room| room.copy_from_slice(&input[at..][..room.len()]), |h| got.extend_from_slice(h));
             s.finish(|h| got.extend_from_slice(h));

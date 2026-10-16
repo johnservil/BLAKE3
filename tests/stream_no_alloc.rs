@@ -68,7 +68,7 @@ fn a_warm_stream_allocates_nothing() {
             for message in &messages {
                 s.submit(message, &mut fold);
                 s.submit_with(message.len(), |at, room| room.copy_from_slice(&message[at..][..room.len()]), &mut fold);
-                s.submit_reader(&message[..], &mut fold).unwrap();
+                s.submit_reader(&message[..], None, &mut fold).unwrap();
             }
             s.submit_batch(&batch[..64 * 16], 64, &mut fold);
             s.submit_batch(&batch, 64, &mut fold);

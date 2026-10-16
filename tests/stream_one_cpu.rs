@@ -47,7 +47,7 @@ fn every_stream_completes_on_one_cpu() {
         for message in &messages {
             s.submit(message, |h| got.extend_from_slice(h));
             s.submit_with(message.len(), |at, room| room.copy_from_slice(&message[at..][..room.len()]), |h| got.extend_from_slice(h));
-            s.submit_reader(&message[..], |h| got.extend_from_slice(h)).unwrap();
+            s.submit_reader(&message[..], None, |h| got.extend_from_slice(h)).unwrap();
             want.extend([reference(message); 3]);
         }
         for count in [16, 4096] {
