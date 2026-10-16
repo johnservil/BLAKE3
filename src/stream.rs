@@ -129,7 +129,7 @@ pub fn stream<'env, T>(mode: Mode, body: impl for<'s> FnOnce(&'s mut Stream<'env
         head: 0,
         tail: 0,
         open: None,
-        stack: Vec::with_capacity(64),
+        stack: arrayvec::ArrayVec::new(),
         pieces: 0,
         env: PhantomData,
     };
@@ -221,7 +221,7 @@ pub struct Stream<'env> {
     open: Option<Task>,
     /// A long message being handed back: its pieces' chaining values so
     /// far (merged as the Hasher's stack merges), and how many.
-    stack: Vec<CVBytes>,
+    stack: arrayvec::ArrayVec<CVBytes, { crate::MAX_DEPTH + 1 }>,
     pieces: u64,
     /// Invariant in 'env, as std::thread::Scope is: the messages' lifetime.
     env: PhantomData<&'env mut &'env ()>,

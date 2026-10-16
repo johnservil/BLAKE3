@@ -122,6 +122,15 @@ name = "queue_no_alloc"
 harness = false
 required-features = ["std"]
 
+[[test]]
+name = "stream_one_cpu"
+required-features = ["std"]
+
+[[test]]
+name = "stream_no_alloc"
+harness = false
+required-features = ["std"]
+
 [[example]]
 name = "scaling"
 required-features = ["std"]
