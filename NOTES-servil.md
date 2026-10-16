@@ -2842,7 +2842,9 @@ is open. Against the same stream on the conventional pool, every stream
 cell level or faster (messages -5% to -49%, batches -3% to -15%); one-shot
 cells level; context switches per run 28.5k -> 10k. Spin 0 cost small
 messages 9-12% against the earlier stream; 20 us cost 22% more CPU time per
-run for no speed. Evidence: bench-hashes-validation/pool-cursor.
+run for no speed. Evidence: bench-hashes-validation/pool-cursor; the
+probes (`stream_probe`, `contention_probe`) on the fork's branch
+probe/devon-stream.
 
 Decided (October 16): the ring is 2 MiB. With the digests in the
 program's places, a 4 MiB ring made two programs streaming 4 MiB batches
