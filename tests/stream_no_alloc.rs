@@ -62,17 +62,21 @@ fn a_warm_stream_allocates_nothing() {
     let messages: Vec<Vec<u8>> = [64usize, 1024, 64 << 10, (1 << 20) + 5].iter().map(|&len| vec![7u8; len]).collect();
     let batch = vec![1u8; 64 * 16384];
     let mut sum = [0u8; 32];
-    let mut fold = |hashes: &[Hash]| hashes.iter().for_each(|h| sum[0] ^= h.as_bytes()[0]);
+    // Every place, made before the count starts.
+    let mut places = vec![Hash::from_bytes([0; 32]); 3 * messages.len() + 16 + 16384];
     let made = allocations_after_warm_up(20, 200, || {
-        blake3_servil::stream(Mode::Hash, |s| {
+        let (singles, batches) = places.split_at_mut(3 * messages.len());
+        let (small, large) = batches.split_at_mut(16);
+        let mut singles = singles.iter_mut();
+        blake3_servil::stream(Mode::Hash, |hashes: &mut [Hash]| hashes.iter().for_each(|h| sum[0] ^= h.as_bytes()[0]), |s| {
             for message in &messages {
-                s.submit(message, &mut fold);
-                s.submit_with(message.len(), |at, room| room.copy_from_slice(&message[at..][..room.len()]), &mut fold);
-                s.submit_reader(&message[..], None, &mut fold).unwrap();
+                s.submit(message, singles.next().unwrap());
+                s.submit_with(message.len(), |at, room| room.copy_from_slice(&message[at..][..room.len()]), singles.next().unwrap());
+                s.submit_reader(&message[..], None, singles.next().unwrap()).unwrap();
             }
-            s.submit_batch(&batch[..64 * 16], 64, &mut fold);
-            s.submit_batch(&batch, 64, &mut fold);
-            s.finish(&mut fold);
+            s.submit_batch(&batch[..64 * 16], 64, small);
+            s.submit_batch(&batch, 64, large);
+            s.finish();
         });
     });
     std::hint::black_box(sum);

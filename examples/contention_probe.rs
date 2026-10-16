@@ -7,22 +7,33 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 fn stream_side(stop: &AtomicBool, bytes: &AtomicU64) {
     let messages: Vec<Vec<u8>> = (0..1024).map(|m| vec![m as u8; 1024]).collect();
-    blake3_servil::stream(blake3_servil::Mode::Hash, |s| {
-        while !stop.load(Ordering::Relaxed) {
-            for m in &messages {
-                s.submit(m, |d| {
-                    std::hint::black_box(d);
-                });
+    // Places cycled as the stream hands them back: a stream that runs on
+    // and on reuses a fixed set.
+    let mut places = vec![blake3_servil::Hash::from_bytes([0; 32]); 2048];
+    let free = std::cell::RefCell::new(places.iter_mut().collect::<Vec<_>>());
+    blake3_servil::stream(
+        blake3_servil::Mode::Hash,
+        |d: &mut [blake3_servil::Hash]| {
+            std::hint::black_box(&d[0]);
+            free.borrow_mut().push(&mut d[0]);
+        },
+        |s| {
+            while !stop.load(Ordering::Relaxed) {
+                for m in &messages {
+                    let out = loop {
+                        if let Some(out) = free.borrow_mut().pop() {
+                            break out;
+                        }
+                        s.collect();
+                    };
+                    s.submit(m, out);
+                }
+                s.collect();
+                bytes.fetch_add(1 << 20, Ordering::Relaxed);
             }
-            s.collect(|d| {
-                std::hint::black_box(d);
-            });
-            bytes.fetch_add(1 << 20, Ordering::Relaxed);
-        }
-        s.finish(|d| {
-            std::hint::black_box(d);
-        });
-    });
+            s.finish();
+        },
+    );
 }
 
 fn oneshot_side(stop: &AtomicBool) -> Vec<u64> {

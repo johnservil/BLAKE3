@@ -42,19 +42,25 @@ fn every_stream_completes_on_one_cpu() {
     let lens = [0, 64, 1000, 16 << 10, 64 << 10, (1 << 20) + 1, 5 << 20];
     let messages: Vec<Vec<u8>> = lens.iter().map(|&len| input(len)).collect();
     let batch = input(64 * 4096);
-    let (mut got, mut want) = (Vec::new(), Vec::new());
-    blake3_servil::stream(Mode::Hash, |s| {
+    let mut want = Vec::new();
+    let mut got = vec![Hash::from_bytes([0; 32]); 3 * messages.len() + 16 + 4096];
+    let handed = std::cell::Cell::new(0);
+    let (singles, batches) = got.split_at_mut(3 * messages.len());
+    let (small, large) = batches.split_at_mut(16);
+    let mut singles = singles.iter_mut();
+    blake3_servil::stream(Mode::Hash, |d: &mut [Hash]| handed.set(handed.get() + d.len()), |s| {
         for message in &messages {
-            s.submit(message, |h| got.extend_from_slice(h));
-            s.submit_with(message.len(), |at, room| room.copy_from_slice(&message[at..][..room.len()]), |h| got.extend_from_slice(h));
-            s.submit_reader(&message[..], None, |h| got.extend_from_slice(h)).unwrap();
+            s.submit(message, singles.next().unwrap());
+            s.submit_with(message.len(), |at, room| room.copy_from_slice(&message[at..][..room.len()]), singles.next().unwrap());
+            s.submit_reader(&message[..], None, singles.next().unwrap()).unwrap();
             want.extend([reference(message); 3]);
         }
-        for count in [16, 4096] {
-            s.submit_batch(&batch[..64 * count], 64, |h| got.extend_from_slice(h));
+        for (count, out) in [(16, small), (4096, large)] {
+            s.submit_batch(&batch[..64 * count], 64, out);
             want.extend(batch[..64 * count].chunks(64).map(reference));
         }
-        s.finish(|h| got.extend_from_slice(h));
+        s.finish();
     });
-    assert!(got == want, "every digest, in order, on one CPU");
+    assert_eq!(handed.get(), want.len(), "every place handed back");
+    assert!(got == want, "every digest, in its place, on one CPU");
 }

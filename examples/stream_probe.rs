@@ -22,7 +22,38 @@
 //!              sample: 25 messages; ns per message)
 //!
 //! The file's header records the CPUs busy during each cell (clocks::threads).
+use blake3_servil::{Hash, Stream};
 use std::sync::mpsc;
+
+/// Places for a stream that runs on: chunks of `k` digests, each taken
+/// for a submission and put back as the stream hands it back.
+struct Free<'a>(std::cell::RefCell<Vec<&'a mut [Hash]>>);
+
+impl<'a> Free<'a> {
+    fn new(places: &'a mut [Hash], k: usize) -> Self {
+        Free(std::cell::RefCell::new(places.chunks_mut(k).collect()))
+    }
+
+    /// The stream's handler: a place back, its digests looked at.
+    fn back(&self, d: &'a mut [Hash]) {
+        std::hint::black_box(d.first());
+        self.0.borrow_mut().push(d);
+    }
+
+    /// A free place, collecting until one is.
+    fn take<D: FnMut(&'a mut [Hash])>(&self, s: &mut Stream<'a, D>) -> &'a mut [Hash] {
+        loop {
+            if let Some(p) = self.0.borrow_mut().pop() {
+                return p;
+            }
+            s.collect();
+        }
+    }
+}
+
+fn zeros(n: usize) -> Vec<Hash> {
+    vec![Hash::from_bytes([0; 32]); n]
+}
 
 const PER_CALL: usize = 1024;
 const LENS: [usize; 7] = [64, 256, 1024, 4096, 16384, 65536, 1 << 20];
@@ -51,60 +82,59 @@ fn solo(api: &str, len: usize) -> Vec<Sample> {
     let messages: Vec<Vec<u8>> = (0..per_call).map(|m| (0..length(m)).map(|i| ((i + m) % 251) as u8).collect()).collect();
     let bytes: usize = messages.iter().map(|m| m.len()).sum();
     let batches = match api {
-        "stream" => blake3_servil::stream(blake3_servil::Mode::Hash, |s| {
-            let b = clocks::measure(64, 2_000_000, || {
-                for m in &messages {
-                    s.submit(m, |d| {
-                        std::hint::black_box(d);
+        "stream" => {
+            let mut places = zeros(2 * per_call);
+            let free = Free::new(&mut places, 1);
+            blake3_servil::stream(
+                blake3_servil::Mode::Hash,
+                |d| free.back(d),
+                |s| {
+                    let b = clocks::measure(64, 2_000_000, || {
+                        for m in &messages {
+                            let p = free.take(s);
+                            s.submit(m, &mut p[0]);
+                        }
+                        s.collect();
                     });
-                }
-                s.collect(|d| {
-                    std::hint::black_box(d);
-                });
-            });
-            s.finish(|d| {
-                std::hint::black_box(d);
-            });
-            b
-        }),
-        "written" => blake3_servil::stream(blake3_servil::Mode::Hash, |s| {
+                    s.finish();
+                    b
+                },
+            )
+        }
+        "written" => {
             // Each message read straight into the stream's bytes.
-            let b = clocks::measure(64, 2_000_000, || {
-                for m in &messages {
-                    s.submit_with(
-                        m.len(),
-                        |at, room| room.copy_from_slice(&m[at..][..room.len()]),
-                        |d| {
-                            std::hint::black_box(d);
-                        },
-                    );
-                }
-                s.collect(|d| {
-                    std::hint::black_box(d);
-                });
-            });
-            s.finish(|d| {
-                std::hint::black_box(d);
-            });
-            b
-        }),
+            let mut places = zeros(2 * per_call);
+            let free = Free::new(&mut places, 1);
+            blake3_servil::stream(
+                blake3_servil::Mode::Hash,
+                |d| free.back(d),
+                |s| {
+                    let b = clocks::measure(64, 2_000_000, || {
+                        for m in &messages {
+                            let p = free.take(s);
+                            s.submit_with(m.len(), |at, room| room.copy_from_slice(&m[at..][..room.len()]), &mut p[0]);
+                        }
+                        s.collect();
+                    });
+                    s.finish();
+                    b
+                },
+            )
+        }
         "rounds" => {
             // A read of each message into the program's buffers, then a
             // stream of them: a buffer is refilled only after its scope.
             let mut buffers = messages.clone();
+            let mut places = zeros(per_call);
             clocks::measure(64, 2_000_000, || {
                 for (b, m) in buffers.iter_mut().zip(&messages) {
                     b.copy_from_slice(m);
                 }
-                blake3_servil::stream(blake3_servil::Mode::Hash, |s| {
-                    for b in &buffers {
-                        s.submit(b, |d| {
-                            std::hint::black_box(d);
-                        });
+                blake3_servil::stream(blake3_servil::Mode::Hash, |d| { std::hint::black_box(d); }, |s| {
+                    for (b, p) in buffers.iter().zip(&mut places) {
+                        s.submit(b, p);
                     }
-                    s.finish(|d| {
-                        std::hint::black_box(d);
-                    });
+                    s.finish();
                 });
             })
         }
@@ -201,60 +231,46 @@ fn batches(api: &str, n: usize) -> Vec<Sample> {
             b
         }
         "batch-written" => {
-            // Each batch copied into the stream's ring as it is read.
-            let total = per_call * n;
-            let mask = total - 1;
-            assert!(total.is_power_of_two());
-            let mut digests = vec![[0u8; 32]; total];
-            blake3_servil::stream(blake3_servil::Mode::Hash, |s| {
-                let mut k = 0;
-                let mut take = |d: &[blake3_servil::Hash]| {
-                    for h in d {
-                        digests[k & mask] = *h.as_bytes();
-                        k += 1;
-                    }
-                };
-                let b = clocks::measure(64, 2_000_000, || {
-                    for buffer in &buffers {
-                        s.submit_batch_with(n, 64, |at, room| room.copy_from_slice(&buffer[at..][..room.len()]), &mut take);
-                    }
-                    s.collect(&mut take);
-                });
-                s.finish(&mut take);
-                b
-            })
+            // Each batch copied into the stream's ring as it is read; its
+            // digests into a place of the batch's size, cycled.
+            let mut places = zeros(2 * per_call * n);
+            let free = Free::new(&mut places, n);
+            blake3_servil::stream(
+                blake3_servil::Mode::Hash,
+                |d| free.back(d),
+                |s| {
+                    let b = clocks::measure(64, 2_000_000, || {
+                        for buffer in &buffers {
+                            let p = free.take(s);
+                            s.submit_batch_with(64, |at, room| room.copy_from_slice(&buffer[at..][..room.len()]), p);
+                        }
+                        s.collect();
+                    });
+                    s.finish();
+                    b
+                },
+            )
         }
         "batch-stream" => {
-            let total = per_call * n;
-            let mask = total - 1;
-            assert!(total.is_power_of_two());
-            let mut digests = vec![[0u8; 32]; total];
-            blake3_servil::stream(blake3_servil::Mode::Hash, |s| {
-                let mut k = 0;
-                let b = clocks::measure(64, 2_000_000, || {
-                    for buffer in &buffers {
-                        s.submit_batch(buffer, 64, |d| {
-                            for h in d {
-                                digests[k & mask] = *h.as_bytes();
-                                k += 1;
-                            }
-                        });
-                    }
-                    s.collect(|d| {
-                        for h in d {
-                            digests[k & mask] = *h.as_bytes();
-                            k += 1;
+            // Each batch's digests straight into a place of the batch's
+            // size, cycled (Queue::fixed's digest space, as batch-queue).
+            let mut places = zeros(2 * per_call * n);
+            let free = Free::new(&mut places, n);
+            blake3_servil::stream(
+                blake3_servil::Mode::Hash,
+                |d| free.back(d),
+                |s| {
+                    let b = clocks::measure(64, 2_000_000, || {
+                        for buffer in &buffers {
+                            let p = free.take(s);
+                            s.submit_batch(buffer, 64, p);
                         }
+                        s.collect();
                     });
-                });
-                s.finish(|d| {
-                    for h in d {
-                        digests[k & mask] = *h.as_bytes();
-                        k += 1;
-                    }
-                });
-                b
-            })
+                    s.finish();
+                    b
+                },
+            )
         }
         _ => panic!("batches: batch-queue | batch-stream"),
     };
@@ -315,25 +331,17 @@ fn collection(api: &str, index: usize) -> Vec<Sample> {
     let mut digests = vec![[0u8; 32]; count];
     let batches = match api {
         "collection-each" => clocks::measure(16, 2_000_000, || blake3_servil::hash_each_multithreaded_with(blake3_servil::Mode::Hash, &slices, &mut digests)),
-        "collection-stream" => clocks::measure(16, 2_000_000, || {
-            let mut k = 0;
-            blake3_servil::stream(blake3_servil::Mode::Hash, |s| {
-                for item in &slices {
-                    s.submit(item, |d| {
-                        for h in d {
-                            digests[k] = *h.as_bytes();
-                            k += 1;
-                        }
-                    });
-                }
-                s.finish(|d| {
-                    for h in d {
-                        digests[k] = *h.as_bytes();
-                        k += 1;
+        "collection-stream" => {
+            let mut places = zeros(count);
+            clocks::measure(16, 2_000_000, || {
+                blake3_servil::stream(blake3_servil::Mode::Hash, |_| {}, |s| {
+                    for (item, p) in slices.iter().zip(&mut places) {
+                        s.submit(item, p);
                     }
+                    s.finish();
                 });
-            });
-        }),
+            })
+        }
         _ => panic!("collection-each | collection-stream"),
     };
     std::hint::black_box(&digests);
@@ -354,30 +362,29 @@ fn oneshot(api: &str, len: usize) -> Vec<Sample> {
             digests[0] = *blake3_servil::hash_multithreaded(&input).as_bytes();
         }),
         "oneshot-job-many" => clocks::measure(64, 2_000_000, || blake3_servil::hash_many_multithreaded(&input, 64, &mut digests)),
-        "oneshot-stream" | "oneshot-stream-many" => clocks::measure(64, 2_000_000, || {
-            let mut k = 0;
-            let mut take = |d: &[blake3_servil::Hash]| {
-                for h in d {
-                    digests[k] = *h.as_bytes();
-                    k += 1;
-                }
-            };
-            blake3_servil::stream(blake3_servil::Mode::Hash, |s| {
-                if many {
-                    s.submit_batch(&input, 64, &mut take);
-                } else {
-                    s.submit(&input, &mut take);
-                }
-                s.finish(&mut take);
-            });
-        }),
+        "oneshot-stream" | "oneshot-stream-many" => {
+            let mut places = zeros(digests.len());
+            clocks::measure(64, 2_000_000, || {
+                blake3_servil::stream(blake3_servil::Mode::Hash, |_| {}, |s| {
+                    if many {
+                        s.submit_batch(&input, 64, &mut places);
+                    } else {
+                        s.submit(&input, &mut places[0]);
+                    }
+                    s.finish();
+                });
+            })
+        }
         // One message from a reader (an in-memory one: each read a copy).
-        "oneshot-reader-stream" => clocks::measure(64, 2_000_000, || {
-            blake3_servil::stream(blake3_servil::Mode::Hash, |s| {
-                s.submit_reader(&input[..], None, |d| digests[0] = *d[0].as_bytes()).unwrap();
-                s.finish(|d| digests[0] = *d[0].as_bytes());
-            });
-        }),
+        "oneshot-reader-stream" => {
+            let mut place = Hash::from_bytes([0; 32]);
+            clocks::measure(64, 2_000_000, || {
+                blake3_servil::stream(blake3_servil::Mode::Hash, |_| {}, |s| {
+                    s.submit_reader(&input[..], None, &mut place).unwrap();
+                    s.finish();
+                });
+            })
+        }
         "oneshot-reader-hasher" => clocks::measure(64, 2_000_000, || {
             digests[0] = *blake3_servil::Hasher::new().update_reader(&input[..]).unwrap().finalize().as_bytes();
         }),
@@ -403,29 +410,32 @@ fn lone(api: &str, len: usize) -> Vec<Sample> {
             .collect()
     };
     match api {
-        "stream" => blake3_servil::stream(blake3_servil::Mode::Hash, |s| {
-            let s = std::cell::RefCell::new(s);
-            let samples = gaps(&mut || {
-                let mut s = s.borrow_mut();
-                s.submit(&message, |d| {
-                    std::hint::black_box(d);
-                });
-                s.finish(|d| {
-                    std::hint::black_box(d);
-                });
-            });
-            samples
-        }),
-        "new" => gaps(&mut || {
-            blake3_servil::stream(blake3_servil::Mode::Hash, |s| {
-                s.submit(&message, |d| {
-                    std::hint::black_box(d);
-                });
-                s.finish(|d| {
-                    std::hint::black_box(d);
-                });
+        "stream" => {
+            let mut places = zeros(2);
+            let free = Free::new(&mut places, 1);
+            blake3_servil::stream(
+                blake3_servil::Mode::Hash,
+                |d| free.back(d),
+                |s| {
+                    let s = std::cell::RefCell::new(s);
+                    gaps(&mut || {
+                        let mut s = s.borrow_mut();
+                        let p = free.take(&mut s);
+                        s.submit(&message, &mut p[0]);
+                        s.finish();
+                    })
+                },
+            )
+        }
+        "new" => {
+            let mut place = Hash::from_bytes([0; 32]);
+            gaps(&mut || {
+                blake3_servil::stream(blake3_servil::Mode::Hash, |d| { std::hint::black_box(d); }, |s| {
+                    s.submit(&message, &mut place);
+                    s.finish();
+                })
             })
-        }),
+        }
         "queue" => {
             let (tx, rx) = mpsc::sync_channel::<Vec<u8>>(1);
             let queue = blake3_servil::Queue::messages(blake3_servil::Mode::Hash, Back(tx));
