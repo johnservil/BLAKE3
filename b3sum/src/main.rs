@@ -50,13 +50,17 @@ struct Inner {
     #[arg(long, default_value_t = 0, value_name("SEEK"))]
     seek: u64,
 
-    /// How many threads to hash on [default: one per CPU]
+    /// The most threads hashing at once [default: as fast as b3sum can]
     ///
-    /// 1: b3sum runs on one thread, reading and hashing each file in turn
-    /// (for one b3sum per core, or to leave other cores to other work).
-    /// N > 1: up to N files hash at once, and each spreads over up to N
-    /// threads, so more than N threads can run together. To limit b3sum to
-    /// chosen CPUs, start it under `taskset -c LIST` (Linux).
+    /// b3sum hashes on at most N threads in all: several files at once, or
+    /// one file over several threads. By default it hashes as many files
+    /// as there are CPUs at once, and a large one over every CPU besides,
+    /// more threads than CPUs, which keeps every core busy to the end. 1 runs b3sum on one thread, reading
+    /// and hashing each file in turn (for one b3sum per core, or to leave
+    /// other cores to other work). With more, a large file read from
+    /// storage, or stdin, has one more thread reading ahead, which hashes
+    /// nothing. To run b3sum on chosen CPUs, start it under
+    /// `taskset -c LIST` (Linux).
     #[arg(long, value_name("NUM"))]
     num_threads: Option<std::num::NonZeroUsize>,
 
@@ -317,13 +321,26 @@ fn threads() -> std::num::NonZeroUsize {
     *THREADS.get().expect("main sets the threads first")
 }
 
+/// The threads hashing files at once, with --num-threads (hash_inputs sets
+/// it); 1 otherwise, so the pool has threads().
+static FILE_THREADS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1);
+
+/// The pool's threads: what the file threads leave of threads(). A file
+/// thread that hashes over the pool is one of its threads, and the pool's
+/// workers, threads() - file threads of them, serve every file thread at
+/// once, so at most threads() threads hash in all.
+fn pool_threads() -> std::num::NonZeroUsize {
+    let file_threads = FILE_THREADS.load(std::sync::atomic::Ordering::Relaxed);
+    std::num::NonZeroUsize::new(threads().get() - file_threads + 1).expect("at most threads() file threads")
+}
+
 /// Hash `input` into `hasher`: over the pool from `pool_from` (at least
 /// POOL_LEN), starting it at the first such input
 /// (`initialize_multithreaded`), so a run of small files starts no
 /// threads; on this thread below, or always with one thread.
 fn update(hasher: &mut blake3::Hasher, input: &[u8], pool_from: usize) {
-    if input.len() >= pool_from && threads().get() > 1 {
-        blake3::initialize_multithreaded(Some(threads()));
+    if input.len() >= pool_from && pool_threads().get() > 1 {
+        blake3::initialize_multithreaded(Some(pool_threads()));
         hasher.update_multithreaded(input);
     } else {
         hasher.update(input);
@@ -637,6 +654,15 @@ fn parse_check_line(mut line: &str) -> anyhow::Result<ParsedCheckLine> {
 fn hash_inputs(args: &Args) -> u64 {
     let paths = &args.file_args;
     let threads = threads().get().min(paths.len());
+    // With --num-threads, the bound: the pool takes what the file threads
+    // leave. By default the pool keeps one thread a CPU beside the file
+    // threads, which keeps every core busy to the run's end: the bound
+    // cost the mixed tree 36% in the page cache and 16 x 64 MiB 17%, a
+    // large file late in the run, or on an E core, hashing alone (bench-
+    // hashes b3sum, i7-12700K, October 18).
+    if args.num_threads().is_some() {
+        FILE_THREADS.store(threads, std::sync::atomic::Ordering::Relaxed);
+    }
     let next = std::sync::atomic::AtomicUsize::new(0);
     let (done_tx, done_rx) = std::sync::mpsc::channel();
     std::thread::scope(|scope| {
