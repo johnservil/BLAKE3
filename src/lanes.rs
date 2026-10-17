@@ -739,8 +739,14 @@ impl Pool {
             if sources::run_one() {
                 continue;
             }
-            if sources::open() && spin_for_work() {
-                continue;
+            if sources::open() && SPINNING.fetch_add(1, Ordering::Relaxed) < SPIN_CAP {
+                let found = spin_for_work();
+                SPINNING.fetch_sub(1, Ordering::Relaxed);
+                if found {
+                    continue;
+                }
+            } else if sources::open() {
+                SPINNING.fetch_sub(1, Ordering::Relaxed);
             }
             // Park: the bit first, then one more look (a publisher stores,
             // then reads `parked`; this sets the bit, then looks: one of the
@@ -772,6 +778,12 @@ impl Pool {
 /// a wake at every gap); 20 us cost 22% more CPU time a run for no speed;
 /// a cap on how many workers spin did not help.
 const SPIN: std::time::Duration = std::time::Duration::from_micros(5);
+
+/// The most workers spinning at once (the rest park at once).
+const SPIN_CAP: usize = 1;
+
+/// Workers spinning now (and those about to see SPIN_CAP).
+static SPINNING: AtomicUsize = AtomicUsize::new(0);
 
 /// Look for work for up to SPIN: whether some appeared.
 fn spin_for_work() -> bool {
