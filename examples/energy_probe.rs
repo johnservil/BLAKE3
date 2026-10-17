@@ -57,6 +57,15 @@ fn main() {
     std::hint::black_box(blake3_servil::hash(&input[..1 << 20]));
     report("sleep", phase(0, || std::thread::sleep(std::time::Duration::from_millis(100))));
     report("integer work, one core", phase(0, || clocks::busy_work(100_000_000)));
+    for threads in [4, 8, 16] {
+        report(&format!("integer work, {threads} threads"), phase(0, || {
+            std::thread::scope(|scope| {
+                for _ in 0..threads {
+                    scope.spawn(|| clocks::busy_work(100_000_000));
+                }
+            });
+        }));
+    }
     report("hash 256 MiB, one thread", phase(LEN, || {
         std::hint::black_box(blake3_servil::hash(std::hint::black_box(&input)));
     }));
