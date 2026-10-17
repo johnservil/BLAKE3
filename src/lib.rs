@@ -2326,8 +2326,9 @@ impl HasherCore {
 
 
     /// [`update`](Hasher::update) with every whole subtree's result taken
-    /// from `results`, in the order [`plan_subtrees`] gave them (in the same
-    /// parts), as [`lanes::Task`] computes them.
+    /// from `results`, one a whole subtree in order (in parts of
+    /// [`lanes::TASK_LEN`], as [`hasher::subtree_len`] cuts them), as
+    /// [`lanes::Task`] computes them.
     #[cfg(feature = "std")]
     pub(crate) fn update_with_results<'a>(&mut self, input: &[u8], results: &mut impl Iterator<Item = &'a [u8; BLOCK_LEN]>) {
         for part in input.chunks(lanes::TASK_LEN) {

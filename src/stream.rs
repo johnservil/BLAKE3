@@ -141,9 +141,7 @@ pub fn stream<'env, D: FnMut(&'env mut [Hash]), T>(mode: Mode, done: D, body: im
     crate::lanes::require();
     let (key, flags) = mode.key_and_flags();
     let s = Storage::take();
-    // Sound: the storage is never freed, so its source lives for 'static.
-    let source: &'static crate::lanes::sources::Source = unsafe { &*(&s.source as *const crate::lanes::sources::Source) };
-    let slot = source.register();
+    let slot = s.source.register();
     crate::lanes::sources::opened();
     let mut stream = Stream {
         key,
@@ -183,8 +181,9 @@ struct Storage {
     /// prefetcher pairs lines), so that the program polling one shares no
     /// line with the threads writing digests. Zero between streams.
     lefts: Box<[OwnLine<AtomicUsize>]>,
-    /// The workers' view of this storage's tasks.
-    source: crate::lanes::sources::Source,
+    /// The workers' view of this storage's tasks: shared with them, so
+    /// apart from the stream's own (`&mut`) storage, and never freed.
+    source: &'static crate::lanes::sources::Source,
 }
 
 /// Streams' storage not in use: recycled, never freed (a worker may read a
@@ -208,7 +207,7 @@ impl Storage {
 
     fn new() -> Storage {
         Storage {
-            source: crate::lanes::sources::Source::new(ENTRIES),
+            source: Box::leak(Box::new(crate::lanes::sources::Source::new(ENTRIES))),
             entries: std::vec![Entry { len: 0, kind: Kind::Abandoned, first: 0, ring_end: 0 }; ENTRIES].into_boxed_slice(),
             // Zeroed, untouched pages: only the bytes used are faulted in.
             ring: Box::into_raw(std::vec![0u8; RING_BYTES].into_boxed_slice()) as *mut u8,
@@ -472,10 +471,10 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
         // as the task is handed over).
         if open.members == 0 {
             self.open_first = entry;
+            open.left = &*self.s.lefts[entry];
         }
-        let first = self.open_first;
-        self.s.entries[entry].first = first;
-        open.member[open.members] = Member { input, len, out, left: &*self.s.lefts[first] };
+        self.s.entries[entry].first = self.open_first;
+        open.member[open.members] = Member { input, len, out };
         open.members += 1;
         open.len += len;
         // Messages longer than a block hash one at a time: a task of them
@@ -533,7 +532,7 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
     /// Hash one of the stream's tasks no thread has taken: whether there
     /// was one.
     fn run_waiting(&mut self) -> bool {
-        match self.s.source.take() {
+        match self.s.source.take_task() {
             Some(task) => {
                 crate::lanes::run_task(task);
                 true
@@ -661,7 +660,7 @@ impl<D> Drop for Stream<'_, D> {
         }
         for i in self.delivered..self.next {
             while self.s.lefts[self.s.entries[i % ENTRIES].first].load(Ordering::Acquire) != 0 {
-                let ran = match self.s.source.take() {
+                let ran = match self.s.source.take_task() {
                     Some(task) => {
                         crate::lanes::run_task(task);
                         true
