@@ -82,7 +82,7 @@ use crate::platform::Platform;
 use crate::{CHUNK_LEN, Hash};
 #[cfg(test)]
 use crate::{Hasher, KEY_LEN};
-use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex, OnceLock};
 
 /// Inputs below this length are hashed on the calling thread. Every call
@@ -97,6 +97,21 @@ use std::sync::{Condvar, Mutex, OnceLock};
 /// 8192 64-byte messages 22.5 -> 13.3 ns/msg (jobs 538-541), the VM's
 /// 512 KiB 20-30% slower than on the caller's thread.
 pub(crate) const MIN_SPLIT_LEN: usize = 512 * 1024;
+
+/// The shortest batch [`hash_many`] splits over the pool when the last
+/// such batch call ended within BATCH_WINDOW (a program hashing one batch
+/// after another): from here to MIN_SPLIT_LEN, a batch splits only then,
+/// and stays on the calling thread after a pause. (A rule on the workers'
+/// state alone never split: they sleep as soon as they find no work.) A batch's messages split anywhere
+/// between them, with no tree to join, so awake workers pay from a
+/// smaller size than a message; waking sleeping ones does not. i7-12700K,
+/// 64-byte messages: one call after another, split from here against
+/// MIN_SPLIT_LEN (5 paired rounds), 1024 messages (64 KiB) x0.63, 1536
+/// x0.46, 2048 x0.38, 4096 x0.25, alone and two programs at once (512, 32
+/// KiB, read x1.14 slower alone); but split from here regardless of the
+/// workers, bench-hashes' calls after a gap read 2048 messages +49% (after
+/// other work) and 1024-2048 +23-33% (after idling).
+pub(crate) const MIN_SPLIT_BATCH: usize = 64 * 1024;
 
 /// The shortest piece: eight chunks, a hybrid kernel's worth.
 const MIN_PIECE_LEN: usize = 8 * CHUNK_LEN;
@@ -245,16 +260,40 @@ pub(crate) fn subtree_children(
     children
 }
 
-/// [`crate::hash_many`] over the machine's threads: below MIN_SPLIT_LEN
-/// of input, or with one message, on this thread.
+/// [`crate::hash_many`] over the machine's threads: below MIN_SPLIT_BATCH
+/// of input, below MIN_SPLIT_LEN with every worker asleep, or with one
+/// message, on this thread.
 #[inline]
 pub(crate) fn hash_many(input: &[u8], message_len: usize, key: &crate::CVWords, flags: u8, outputs: &mut [[u8; crate::OUT_LEN]]) {
     // The short path first and inline, so a small batch costs what
     // crate::hash_many costs; everything the pool needs is behind the call.
-    if outputs.len() < 2 || input.len() < MIN_SPLIT_LEN {
+    if outputs.len() < 2 || input.len() < MIN_SPLIT_BATCH {
         return crate::hash_many_serial(input, message_len, key, flags, outputs);
     }
-    hash_many_over_pool(input, message_len, key, flags, outputs)
+    hash_many_middle(input, message_len, key, flags, outputs)
+}
+
+/// How soon after the last batch call from MIN_SPLIT_BATCH the next splits
+/// below MIN_SPLIT_LEN: back-to-back calls come within it, calls after a
+/// pause (bench-hashes' gaps are 1 ms) do not.
+const BATCH_WINDOW: std::time::Duration = std::time::Duration::from_micros(200);
+
+/// When the last batch call from MIN_SPLIT_BATCH ended, in ns since the
+/// pool's start.
+static LAST_BATCH_NS: AtomicU64 = AtomicU64::new(0);
+
+/// A batch from MIN_SPLIT_BATCH: over the pool from MIN_SPLIT_LEN, or when
+/// the last such call ended within BATCH_WINDOW; else on this thread.
+#[inline(never)]
+fn hash_many_middle(input: &[u8], message_len: usize, key: &crate::CVWords, flags: u8, outputs: &mut [[u8; crate::OUT_LEN]]) {
+    let started = pool().started.elapsed().as_nanos() as u64;
+    let recent = started.saturating_sub(LAST_BATCH_NS.load(Ordering::Relaxed)) < BATCH_WINDOW.as_nanos() as u64;
+    if input.len() >= MIN_SPLIT_LEN || recent {
+        hash_many_over_pool(input, message_len, key, flags, outputs);
+    } else {
+        crate::hash_many_serial(input, message_len, key, flags, outputs);
+    }
+    LAST_BATCH_NS.store(pool().started.elapsed().as_nanos() as u64, Ordering::Relaxed);
 }
 
 #[inline(never)]
@@ -667,6 +706,8 @@ struct Pool {
     sme2: bool,
     /// Workers asleep on `posted`.
     sleepers: AtomicUsize,
+    /// When the pool was made: LAST_BATCH_NS's origin.
+    started: std::time::Instant,
     /// Of those, the ones a caller has asked to wake and that have yet to.
     notified: AtomicUsize,
     /// Of those, the ones still to be woken: woken workers wake them.
@@ -702,6 +743,7 @@ pub(crate) fn initialize() {
         cpus,
         sme2,
         sleepers: AtomicUsize::new(0),
+        started: std::time::Instant::now(),
         notified: AtomicUsize::new(0),
         owed: AtomicUsize::new(0),
         sleep_lock: Mutex::new(()),
@@ -1662,49 +1704,5 @@ mod test {
                 });
             }
         });
-    }
-}
-
-/// Proofs (Kani, `cargo kani`; QUALITY.md says how to install it):
-/// properties the pool's cuts rest on, for every input, where the tests
-/// check chosen points.
-#[cfg(kani)]
-mod proofs {
-    use super::*;
-
-    /// A piece is a power of two between the bounds, and at most a
-    /// thread's share of what remains unless that share is below the
-    /// shortest piece: for every remaining length and 1 to 256 threads.
-    #[kani::proof]
-    #[kani::solver(cadical)]
-    fn next_piece_len_bounds() {
-        let remaining: usize = kani::any();
-        let threads: usize = kani::any();
-        kani::assume(threads > 0 && threads <= 256);
-        let piece = next_piece_len(remaining, threads);
-        assert!(piece.is_power_of_two() && MIN_PIECE_LEN <= piece && piece <= MAX_PIECE_LEN);
-        assert!(piece <= (remaining / threads).max(MIN_PIECE_LEN));
-        assert!(piece * 2 > (remaining / threads).clamp(MIN_PIECE_LEN, MAX_PIECE_LEN));
-    }
-
-    /// One step of cut_with_prefix's pool loop keeps its invariant: the
-    /// offset is a multiple of `cap`, a power of two (the last piece's
-    /// length, or MAX_PIECE_LEN at the start). The next piece is a power
-    /// of two no longer than `cap`, so the offset is a multiple of it and
-    /// it is a whole subtree there, and it becomes the next `cap`. By
-    /// induction every piece of the loop is a whole subtree at its offset,
-    /// no longer than the one before, for every length.
-    #[kani::proof]
-    #[kani::solver(cadical)]
-    fn cut_step_keeps_whole_subtrees() {
-        let len: usize = kani::any();
-        let offset: usize = kani::any();
-        let cap: usize = kani::any();
-        let threads: usize = kani::any();
-        kani::assume(threads >= 2 && threads <= 256);
-        kani::assume(cap.is_power_of_two() && cap <= MAX_PREFIX_PIECE_LEN.max(MAX_PIECE_LEN));
-        kani::assume(offset & (cap - 1) == 0 && offset < len);
-        let piece = next_piece_len(len - offset, threads).min(cap);
-        assert!(piece.is_power_of_two() && piece <= cap && offset & (piece - 1) == 0);
     }
 }

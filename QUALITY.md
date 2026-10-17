@@ -7,32 +7,28 @@ the bugs those steps found and what formal verification we have tried.
 
 **In brief.** On Apple Silicon and other 64-bit Arm CPUs:
 
-- **The answers are proved right.** Every assembly kernel but one, and
-  the Rust code around them, is proved to compute the BLAKE3 standard's
-  compression function for every input. The one, the SME2 kernel that
-  adds an integer lane (`c/blake3_sme2_hybrid_aarch64.S`), runs inside
-  SME2 hashes of 256 KiB and more, and is tested. The library's own compiled `hash`, run as a
-  whole from entry to result, is proved to return the standard's hash for
-  every input at 153 lengths up to 64 KiB; `keyed_hash`, `derive_key`,
-  and a `Hasher` fed in two pieces, at 142 lengths up to 4 KiB. The code
-  that splits input into chunks and combines them into BLAKE3's tree is
-  proved for every length, given its kernels.
-- **The time a hash takes depends only on its length**, at those
-  lengths: the instructions run and the memory touched are the same for
-  every message ("Timing and secrets" says what that does and does not
-  cover).
+- **The assembly kernels are proved right.** Every assembly kernel but
+  one (NEON, integer, and SME2) is proved to compute the BLAKE3
+  standard's compression function for every input, key, counter, and
+  flags value, as the CPU runs it; each reads and writes only its own
+  buffers and takes a path that depends only on lengths. The one, the
+  SME2 kernel that adds an integer lane (`c/blake3_sme2_hybrid_aarch64.S`),
+  runs inside SME2 hashes of 256 KiB and more, and is tested.
+- **The Rust code around the kernels is tested**, and the tests are
+  checked themselves (below); proofs are kept for the assembly, which
+  testing reaches least.
 - **Every answer is also tested** against upstream's published vectors
   and an independent reference implementation, and each process checks
   its kernels against fixed answers before its first hash.
 - **The tests are checked themselves**: mutation testing plants likely
-  bugs throughout the library, one at a time, and each that every test
-  survives is listed with its reason.
+  bugs throughout the library's Rust, one at a time, and each that every
+  test survives is listed with its reason.
 - **Memory safety is tested** under AddressSanitizer, ThreadSanitizer,
   Miri, and guard pages around every kernel's buffers.
 
 On x86-64 the fork's own code is tested, its kernels among them (Devon
 Jonte's passes of whole chunks and a partial one, in Rust intrinsics, beside
-upstream's assembly), and the proofs leave it aside. The code awaits a line-by-line human
+upstream's assembly), and the proofs cover AArch64. The code awaits a line-by-line human
 review and an audit; the [README's warning](README.md) stands. "Proofs" states
 each claim precisely, with what it rests on; "What each check would
 catch" says which kinds of bug each step finds.
@@ -107,27 +103,25 @@ tests; the tests check the calls into them, and every other platform.)
   such), or code that does nothing (removed).
 
 **What mutation testing finds**, over the whole library on the VM
-(October 16; the four proved cores, which the proofs cover, are left
-out): of 2488 mutants, 1560 fail a test or hang, and 147 do not compile.
-Each of the other 781 is listed with its reason in
-`tools/mutants/known-aarch64.txt`: code for another machine (x86,
-wasm32, a CPU without SME2 or the SHA-3 extension, one CPU), a choice
-between equally correct paths (what to prefetch, a speed threshold, how
-work is cut among threads), an equivalent change (`|` made `^` on flag
-bits that never overlap), or a Kani harness's own code. Two groups stay
-open: the thread pool's scheduling under interleavings that the tests
-leave to chance (Loom would force them), and the queue and the pool's
-job scheduler, which the stream now in design replaces. The run found
-missing cases (in `Hash`, the `Hasher`, `OutputReader`, `update_each`,
-the self-test) and dead code, each fixed. By function, of the library's
-384 functions with mutants, 223 have every mutant caught, 123 every
-survivor explained, and 38 an open survivor (in the two groups above);
-the four proved cores and the assembly kernels are the proofs'.
+(October 17): of 2614 mutants, 1772 fail a test or hang, and 169 do not
+compile. Each of the other 673 is listed with its reason in
+`tools/mutants/known-aarch64.txt`: code for another machine (x86, a CPU
+without SME2 or the SHA-3 extension, one CPU), a choice between equally
+correct paths (what to prefetch, a speed threshold, how work is cut
+among threads), or an equivalent change (`|` made `^` on flag bits that
+never overlap). Two groups stay open: the thread pool's scheduling under
+interleavings that the tests leave to chance (Loom would force them),
+and the queue and the pool's job scheduler, which the stream replaces.
+Earlier runs found missing cases (in `Hash`, the `Hasher`,
+`OutputReader`, `update_each`, the self-test) and dead code, each fixed.
+By function, of the library's 398 functions with mutants, 253 have every
+mutant caught, 109 every survivor explained, and 36 an open survivor (in
+the two groups above); the assembly kernels are the proofs'.
 `tools/mutants/check.py` reruns every mutant, reruns alone any whose
 outcome differs from the list (so a test that fails by chance, under
 load, decides nothing), and fails on a survivor not listed, a listed one
-now caught, or a listed one without a reason; the long proofs run it
-before each promotion.
+now caught, or a listed one without a reason; it runs before each
+promotion that changes the library's Rust (44 minutes on the VM).
 
 **What the suites cover now**, on the VM: 88% of the library's branch
 sides (906 of 1026), over the default, one-CPU, and no-std runs. Most of
@@ -214,151 +208,66 @@ unrolled kernel code.
 
 ### What is proved
 
-On AArch64 (Apple Silicon, and other 64-bit Arm CPUs), the parts of the
-library that compute BLAKE3 are proved to compute what
-[C2SP's BLAKE3 standard](https://c2sp.org/BLAKE3) specifies:
+On AArch64 (Apple Silicon, and other 64-bit Arm CPUs), every assembly
+kernel but the SME2 hybrid kernel (the NEON and integer kernels in
+`c/blake3_neon_hybrid_aarch64.S`, the SME2 kernels in
+`c/blake3_sme2_aarch64.S`) is proved to compute what
+[C2SP's BLAKE3 standard](https://c2sp.org/BLAKE3) specifies, for every
+input, key, counter, and flags value: each output word equals the
+standard's. The SME2 kernels are proved at the 512-bit vector length of
+Apple's M4, and the chunk, parent, message, and extended-output kernels
+at every group count, by induction over their group loops. Each kernel
+also reads and writes only its own buffers, keeps the calling
+convention, and takes a path that depends only on lengths.
 
-- **The compression function**: every assembly kernel (NEON, integer,
-  and SME2) but the SME2 hybrid kernel, and the Rust compression code, as the CPU runs them, for every input, key, counter, and flags
-  value (the SME2 kernels at the 512-bit vector length of Apple's M4).
-  Each kernel also reads and writes only its own buffers, keeps
-  the calling convention, and takes a path that depends only on lengths.
-- **The hash, around its kernels**: the library's one-shot hash, which
-  splits an input into chunks, combines their chaining values as a tree,
-  and finishes the root, returns the standard's 32-byte hash of the input,
-  given kernels that meet their contracts (each kernel's contract states
-  what it must return in the standard's own terms).
-- **The Hasher, around its kernels**: after any sequence of updates, a
-  `Hasher`'s result is the standard's hash of all their bytes, given
-  compression kernels and hooks (the pool's and SME2's routes) that meet
-  their contracts. Its stack, its loop, its final fold, its chunk state,
-  and its nodes are proved code.
-- **The pool's cuts and the batch tables**: every piece the pool hashes
-  is a whole BLAKE3 subtree at its offset, and a batch's pointer table
-  points each lane at its own message.
-- **Whole calls, as compiled**: on NEON and on SME2, a thread's first
-  call and its second each return the standard's 32-byte result for every
-  input of the length, and run one path ("Timing and secrets", below):
-  `hash` at 153 lengths from 0 bytes to 64 KiB (every length to 129 bytes,
-  the chunk boundaries, and the powers of two with their neighbours);
-  `keyed_hash` (for every key), `derive_key`, and a `Hasher` fed its input
-  in two updates, at the 142 of those lengths up to 4 KiB. This runs the
-  library's own machine code end to end, the dispatch, the walk, the
-  kernels, and the code between them, as users get it from Rust 1.98.1
-  (another compiler's machine code is another program, proved when the
-  pin in `tools/verify/rust/rust-toolchain.toml` moves to it).
-
-Each part but whole calls is proved for every input; whole calls, for
-every input of each length proved. Three things remain before "the
-library's `hash` returns BLAKE3's hash of its input" is one theorem for
-every length:
-
-- the code that connects the parts: the one-shot hash's kernels and the
-  `Hasher`'s pool and SME2 routes meeting the contracts the proofs assume
-  (the compression wrappers meet theirs, proved as machine code), the
-  `Hasher`'s staging of short updates and its three-line `update_pooled`,
-  platform detection, the multithreaded paths, and the batch APIs;
-- the SME2 hybrid kernel (`c/blake3_sme2_hybrid_aarch64.S`, generated by
-  `tools/gen_sme2_hybrid.py`), which the SME2 walk runs on subtrees of
-  256 KiB and more: tested against the portable code and checked by the
-  startup self-test, unproved;
-- x86-64 and wasm32, whose code (the fork's own x86-64 kernels among it)
-  the tests cover;
-- one statement in Lean: the compression proofs reach their verdicts in
-  Z3, outside Lean.
+The Rust code (the dispatch, the tree walk, the `Hasher`, the pool, the
+batch APIs) and the SME2 hybrid kernel are tested, and unproved; so are
+x86-64 and wasm32.
 
 ### How to read what is proved
 
 **BLAKE3, as the proofs mean it.** `c2sp/BLAKE3/Blake3.lean` defines
 BLAKE3 in Lean, as C2SP's standard states it. It follows `BLAKE3.md`
-section by section, each definition under the standard's own text, and
-ends with the three modes, `hash`, `keyed_hash`, and `derive_key`. It
-mentions no implementation: the C code, the official Rust crate, and
-this fork are absent from it, so the proofs below compare the library
-with the standard itself. Its compression function (sections 2.2 to 3.3)
-is generated from the standard's pseudocode, one rule per construct;
-`check.py` confirms the generated text and reproduces every value in
-the standard's appendix and the official test vectors.
-
-**Each part's statement**, and what checks it:
+section by section, each definition under the standard's own text. It
+mentions no implementation, so the proofs compare the kernels with the
+standard itself. Its compression function (sections 2.2 to 3.3) is
+generated from the standard's pseudocode, one rule per construct;
+`check.py` confirms the generated text and reproduces every value in the
+standard's appendix and the official test vectors.
 
 | Part | Statement | Checked by |
 |---|---|---|
-| The compression proofs' definition is the standard's | `tools/verify/lean/Sound.lean`: `symbolic_is_the_specifications` | Lean |
-| Each kernel and the Rust compression compute that definition | `tools/verify/prove_hybrid.py`, `prove_sme2.py`, `prove_rust.py`: every output word equal to the definition's, which `lean_spec.py` reads from Lean's `compress.json` | Z3 |
-| The hash, around its kernels | `tools/verify/tree/lean/HashProofs.lean`: `hash_spec`, on `WideProofs.lean` (`wide_is_tree`, the walk) and `ChildrenProofs.lean` (`children_spec`, the root's children) | Lean |
-| A chunk's state, around its compression kernels | `tools/verify/tree/lean/ChunkProofs.lean`: `absorb_spec`, `node_eq` | Lean |
-| The Hasher, around its kernels | `tools/verify/tree/lean/OutputProofs.lean`: `hasher_hash`, on `HasherCoreProofs.lean`: `hasher_spec`, on `StackProofs.lean` (`merge_spec`, `push_spec`, the stack's code) and `HasherProofs.lean` (`merge_push`, `final_output_whole`, `final_output_partial`, the algorithm) | Lean |
-| The pool's cuts and the batch tables | the `#[kani::proof]` harnesses in `src/lanes.rs` and `src/many.rs` | Kani |
-| The compressions BLAKE3 performs on an input of each length, in order, give the standard's output | `tools/verify/lean/ScheduleProofs.lean`: `run_eq`, for the schedules in `schedules.json` | Lean |
-| Whole calls (`hash`, `keyed_hash`, `derive_key`, the Hasher): results and timing | `tools/verify/prove_timing.py`: each call's result equal to its length's schedule performed with the definition's compression (`whole.py`) | Z3 |
+| The proofs' definition of the compression is the standard's | `tools/verify/lean/Sound.lean`: `symbolic_is_the_specifications` | Lean |
+| Each kernel computes that definition | `tools/verify/prove_hybrid.py`, `prove_sme2.py`: every output word equal to the definition's, which `lean_spec.py` reads from Lean's `compress.json` | Z3 |
 
-<details>
-<summary>Reading one statement: the tree walk</summary>
+**What the proofs take on trust.** Lean rests on its kernel and three
+standard axioms (`propext`, `Classical.choice`, `Quot.sound`). The kernel
+proofs prove the assembled machine code, and rest on Z3, on our model of
+each AArch64 instruction they meet, on the assembler and disassembler,
+and on `lean_spec.py`'s reading of Lean's `compress.json`. Each
+instruction's model is checked against the CPU on random states and, for
+322 of the 325 NEON and integer forms and 19 of the 23 streaming forms,
+proved equal to Arm's own specification of the architecture (Sail's
+Armv9.4, run by Isla); the rest, and the matrix unit's loads and stores,
+are checked against the CPU.
 
-`wide_is_tree` takes, as hypotheses, kernels that meet their contracts:
-`hchunks` says the chunk kernel returns the standard's chaining value of
-each chunk, `hparents` that the parent kernel returns the standard's
-parent of each pair, and `hsubtree` the same for SME2's whole-subtree
-kernel. Under them, it concludes that the standard's tree over the
-values the library's walk (`wide`) returns is the standard's tree over
-the input's chunks. `wide` is the library's own `src/tree_core.rs`,
-translated to Lean by Aeneas; `Blake3.tree` and `Blake3.chunkNode` are
-the definition above. The compression proofs show the kernels meet
-these contracts, in Z3; stating that in Lean, so the two proofs join,
-is among what remains.
-
-</details>
-
-**What the proofs take on trust.** Every proof rests on its checker. Lean
-rests on its kernel and three standard axioms (`propext`,
-`Classical.choice`, `Quot.sound`). The tree and stack proofs rest on
-Aeneas and Charon, which translate the Rust to Lean, and on the Rust
-compiler, since they prove the source. The compression proofs prove the
-compiled machine code, and rest on Z3, on our model of each AArch64
-instruction they meet, on the assembler and disassembler, on
-`lean_spec.py`'s reading of Lean's `compress.json`, and, for whole calls,
-on the C library functions they call (copies, allocation, thread keys)
-doing what POSIX says; the whole-call results also rest on `whole.py`,
-whose 15-line loop performs the compressions Lean's proved schedule lists,
-and on `Emit.lean`'s printing of that schedule. Inside the Rust and whole-call proofs each
-assembly kernel runs by the statement its own proof establishes, only
-where the library's bytes of that kernel equal the bytes its proof ran. Each instruction's
-model is checked against the CPU on random states and, for 322 of the
-325 NEON and integer forms and 19 of the 23 streaming forms, proved
-equal to Arm's own specification of the architecture (Sail's Armv9.4,
-run by Isla); the rest, and the matrix unit's loads and stores, are
-checked against the CPU.
-
-**How the checkers are checked.** Each tool a proof rests on is checked
-by another that does not share its mistakes:
+**How the checkers are checked.**
 
 - **The definition against the standard.** `check.py` regenerates the
   compression function from the standard's pseudocode and reproduces
   every value in its appendix and the official test vectors; Lean proves
   the definition the Z3 proofs read equal to it (`Sound.lean`).
 - **The instruction models against the CPU and against Arm.**
-  `cross_check.py` runs every register form the proofs meet on the CPU
-  from 200 random states and compares each result with the model;
-  `isla_check.py` proves the forms equal to Arm's own specification, and
-  shows that planted errors in a model are caught.
+  `cross_check.py` and `cross_check_sme.py` run every register form the
+  kernels use on the CPU from random states and compare each result with
+  the model; `isla_check.py` proves the forms equal to Arm's own
+  specification, and shows that planted errors in a model are caught.
+  Reviewing the models found one wrong flag (an addition's carry when one
+  operand is 0), now modelled as Arm defines it.
 - **The proofs against wrong code.** `mutants.py` plants errors in the
-  kernels (a rotation off by one, a wrong operation, a loop's wrong step)
-  and in whole calls (a rotation, the root flag, a bit of the IV), and each
-  is rejected; `whole.py` reproduces the official test vectors at every length it holds; the timing proof's detector stops at a planted
-  branch on a message byte and a planted table index taken from one
-  (`test_helpers.py`); a planted `sorry` fails the Lean checks.
-- **The proofs against the shipped build.** The machine-code proofs run
-  the library compiled as users build it. They once ran a build without
-  the standard library, which takes other paths; running the default
-  build is what brought the timer, thread-local, and allocation paths
-  under the timing proof. Reviewing the models found one wrong flag (an
-  addition's carry when one operand is 0), now modelled as Arm defines it.
-  Running the official test vectors through the executor, on the library's
-  `hash` with concrete inputs, checks the models of loads, branches, and
-  calls that the CPU comparison leaves out: every digest matches.
-- **Tests beside proofs.** The same code runs the test suites on the Mac
-  and in the VM, under the sanitizers, Miri, and Kani.
+  kernels (a rotation off by one, a wrong operation, a schedule entry
+  read from the next byte, a loop's wrong counter or pointer step), and
+  each is rejected; a planted `sorry` fails the Lean checks.
 
 ### How to run the proofs and read their verdicts
 
@@ -367,21 +276,12 @@ directory's `lean-toolchain` names the version):
 
 ```sh
 python3 c2sp/BLAKE3/check.py        # the definition: C2SP's text, its appendix, the test vectors
-pypy3 tools/verify/lean/emit.py   # the proofs' compression and schedules are the standard's (needs python3-z3)
-sh tools/verify/tree/check.sh       # the tree walk and the Hasher's stack (needs Aeneas: tools/verify/tree/README.md)
+pypy3 tools/verify/lean/emit.py   # the proofs' compression is the standard's (needs python3-z3)
 ```
 
-Each prints, for every theorem, the axioms it depends on:
-
-```
-'WideBridge.wide_is_tree' depends on axioms: [propext, Classical.choice, Quot.sound]
-```
-
-These three are Lean's standard axioms. A proof with a step left
-unproved lists `sorryAx`, and one resting on an assumed fact lists that
-fact, so the lines show every assumption each theorem rests on. Each
-command fails on any axiom beyond the three, so exit status 0 means Lean
-has checked every proof it builds, completely.
+Each prints, for every theorem, the axioms it depends on, and fails on
+any beyond Lean's standard three, so exit status 0 means Lean has checked
+every proof it builds, completely.
 
 Z3 (an AArch64 Linux machine with PyPy and `python3-z3`, Clang and
 llvm-objdump 17 or later; details in [`tools/verify/README.md`](tools/verify/README.md)):
@@ -390,25 +290,15 @@ llvm-objdump 17 or later; details in [`tools/verify/README.md`](tools/verify/REA
 pypy3 tools/verify/prove_hybrid.py   # ends "327 of 327 cases proved"
 pypy3 tools/verify/prove_sme2.py     # ends "36 of 36 cases proved" (hours: the chunk kernel at every group count)
 pypy3 tools/verify/prove_sme2.py xof_every messages_every  # the other kernels at every group count (hours)
-pypy3 tools/verify/prove_rust.py     # ends "363 of 363 cases proved"
-pypy3 tools/verify/prove_timing.py   # ends "2316 of 2316 cases proved"
 pypy3 tools/verify/mutants.py        # wrong kernels, each rejected
 ```
 
-All of them run on the fork's VM before each promotion that changes the
-code or the proof tools (`tools/verify/long-proofs.sh`), reported on
-GitHub as the commit's status "long proofs".
-
-Each case is proved when Z3 finds no input on which the code and the
-definition differ. Each case prints its verdict; one that fails prints
-`NOT PROVED` with what it could not prove, and the run ends with exit
-status 1. `mutants.py` shows the proofs can fail: it plants errors (a
-rotation off by one, an add made an xor, a read past a buffer) and
-checks each is rejected.
-
-Kani (`cargo install --locked kani-verifier && cargo kani setup`; on
-Debian 12, `--version 0.64.0`): `cargo kani` ends with each harness's
-`VERIFICATION:- SUCCESSFUL`.
+All of them run on the fork's VM before each promotion that changes a
+kernel or the proof tools (`tools/verify/long-proofs.sh`), reported on
+GitHub as the commit's status "long proofs". Each case is proved when Z3
+finds no input on which the code and the definition differ; one that
+fails prints `NOT PROVED` with what it could not prove, and the run ends
+with exit status 1.
 
 ## Check it yourself
 
@@ -433,13 +323,7 @@ RUSTFLAGS="-Zsanitizer=thread" cargo +nightly test -Zbuild-std --target aarch64-
 MIRIFLAGS="-Zmiri-num-cpus=4 -Zmiri-ignore-leaks" cargo +nightly miri test --features pure --lib -- unsafe_paths miri
 ```
 
-(On macOS, use the target `aarch64-apple-darwin`.) The proofs need Kani
-(`cargo install --locked kani-verifier && cargo kani setup`; on Debian 12,
-whose glibc is older than recent Kani bundles need, `--version 0.64.0`):
-
-```sh
-cargo kani
-```
+(On macOS, use the target `aarch64-apple-darwin`.)
 
 Timing claims are checked the same way: [bench-hashes](https://github.com/johnservil/bench-hashes)
 measures the fork against the official crate and others on your machine.
@@ -533,8 +417,6 @@ names the commit that introduced the code and the one that fixed it, in
 | Check | Catches | Evidence | Cannot see |
 |---|---|---|---|
 | Machine-code proofs of the kernels | any wrong result for any input; a read or write outside the kernel's buffers; a broken calling convention; a path that depends on data | planted errors (a rotation off by one, an add made an xor, a read past a buffer, a loop's wrong step) are each rejected (`mutants.py`) | a fault in the instruction models (the CPU and Arm checks below cover it), or in the CPU itself (the self-test covers it) |
-| Whole-call proofs | a wrong result anywhere between the API and the kernels, as compiled: dispatch, the tree walk, padding, flags, the root | planted errors in a whole call (a rotation, the root flag, a bit of the IV) are each rejected | lengths not among those proved |
-| Lean proofs of the tree and the Hasher | an error in how chunks combine, at any length or update sequence, in the source code | `check.sh` fails on any unproved step (a planted `sorry`) and on any axiom beyond Lean's three | the compiler (the whole-call proofs cover it) |
 | Instruction models against the CPU and Arm's specification | a wrong model of an instruction the proofs rely on | the CPU check found the carry-flag error; Isla rejects planted model errors | loads, branches, and calls by contract, which the executor's run of the official vectors checks |
 | Test vectors and the reference implementation | any wrong digest at the lengths and shapes tested, on any platform | found bugs 1 and 2 below | untested lengths and shapes |
 | Startup self-test | a miscompiled, mislinked, or faulty-hardware kernel on the user's machine | its inputs run every kernel entry point (a unit test checks it each run), and each case's output feeds the next, so one wrong result changes every later one | faults that appear only after startup |
@@ -542,19 +424,15 @@ names the commit that introduced the code and the one that fixed it, in
 
 ## Formal verification: what we tried and considered
 
-- **Kani** (bounded model checking): tried, with the results above. The
-  first attempt, a single proof of the whole cutting loop over inputs up
-  to 2 MiB, ran out of memory even at 96 KiB and with every solver we
-  tried. Proving one loop step and arguing by induction proved more, in
-  under two seconds. One proof with an unbounded symbolic thread count
-  ran for hours without an answer, and bounding the count settled it. A
-  proof over all 144 lanes of the batch pointer table did not finish
-  within 7 minutes, when we stopped it; 20 lanes take 45 seconds. Kani cannot look inside
-  the assembly kernels or C code.
+- **Kani** (bounded model checking) and **Aeneas** (safe Rust
+  translated to Lean): used for the pool's cuts and batch tables (Kani)
+  and the tree walk and the Hasher (Aeneas, with machine-code proofs of
+  whole calls beside them), then set aside on October 16, 2026: they
+  took most of the proofs' hours and tools, and mutation testing,
+  coverage, and Miri test that Rust well. The proofs keep to the
+  assembly, where tests reach least.
 - **Miri**: used (above). It checks the executions it runs, which falls
   short of a proof, and it cannot run assembly or intrinsics.
-- **Aeneas** (safe Rust translated to Lean): used for the tree walk
-  and the Hasher's stack (above).
 - **Verus, Prusti, Creusot**: considered, not tried. They could
   prove the pool and the batch paths for every thread interleaving; the
   cost is annotating or restructuring the code (atomics, raw pointers,
@@ -585,20 +463,11 @@ chooses the other bytes, wherever the secret's bits sit among them, and
 however often the hash is timed.
 
 1. **The instructions run, and the memory addresses they touch, depend
-   only on the length.** Proved for every AArch64 assembly kernel and
-   for the Rust compression code, as compiled: each proof stops at any
-   branch, memory address, or table index that depends on the key or
-   the message. For whole calls on AArch64, as compiled with the default
-   features, the same holds on NEON and on SME2: a thread's first call
-   and its second each run one path, whatever the message (and key), both
-   back to back and after a pause (the one thing besides the length that
-   steers a call: whether to prefetch its code first). `hash` is proved
-   at every length from 0 to 129 bytes and at the chunk boundaries and
-   powers of two (and their neighbours) to 64 KiB; `keyed_hash`,
-   `derive_key`, and a `Hasher` fed in two updates, at those lengths to
-   4 KiB. Other lengths, and other ways of feeding a Hasher, are still
-   to come. These proofs cover AArch64; on x86-64 the tests cover the
-   fork's code.
+   only on the length.** Proved for every AArch64 assembly kernel but the
+   SME2 hybrid kernel, as assembled: each proof stops at any branch,
+   memory address, or table index that depends on the key or the message.
+   The Rust code around the kernels is written to branch on lengths
+   alone; no proof checks it.
 2. **Each instruction takes the same time whatever values it computes
    on.** That is a promise of the CPU. Arm CPUs make it, for a listed set
    of instructions, while data-independent timing (DIT) is enabled. The
@@ -616,4 +485,4 @@ however often the hash is timed.
 No person has reviewed the code line by line, and nobody has audited it.
 The test suites have run on an Apple M4 Max, under macOS and in a
 Debian 12 AArch64 VM on it (whose SME2 unit the VM exposes), and on
-CI's hosted machines; the sanitizers on both, Miri and Kani in the VM.
+CI's hosted machines; the sanitizers on both, Miri in the VM.

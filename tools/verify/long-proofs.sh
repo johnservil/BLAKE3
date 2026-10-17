@@ -3,14 +3,10 @@
 # the commit's status "long proofs" (beside CI's checks): the Lean
 # specification against C2SP's text and the proofs' definition from it;
 # the generated hybrid file against its generator; the helpers; every
-# hybrid kernel; every SME2 kernel at every group count (the chunk and
-# parent kernels' inductions are what the SME2 contracts in the Rust and
-# whole-call proofs rest on); the Rust paths and whole calls, with the
-# instruction models they run checked against the CPU; the proofs' mutants;
-# and the tests' (tools/mutants/check.py).
-# About nine hours, in a worktree of the commit; nothing should measure
-# meanwhile. The logs stay in tmp/long-proofs/COMMIT/, and the status
-# names their BLAKE3 hash.
+# hybrid kernel; every SME2 kernel at every group count; the instruction
+# models checked against the CPU; and the proofs' mutants. Hours, in a
+# worktree of the commit; nothing should measure meanwhile. The logs stay in tmp/long-proofs/COMMIT/, and
+# the status names their BLAKE3 hash.
 #
 #     sh tools/verify/long-proofs.sh [COMMIT]     (default HEAD)
 set -eu
@@ -38,19 +34,13 @@ run() {  # name, command...: its log in $logs/name.txt; a failure ends the run
 	"$@" > "$logs/$name.txt" 2>&1 || { verdict="FAILED ($name)" state=failure; }
 }
 run lean_spec python3 c2sp/BLAKE3/check.py
-run lean_emit sh -c 'pypy3 tools/verify/lean/emit.py && git diff --exit-code tools/verify/lean/compress.json tools/verify/lean/schedules.json tools/verify/lean/Generic.lean'
+run lean_emit sh -c 'pypy3 tools/verify/lean/emit.py && git diff --exit-code tools/verify/lean/compress.json tools/verify/lean/Generic.lean'
 run generated sh -c 'pypy3 tools/gen_neon_hybrid.py | cmp - c/blake3_neon_hybrid_aarch64.S'
 run helpers pypy3 -m unittest discover -s tools/verify -p test_helpers.py
 run prove_hybrid pypy3 tools/verify/prove_hybrid.py
 run prove_sme2 pypy3 tools/verify/prove_sme2.py chunks chunks_at messages parents xof every parents_every xof_every messages_every
 run cross_check pypy3 tools/verify/cross_check.py
 run mutants pypy3 tools/verify/mutants.py
-# The library's tests against plausible bugs, every survivor known
-# (tools/mutants/check.py; cargo-mutants under /root/tools when absent).
-export PATH=/root/tools/bin:$PATH
-command -v cargo-mutants >/dev/null || CARGO_INSTALL_ROOT=/root/tools cargo install -q cargo-mutants --locked
-run test_mutants pypy3 tools/mutants/check.py
-hash=$(pypy3 -c 'import sys; sys.path.insert(0, "tools/verify"); import results
-print(results.blake3(data="\n".join(results.blake3(sorted(sys.argv[1:]))).encode())[0][:16])' "$logs"/*.txt)
+hash=$(cat "$logs"/*.txt | cargo run -q --release --manifest-path b3sum/Cargo.toml -- --no-names | cut -c1-16)
 status "$state" "$verdict: Lean, hybrid, SME2, cross_check, mutants; logs' BLAKE3 $hash (VM)"
 echo "long proofs $verdict for $commit; logs in $logs, BLAKE3 $hash"

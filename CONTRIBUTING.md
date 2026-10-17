@@ -21,8 +21,8 @@ The README lists what the fork adds for callers; the code is laid out so:
   `Hasher`), `platform.rs` (detection and dispatch), `many.rs` (batches),
   `each.rs` (collections, `update_each`), `lanes.rs` (the thread pool),
   `queue.rs`, `outboard.rs` (outboards and the `Verifier`),
-  `self_test.rs` (the startup self-test), and the proved cores
-  (`tree_core.rs`, `hasher_core.rs`, `stack_core.rs`, `chunk_core.rs`).
+  `self_test.rs` (the startup self-test), `hasher.rs` (the Hasher's
+  stack, loop, and chunk state), and `tree.rs` (the tree walk).
 - `capi/`: the C API, `b3.h`, a thin layer over the crate
   (`capi/src/lib.rs`), tested from Rust against the official test vectors
   and from C (`capi/tests/`).
@@ -106,8 +106,9 @@ benchmark against your working tree, see bench-hashes' `CONTRIBUTING.md`.
 
 `servil` is the main line. Work happens on `candidate/<topic>`
 branches; a candidate joins `servil` as a fast-forward once every check
-above passes, the proofs pass for a change to code or proof tools
-(QUALITY.md says how to run them), and the regression check finds no
+above passes, mutation testing passes for a change to the Rust
+(`tools/mutants/check.py`), the proofs pass for a change to an AArch64
+kernel or the proof tools (QUALITY.md says how to run them), and the regression check finds no
 slowdown on AArch64 Linux in a VM and natively on an Apple M4 Max. Pull requests are welcome
 against `servil`; say in yours which machines you measured on.
 

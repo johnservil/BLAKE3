@@ -296,3 +296,89 @@ def forced(m, term):
         return None
     v = s.model().eval(term, model_completion=True)
     return v.as_long() if aarch64.holds(m, term == v) else None
+
+
+def mismatches(m, g, kval):
+    """The positions where the machine differs from the generalized state at
+    iteration `kval` (none: it is that state)."""
+    from prove_hybrid import same
+    inst = g.at(kval)
+    def agree(a, b):
+        if b is None:
+            return True
+        if isinstance(a, tuple) or isinstance(b, tuple):
+            # A byte of a stored pointer.
+            return (isinstance(a, tuple) and isinstance(b, tuple) and a[1] == b[1]
+                    and agree(a[0], b[0]))
+        if isinstance(b, Ptr) or isinstance(a, Ptr):
+            return (isinstance(a, Ptr) and isinstance(b, Ptr) and a.region == b.region
+                    and aarch64.holds(m, aarch64.as_bv(a.offset) == aarch64.as_bv(b.offset)))
+        if same(a, b):
+            return True
+        return aarch64.lengths_only(m, a - b) and aarch64.holds(m, a == b)
+    bad = []
+    for r, gv in g.x.items():
+        if not agree(m.x[r], inst(gv)):
+            bad.append(("x", r))
+    for r, lanes in g.v.items():
+        for l, gv in enumerate(lanes):
+            if not agree(m.v[r][l], inst(gv)):
+                bad.append(("v", r, l))
+    if g.za is not None:
+        for t, tile in enumerate(g.za):
+            for row, cells in enumerate(tile):
+                for col, gv in enumerate(cells):
+                    if not agree(m.za[t][row][col], inst(gv)):
+                        bad.append(("za", t, row, col))
+    if g.p is not None:
+        for k, v in g.p.items():
+            if v is not None and m.p.get(k) != v:
+                bad.append(("p", k))
+    for name, mem in g.mem.items():
+        if name == "out":
+            continue
+        region = m.regions[name]
+        for off, b in mem.items():
+            if b is None or (isinstance(b, tuple) and b[0] == "word"):
+                continue
+            if off not in region.bytes or not agree(region.bytes[off], b):
+                bad.append(("mem", name, off))
+        for off in {o - b[2] for o, b in mem.items() if isinstance(b, tuple) and b[0] == "word"}:
+            w = word(region, off)
+            if w is None or not agree(w, inst(mem[off][1])):
+                bad.append(("word", name, off))
+    return bad
+
+
+def loop_step(g, start, kval, assumptions, head, check):
+    """Every path of one iteration from `g` at `kval` (induction.py): `check`
+    each path's end (`check(end, how)`); a path back at the head must be in the
+    state for kval + 1. Positions where it differs become unknown in `g`, and
+    the step is proved again: the invariant needs only what the iterations
+    rely on (a weaker invariant still holds at the start). Returns the
+    counts of paths."""
+    passes = 0
+    while True:
+        passes += 1
+        mk = g.machine(start, kval)
+        mk.assumptions = assumptions
+        ends = paths(mk, head, {head})
+        forget = set()
+        for end, how in ends:
+            if how == "head":
+                canon.set_context(end.assumptions, end.lengths)
+                forget.update(mismatches(end, g, kval + 1))
+        canon.set_context([], set())
+        print(f"  induction pass {passes}: {len(ends)} paths, {len(forget)} positions left unknown {sorted(map(str, forget))[:8]}", flush=True)
+        if not forget:
+            break
+        for pos in forget:
+            g.forget(pos)
+    # The invariant settled: each path's own obligations.
+    kinds = {"head": 0, "return": 0}
+    for end, how in ends:
+        kinds[how] += 1
+        canon.set_context(end.assumptions, end.lengths)
+        check(end, how)
+    canon.set_context([], set())
+    return kinds

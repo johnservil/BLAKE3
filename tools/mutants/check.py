@@ -44,6 +44,10 @@ def read_known():
 
 
 SHARDS = 3  # runs at once, each in its own worktree and build
+# The seconds a mutant's tests may take: the unmutated tests take 1.5 s on
+# the VM and a caught mutant's at most 2.5 s (October 16), so a mutant
+# still running at 10 s hangs.
+TIMEOUT = 10
 # Each process's address space, builds' and tests' alike: a mutant that
 # allocates without end fails its test here, and leaves the machine's
 # memory to the rest (one of 57 GB took the long proofs' memory).
@@ -55,17 +59,16 @@ def cap_memory():
     resource.setrlimit(resource.RLIMIT_AS, (MEMORY, MEMORY))
 
 
-def run(files, extra=(), shards=SHARDS):
+def run(files, extra=(), shards=SHARDS, label="run"):
     """The mutants that survive the library's tests, by name, counted, and
     every mutant's outcome by function. Each shard's results are kept in
-    tmp/mutants-last/ for a look afterwards."""
+    tmp/mutants-last/<label>/ for a look afterwards."""
     # The public features on, so the code behind them is tested too (the
     # build variants, pure, no_sme2, and the like, are their own builds).
-    # Proved code is left to its proofs: the Kani harnesses (`proofs::`,
-    # which `cargo kani` checks) here, and the four proved cores, which
-    # cargo-mutants never reaches (they come in by `include!`).
-    args = ["cargo", "mutants", "--in-place", "--profile", "mutants", "--features", "mmap,serde,zeroize,traits-preview", "--timeout", "30",
-            "--exclude-re", "proofs::", *extra]
+    # A mutant whose tests outlast TIMEOUT is a hang, which the check counts
+    # as caught.
+    args = ["cargo", "mutants", "--in-place", "--profile", "mutants", "--features", "mmap,serde,zeroize,traits-preview", "--timeout", str(TIMEOUT),
+            *extra]
     for f in files:
         args += ["--file", f]
     runs = []
@@ -82,7 +85,7 @@ def run(files, extra=(), shards=SHARDS):
         runs.append((tree, subprocess.Popen(shard, cwd=tree, env=env, preexec_fn=cap_memory)))
     names = collections.Counter()
     functions = collections.defaultdict(list)  # (file, function) -> [(outcome, name)]
-    kept = os.path.join(ROOT, "tmp", "mutants-last")
+    kept = os.path.join(ROOT, "tmp", "mutants-last", label)
     shutil.rmtree(kept, ignore_errors=True)
     for k, (tree, process) in enumerate(runs):
         # 0: every mutant caught; 2: some missed; 3: some timed out. Any
@@ -115,7 +118,7 @@ def confirm(found, known):
     if not differ:
         return found
     patterns = [": " + re.escape(k.split("\t", 1)[1]) + "$" for k in differ]
-    again, _ = run(sorted({k.split("\t", 1)[0] for k in differ}), [arg for p in patterns for arg in ("--re", p)], shards=1)
+    again, _ = run(sorted({k.split("\t", 1)[0] for k in differ}), [arg for p in patterns for arg in ("--re", p)], shards=1, label="confirm")
     confirmed = collections.Counter(found)
     for k in differ:
         confirmed[k] = again.get(k, 0)
@@ -137,7 +140,7 @@ def figure(functions, known):
         else:
             open_.append(f"{file} {function}")
     print(f"functions: {len(functions)}: {caught} every mutant caught, {explained} every survivor explained, {len(open_)} open; "
-          "the proved cores (src/*_core.rs) and the assembly kernels are the proofs'")
+          "the assembly kernels are the proofs'")
     return open_
 
 

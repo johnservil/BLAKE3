@@ -1,5 +1,4 @@
 import Sound
-import Schedule
 import Std.Data.HashMap
 
 /-! `symbolic` (`Sound.lean`), written as a graph for `lean_spec.py`: each node once, as the
@@ -49,25 +48,7 @@ def sample (k : Nat) : (String → UInt32) × UInt64 :=
   let word (n : Nat) : UInt32 := (n * 0x9E3779B9 + 977 * k + 1).toUInt32
   (fun name => word (name.hash.toNat % 1000003), (k * 0x9E3779B97F4A7C15 + 5).toUInt64)
 
-/-- An entry of `Schedule.sched`, as `whole.py` reads it: `[h, m, t, len, flags]`, `h` the
-key's words (`-1`) or entry `e`'s chaining value (`e`), `m` input words `j` to `j + 15` (`j`)
-or entries `l`'s and `r`'s chaining values (`[l, r]`). Any other shape stops the printer. -/
-def entryJson (e : Schedule.Entry) : String :=
-  let h := if e.h = (List.range 8).map Schedule.Src.key then "-1" else match e.h with
-    | Schedule.Src.cv x 0 :: _ => if e.h = (List.range 8).map (Schedule.Src.cv x) then toString x else panic! "an unexpected h"
-    | _ => panic! "an unexpected h"
-  let m := match e.m with
-    | Schedule.Src.msg j :: _ => if e.m = (List.range 16).map (fun k => Schedule.Src.msg (j + k)) then toString j else panic! "an unexpected m"
-    | Schedule.Src.cv l 0 :: _ => match e.m[8]? with
-      | some (Schedule.Src.cv r 0) =>
-        if e.m = (List.range 8).map (Schedule.Src.cv l) ++ (List.range 8).map (Schedule.Src.cv r) then s!"[{l}, {r}]"
-        else panic! "an unexpected m"
-      | _ => panic! "an unexpected m"
-    | _ => panic! "an unexpected m"
-  s!"[{h}, {m}, {e.t}, {e.len}, {e.flags}]"
-
-/-- `compress.json`, `samples.json`, then with a third path and input lengths, the schedules of
-those lengths (`ScheduleProofs.lean`'s `run_eq`) as `{"n": [entry, ...], ...}`. -/
+/-- `compress.json`, then `samples.json`. -/
 def main (args : List String) : IO Unit := do
   IO.FS.writeFile (args.head!) (graphSafe symbolic.toList)
   -- The specification's outputs at the samples, with the inputs that gave them.
@@ -79,7 +60,3 @@ def main (args : List String) : IO Unit := do
     let ins := ", ".intercalate (names.map fun n => s!"\"{n}\": {(env n).toNat}")
     s!"\{\"inputs\": \{{ins}, \"t\": {t.toNat}}, \"outputs\": {out.toList.map (·.toNat)}}"
   IO.FS.writeFile (args[1]!) ("[\n" ++ ",\n".intercalate rows ++ "\n]\n")
-  if let some (path : String) := args[2]? then
-    let rows := (args.drop 3).map fun n =>
-      s!"\"{n}\": [" ++ ", ".intercalate ((Schedule.sched n.toNat!).map entryJson) ++ "]"
-    IO.FS.writeFile path ("{\n" ++ ",\n".intercalate rows ++ "\n}\n")

@@ -1,4 +1,0 @@
-# The machine-code proofs are of the library as this compiler builds it:
-# the VM and CI build it alike (a newer compiler emits other instructions).
-[toolchain]
-channel = "1.98.1"

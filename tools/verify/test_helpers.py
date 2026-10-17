@@ -88,27 +88,3 @@ class LeakTests(unittest.TestCase):
         code = {0: ("ldrb", ["w8", "[x0, #3]"]), 4: ("eor", ["w8", "w8", "#0x5a"]), 8: ("ret", [])}
         self.run_code(code)
 
-
-class WholeTests(unittest.TestCase):
-    def test_whole_matches_the_official_vectors(self):
-        """whole.py, the results whole calls are proved to return, computes
-        the official test vectors (hash, keyed_hash, derive_key) from
-        concrete bytes, at each vector's length that lean/schedules.json
-        holds."""
-        import json, os
-        from z3 import BitVecVal, simplify
-        import whole
-        path = os.path.join(os.path.dirname(__file__), "..", "..", "test_vectors", "test_vectors.json")
-        for case in json.load(open(path))["cases"]:
-            n = case["input_len"]
-            if str(n) not in whole.schedules():
-                continue
-            import lean_spec as spec
-            vectors = json.load(open(path))
-            data = [BitVecVal(i % 251, 8) for i in range(n)]
-            key = [simplify(x) for x in spec.words([BitVecVal(b, 8) for b in vectors["key"].encode()])]
-            for mode, words in (("hash", whole.hash32(data)),
-                                ("keyed_hash", whole.hash32(data, key, whole.KEYED_HASH)),
-                                ("derive_key", whole.derive_key32(vectors["context_string"], data))):
-                got = b"".join(simplify(x).as_long().to_bytes(4, "little") for x in words).hex()
-                self.assertEqual(got, case[mode][:64], f"{mode}, {n} bytes")

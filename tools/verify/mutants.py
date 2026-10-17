@@ -6,7 +6,6 @@ be vacuous.
 """
 
 import os
-import re
 import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
@@ -152,91 +151,24 @@ def main():
         else:
             print(f"SME2 chunks mutant, {what}: PROVED (the proof is vacuous here)")
             failures += 1
-    aarch64.disassemble = real
-    # The Rust paths: a wrong instruction among those each one runs.
-    import prove_rust
-    lib = prove_rust.Library(prove_rust.build())
-    original = dict(lib.code)
-    proofs = {"xof": lambda: prove_rust.prove_xof(lib, "verify_neon_xof_many", 5),
-              "portable": lambda: prove_rust.prove_in_place(lib, "verify_portable_compress_in_place")}
-    ran = {}
-    for path, prove in proofs.items():
-        traced = []
-        step = aarch64.step
-        aarch64.step = lambda m, pc, mnem, ops: (traced.append(pc), step(m, pc, mnem, ops))[1]
-        prove()
-        aarch64.step = step
-        ran[path] = set(traced)
-    def first(pred, path):
-        return next(a for a, (m, o) in sorted(original.items()) if a in ran[path] and pred(m, o))
-    rust = []
-    a = first(lambda m, o: m == "usra", "xof")
-    rust.append(("a NEON rotation's shift one bit off", a, ("usra", original[a][1][:2] + [f"#{aarch64.imm(original[a][1][2]) + 1}"]), "xof"))
-    a = first(lambda m, o: m == "eor" and o[-1].startswith("ror"), "portable")
-    rust.append(("a rotated operand one bit off", a, ("eor", original[a][1][:3] + [f"ror #{aarch64.imm(original[a][1][3].split()[1]) + 1}"]), "portable"))
-    a = first(lambda m, o: m == "add" and o[0].endswith(".4s"), "xof")
-    rust.append(("a vector add made an eor", a, ("eor", [x.replace(".4s", ".16b") for x in original[a][1]]), "xof"))
-    a = first(lambda m, o: m == "mov" and re.search(r"\.d\[1\]", o[0] or ""), "xof")
-    rust.append(("an element moved from the wrong lane", a, ("mov", [original[a][1][0], original[a][1][1].replace("[0]", "[1]")]), "xof"))
-    for what, addr, instr, path in rust:
-        lib.code = dict(original)
-        lib.code[addr] = instr
+    # The induction over the SME2 extended-output kernel's group loop
+    # (prove_sme2.prove_xof_every): its counter and pointer steps, which only
+    # the step from one group to the next sees.
+    xof = (ssyms["blake3_sme2_xof16_512"], min(v for v in ssyms.values() if v > ssyms["blake3_sme2_xof16_512"]))
+    for what, reg, imm, new in (("the group loop's counter step", "x2", "#0x10", "#0x11"),
+                                ("the group loop's pointer step", "x4", "#0x400", "#0x3c0")):
+        a = next(a for a, (m, o) in sorted(sbase.items())
+                 if xof[0] <= a < xof[1] and m == "add" and o == [reg, reg, imm])
+        code = dict(sbase)
+        code[a] = ("add", [reg, reg, new])
+        aarch64.disassemble = lambda *a, code=code, **k: code
         try:
-            proofs[path]()
-            print(f"Rust mutant, {what} at {addr:#x}: PROVED (the proof is vacuous here)")
-            failures += 1
-        except (Unproved, KeyError) as e:
-            print(f"Rust mutant, {what} at {addr:#x}: rejected ({e})")
-    # The induction over the NEON extended output's loop: its counter and
-    # pointer steps, which only the step from one iteration to the next sees.
-    lib.code = dict(original)
-    function = lib.symbol("_13blake3_servil8neon_xof8xof_many")
-    head = prove_rust.loop_head(lib, "verify_neon_xof_many", function)
-    back = next(a for a, (m, o) in sorted(original.items())
-                if a > head and m.startswith("b.") and int(o[0].split()[0], 16) == head)
-    body = [a for a in sorted(original) if head <= a <= back]
-    find = prove_rust.loop_head
-    prove_rust.loop_head = lambda *args: head
-    for what, imm, new in (("the loop's counter step", ("#0x8",), "#0x9"), ("the loop's pointer step", ("#0x200",), "#0x1c0")):
-        a = next(a for a in body if original[a][0] == "add" and original[a][1][-1] in imm)
-        lib.code = dict(original)
-        lib.code[a] = ("add", original[a][1][:-1] + [new])
-        try:
-            prove_rust.prove_xof_every(lib, "verify_neon_xof_many", function, 8, 16)
+            prove_sme2.prove_xof_every(sobj)
             print(f"induction mutant, {what} at {a:#x}: PROVED (the proof is vacuous here)")
             failures += 1
         except (Unproved, KeyError) as e:
             print(f"induction mutant, {what} at {a:#x}: rejected ({e})")
-    prove_rust.loop_head = find
-    # Whole calls of `hash` (prove_timing.py): a wrong instruction among
-    # those a call of 2049 bytes runs (chunks, a parent, the root), and the
-    # proof of its result must fail.
-    import prove_timing
-    lib.code = dict(original)
-    traced = []
-    step = aarch64.step
-    aarch64.step = lambda m, pc, mnem, ops: (traced.append(pc), step(m, pc, mnem, ops))[1]
-    prove_timing.prove_length(lib, 2049, prove_timing.PLATFORMS["NEON"][0], (1, 2))
-    aarch64.step = step
-    ran = set(traced)
-    def first_run(pred):
-        return next(a for a, (m, o) in sorted(original.items()) if a in ran and pred(m, o))
-    whole_mutants = []
-    a = first_run(lambda m, o: m == "ror" and len(o) == 3 and o[2].startswith("#"))
-    whole_mutants.append(("a rotation one bit off", a, ("ror", original[a][1][:2] + [f"#{aarch64.imm(original[a][1][2]) + 1}"])))
-    a = first_run(lambda m, o: m == "orr" and len(o) == 3 and o[2] == "#0xc")
-    whole_mutants.append(("the root flag left out (PARENT | ROOT made PARENT)", a, ("orr", original[a][1][:2] + ["#0x4"])))
-    a = first_run(lambda m, o: m == "movk" and o[1] == "#0x6a09")
-    whole_mutants.append(("a bit of the IV flipped", a, ("movk", [original[a][1][0], "#0x6a08", original[a][1][2]])))
-    for what, addr, instr in whole_mutants:
-        lib.code = dict(original)
-        lib.code[addr] = instr
-        try:
-            prove_timing.prove_length(lib, 2049, prove_timing.PLATFORMS["NEON"][0], (1, 2))
-            print(f"whole-call mutant, {what} at {addr:#x}: PROVED (the proof is vacuous here)")
-            failures += 1
-        except (Unproved, KeyError) as e:
-            print(f"whole-call mutant, {what} at {addr:#x}: rejected ({e})")
+    aarch64.disassemble = real
     sys.exit(1 if failures else 0)
 
 

@@ -727,7 +727,7 @@ const fn test_hash_const_conversions() {
 fn test_block_buffer_alignment() {
     // ChunkState.buf and Output.block are 64-byte aligned so that wide vector stores
     // into them (e.g. from memcpy) can store-to-load forward regardless of
-    // stack layout. See the comment on Output in chunk_core.rs, the measurements in
+    // stack layout. See the comment on Output in hasher.rs, the measurements in
     // https://github.com/zooko/bench-hashes/issues/2, and the before/after
     // benchmarks in https://github.com/BLAKE3-team/BLAKE3/pull/582.
     assert_eq!(64, core::mem::align_of::<crate::Output>());

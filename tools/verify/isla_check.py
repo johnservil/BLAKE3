@@ -463,9 +463,8 @@ def streaming_forms():
 def all_forms():
     import cross_check
     import prove_hybrid
-    cross_check.proved_forms()
     obj = prove_hybrid.assemble()
-    forms = cross_check.forms(list(aarch64.disassemble(obj, 0, 1 << 30).values()) + sorted(aarch64.EXECUTED))
+    forms = cross_check.forms(list(aarch64.disassemble(obj, 0, 1 << 30).values()))
     return forms
 
 

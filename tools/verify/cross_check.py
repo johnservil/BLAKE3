@@ -5,8 +5,8 @@ and by the model, must agree bit for bit.
 
     pypy3 tools/verify/cross_check.py
 
-The forms are the hybrid kernels' file's and those the Rust and
-whole-call proofs run.
+The forms are the hybrid kernels' file's (cross_check_sme.py checks the
+SME2 kernels' file).
 
 Loads, stores, and branches are not checked here: the proofs check every
 address against its region, and their models are a few lines each.
@@ -101,42 +101,10 @@ def model(mnem, text, xs, vs):
             [aarch64.concrete(m.v[i][l]) for i in range(4) for l in range(4)])
 
 
-def proved_forms():
-    """Every instruction form the Rust and whole-call proofs run: from their
-    last passing runs on this library with these tools (results.py), or by
-    running them. Stops if one fails."""
-    import prove_rust
-    import prove_timing
-    import results
-    so = prove_rust.build()
-    forms = set()
-    for kind, prove in (("rust", prove_rust.prove), ("timing", prove_timing.prove)):
-        got = results.load_forms(kind, so)
-        if got is None:
-            failed, got = prove()
-            if failed:
-                sys.exit("a proof above failed")
-        else:
-            print(f"the {kind} proofs passed on this library with these tools: their forms reused (results.py)", flush=True)
-        forms |= got
-    aarch64.EXECUTED.update(forms)
-    return forms
-
-
 def main():
     rounds = 200
-    # The hybrid kernels' file, and every instruction the Rust proofs and the
-    # whole-call proofs run.
-    proved_forms()
-    # The streaming instructions the runs met: each one of the SME2 kernels'
-    # file, whose forms cross_check_sme.py checks.
-    import prove_sme2
-    sme_file = {(mn, tuple(o)) for mn, o in aarch64.disassemble(prove_sme2.assemble(), 0, 1 << 30, llvm=True).values()}
-    outside = sorted(f for f in aarch64.EXECUTED if streaming(*f) and f not in sme_file)
-    if outside:
-        sys.exit(f"streaming instructions outside the SME2 kernels' file: {outside[:5]}")
     obj = prove_hybrid.assemble()
-    fl = forms(list(aarch64.disassemble(obj, 0, 1 << 30).values()) + sorted(aarch64.EXECUTED))
+    fl = forms(list(aarch64.disassemble(obj, 0, 1 << 30).values()))
     lib = build(fl)
     bad = 0
     for i, (mnem, text) in enumerate(fl):

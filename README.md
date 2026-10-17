@@ -5,7 +5,7 @@
 This code is new. An AI wrote it rapidly under Zooko's direction (his guidance is in
 `AGENTS.md`), and it awaits its first line-by-line review by a person and its first audit.
 It is checked with tests against the reference implementation and fixed digests,
-sanitizers, Miri, formal proofs, mutation testing, and a self-test that every process runs
+sanitizers, Miri, formal proofs of its AArch64 assembly kernels, mutation testing, and a self-test that every process runs
 before its first hash; [`QUALITY.md`](QUALITY.md) lists every check, the bugs they found,
 and how to repeat them. Its speed is measured on an Apple M4 Max (and a Linux VM on it) and
 on an Intel i7-12700K; its tests also run on other 64-bit Arm CPUs (down to a Raspberry Pi

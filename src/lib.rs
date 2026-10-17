@@ -687,7 +687,7 @@ impl Clone for ChunkState {
 
 impl ChunkState {
     // Try to avoid buffering as much as possible, by compressing directly from
-    // the input slice when full blocks are available (chunk_core.rs).
+    // the input slice when full blocks are available (src/hasher.rs).
     #[inline(always)]
     fn update(&mut self, input: &[u8]) -> &mut Self {
         self.absorb(input);
@@ -910,7 +910,7 @@ fn compress_parents_parallel(
 
     let mut parents_exact = child_chaining_values.chunks_exact(BLOCK_LEN);
     // Use MAX_SIMD_DEGREE_OR_2 rather than MAX_SIMD_DEGREE here: the walk
-    // (tree_core.rs) returns at least 2 values.
+    // (src/tree.rs) returns at least 2 values.
     let mut parents_array = ArrayVec::<&[u8; BLOCK_LEN], MAX_SIMD_DEGREE_OR_2>::new();
     for parent in &mut parents_exact {
         parents_array.push(parent.try_into().unwrap());
@@ -936,7 +936,7 @@ fn compress_parents_parallel(
     }
 }
 
-// Hash a subtree with the walk (tree_core.rs, `children`), condensing its
+// Hash a subtree with the walk (src/tree.rs, `children`), condensing its
 // chaining values down to a single parent node. Don't compress that
 // last parent node, however. Instead, return its message bytes (the
 // concatenated chaining values of its children). This is necessary when the
@@ -978,7 +978,7 @@ fn hash_one_chunk_root(input: &[u8], key: &CVWords, flags: u8) -> Hash {
     let whole = (blocks - 1) * BLOCK_LEN;
     let tail = &input[whole..];
     /// The padded last block, 64-byte aligned as hasher::Output's is
-    /// (chunk_core.rs explains).
+    /// (src/hasher.rs explains).
     #[repr(align(64))]
     struct Aligned64([u8; BLOCK_LEN]);
     let padded;
@@ -1723,8 +1723,9 @@ pub fn kernel_report_many_multithreaded(message_len: usize) -> KernelReport {
     }
     report.kernels.push(Kernel {
         // The split counts the batch's slots (each message's whole blocks,
-        // zero past its end), from two messages.
-        from_len: lanes::MIN_SPLIT_LEN.div_ceil(many::slot_len(message_len)).max(2) * message_len,
+        // zero past its end), from two messages, from MIN_SPLIT_BATCH bytes
+        // of them when the last such call ended within BATCH_WINDOW.
+        from_len: lanes::MIN_SPLIT_BATCH.div_ceil(many::slot_len(message_len)).max(2) * message_len,
         name: "split over threads",
         why: "From here the batch is cut into ranges of messages that the calling thread and this crate's worker threads (one per CPU beyond the first) hash at once, each with integer and NEON code.",
     });
@@ -1907,34 +1908,7 @@ pub(crate) struct HasherCore {
     cv_stack: CvStack,
 }
 
-/// The Hasher's stack, loop, chunk state, and nodes (src/stack_core.rs,
-/// src/hasher_core.rs, src/chunk_core.rs, proved in tools/verify/tree).
-pub(crate) mod hasher {
-    use crate::{CVBytes as Cv, MAX_DEPTH};
-    use crate::{BLOCK_LEN, CHUNK_END, CHUNK_LEN, CHUNK_START, PARENT, ROOT};
-    const DEPTH: usize = MAX_DEPTH + 1;
-    include!("stack_core.rs");
-    include!("hasher_core.rs");
-    include!("chunk_core.rs");
-
-    #[cfg(all(test, feature = "zeroize"))]
-    impl CvStack {
-        /// The array, for the zeroize test.
-        pub fn array(&self) -> Option<&[Cv; DEPTH]> {
-            self.cvs.as_ref()
-        }
-    }
-
-    #[cfg(feature = "zeroize")]
-    impl zeroize::Zeroize for CvStack {
-        fn zeroize(&mut self) {
-            if let Some(cvs) = &mut self.cvs {
-                cvs.zeroize();
-            }
-            self.len = 0;
-        }
-    }
-}
+mod hasher;
 use hasher::CvStack;
 
 /// What the Hasher's kernels take from the library (hasher::Hooks): with
@@ -2360,7 +2334,7 @@ impl HasherCore {
     #[cfg(feature = "std")]
     fn merge_cv_stack(&mut self, chunk_counter: u64) {
         // Its callers (the queue's hashers, and a Hasher's held group) start
-        // at offset zero; hazmat's offsets take the proved core's path.
+        // at offset zero; hazmat's offsets take the core's path.
         debug_assert_eq!(self.initial_chunk_counter, 0, "a hasher at offset zero");
         let post_merge_stack_len = hasher::ones(chunk_counter);
         let kernels = kernels_on(&self.key, &self.chunk_state, self.chunk_state.platform, false);
@@ -2464,7 +2438,7 @@ impl HasherCore {
         let _ = pooled;
         self.assert_room(self.count(), input.len());
         // The partial chunk first (hasher::fill), then whole subtrees and the
-        // last chunk (hasher::feed), as src/hasher_core.rs describes.
+        // last chunk (hasher::feed), as src/hasher.rs describes.
         let fill_kernels = kernels_on(&self.key, &self.chunk_state, self.chunk_state.platform, pooled);
         let rest = hasher::fill(&fill_kernels, &mut self.chunk_state, &mut self.cv_stack, self.initial_chunk_counter, input);
         if rest.is_empty() {

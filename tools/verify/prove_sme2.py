@@ -17,6 +17,7 @@ import time
 sys.path.insert(0, os.path.dirname(__file__))
 from z3 import BitVec, BitVecVal, Concat, ZeroExt, Extract, If, LShR, simplify
 import aarch64
+import induction
 from aarch64 import Region, Ptr, Unproved
 import prove_hybrid
 from prove_hybrid import Setup, byte_symbols, same
@@ -56,8 +57,8 @@ def check_out(out, start, cvs):
 
 def chunk_cvs(chunks, key, counters, flags, start, end):
     """The chunk kernel's statement: prove_hybrid's table_cvs for chunks of
-    16 whole blocks, chunk i at counters[i]. The proof below and
-    prove_rust's contract for the kernel both state it with this."""
+    16 whole blocks, chunk i at counters[i]. The proofs below state it with
+    this."""
     return prove_hybrid.table_cvs(chunks, key, counters, flags, start, end, BitVecVal(64, 8), 16)
 
 
@@ -239,7 +240,6 @@ def prove_chunks_every(obj, stored):
     K's lane l hashes the chunk table[16 K + l] points to, at counter + 16 K
     + l, into out[32 (16 K + l)..]. Each group's chunks are arbitrary (one
     set of symbols, since each step is proved for any)."""
-    import induction
     import canon
     from z3 import ULE, UGE, ULT
     lanes = [byte_symbols(f"in{l}_", 1024) for l in range(16)]
@@ -329,7 +329,6 @@ def prove_chunks_every(obj, stored):
     check_group(s1, 0)
     gen = induction.Generalized(s0, s1, k)
     current[0] = k
-    import prove_rust
     def check(endm, how):
         if how == "head":
             check_group(endm, k)
@@ -340,7 +339,7 @@ def prove_chunks_every(obj, stored):
             raise Unproved(f"returned {endm.x[0]}, not 16")
         check_group(endm, k, stored or 16)
         prove_hybrid.check_abi(endm)
-    kinds = prove_rust.loop_step(gen, s0, k, list(s0.assumptions) + [ULT(k, g), ULE(k, 1 << 39)], head, check)
+    kinds = induction.loop_step(gen, s0, k, list(s0.assumptions) + [ULT(k, g), ULE(k, 1 << 39)], head, check)
     return f"{kinds['head']} paths back to the group loop's head, {kinds['return']} out of it"
 
 
@@ -351,7 +350,6 @@ def prove_messages_every(obj, blocks):
     lane l hashes the message table[16 K + l] points to, at counter + step
     K, its last block of last_len bytes (0: 64), the last group storing all
     16."""
-    import induction
     import canon
     from z3 import ULE, UGE, ULT
     lanes = [byte_symbols(f"in{l}_", 64 * blocks) for l in range(16)]
@@ -443,7 +441,6 @@ def prove_messages_every(obj, blocks):
     check_group(s1, 0)
     gen = induction.Generalized(s0, s1, k)
     current[0] = k
-    import prove_rust
     def check(endm, how):
         if how == "head":
             check_group(endm, k)
@@ -454,7 +451,7 @@ def prove_messages_every(obj, blocks):
             raise Unproved(f"returned {endm.x[0]}, not 16")
         check_group(endm, k)
         prove_hybrid.check_abi(endm)
-    kinds = prove_rust.loop_step(gen, s0, k, list(s0.assumptions) + [ULT(k, g), ULE(k, 1 << 39)], head, check)
+    kinds = induction.loop_step(gen, s0, k, list(s0.assumptions) + [ULT(k, g), ULE(k, 1 << 39)], head, check)
     return f"{kinds['head']} paths back to the group loop's head, {kinds['return']} out of it"
 
 
@@ -468,7 +465,6 @@ def prove_parents_every(obj):
     group's pairs (it preloads the next group's) would compute other terms.
     Between groups the words differ by 1, a constant, so the loop invariant
     holds the next group's words as pair_w + K + 1."""
-    import induction
     from z3 import ULE, UGE, ULT
     words = [BitVec(f"pair{w}", 32) for w in range(256)]
     key = byte_symbols("key", 32)
@@ -527,7 +523,6 @@ def prove_parents_every(obj):
     s1 = induction.run_to(induction.snapshot(s0), head, head)
     check_group(s1, 0)
     gen = induction.Generalized(s0, s1, k)
-    import prove_rust
     def check(endm, how):
         check_group(endm, k)
         if how == "return":
@@ -536,7 +531,7 @@ def prove_parents_every(obj):
             if aarch64.concrete(endm.x[0]) != 16:
                 raise Unproved(f"returned {endm.x[0]}, not 16")
             prove_hybrid.check_abi(endm)
-    kinds = prove_rust.loop_step(gen, s0, k, list(s0.assumptions) + [ULT(k, g), ULE(k, 1 << 39)], head, check)
+    kinds = induction.loop_step(gen, s0, k, list(s0.assumptions) + [ULT(k, g), ULE(k, 1 << 39)], head, check)
     return f"{kinds['head']} paths back to the group loop's head, {kinds['return']} out of it"
 
 
@@ -545,7 +540,6 @@ def prove_xof_every(obj):
     concrete cases), by induction over its group loop: group K's output
     block i, at out[1024 K + 64 i..], is the compression of `block` under cv
     at counter + 16 K + i. Every group reads the same cv and block."""
-    import induction
     from z3 import ULE, UGE, ULT
     cvb, block = byte_symbols("cv", 32), byte_symbols("block", 64)
     g, k = BitVec("len_groups", 64), BitVec("len_k", 64)
@@ -584,7 +578,6 @@ def prove_xof_every(obj):
     s1 = induction.run_to(induction.snapshot(s0), head, head)
     check_group(s1, 0)
     gen = induction.Generalized(s0, s1, k)
-    import prove_rust
     def check(endm, how):
         check_group(endm, k)
         if how == "return":
@@ -593,7 +586,7 @@ def prove_xof_every(obj):
             if aarch64.concrete(endm.x[0]) != 16:
                 raise Unproved(f"returned {endm.x[0]}, not 16")
             prove_hybrid.check_abi(endm)
-    kinds = prove_rust.loop_step(gen, s0, k, list(s0.assumptions) + [ULT(k, g), ULE(k, 1 << 39)], head, check)
+    kinds = induction.loop_step(gen, s0, k, list(s0.assumptions) + [ULT(k, g), ULE(k, 1 << 39)], head, check)
     return f"{kinds['head']} paths back to the group loop's head, {kinds['return']} out of it"
 
 
@@ -653,11 +646,9 @@ def prove_chunks_x2(obj, groups, check=True):
         return m.steps
     check_out(m.regions["out"], 0, chunk_cvs(chunks, key, [counter + i for i in range(n)], flags, start, end))
     return m.steps
-# The group counts the always-run cases prove the chunk and parent kernels
-# at: 1 and 2 by the concrete cases, 2 to 2^40 by the inductions over the
-# group loop (every, parents_every), which run with them. prove_rust.py's
-# contracts stand in for the kernels at these counts alone.
-GROUPS = range(1, (1 << 40) + 1)
+# The always-run cases prove the chunk and parent kernels at 1 and 2 groups
+# (the concrete cases) and 2 to 2^40 (the inductions over the group loop,
+# every and parents_every).
 ALWAYS = ("every", "parents_every")
 
 
@@ -726,13 +717,22 @@ def prove_case(case):
     return case, f"proved ({what}, {steps} instructions, {time.time() - t:.1f} s)"
 
 
+WORKERS = 5
+
+
 def main():
     import multiprocessing
-    todo = cases(set(sys.argv[1:]))
+    # The longest cases first, so none is left to run alone at the end: the
+    # chunk kernel's induction (4.3 hours, October 16), then the message
+    # kernel's, longest message first (3.6 hours at 14 blocks, 16 minutes at 5).
+    todo = sorted(cases(set(sys.argv[1:])),
+                  key=lambda c: (0,) if c[0] == "every" else (1, -c[2]) if c[0] == "messages_every" else (2,))
     failed = 0
     # A fresh process per case: the normal forms' caches keep their terms
-    # alive (canon.py), so a worker that kept them would only grow.
-    with multiprocessing.Pool(min(4, multiprocessing.cpu_count()), maxtasksperchild=1) as pool:
+    # alive (canon.py), so a worker that kept them would only grow. WORKERS
+    # at once: the largest case holds about 14 GB (messages_every at 16
+    # blocks, October 16), so five fit the VM's 98 GB.
+    with multiprocessing.Pool(min(WORKERS, multiprocessing.cpu_count()), maxtasksperchild=1) as pool:
         for (name, _, _), verdict in pool.imap_unordered(prove_case, todo):
             print(f"{name}: {verdict}", flush=True)
             failed += verdict.startswith("NOT")

@@ -2,8 +2,7 @@
 # SME2 and the SHA-3 extension), each with its reason; tools/mutants/check.py
 # fails on any other survivor and on any listed one now caught.
 # A line: file <TAB> mutant (function and change) <TAB> places <TAB> reason.
-files: src/chunk_core.rs src/each.rs src/ffi_avx2.rs src/ffi_avx512.rs src/ffi_neon.rs src/ffi_neon_hybrid.rs src/ffi_sme2.rs src/ffi_sse2.rs src/ffi_sse41.rs src/guts.rs src/hasher_core.rs src/hazmat.rs src/io.rs src/lanes.rs src/lib.rs src/many.rs src/neon_xof.rs src/outboard.rs src/pair.rs src/platform.rs src/portable.rs src/queue.rs src/rust_avx2.rs src/rust_sse2.rs src/rust_sse41.rs src/self_test.rs src/stack_core.rs src/traits.rs src/tree.rs src/tree_core.rs src/wasm32_simd.rs 
-src/each.rs	replace * with / in hash_held	2	another machine: the per-group calls of a CPU without SME2 (check-builds' one-CPU no_sme2 tests reach them)
+files: src/each.rs src/ffi_neon.rs src/ffi_neon_hybrid.rs src/ffi_sme2.rs src/hasher.rs src/hazmat.rs src/io.rs src/lanes.rs src/lib.rs src/many.rs src/neon_xof.rs src/outboard.rs src/pair.rs src/platform.rs src/portable.rs src/queue.rs src/self_test.rs src/traits.rs src/tree.rs
 src/each.rs	replace / with * in hash_each_on	1	speed: moves a threshold between equally correct paths (with more rounds, the extra ones hash nothing)
 src/each.rs	replace < with <= in hash_each_multithreaded_with	1	speed: moves a threshold between equally correct paths
 src/each.rs	replace < with == in hash_each_multithreaded_with	1	speed: moves a threshold between equally correct paths
@@ -41,6 +40,18 @@ src/ffi_neon_hybrid.rs	replace sha3_detected -> bool with false	1	detection, on 
 src/ffi_neon_hybrid.rs	replace sha3_detected -> bool with true	1	detection, on a machine with SHA-3: a wrong no runs the NEON kernels (equally correct), a wrong yes is this machine's answer
 src/ffi_neon_hybrid.rs	replace | with ^ in compress_in_place	1	equivalent: | and ^ agree on flag bits that never overlap
 src/ffi_sme2.rs	replace prefetch_code with ()	1	speed: whether and what to prefetch after a pause (no effect on results)
+src/hasher.rs	replace - with + in feed	1	speed: ahead is a prefetch hint (how far the SME2 walk prefetches past its input)
+src/hasher.rs	replace - with / in feed	1	speed: ahead is a prefetch hint (how far the SME2 walk prefetches past its input)
+src/hasher.rs	replace < with <= in ChunkState<P>::fill_buf	1	equivalent: at equality both arms take the same length
+src/hasher.rs	replace < with <= in fill	1	equivalent: at equality both arms take the same length
+src/hasher.rs	replace <impl Feed<ChunkState<P>> for Kernels<'_, P, H>>::subtree_cv -> Option<Cv> with None	1	speed: chooses between equally correct paths (None sends the subtree through its children, which compute the same value)
+src/hasher.rs	replace > with < in feed	1	speed: chooses between equally correct paths (the subtree through the flat walk, or through its children)
+src/hasher.rs	replace > with >= in ChunkState<P>::absorb	1	speed: chooses between equally correct paths (a first whole block through the empty buffer, or straight from the input)
+src/hasher.rs	replace CvStack::array -> Option<&[Cv; DEPTH]> with Some(Box::leak(Box::new([Default::default(); DEPTH])))	1	test-only code (cfg(test)): the test's own accessor
+src/hasher.rs	replace | with ^ in ChunkState<P>::absorb	1	equivalent: | made ^ on flag bits that never overlap (the mode's flag beside CHUNK_START, CHUNK_END, PARENT, or ROOT)
+src/hasher.rs	replace | with ^ in ChunkState<P>::output	2	equivalent: | made ^ on flag bits that never overlap (the mode's flag beside CHUNK_START, CHUNK_END, PARENT, or ROOT)
+src/hasher.rs	replace | with ^ in Output<P>::root_bytes	1	equivalent: | made ^ on flag bits that never overlap (the mode's flag beside CHUNK_START, CHUNK_END, PARENT, or ROOT)
+src/hasher.rs	replace | with ^ in parent_output	1	equivalent: | made ^ on flag bits that never overlap (the mode's flag beside CHUNK_START, CHUNK_END, PARENT, or ROOT)
 src/io.rs	replace * with +	1	speed: moves a threshold between equally correct paths (MINIMUM_MMAP_SIZE: whether to map or read)
 src/io.rs	replace - with + in maybe_mmap_file	1	a guard against lengths past isize::MAX, which no file reaches
 src/io.rs	replace - with / in maybe_mmap_file	1	a guard against lengths past isize::MAX, which no file reaches
@@ -121,7 +132,7 @@ src/lanes.rs	replace > with < in takes_tasks	1	one CPU or many: this machine has
 src/lanes.rs	replace > with == in Pool::wake_for	2	OPEN: the pool's scheduling under interleavings the tests leave to chance; Loom would force them (bench-hashes NEXT-STEPS, "Mutation testing beside the proofs")
 src/lanes.rs	replace > with == in hash_many_over_pool	1	OPEN, deferred: the pool's job scheduler, which the one scheduler replaces (fork #59)
 src/lanes.rs	replace > with == in hash_over_pool	1	OPEN, deferred: the pool's job scheduler, which the one scheduler replaces (fork #59)
-src/lanes.rs	replace > with == in sme2_main	1	OPEN: the pool's scheduling under interleavings the tests leave to chance; Loom would force them (bench-hashes NEXT-STEPS, "Mutation testing beside the proofs")
+src/lanes.rs	replace > with == in sme2_main	2	OPEN: the pool's scheduling under interleavings the tests leave to chance; Loom would force them (bench-hashes NEXT-STEPS, "Mutation testing beside the proofs")
 src/lanes.rs	replace > with == in takes_tasks	1	one CPU or many: this machine has many (check-builds' one-CPU tests run the other side)
 src/lanes.rs	replace > with >= in Pool::piece_done	1	OPEN: the pool's scheduling under interleavings the tests leave to chance; Loom would force them (bench-hashes NEXT-STEPS, "Mutation testing beside the proofs")
 src/lanes.rs	replace > with >= in Pool::wake_for	1	OPEN: the pool's scheduling under interleavings the tests leave to chance; Loom would force them (bench-hashes NEXT-STEPS, "Mutation testing beside the proofs")
@@ -238,7 +249,6 @@ src/lib.rs	replace Hasher::held_group -> Option<(u64, &[u8; STAGE_LEN])> with So
 src/lib.rs	replace Hasher::held_group -> Option<(u64, &[u8; STAGE_LEN])> with Some((1, Box::leak(Box::new([1; STAGE_LEN]))))	1	speed: whether the Hasher stages input or hashes it at once (equally correct)
 src/lib.rs	replace batch_after_pause -> bool with false	1	speed: whether and what to prefetch after a pause (no effect on results)
 src/lib.rs	replace code_may_be_cold -> bool with false	1	speed: whether and what to prefetch after a pause (no effect on results)
-src/lib.rs	replace hasher::CvStack::array -> Option<&[Cv; DEPTH]> with Some(Box::leak(Box::new([Default::default(); DEPTH])))	1	test-only code (cfg(test)): the test's own accessor
 src/lib.rs	replace match guard partial > 5 * BLOCK_LEN with false in spare_lane	1	x86 only: compiled out on AArch64 (CI's x86 tests reach it)
 src/lib.rs	replace match guard partial > 5 * BLOCK_LEN with true in spare_lane	1	x86 only: compiled out on AArch64 (CI's x86 tests reach it)
 src/lib.rs	replace prefetch_after_pause with ()	1	speed: whether and what to prefetch after a pause (no effect on results)
@@ -504,40 +514,8 @@ src/self_test.rs	replace == with != in compiled_features_present	2	x86 only: com
 src/self_test.rs	replace compiled_features_present with ()	1	x86 only: compiled out on AArch64 (CI's x86 tests reach it)
 src/self_test.rs	replace ensure_slow::<impl Drop for Failed>::drop with ()	1	OPEN: the self-test's failure path (a CPU or build that computes wrong digests); no test makes the self-test fail
 src/self_test.rs	replace | with ^ in chunk_values	2	equivalent: | and ^ agree on flag bits that never overlap
+src/tree.rs	replace * with + in root_children	1	speed: the arrays' size (each choice holds the values; only the stack frame changes)
+src/tree.rs	replace * with / in root_children	1	speed: the arrays' size (each choice holds the values; only the stack frame changes)
+src/tree.rs	replace / with * in root_children	2	speed: the arrays' size (each choice holds the values; only the stack frame changes)
+src/tree.rs	replace < with <= in wide	1	equivalent: degrees are powers of two, and at degree 2 both arms give 2
 src/tree.rs	replace <impl Kernels for PlatformKernels<'_>>::children -> Option<[Cv; 2]> with None	1	speed: chooses between equally correct paths (the walk computes the children itself)
-src/wasm32_simd.rs	delete ! in load_counters	1	another architecture's: wasm32, compiled out here (CI's wasm tests run it)
-src/wasm32_simd.rs	replace & with ^ in load_counters	8	another architecture's: wasm32, compiled out here (CI's wasm tests run it)
-src/wasm32_simd.rs	replace & with | in load_counters	8	another architecture's: wasm32, compiled out here (CI's wasm tests run it)
-src/wasm32_simd.rs	replace * with + in compress_pre	8	another architecture's: wasm32, compiled out here (CI's wasm tests run it)
-src/wasm32_simd.rs	replace * with / in compress_pre	8	another architecture's: wasm32, compiled out here (CI's wasm tests run it)
-src/wasm32_simd.rs	replace + with * in load_counters	8	another architecture's: wasm32, compiled out here (CI's wasm tests run it)
-src/wasm32_simd.rs	replace + with - in load_counters	8	another architecture's: wasm32, compiled out here (CI's wasm tests run it)
-src/wasm32_simd.rs	replace - with + in rot12	1	another architecture's: wasm32, compiled out here (CI's wasm tests run it)
-src/wasm32_simd.rs	replace - with + in rot7	1	another architecture's: wasm32, compiled out here (CI's wasm tests run it)
-src/wasm32_simd.rs	replace - with / in rot12	1	another architecture's: wasm32, compiled out here (CI's wasm tests run it)
-src/wasm32_simd.rs	replace - with / in rot7	1	another architecture's: wasm32, compiled out here (CI's wasm tests run it)
-src/wasm32_simd.rs	replace add -> v128 with Default::default()	1	another architecture's: wasm32, compiled out here (CI's wasm tests run it)
-src/wasm32_simd.rs	replace blend_epi16 -> v128 with Default::default()	1	another architecture's: wasm32, compiled out here (CI's wasm tests run it)
-src/wasm32_simd.rs	replace compress_in_place with ()	1	another architecture's: wasm32, compiled out here (CI's wasm tests run it)
-src/wasm32_simd.rs	replace compress_pre -> [v128; 4] with [Default::default(); 4]	1	another architecture's: wasm32, compiled out here (CI's wasm tests run it)
-src/wasm32_simd.rs	replace compress_xof -> [u8; 64] with [0; 64]	1	another architecture's: wasm32, compiled out here (CI's wasm tests run it)
-src/wasm32_simd.rs	replace compress_xof -> [u8; 64] with [1; 64]	1	another architecture's: wasm32, compiled out here (CI's wasm tests run it)
-src/wasm32_simd.rs	replace diagonalize with ()	1	another architecture's: wasm32, compiled out here (CI's wasm tests run it)
-src/wasm32_simd.rs	replace g1 with ()	1	another architecture's: wasm32, compiled out here (CI's wasm tests run it)
-src/wasm32_simd.rs	replace g2 with ()	1	another architecture's: wasm32, compiled out here (CI's wasm tests run it)
-src/wasm32_simd.rs	replace load_counters -> (v128, v128) with (Default::default(), Default::default())	1	another architecture's: wasm32, compiled out here (CI's wasm tests run it)
-src/wasm32_simd.rs	replace rot12 -> v128 with Default::default()	1	another architecture's: wasm32, compiled out here (CI's wasm tests run it)
-src/wasm32_simd.rs	replace rot16 -> v128 with Default::default()	1	another architecture's: wasm32, compiled out here (CI's wasm tests run it)
-src/wasm32_simd.rs	replace rot7 -> v128 with Default::default()	1	another architecture's: wasm32, compiled out here (CI's wasm tests run it)
-src/wasm32_simd.rs	replace rot8 -> v128 with Default::default()	1	another architecture's: wasm32, compiled out here (CI's wasm tests run it)
-src/wasm32_simd.rs	replace round with ()	1	another architecture's: wasm32, compiled out here (CI's wasm tests run it)
-src/wasm32_simd.rs	replace set1 -> v128 with Default::default()	1	another architecture's: wasm32, compiled out here (CI's wasm tests run it)
-src/wasm32_simd.rs	replace set4 -> v128 with Default::default()	1	another architecture's: wasm32, compiled out here (CI's wasm tests run it)
-src/wasm32_simd.rs	replace shuffle_epi32 -> v128 with Default::default()	1	another architecture's: wasm32, compiled out here (CI's wasm tests run it)
-src/wasm32_simd.rs	replace transpose_vecs with ()	1	another architecture's: wasm32, compiled out here (CI's wasm tests run it)
-src/wasm32_simd.rs	replace undiagonalize with ()	1	another architecture's: wasm32, compiled out here (CI's wasm tests run it)
-src/wasm32_simd.rs	replace unpackhi_epi32 -> v128 with Default::default()	1	another architecture's: wasm32, compiled out here (CI's wasm tests run it)
-src/wasm32_simd.rs	replace unpackhi_epi64 -> v128 with Default::default()	1	another architecture's: wasm32, compiled out here (CI's wasm tests run it)
-src/wasm32_simd.rs	replace unpacklo_epi32 -> v128 with Default::default()	1	another architecture's: wasm32, compiled out here (CI's wasm tests run it)
-src/wasm32_simd.rs	replace unpacklo_epi64 -> v128 with Default::default()	1	another architecture's: wasm32, compiled out here (CI's wasm tests run it)
-src/wasm32_simd.rs	replace xor -> v128 with Default::default()	1	another architecture's: wasm32, compiled out here (CI's wasm tests run it)
