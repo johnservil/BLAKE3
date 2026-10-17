@@ -19,7 +19,7 @@ on 64-bit Arm, above all on Apple M4-class chips, and on x86-64. It computes the
 official BLAKE3, and adds calls for the ways programs hash: one large message over every
 core (`hash_multithreaded`), batches and collections of messages (`hash_many`,
 `hash_each_with`), many messages arriving at once (`Hasher::update_each`), a stream of
-buffers hashed on other threads while your program reads the next (`Queue`), and verified
+messages hashed on other threads while your program reads or makes the next (`stream`), and verified
 streaming in the format [iroh-blobs](https://github.com/n0-computer/iroh-blobs) stores
 (`outboard_with`, `Verifier`).
 

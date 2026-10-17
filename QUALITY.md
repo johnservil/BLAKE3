@@ -49,8 +49,10 @@ Rust, and its x86-64 kernels, and adds code of its own:
 - batches of many messages in one call (`hash_many`, `src/many.rs`),
   collections of messages and many hashers at once (`hash_each_with`,
   `Hasher::update_each`, `src/each.rs`);
-- the queue, which hashes the program's buffers behind it and hands
-  each back to a handler (`Queue`, `src/queue.rs`);
+- the stream, which hashes the program's messages behind it, each digest
+  into the place the program names (`stream`, `src/stream.rs`). (The
+  queue it replaced, `src/queue.rs`, retired on October 16, 2026; the
+  records below that name it describe its time.)
 - outboards and their verification (`outboard_with`, `Verifier`,
   `src/outboard.rs`);
 - the startup self-test (`src/self_test.rs`);

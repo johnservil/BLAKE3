@@ -44,16 +44,17 @@
 //! | Many messages of one length, in one buffer | [`hash_many_multithreaded`] |
 //! | Many messages of different lengths, in memory | [`hash_each_multithreaded_with`] |
 //! | Many messages arriving at once (a server's uploads) | [`Hasher::update_each`] |
-//! | A stream of buffers your program can hand over | a [`Queue`] |
+//! | A stream of messages read, made, or arriving | [`stream`] |
 //! | A message read in verified ranges (Bao, iroh-blobs) | [`outboard_with`], [`verify_range_with`], [`Verifier`] |
 //!
 //! Each call returns once its hash is done, and uses other CPU cores
 //! where that is faster (the forms without `multithreaded` stay on the
-//! calling thread). A [`Queue`] is different: your program hands it a
-//! buffer and goes on to read or make the next one while other threads
-//! hash it; the buffer comes back with its hash a little later. Choose it
-//! when reading or making the data keeps your thread busy, such as files
-//! read from memory or a fast disk: it hashes the most bytes per second.
+//! calling thread). A [`stream`] is different: your program submits
+//! messages and goes on to read or make the next ones while other threads
+//! hash them; each digest arrives in the place your program named, a
+//! little later. Choose it when reading or making the data keeps your
+//! thread busy, such as files read from memory or a fast disk: it hashes
+//! the most bytes per second.
 //!
 //! Short messages hash fastest together: 1024 messages of 64 bytes in one
 //! [`hash_many`] call take about a fifth of the time of 1024 [`hash`]
@@ -63,7 +64,7 @@
 //! [`keyed_hash`], [`derive_key`], and for every other call a [`Mode`],
 //! taken by its `_with` form ([`hash_with`], [`hash_many_with`], ...),
 //! by [`Hasher::new_keyed`] and [`Hasher::new_derive_key`], and by a
-//! [`Queue`].
+//! [`stream`].
 //!
 //! **Hashing now and then** (rather than nonstop) is slower per byte on
 //! every hash function, since its code and data must come back into the
@@ -109,14 +110,14 @@
 //!   hash on the calling thread. Above it they keep a list of the pieces
 //!   they hand out, freed when they return: 48 bytes for each 128 KiB of
 //!   input, and at most 200 bytes for each CPU (1 GiB on 16 CPUs: 390 KiB).
-//! - **A [`Queue`]** allocates when it is made, and as the buffers you keep
-//!   in flight first reach a new number; once it has met your most in
-//!   flight, it allocates nothing.
+//! - **A [`stream`]** takes its storage (its 2 MiB ring and its entries)
+//!   from a pool the process keeps: a thread's first stream allocates it
+//!   and later streams reuse it, never freed; once that storage exists, a
+//!   stream allocates nothing.
 //! - **Once per process**: the startup self-test's buffers, about 45 KiB
 //!   of the calling thread's stack while it runs (it allocates nothing),
-//!   and the threads: a worker per CPU beyond the first, the queue's
-//!   delivery thread, each with the standard library's stack, started by
-//!   [`initialize_multithreaded`].
+//!   and the threads: by default a worker per CPU beyond the first, each with the
+//!   standard library's stack, started by [`initialize_multithreaded`].
 //!
 //! # Startup self-test
 //!
@@ -124,8 +125,8 @@
 //! once, before any other call of this crate**: a call before it panics, in
 //! every build, saying so. The check costs nothing: it is part of the
 //! platform load every call makes. **A program that makes multithreaded
-//! calls or uses a [`Queue`] calls [`initialize_multithreaded`]**: a
-//! multithreaded call or a `Queue` before it panics (one load per call).
+//! calls or streams calls [`initialize_multithreaded`]**: a
+//! multithreaded call or a stream before it panics (one load per call).
 //!
 //! In `initialize`, the crate checks the build and the machine running it
 //! before the process first hashes: a miscompilation, a faulty CPU, a
@@ -263,9 +264,11 @@ mod tree;
 mod lanes;
 mod many;
 #[cfg(feature = "std")]
-mod queue;
 #[cfg(feature = "std")]
-pub use queue::{FixedHandler, MessageHandler, PieceHandler, Queue, shape};
+#[cfg(feature = "std")]
+mod stream;
+#[cfg(feature = "std")]
+pub use stream::{stream, Stream};
 mod pair;
 mod self_test;
 
@@ -752,50 +755,6 @@ impl IncrementCounter {
 }
 
 
-/// Where a stream stands for [`plan_subtrees`]: its chunk counter and the
-/// bytes in its partial chunk (0 to CHUNK_LEN), as a [`Hasher`]'s chunk
-/// state holds them.
-#[cfg(feature = "std")]
-#[derive(Clone, Copy, Default)]
-pub(crate) struct PlanState {
-    counter: u64,
-    partial: usize,
-}
-
-/// The whole subtrees that [`Hasher::update`] would hash from `state` on
-/// `piece` in parts of at most [`lanes::TASK_LEN`] (any split of the input
-/// gives the same digest; the parts spread a long input over threads),
-/// appended to `tasks` in order (each computed as [`lanes::Task`] says),
-/// and `state` moved past the piece: what [`Hasher::update_with_results`]
-/// takes back. The bytes around them (a partial chunk's fill, a part's last
-/// chunk) stay for the replay. The stream starts at chunk zero.
-#[cfg(feature = "std")]
-pub(crate) fn plan_subtrees(state: &mut PlanState, piece: &[u8], tasks: &mut Vec<lanes::Task>) {
-    for part in piece.chunks(lanes::TASK_LEN) {
-        plan_part(state, part, tasks);
-    }
-}
-
-#[cfg(feature = "std")]
-fn plan_part(state: &mut PlanState, piece: &[u8], tasks: &mut Vec<lanes::Task>) {
-    let mut offset = 0;
-    if state.partial > 0 {
-        offset = cmp::min(CHUNK_LEN - state.partial, piece.len());
-        if offset == piece.len() {
-            state.partial += offset;
-            return;
-        }
-        state.counter += 1;
-    }
-    while piece.len() - offset > CHUNK_LEN {
-        let len = hasher::subtree_len(state.counter, piece.len() - offset);
-        tasks.push(lanes::Task::of(&piece[offset..offset + len], state.counter));
-        state.counter += (len / CHUNK_LEN) as u64;
-        offset += len;
-    }
-    state.partial = piece.len() - offset;
-}
-
 /// The lanes of the one pass that hashes `whole` whole chunks with a
 /// partial one of `partial` bytes after them, where the pass costs less
 /// than the partial chunk's blocks after the whole ones: three whole
@@ -1090,7 +1049,7 @@ pub fn hash(input: &[u8]) -> Hash {
 /// [`Hash`](struct@Hash) as [`hash`], never slower.
 ///
 /// ```
-/// # blake3_servil::initialize_multithreaded();
+/// # blake3_servil::initialize_multithreaded(None);
 /// let hash = blake3_servil::hash_multithreaded(&[0u8; 1 << 20]);
 /// assert_eq!(hash, blake3_servil::hash(&[0u8; 1 << 20]));
 /// ```
@@ -1131,30 +1090,39 @@ pub fn initialize() {
 }
 
 /// [`initialize`], and start the threads that the multithreaded calls and
-/// [`Queue`] use: every program that makes such calls calls this once,
-/// before them, in place of `initialize`. It starts the first worker and
-/// the queue's delivery thread and returns; the first worker starts the
-/// others, a worker per CPU beyond the first (each 20-30 us on Linux
-/// x86-64), and calls run on the workers started so far. Later calls
-/// return at once. The threads wait asleep
-/// whenever no call has work for them (their memory: see
-/// [Memory](crate#memory)).
+/// [`stream`] use: every program that makes such calls calls this once,
+/// before them, in place of `initialize`. It starts `threads - 1` workers,
+/// and each multithreaded call hashes on its calling thread and the
+/// workers (calls made at once share the workers), and on CPUs with SME2
+/// (Apple M4) the SME2 thread too; `None` means one thread
+/// a CPU (`std::thread::available_parallelism`, which follows the CPU
+/// affinity the program runs under). With 1, calls hash on their calling
+/// thread alone: no workers start, nor the SME2 thread. Otherwise it
+/// starts the first worker and returns; the first worker starts the others
+/// (each 20-30 us on Linux x86-64), and calls run on the workers started
+/// so far. The
+/// threads wait asleep whenever no call has work for them (their memory:
+/// see [Memory](crate#memory)). Later calls return at once, and must ask
+/// for the same number: another `Some` panics.
 ///
 /// ```
-/// blake3_servil::initialize_multithreaded();
+/// blake3_servil::initialize_multithreaded(None);
 /// let hash = blake3_servil::hash_multithreaded(&[0u8; 1 << 20]);
 /// assert_eq!(hash, blake3_servil::hash(&[0u8; 1 << 20]));
 /// ```
 #[cfg(feature = "std")]
-pub fn initialize_multithreaded() {
-    static STARTED: std::sync::Once = std::sync::Once::new();
-    STARTED.call_once(|| {
+pub fn initialize_multithreaded(threads: Option<core::num::NonZeroUsize>) {
+    static STARTED: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    let cpus = || std::thread::available_parallelism().map_or(1, |n| n.get());
+    let started = *STARTED.get_or_init(|| {
+        let threads = threads.map_or_else(cpus, |n| n.get());
         initialize();
-        lanes::initialize();
-        // A queue needs threads, which wasm32 lacks (its first submission panics).
-        #[cfg(not(target_family = "wasm"))]
-        queue::start_delivery();
+        lanes::initialize(threads);
+        threads
     });
+    if let Some(threads) = threads {
+        assert_eq!(started, threads.get(), "blake3-servil: the multithreaded calls were started with {started} threads; initialize_multithreaded cannot change that to {threads}");
+    }
 }
 
 /// Which of BLAKE3's three functions a call computes: the plain hash
@@ -1206,7 +1174,7 @@ pub fn hash_with(mode: Mode, input: &[u8]) -> Hash {
 /// [`hash_multithreaded`] in any [`Mode`], at its speed.
 ///
 /// ```
-/// # blake3_servil::initialize_multithreaded();
+/// # blake3_servil::initialize_multithreaded(None);
 /// use blake3_servil::Mode;
 /// let key = [7u8; 32];
 /// let input = vec![1u8; 1 << 20];
@@ -1248,7 +1216,7 @@ fn hash_serial_from(platform: Platform, input: &[u8], key: &CVWords, flags: u8) 
 /// parallel, not one miss at a time (M4 Max, after other work: 4 KiB
 /// x0.61, 8 KiB x0.51, 16 KiB x0.66; 32 KiB and up level, the hashing's
 /// own time dwarfing it; jobs 971-975). The streaming paths (Hasher,
-/// batches, the queue's tasks) run back to back with their code near.
+/// batches, the streams' tasks) run back to back with their code near.
 #[cfg(all(blake3_neon_hybrid, feature = "std"))]
 const PREFETCH_BELOW: usize = 64 * 1024;
 
@@ -1468,7 +1436,7 @@ fn hash_many_serial_from(platform: Platform, input: &[u8], message_len: usize, k
 /// hashes, never slower.
 ///
 /// ```
-/// # blake3_servil::initialize_multithreaded();
+/// # blake3_servil::initialize_multithreaded(None);
 /// let leaves = vec![7u8; 4096 * 256];
 /// let mut hashes = vec![[0u8; 32]; 4096];
 /// blake3_servil::hash_many_multithreaded(&leaves, 256, &mut hashes);
@@ -1504,7 +1472,7 @@ pub fn hash_many_with(mode: Mode, input: &[u8], message_len: usize, out: &mut [[
 /// [`hash_many_multithreaded`] in any [`Mode`], at its speed.
 ///
 /// ```
-/// # blake3_servil::initialize_multithreaded();
+/// # blake3_servil::initialize_multithreaded(None);
 /// use blake3_servil::Mode;
 /// let key = [7u8; 32];
 /// let nodes = vec![1u8; 20000 * 64];
@@ -1737,7 +1705,7 @@ pub fn kernel_report_many_multithreaded(message_len: usize) -> KernelReport {
         // zero past its end), from two messages.
         from_len: lanes::MIN_SPLIT_LEN.div_ceil(many::slot_len(message_len)).max(2) * message_len,
         name: "split over threads",
-        why: "From here the batch is cut into ranges of messages that the calling thread and this crate's worker threads (one per CPU beyond the first) hash at once, each with integer and NEON code.",
+        why: "From here the batch is cut into ranges of messages that the calling thread and this crate's worker threads (by default one per CPU beyond the first) hash at once, each with integer and NEON code.",
     });
     report
 }
@@ -1758,7 +1726,7 @@ pub fn kernel_report_multithreaded() -> KernelReport {
     report.kernels.push(Kernel {
         from_len: lanes::MIN_SPLIT_LEN,
         name: "split over threads, SME2 on one for large inputs",
-        why: "From here the input is cut into whole subtrees that the calling thread and this crate's worker threads (one per CPU beyond the first) hash at once, the workers with integer and NEON code. Once its share comes to 128 KiB or more (with sixteen threads, inputs from about 1.3 MiB), the calling thread hashes a share sized to its speed on SME2, with integer code beside it from 256 KiB pieces.",
+        why: "From here the input is cut into whole subtrees that the calling thread and this crate's worker threads (by default one per CPU beyond the first) hash at once, the workers with integer and NEON code. Once its share comes to 128 KiB or more (with sixteen threads, inputs from about 1.3 MiB), the calling thread hashes a share sized to its speed on SME2, with integer code beside it from 256 KiB pieces.",
     });
     report
 }
@@ -2146,11 +2114,12 @@ impl Hasher {
     /// faster: the same result, never slower. Pieces of 512 KiB and more
     /// use them, as [`hash_multithreaded`] does; shorter ones hash on the
     /// calling thread. One `Hasher` may mix the two calls. When reading
-    /// the pieces keeps your thread busy, a [`Queue::pieces`] is faster: it
-    /// hashes each piece while your thread reads the next.
+    /// the pieces keeps your thread busy, a [`stream`] is faster
+    /// ([`Stream::submit_reader`], or [`Stream::submit_with`]): it hashes
+    /// each piece while your thread reads the next.
     ///
     /// ```
-    /// # blake3_servil::initialize_multithreaded();
+    /// # blake3_servil::initialize_multithreaded(None);
     /// let input = vec![7u8; 3 << 20];
     /// let mut hasher = blake3_servil::Hasher::new();
     /// for piece in input.chunks(64 * 1024) {
@@ -2399,8 +2368,9 @@ impl HasherCore {
 
 
     /// [`update`](Hasher::update) with every whole subtree's result taken
-    /// from `results`, in the order [`plan_subtrees`] gave them (in the same
-    /// parts), as [`lanes::Task`] computes them.
+    /// from `results`, one a whole subtree in order (in parts of
+    /// [`lanes::TASK_LEN`], as [`hasher::subtree_len`] cuts them), as
+    /// [`lanes::Task`] computes them.
     #[cfg(feature = "std")]
     pub(crate) fn update_with_results<'a>(&mut self, input: &[u8], results: &mut impl Iterator<Item = &'a [u8; BLOCK_LEN]>) {
         for part in input.chunks(lanes::TASK_LEN) {

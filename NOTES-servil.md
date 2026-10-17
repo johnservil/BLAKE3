@@ -546,7 +546,7 @@ SME2 chunked-message kernel and the NEON `hash_messages_raw`, which gained
 a flags argument): the mode's flags ride in the low byte of each kernel's
 packed flags, beside CHUNK_START / CHUNK_END / PARENT / ROOT, so every mode
 costs the same (perf_regress on the VM: level). `initialize()` runs the
-self-test alone; `initialize_multithreaded()` also starts the pool.
+self-test alone; `initialize_multithreaded(None)` also starts the pool.
 
 **The queue, as rebuilt from scratch** (September 28, 2026; branch
 candidate/queue-simple; `src/queue.rs` module docs have the mechanism).
@@ -2186,7 +2186,8 @@ or tested beyond tests/queue_no_alloc.rs:
   subtree it sends to the pool. Hasher::update_reader past 64 KiB: a
   1 MiB buffer (src/io.rs), freed at return; update_mmap*: the mapping.
 - **Once per process**: the pool (its first multithreaded call, or
-  initialize_multithreaded): one thread per CPU beyond the first, and the
+  initialize_multithreaded): one fewer than the threads it asks for (by
+  default, one per CPU beyond the first), and the
   SME2 thread where SME2 is, each with std's default stack (2 MiB of
   address space, touched as used); the task list, a VecDeque that grows
   to the most tasks ever queued at once (each queue makes room for what
@@ -2816,6 +2817,45 @@ so `canon` compares the root as it compares any whole call. Proved:
 rejected. From 256 KiB the walk calls the hybrid kernel, which needs its
 contract in this form once its proof lands (the other agent's
 candidate/prove-sme2-hybrid-every).
+
+## The pool, special-purpose: a lock-free source per stream, a parking token per worker (October 16, 2026)
+
+Zooko's lesson, from this work: it is often better not to reuse a
+general-purpose abstraction or tool and to build a special-purpose one;
+especially so for preemptive multithreading's paradigms and conventional
+wisdom.
+
+The case (i7-12700K, 19 workers). The pool was conventional: one
+`Mutex<VecDeque<Task>>`, and one `Mutex` with one `Condvar` for idle
+workers. A task's hand-over cost the producer, the bottleneck thread, 434
+ns (the lock 19 workers poll, list work, a wake check reading counters the
+workers write); and every worker slept and woke through one mutex and
+condvar, which the kernel serialized on one futex bucket's spinlock: 6-15%
+of all samples in `native_queued_spin_lock_slowpath` (`futex_q_lock`,
+`futex_wake`), resolved against vmlinux.
+
+The special-purpose pool (experiment/devon-pool-cursor): each stream's own
+ring is its queue (`published`, one Release store by the stream; `claimed`,
+CAS by workers; both only count up); each worker parks on its own thread
+token (park/unpark, a parked bit mask); the producer wakes at most one
+worker per publish, woken workers chain; workers spin 5 us while a stream
+is open. Against the same stream on the conventional pool, every stream
+cell level or faster (messages -5% to -49%, batches -3% to -15%); one-shot
+cells level; context switches per run 28.5k -> 10k. Spin 0 cost small
+messages 9-12% against the earlier stream; 20 us cost 22% more CPU time per
+run for no speed. Evidence: bench-hashes-validation/pool-cursor; the
+probes (`stream_probe`, `contention_probe`) on the fork's branch
+probe/devon-stream.
+
+Decided (October 16): the ring is 2 MiB. With the digests in the
+program's places, a 4 MiB ring made two programs streaming 4 MiB batches
+18% slower (ring, places and the programs' buffers past the L3; 3 MiB
++7.5%, 2 MiB level), at a cost of 2-4 points on some other cells against
+4 MiB. A deliberate cost, accepted: 64-byte messages streamed one at a
+time run 4-8% slower than in the stream's earlier design (each message's
+place comes back alone, about 1-2 ns a message); equal-length short
+messages belong in `submit_batch`, 5-13% faster, and the stream's
+documentation says so. A cap on how many workers spin did not help.
 
 ## Energy, and the M4 Max's three SME units (October 17, 2026)
 

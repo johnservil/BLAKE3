@@ -110,7 +110,7 @@ pub unsafe extern "C" fn b3_hash(mode: *const B3Mode, input: *const c_void, len:
 /// As `b3_hash`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn b3_hash_multithreaded(mode: *const B3Mode, input: *const c_void, len: usize) -> Digest {
-    blake3_servil::initialize_multithreaded();
+    blake3_servil::initialize_multithreaded(None);
     let mode = unsafe { self::mode(mode) };
     digest(blake3_servil::hash_multithreaded_with(mode.mode(), unsafe { bytes(input, len, "the input") }))
 }
@@ -145,7 +145,7 @@ pub unsafe extern "C" fn b3_hash_many(mode: *const B3Mode, input: *const c_void,
 /// As `b3_hash_many`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn b3_hash_many_multithreaded(mode: *const B3Mode, input: *const c_void, message_len: usize, count: usize, out: *mut Digest) {
-    blake3_servil::initialize_multithreaded();
+    blake3_servil::initialize_multithreaded(None);
     let mode = unsafe { self::mode(mode) };
     let (input, out) = unsafe { batch(input, message_len, count, out) };
     blake3_servil::hash_many_multithreaded_with(mode.mode(), input, message_len, out);
@@ -182,7 +182,7 @@ pub unsafe extern "C" fn b3_hasher_update(hasher: *mut B3Hasher, input: *const c
 /// As `b3_hasher_update`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn b3_hasher_update_multithreaded(hasher: *mut B3Hasher, input: *const c_void, len: usize) {
-    blake3_servil::initialize_multithreaded();
+    blake3_servil::initialize_multithreaded(None);
     let hasher = unsafe { hasher_mut(hasher) };
     hasher.update_multithreaded(unsafe { bytes(input, len, "the input") });
 }

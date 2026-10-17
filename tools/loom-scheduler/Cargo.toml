@@ -1,0 +1,17 @@
+# A Loom model of the pool's protocol (src/lanes.rs): claiming by CAS below
+# `published`, parking on per-worker bits, waking with the owed chain, and a
+# one-shot job's completion. Not part of the workspace: run it alone,
+#     cd tools/loom-scheduler && RUSTFLAGS="--cfg loom" cargo test --release
+[package]
+name = "loom-scheduler"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+loom = "0.7"
+
+[workspace]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(loom)"] }

@@ -3,7 +3,7 @@
 contract requires: each doc example (a hidden line), and each `main`,
 `#[test]` function of the integration tests, examples, b3sum, and
 test_vectors. A doc example that makes a
-multithreaded call or uses a `Queue` calls `initialize_multithreaded()`
+multithreaded call or uses a `stream` calls `initialize_multithreaded(None)`
 instead (its hidden `initialize()` line becomes that). A function that
 already calls an `initialize` is left as it is, so the script can run again
 after a merge (take either side's version of a conflicting file, then run
@@ -31,14 +31,14 @@ def doc_examples(path):
             j += 1
         block = lines[i + 1:j]
         rust = set(lang.split(",")) <= {"", "rust", "no_run", "should_panic", "compile_fail", "edition2021", "edition2024"}
-        threads = any(re.search(r"multithreaded|\bQueue\b", b) for b in block)
+        threads = any(re.search(r"multithreaded|\bstream\(", b) for b in block)
         call = "initialize_multithreaded" if threads else "initialize"
         if rust and "compile_fail" not in lang and not any("initialize" in b for b in block):
             at = next((k + 1 for k, b in enumerate(block) if re.search(r"\bfn main\b", b)), 0)
             block = block[:at] + [prefix + f"# blake3_servil::{call}();"] + block[at:]
             changed = True
         elif rust and threads and any(b.endswith("# blake3_servil::initialize();") for b in block):
-            block = [b.replace("# blake3_servil::initialize();", "# blake3_servil::initialize_multithreaded();") for b in block]
+            block = [b.replace("# blake3_servil::initialize();", "# blake3_servil::initialize_multithreaded(None);") for b in block]
             changed = True
         out += block + [lines[j]]
         i = j + 1

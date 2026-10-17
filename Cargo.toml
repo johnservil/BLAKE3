@@ -88,20 +88,16 @@ name = "api_plan"
 required-features = ["std"]
 
 [[test]]
-name = "one_cpu"
+name = "stream_one_cpu"
 required-features = ["std"]
 
 [[test]]
-name = "queue_no_alloc"
+name = "stream_no_alloc"
 harness = false
 required-features = ["std"]
 
 [[example]]
 name = "scaling"
-required-features = ["std"]
-
-[[example]]
-name = "queue_probe"
 required-features = ["std"]
 
 [[example]]

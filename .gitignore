@@ -1,3 +1,5 @@
 Cargo.lock
 target
 __pycache__/
+/tools/loom-scheduler/target
+/tools/loom-scheduler/Cargo.lock

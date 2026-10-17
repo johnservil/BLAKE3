@@ -2,7 +2,7 @@
 //! encoding fed in pieces of PIECE bytes, nonstop (clocks::measure,
 //! clocks::summary::mean), ns per message byte. `verifier_probe MODE PIECE`.
 fn main() {
-    blake3_servil::initialize_multithreaded();
+    blake3_servil::initialize_multithreaded(None);
     let args: Vec<String> = std::env::args().skip(1).collect();
     let (pooled, piece): (bool, usize) = (args[0] == "mt", args[1].parse().unwrap());
     let len = 64 << 20;

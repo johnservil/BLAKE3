@@ -50,9 +50,15 @@ struct Inner {
     #[arg(long, default_value_t = 0, value_name("SEEK"))]
     seek: u64,
 
-    /// Ignored, with a warning: b3sum chooses its threads itself
+    /// How many threads to hash on [default: one per CPU]
+    ///
+    /// 1: b3sum runs on one thread, reading and hashing each file in turn
+    /// (for one b3sum per core, or to leave other cores to other work).
+    /// N > 1: up to N files hash at once, and each spreads over up to N
+    /// threads, so more than N threads can run together. To limit b3sum to
+    /// chosen CPUs, start it under `taskset -c LIST` (Linux).
     #[arg(long, value_name("NUM"))]
-    num_threads: Option<usize>,
+    num_threads: Option<std::num::NonZeroUsize>,
 
     /// No effect: b3sum chooses between reading and mapping each file
     #[arg(long)]
@@ -127,7 +133,7 @@ impl Args {
         })
     }
 
-    fn num_threads(&self) -> Option<usize> {
+    fn num_threads(&self) -> Option<std::num::NonZeroUsize> {
         self.inner.num_threads
     }
 
@@ -250,13 +256,21 @@ const POOL_LEN: usize = 512 << 10;
 #[cfg(unix)]
 const SHARED_POOL_LEN: usize = 8 << 20;
 
+/// The most threads b3sum hashes on (--num-threads, else one per CPU),
+/// set once in main before any input is hashed.
+static THREADS: std::sync::OnceLock<std::num::NonZeroUsize> = std::sync::OnceLock::new();
+
+fn threads() -> std::num::NonZeroUsize {
+    *THREADS.get().expect("main sets the threads first")
+}
+
 /// Hash `input` into `hasher`: over the pool from `pool_from` (at least
 /// POOL_LEN), starting it at the first such input
 /// (`initialize_multithreaded`), so a run of small files starts no
-/// threads; on this thread below.
+/// threads; on this thread below, or always with one thread.
 fn update(hasher: &mut blake3::Hasher, input: &[u8], pool_from: usize) {
-    if input.len() >= pool_from {
-        blake3::initialize_multithreaded();
+    if input.len() >= pool_from && threads().get() > 1 {
+        blake3::initialize_multithreaded(Some(threads()));
         hasher.update_multithreaded(input);
     } else {
         hasher.update(input);
@@ -295,7 +309,17 @@ fn fill(reader: &mut impl Read, buffer: &mut [u8]) -> io::Result<usize> {
 /// (`bench-hashes b3sum`; NOTES-servil.md, "b3sum, measured").
 fn update_from(hasher: &mut blake3::Hasher, mut reader: impl Read + Send) -> io::Result<()> {
     BUFFERS.with_borrow_mut(|[first, second]| {
-        let len = fill(&mut reader, first)?;
+        let mut len = fill(&mut reader, first)?;
+        if threads().get() == 1 {
+            // Each piece read, then hashed, on this thread.
+            loop {
+                update(hasher, &first[..len], POOL_LEN);
+                if len < PIECE {
+                    return Ok(());
+                }
+                len = fill(&mut reader, first)?;
+            }
+        }
         if len < PIECE {
             update(hasher, &first[..len], POOL_LEN);
             return Ok(());
@@ -557,7 +581,7 @@ fn parse_check_line(mut line: &str) -> anyhow::Result<ParsedCheckLine> {
 /// opening and reading each, which one thread does one at a time.
 fn hash_inputs(args: &Args) -> u64 {
     let paths = &args.file_args;
-    let threads = std::thread::available_parallelism().map_or(1, |n| n.get()).min(paths.len());
+    let threads = threads().get().min(paths.len());
     let next = std::sync::atomic::AtomicUsize::new(0);
     let (done_tx, done_rx) = std::sync::mpsc::channel();
     std::thread::scope(|scope| {
@@ -711,9 +735,8 @@ fn check_one_checkfile(path: &Path, args: &Args, files_failed: &mut u64) -> anyh
 fn main() -> anyhow::Result<()> {
     blake3::initialize();
     let args = Args::parse()?;
-    if args.num_threads().is_some() {
-        eprintln!("{NAME}: warning: --num-threads is no longer supported and is ignored; b3sum chooses its threads itself");
-    }
+    let threads = args.num_threads().unwrap_or_else(|| std::thread::available_parallelism().unwrap_or(std::num::NonZeroUsize::MIN));
+    THREADS.set(threads).expect("main sets the threads once");
     let mut files_failed = 0u64;
     // Note that file_args automatically includes `-` if nothing is given.
     if args.check() {

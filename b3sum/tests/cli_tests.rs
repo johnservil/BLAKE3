@@ -711,19 +711,26 @@ fn test_globbing() {
     assert_eq!(expected, output);
 }
 
+/// --num-threads 1 and 3 hash as the default does: a file past a read
+/// piece and the pool's threshold beside a small one, and the same bytes
+/// from stdin, every digest the library's. 0 is refused.
 #[test]
-fn test_num_threads_is_ignored_with_a_warning() {
+fn test_num_threads() {
     blake3::initialize();
-    let expected = format!("{}  -", blake3::hash(b"foo").to_hex());
-    let output = cmd!(b3sum_exe(), "--num-threads", "3")
-        .stdin_bytes("foo")
-        .stdout_capture()
-        .stderr_capture()
-        .run()
-        .unwrap();
-    assert_eq!(expected, std::str::from_utf8(&output.stdout).unwrap().trim_end());
-    let stderr = std::str::from_utf8(&output.stderr).unwrap();
-    assert!(stderr.contains("--num-threads is no longer supported"), "stderr: {stderr}");
+    let dir = tempfile::tempdir().unwrap();
+    let big: Vec<u8> = (0..9u32 << 20).map(|i| (i * 7 + i / 4093) as u8).collect();
+    let (file1, file2) = (dir.path().join("big"), dir.path().join("small"));
+    fs::write(&file1, &big).unwrap();
+    fs::write(&file2, b"bar").unwrap();
+    let expected = format!("{}\n{}", blake3::hash(&big).to_hex(), blake3::hash(b"bar").to_hex());
+    for threads in ["1", "3"] {
+        let output = cmd!(b3sum_exe(), "--num-threads", threads, "--no-names", &file1, &file2).read().unwrap();
+        assert_eq!(expected, output, "{threads} threads");
+        let output = cmd!(b3sum_exe(), "--num-threads", threads, "--no-names").stdin_bytes(big.clone()).read().unwrap();
+        assert_eq!(blake3::hash(&big).to_hex().to_string(), output, "{threads} threads, stdin");
+    }
+    let zero = cmd!(b3sum_exe(), "--num-threads", "0").stdin_bytes("foo").stderr_null().unchecked().run().unwrap();
+    assert!(!zero.status.success(), "0 threads is refused");
 }
 
 /// Inputs around the 4 MiB read piece (one piece, one byte more, two
