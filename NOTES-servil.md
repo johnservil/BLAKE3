@@ -2278,6 +2278,47 @@ of 0.5-0.8 us and give back 10-20% of the compute (rolling's cost in
 earlier measurements): about 10% for a second kernel family to
 generate, test, and self-test. Not built.
 
+## b3sum, measured: where its time goes, and what was tried (October 16, 2026)
+
+i7-12700K (16 P threads, 4 E cores), Linux 7.0, ext4 on NVMe, bench-hashes
+b3sum (15 rounds; cached and from storage), servil beb9abe against the
+variants below. Evidence on Devon's machine: bench-hashes-validation/
+b3sum-v3, b3sum-hybrid, b3sum-stream.
+
+**Costs of the parts** (cached files, a P core): open 0.65 us, fstat 0.19
+us, read 16 KiB to its end 1.1 us, close 0.19 us; a thread start 20-30 us;
+a hand-off to an awake thread about 30 ns, a wake of a sleeping one 15-45
+us before it runs; a whole b3sum process 650-800 us. munmap about 65 ns a
+page (with cross-core TLB flushes); exit tears down held mappings at
+about 15 ms per GiB.
+
+**The mixed tree (1000 files, 74 MiB), cached: where 6.7 ms goes.** About
+0.4 ms before hashing (initialize, 1000 arguments), 0.5 ms starting 20
+threads, 4.5-5.5 ms hashing, 0.6 ms printing 1000 lines (a write each).
+Small files alone hash in about 2 ms, the 20 files of 1-16 MiB alone in
+2-3 ms, together in 4.7-7 ms: while the larger files run on the pool, 20
+b3sum threads and 19 workers share 20 CPUs, and each small file's hashing
+takes three times as long. A 1 MiB file on the pool pays its wake (about
+100 us) to save less.
+
+**Tried, with the result against servil** (cached unless said):
+
+| variant | result | kept |
+|---|---|---|
+| a cached file beside others takes the pool only from 8 MiB (#52) | mixed tree x0.87-0.95, rest level | proposed |
+| never unmap a file; exit reclaims (#56) | 256 MiB x0.58-0.62, 1 GiB x0.60-0.92, 16 x 64 MiB x0.76, mixed tree x0.87-0.89 | proposed |
+| a file that changes while hashed is an error (#53) | level | proposed |
+| plan ahead: stat all, big files first over the pool | x1.08 slower | no |
+| plan ahead: no pool, largest first | x1.20 slower | no |
+| plan ahead: stat in the hashing threads, big files first | x1.03 | no |
+| buffered output | not significant | no |
+| one stream for every file, one submitting thread | 1000 x 16 KiB x2.6 and x5.3 (from storage) slower, mixed tree x1.9 and x4.1 | no |
+| hybrid: 1-2 opener threads map files (never unmapped), one stream hashes them | mixed tree x0.83 (1 opener), x0.755 (2); 1000 x 16 KiB x1.47, x1.13 slower; 16 x 64 MiB level; from storage, mixed tree x1.18 slower | not yet |
+
+From storage, the drive (3.2-3.5 GB/s) bounds every large input, and every
+variant reads level there. The hybrid's from-storage cells were partly
+served from the page cache (the suite flagged them): not yet understood.
+
 ## b3sum: several files at once; which API it calls (October 6, 2026)
 
 Zooko asked whether b3sum could be faster through another API, a stream
