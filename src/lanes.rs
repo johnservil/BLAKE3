@@ -727,10 +727,10 @@ pub(crate) fn initialize() {
             for worker in 2..cpus {
                 std::thread::Builder::new()
                     .name(format!("blake3-worker-{worker}"))
-                    .spawn(worker_main)
+                    .spawn(move || worker_main(worker))
                     .expect("spawning a BLAKE3 worker");
             }
-            worker_main()
+            worker_main(1)
         })
         .expect("spawning a BLAKE3 worker");
 }
@@ -1289,14 +1289,32 @@ impl Tasks {
     }
 }
 
-fn worker_main() {
+/// probe/sme-units: workers 1 to BLAKE3_SME2_WORKERS hash on SME2 (no
+/// turn: each its own unit, if the OS spreads them); with BLAKE3_SME2_E=1,
+/// worker 1 at background QoS, which macOS keeps on the E-cores.
+fn worker_platform(worker: usize) -> Platform {
+    let var = |name: &str| std::env::var(name).ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(0);
+    #[cfg(target_vendor = "apple")]
+    if worker == 1 && var("BLAKE3_SME2_E") == 1 {
+        unsafe extern "C" {
+            fn pthread_set_qos_class_self_np(class: u32, relative: i32) -> i32;
+        }
+        // QOS_CLASS_BACKGROUND.
+        // Sound: a plain call about this thread.
+        unsafe { pthread_set_qos_class_self_np(0x09, 0) };
+    }
+    if worker <= var("BLAKE3_SME2_WORKERS") { Platform::detect() } else { pool_platform() }
+}
+
+fn worker_main(worker: usize) {
     let pool = pool();
     let mut start = 0;
+    let platform = worker_platform(worker);
     loop {
         let (job_ptr, index) = pool.next_piece(&mut start);
         // Sound by the pool's contract: our active reservation keeps the job alive.
         let job = unsafe { &*job_ptr };
-        unsafe { job.hash_piece(index, pool_platform()) };
+        unsafe { job.hash_piece(index, platform) };
         pool.piece_done(&job.active);
     }
 }
