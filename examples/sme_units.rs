@@ -1,6 +1,7 @@
 //! probe/sme-units: the pool's first K workers on SME2 (each perhaps its
 //! own SME unit), and with `e` the first of them on the E-cores. Each
-//! phase hashes back to back for 5 s after a 3 s rest; each line leads
+//! run starts after a minute's rest, and each phase hashes back to back
+//! for 5 s after a 3 s rest; each line leads
 //! with its start (Unix seconds), to line up with powermetrics.
 //!
 //!     cargo run --release --example sme_units -- K [e]
@@ -32,6 +33,9 @@ fn main() {
         std::env::set_var("BLAKE3_SME2_WORKERS", k.to_string());
         std::env::set_var("BLAKE3_SME2_E", if e { "1" } else { "0" });
     }
+    // A minute's rest first, so each run starts with the chip cool (back
+    // to back, full-load runs throttled within minutes, jobs 1589-1596).
+    std::thread::sleep(std::time::Duration::from_secs(60));
     blake3_servil::initialize_multithreaded();
     println!("K = {k} SME2 workers{}", if e { ", the first on the E-cores" } else { "" });
     let big: Vec<u8> = (0..64usize << 20).map(|i| (i * 31) as u8).collect();
