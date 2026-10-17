@@ -48,6 +48,7 @@
 use std::time::Instant;
 
 pub mod child;
+pub mod energy;
 pub mod load;
 pub mod other_code;
 pub mod summary;
