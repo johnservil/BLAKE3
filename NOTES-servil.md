@@ -986,6 +986,49 @@ length it takes, in all three modes, against the reference); qemu runs no
 AVX-512, so that path is the AVX-512 kernel's own two-input path, untested
 here. Unmeasured on x86 hardware.
 
+## Mappings and page tables: existing costs nothing; creating and destroying them costs (October 16, 2026)
+
+Conventional wisdom treats a mapping, and the page tables behind it, as a
+cost to free as soon as possible. Zooko's hypothesis was the
+contrary: that a page-table entry's *existence* costs nothing, and only
+*using* it (creating it at a fault, tearing it down at an unmap or at
+exit) costs. It is also the idea behind smalloc. The experiments below
+support it; nothing measured disproves it. Keep the two questions apart:
+whether entries exist, and whether anything touches them.
+
+**Existence** (i7-12700K, Linux 7.0, 16 GB, one NUMA node, NUMA balancing
+off, `vm.max_map_count` 1048576). A process mapped six 1 GiB files, touched
+every page, then sat idle, holding the mappings or having unmapped them;
+another process then read 10 GiB of other files, more than memory holds
+beside them, so the kernel had to reclaim the page cache. Two rounds each:
+
+| the holder | the reader's speed | the holder's files still cached | the holder's page tables |
+|---|---|---|---|
+| holds its 6 GiB of mappings | 2.32, 2.33 GiB/s | 79%, 100% | 12 MiB |
+| unmapped them (still running) | 2.27, 2.10 GiB/s | 34%, 22% | 0.05 MiB |
+| none (the files read into the cache) | 2.32, 2.33 GiB/s | 20%, 20% | none |
+
+- No slowdown of anyone: the other program read at the same speed.
+- Memory: 2 MiB of page tables per GiB of file pages touched (none for
+  mapped space never touched), kernel memory that reclaim does not free.
+  It matters only at a scale where it is a share of RAM (a terabyte held
+  in one process: about 2 GB on this machine).
+- A policy effect, not a cost: while mapped, a file's pages stay cached
+  in preference to others' (mapped pages count as in use).
+
+**Use.** Creating entries (page faults) and destroying them are what cost:
+`munmap` of 64 MiB, touched, took 1.1 ms with one thread and 1.4 ms with 19
+threads alive (cross-core TLB flushes): about 65 ns a page, a third of what
+hashing the page costs at 23 GB/s. Exit tears them down too, about 15 ms
+per GiB, but without the flushes. Inside b3sum, unmapping its 1 GiB file
+took 23-25 ms of a 56 ms run; a b3sum that never unmaps (held to exit) ran
+cached 256 MiB x0.61, 16 MiB x0.84, 1 GiB x0.92 and the mixed tree x0.87,
+everything from storage level (bench-hashes b3sum, three runs).
+
+So: map once, never unmap within a process's life, and let exit reclaim
+(crash-only). Bound the memory, if ever, by the program's total memory
+use, not by a cap on mappings.
+
 ## Rejected (with the reason; do not retry without new evidence)
 
 - **A C `crypto_core` for SUPERCOP** (October 12, 2026): one whole 16-chunk
