@@ -17,7 +17,7 @@ use crate::{CVBytes, CVWords, ChunkState, Hash, Hasher, IncrementCounter, Mode, 
 /// Requires `out.len() == items.len()`.
 ///
 /// ```
-/// # blake3_servil::initialize_multithreaded();
+/// # blake3_servil::initialize_multithreaded(None);
 /// use blake3_servil::Mode;
 /// let items: Vec<Vec<u8>> = (0..100).map(|i| vec![i as u8; 1000 * i]).collect();
 /// let slices: Vec<&[u8]> = items.iter().map(|m| m.as_slice()).collect();

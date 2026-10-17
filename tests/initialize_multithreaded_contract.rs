@@ -4,9 +4,9 @@
 // leaves it as it is.)
 
 #[test]
-#[should_panic(expected = "call blake3_servil::initialize_multithreaded() once, before any multithreaded call or stream")]
+#[should_panic(expected = "call blake3_servil::initialize_multithreaded(None) once, before any multithreaded call or stream")]
 fn a_multithreaded_call_before_initialize_multithreaded_panics() {
     blake3_servil::initialize();
-    // Deliberately without initialize_multithreaded(): this test is the contract's check.
+    // Deliberately without initialize_multithreaded(None): this test is the contract's check.
     blake3_servil::hash_multithreaded(b"");
 }

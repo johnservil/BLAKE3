@@ -57,7 +57,7 @@ fn from_c() {
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     let out = String::from_utf8(out.stdout).unwrap();
 
-    blake3_servil::initialize_multithreaded();
+    blake3_servil::initialize_multithreaded(None);
     let input: Vec<u8> = (0..100000).map(|i| (i % 251) as u8).collect();
     let key = *b"whats the Elvish word for friend";
     let context = "BLAKE3 2019-12-27 16:29:52 test vectors context";

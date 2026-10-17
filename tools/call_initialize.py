@@ -3,7 +3,7 @@
 contract requires: each doc example (a hidden line), and each `main`,
 `#[test]` function of the integration tests, examples, b3sum, and
 test_vectors. A doc example that makes a
-multithreaded call or uses a `stream` calls `initialize_multithreaded()`
+multithreaded call or uses a `stream` calls `initialize_multithreaded(None)`
 instead (its hidden `initialize()` line becomes that). A function that
 already calls an `initialize` is left as it is, so the script can run again
 after a merge (take either side's version of a conflicting file, then run
@@ -38,7 +38,7 @@ def doc_examples(path):
             block = block[:at] + [prefix + f"# blake3_servil::{call}();"] + block[at:]
             changed = True
         elif rust and threads and any(b.endswith("# blake3_servil::initialize();") for b in block):
-            block = [b.replace("# blake3_servil::initialize();", "# blake3_servil::initialize_multithreaded();") for b in block]
+            block = [b.replace("# blake3_servil::initialize();", "# blake3_servil::initialize_multithreaded(None);") for b in block]
             changed = True
         out += block + [lines[j]]
         i = j + 1

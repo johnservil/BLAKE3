@@ -116,7 +116,7 @@
 //!   stream allocates nothing.
 //! - **Once per process**: the startup self-test's buffers, about 45 KiB
 //!   of the calling thread's stack while it runs (it allocates nothing),
-//!   and the threads: a worker per CPU beyond the first, each with the
+//!   and the threads: by default a worker per CPU beyond the first, each with the
 //!   standard library's stack, started by [`initialize_multithreaded`].
 //!
 //! # Startup self-test
@@ -1049,7 +1049,7 @@ pub fn hash(input: &[u8]) -> Hash {
 /// [`Hash`](struct@Hash) as [`hash`], never slower.
 ///
 /// ```
-/// # blake3_servil::initialize_multithreaded();
+/// # blake3_servil::initialize_multithreaded(None);
 /// let hash = blake3_servil::hash_multithreaded(&[0u8; 1 << 20]);
 /// assert_eq!(hash, blake3_servil::hash(&[0u8; 1 << 20]));
 /// ```
@@ -1091,26 +1091,38 @@ pub fn initialize() {
 
 /// [`initialize`], and start the threads that the multithreaded calls and
 /// [`stream`] use: every program that makes such calls calls this once,
-/// before them, in place of `initialize`. It starts the first worker and
-/// returns; the first worker starts the
-/// others, a worker per CPU beyond the first (each 20-30 us on Linux
-/// x86-64), and calls run on the workers started so far. Later calls
-/// return at once. The threads wait asleep
-/// whenever no call has work for them (their memory: see
-/// [Memory](crate#memory)).
+/// before them, in place of `initialize`. It starts `threads - 1` workers,
+/// and each multithreaded call hashes on its calling thread and the
+/// workers (calls made at once share the workers), and on CPUs with SME2
+/// (Apple M4) the SME2 thread too; `None` means one thread
+/// a CPU (`std::thread::available_parallelism`, which follows the CPU
+/// affinity the program runs under). With 1, calls hash on their calling
+/// thread alone: no workers start, nor the SME2 thread. Otherwise it
+/// starts the first worker and returns; the first worker starts the others
+/// (each 20-30 us on Linux x86-64), and calls run on the workers started
+/// so far. The
+/// threads wait asleep whenever no call has work for them (their memory:
+/// see [Memory](crate#memory)). Later calls return at once, and must ask
+/// for the same number: another `Some` panics.
 ///
 /// ```
-/// blake3_servil::initialize_multithreaded();
+/// blake3_servil::initialize_multithreaded(None);
 /// let hash = blake3_servil::hash_multithreaded(&[0u8; 1 << 20]);
 /// assert_eq!(hash, blake3_servil::hash(&[0u8; 1 << 20]));
 /// ```
 #[cfg(feature = "std")]
-pub fn initialize_multithreaded() {
-    static STARTED: std::sync::Once = std::sync::Once::new();
-    STARTED.call_once(|| {
+pub fn initialize_multithreaded(threads: Option<core::num::NonZeroUsize>) {
+    static STARTED: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    let cpus = || std::thread::available_parallelism().map_or(1, |n| n.get());
+    let started = *STARTED.get_or_init(|| {
+        let threads = threads.map_or_else(cpus, |n| n.get());
         initialize();
-        lanes::initialize();
+        lanes::initialize(threads);
+        threads
     });
+    if let Some(threads) = threads {
+        assert_eq!(started, threads.get(), "blake3-servil: the multithreaded calls were started with {started} threads; initialize_multithreaded cannot change that to {threads}");
+    }
 }
 
 /// Which of BLAKE3's three functions a call computes: the plain hash
@@ -1162,7 +1174,7 @@ pub fn hash_with(mode: Mode, input: &[u8]) -> Hash {
 /// [`hash_multithreaded`] in any [`Mode`], at its speed.
 ///
 /// ```
-/// # blake3_servil::initialize_multithreaded();
+/// # blake3_servil::initialize_multithreaded(None);
 /// use blake3_servil::Mode;
 /// let key = [7u8; 32];
 /// let input = vec![1u8; 1 << 20];
@@ -1424,7 +1436,7 @@ fn hash_many_serial_from(platform: Platform, input: &[u8], message_len: usize, k
 /// hashes, never slower.
 ///
 /// ```
-/// # blake3_servil::initialize_multithreaded();
+/// # blake3_servil::initialize_multithreaded(None);
 /// let leaves = vec![7u8; 4096 * 256];
 /// let mut hashes = vec![[0u8; 32]; 4096];
 /// blake3_servil::hash_many_multithreaded(&leaves, 256, &mut hashes);
@@ -1460,7 +1472,7 @@ pub fn hash_many_with(mode: Mode, input: &[u8], message_len: usize, out: &mut [[
 /// [`hash_many_multithreaded`] in any [`Mode`], at its speed.
 ///
 /// ```
-/// # blake3_servil::initialize_multithreaded();
+/// # blake3_servil::initialize_multithreaded(None);
 /// use blake3_servil::Mode;
 /// let key = [7u8; 32];
 /// let nodes = vec![1u8; 20000 * 64];
@@ -1693,7 +1705,7 @@ pub fn kernel_report_many_multithreaded(message_len: usize) -> KernelReport {
         // zero past its end), from two messages.
         from_len: lanes::MIN_SPLIT_LEN.div_ceil(many::slot_len(message_len)).max(2) * message_len,
         name: "split over threads",
-        why: "From here the batch is cut into ranges of messages that the calling thread and this crate's worker threads (one per CPU beyond the first) hash at once, each with integer and NEON code.",
+        why: "From here the batch is cut into ranges of messages that the calling thread and this crate's worker threads (by default one per CPU beyond the first) hash at once, each with integer and NEON code.",
     });
     report
 }
@@ -1714,7 +1726,7 @@ pub fn kernel_report_multithreaded() -> KernelReport {
     report.kernels.push(Kernel {
         from_len: lanes::MIN_SPLIT_LEN,
         name: "split over threads, SME2 on one for large inputs",
-        why: "From here the input is cut into whole subtrees that the calling thread and this crate's worker threads (one per CPU beyond the first) hash at once, the workers with integer and NEON code. Once its share comes to 128 KiB or more (with sixteen threads, inputs from about 1.3 MiB), the calling thread hashes a share sized to its speed on SME2, with integer code beside it from 256 KiB pieces.",
+        why: "From here the input is cut into whole subtrees that the calling thread and this crate's worker threads (by default one per CPU beyond the first) hash at once, the workers with integer and NEON code. Once its share comes to 128 KiB or more (with sixteen threads, inputs from about 1.3 MiB), the calling thread hashes a share sized to its speed on SME2, with integer code beside it from 256 KiB pieces.",
     });
     report
 }
@@ -2107,7 +2119,7 @@ impl Hasher {
     /// each piece while your thread reads the next.
     ///
     /// ```
-    /// # blake3_servil::initialize_multithreaded();
+    /// # blake3_servil::initialize_multithreaded(None);
     /// let input = vec![7u8; 3 << 20];
     /// let mut hasher = blake3_servil::Hasher::new();
     /// for piece in input.chunks(64 * 1024) {

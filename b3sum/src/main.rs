@@ -309,7 +309,7 @@ const SHARED_POOL_LEN: usize = 8 << 20;
 /// threads; on this thread below.
 fn update(hasher: &mut blake3::Hasher, input: &[u8], pool_from: usize) {
     if input.len() >= pool_from {
-        blake3::initialize_multithreaded();
+        blake3::initialize_multithreaded(None);
         hasher.update_multithreaded(input);
     } else {
         hasher.update(input);

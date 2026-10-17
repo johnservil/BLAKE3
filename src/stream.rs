@@ -134,7 +134,7 @@ struct Out<const N: usize>(UnsafeCell<[u8; N]>);
 /// [`finish`](Stream::finish) between rounds that depend on each other).
 ///
 /// ```
-/// # blake3_servil::initialize_multithreaded();
+/// # blake3_servil::initialize_multithreaded(None);
 /// use blake3_servil::{Hash, Mode};
 /// let messages: Vec<Vec<u8>> = (0..1000u32).map(|i| i.to_le_bytes().repeat(16)).collect();
 /// let mut digests = vec![Hash::from_bytes([0; 32]); messages.len()];

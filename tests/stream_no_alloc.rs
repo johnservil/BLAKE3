@@ -53,7 +53,7 @@ fn main() {
 
 #[cfg(not(any(target_family = "wasm", miri)))]
 fn a_warm_stream_allocates_nothing() {
-    blake3_servil::initialize_multithreaded();
+    blake3_servil::initialize_multithreaded(None);
     // The threads start in the background (each start allocates, for the
     // standard library's stack-overflow handler), within about 1 ms: the
     // first 100 ms are their warm-up.

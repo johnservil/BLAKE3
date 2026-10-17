@@ -36,7 +36,7 @@ fn every_stream_completes_on_one_cpu() {
     // Sound: one long with CPU 0's bit, for this process.
     assert_eq!(unsafe { sched_setaffinity(0, core::mem::size_of_val(&mask), mask.as_ptr()) }, 0, "pin the process to CPU 0");
     assert_eq!(std::thread::available_parallelism().unwrap().get(), 1);
-    blake3_servil::initialize_multithreaded();
+    blake3_servil::initialize_multithreaded(None);
     // Messages short (gathered into tasks) and long (pieces), borrowed,
     // written, and read; and batches small and large.
     let lens = [0, 64, 1000, 16 << 10, 64 << 10, (1 << 20) + 1, 5 << 20];

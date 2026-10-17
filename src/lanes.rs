@@ -29,7 +29,7 @@
 //! in order by compare-and-swap, with no lock and no shared queue. A call
 //! publishes its job's pieces at once and hashes pieces itself until none
 //! remain, then waits for the last ones in flight. Workers, started once per
-//! process ([`crate::initialize_multithreaded`]), one per CPU beyond the
+//! process ([`crate::initialize_multithreaded`]), by default one per CPU beyond the
 //! first, take from every registered source, one item at a time: two callers
 //! hashing at once each get about half the workers' time, and a slow
 //! thread takes fewer pieces than a fast one; there is nothing to tune for
@@ -164,13 +164,13 @@ fn spare_pool() -> Option<(&'static Pool, Caller<'static>)> {
     let pool = pool();
     let callers = pool.callers.fetch_add(1, Ordering::SeqCst) + 1;
     let caller = Caller(&pool.callers);
-    (callers < pool.cpus).then_some((pool, caller))
+    (callers < pool.threads).then_some((pool, caller))
 }
 
 /// A call's note that other callers took the pool (with one CPU, it has no
 /// threads): for the kernel reports' test (crate::ran).
 fn pool_busy() {
-    if pool().cpus > 1 {
+    if pool().threads > 1 {
         crate::ran(crate::Ran::PoolBusy);
     }
 }
@@ -179,7 +179,7 @@ fn pool_busy() {
 /// values, hashed over the pool (the SME2 thread's prefix first, where it
 /// takes one).
 fn tree_cvs(pool: &Pool, input: &[u8], key: &crate::CVWords, counter: u64, flags: u8) -> (Vec<Piece>, Vec<ChainingValue>) {
-    let threads = pool.cpus;
+    let threads = pool.threads;
     let turn = crate::platform::Sme2Turn::take(Platform::detect(), true);
     let (pieces, own) = cut_with_prefix(input.len(), threads, prefix_for(&turn, input.len(), threads));
     let mut cvs = vec![ChainingValue::default(); pieces.len()];
@@ -230,7 +230,7 @@ fn hash_many_over_pool(input: &[u8], message_len: usize, key: &crate::CVWords, f
     let slot = crate::many::slot_len(message_len);
     assert_eq!(Some(input.len()), slot.checked_mul(outputs.len()), "input holds one slot of whole blocks per output");
     let Some((pool, _caller)) = spare_pool() else { pool_busy(); return crate::hash_many_serial(input, message_len, key, flags, outputs) };
-    let pieces = cut_messages(outputs.len(), slot, pool.cpus);
+    let pieces = cut_messages(outputs.len(), slot, pool.threads);
     let work = Work::Messages { input, message_len, key: *key, flags, pieces: &pieces, outputs: outputs.as_mut_ptr() };
     pool.run_job(work, pieces.len(), 0, pool_platform());
 }
@@ -248,7 +248,7 @@ pub(crate) fn hash_each(key: &crate::CVWords, flags: u8, items: &[&[u8]], out: &
     let mut pieces = Vec::with_capacity(64);
     let mut start = 0;
     while start < items.len() {
-        let want = next_piece_len(remaining, pool.cpus);
+        let want = next_piece_len(remaining, pool.threads);
         let (mut end, mut bytes) = (start, 0);
         while end < items.len() && (bytes < want || end == start) {
             bytes += items[end].len();
@@ -275,7 +275,7 @@ pub(crate) fn group_cvs(groups: &[&[u8]], first_group: u64, key: &crate::CVWords
         pool_busy();
         return crate::outboard::groups_cvs_into(groups, first_group, key, flags, Platform::detect(), cvs);
     };
-    let pieces = cut_messages(groups.len(), crate::outboard::GROUP_LEN, pool.cpus);
+    let pieces = cut_messages(groups.len(), crate::outboard::GROUP_LEN, pool.threads);
     let work = Work::Groups { groups, first_group, pieces: &pieces, key: *key, flags, cvs: cvs.as_mut_ptr() };
     pool.run_job(work, pieces.len(), 0, pool_platform());
 }
@@ -576,13 +576,14 @@ fn merge_to_children(pieces: &[Piece], cvs: &mut [ChainingValue], key: &crate::C
     count
 }
 
-/// The pool: cpus - 1 workers taking from the registered sources
+/// The pool: threads - 1 workers (the calling thread hashes too) taking from the registered sources
 /// ([`sources`]), the SME2 thread beside them where the CPU has SME2, and
 /// the record of which workers are parked.
 struct Pool {
     /// Calls on the pool now ([`spare_pool`]).
     callers: AtomicUsize,
-    cpus: usize,
+    /// The threads a call hashes on: its caller and the workers.
+    threads: usize,
     /// Whether the SME2 thread runs (this CPU has SME2).
     sme2: bool,
     /// Workers parked: bit w of word w / 64 for worker w (0 for
@@ -592,7 +593,7 @@ struct Pool {
     /// no two share a lock or a futex word.
     parked: Box<[OwnLine<AtomicU64>]>,
     /// Each worker's thread, set as it starts.
-    threads: Box<[OnceLock<std::thread::Thread>]>,
+    handles: Box<[OnceLock<std::thread::Thread>]>,
     /// Wakes still owed: each woken worker pays them before it works.
     owed: AtomicUsize,
 }
@@ -601,28 +602,28 @@ struct Pool {
 /// process ([`crate::initialize_multithreaded`] is its public face): this
 /// thread starts the SME2 thread and worker 1, and worker 1 the other
 /// workers. Calls run on the workers started so far.
-pub(crate) fn initialize() {
-    let cpus = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
-    let sme2 = cfg!(blake3_sme2) && !matches!(pool_platform(), p if core::mem::discriminant(&p) == core::mem::discriminant(&Platform::detect()));
+pub(crate) fn initialize(threads: usize) {
+    // With one thread, none beside the caller: no SME2 thread either.
+    let sme2 = threads > 1 && cfg!(blake3_sme2) && !matches!(pool_platform(), p if core::mem::discriminant(&p) == core::mem::discriminant(&Platform::detect()));
     let pool = Pool {
         callers: AtomicUsize::new(0),
-        cpus,
+        threads,
         sme2,
-        parked: (0..cpus.div_ceil(64)).map(|_| OwnLine(AtomicU64::new(0))).collect(),
-        threads: (0..cpus).map(|_| OnceLock::new()).collect(),
+        parked: (0..threads.div_ceil(64)).map(|_| OwnLine(AtomicU64::new(0))).collect(),
+        handles: (0..threads).map(|_| OnceLock::new()).collect(),
         owed: AtomicUsize::new(0),
     };
     assert!(POOL.set(pool).is_ok(), "initialize_multithreaded creates the pool once");
     if sme2 {
         std::thread::Builder::new().name("blake3-sme2".into()).spawn(sme2_main).expect("spawning the SME2 thread");
     }
-    if cpus == 1 {
+    if threads == 1 {
         return;
     }
     std::thread::Builder::new()
         .name("blake3-worker-1".into())
         .spawn(move || {
-            for worker in 2..cpus {
+            for worker in 2..threads {
                 std::thread::Builder::new()
                     .name(format!("blake3-worker-{worker}"))
                     .spawn(move || worker_main(worker - 1))
@@ -644,7 +645,7 @@ pub(crate) fn require() {
 /// Whether a call may leave the calling thread: the process has more
 /// than one CPU. Requires the pool (`require`).
 pub(crate) fn splits() -> bool {
-    pool().cpus > 1
+    pool().threads > 1
 }
 
 /// The pool, once [`initialize`] has created it.
@@ -669,11 +670,11 @@ fn pool() -> &'static Pool {
 fn no_pool() -> &'static Pool {
     #[cfg(test)]
     {
-        crate::initialize_multithreaded();
+        crate::initialize_multithreaded(None);
         POOL.get().expect("initialize_multithreaded created the pool")
     }
     #[cfg(not(test))]
-    panic!("blake3-servil: call blake3_servil::initialize_multithreaded() once, before any multithreaded call or stream: it starts the threads they use")
+    panic!("blake3-servil: call blake3_servil::initialize_multithreaded(None) once, before any multithreaded call or stream: it starts the threads they use")
 }
 
 impl Pool {
@@ -720,7 +721,7 @@ impl Pool {
         if parked == 0 {
             return;
         }
-        let awake = self.cpus - 1 - parked;
+        let awake = self.threads - 1 - parked;
         if awake < wanted {
             let need = (wanted - awake).min(parked);
             if need > 1 {
@@ -739,7 +740,7 @@ impl Pool {
                 let before = word.fetch_and(!bit, Ordering::SeqCst);
                 if before & bit != 0 {
                     let worker = w * 64 + bit.trailing_zeros() as usize;
-                    self.threads[worker].get().expect("a parked worker has set its thread").unpark();
+                    self.handles[worker].get().expect("a parked worker has set its thread").unpark();
                     return true;
                 }
                 bits = before & !bit;
@@ -1299,7 +1300,7 @@ fn wake_sme2() {
 #[cfg(test)]
 pub(crate) fn assert_past_the_split(what: &str) {
     let kinds = crate::RAN.with(|r| r.get());
-    assert!(pool().cpus == 1 || kinds & (crate::Ran::Pool as u32 | crate::Ran::PoolBusy as u32) != 0, "{what} went past the split");
+    assert!(pool().threads == 1 || kinds & (crate::Ran::Pool as u32 | crate::Ran::PoolBusy as u32) != 0, "{what} went past the split");
 }
 
 /// Run `task` on this thread, as a worker would.
@@ -1309,7 +1310,7 @@ pub(crate) fn run_task(task: Task) {
 
 fn worker_main(me: usize) {
     let pool = pool();
-    assert!(pool.threads[me].set(std::thread::current()).is_ok(), "each worker sets its thread once");
+    assert!(pool.handles[me].set(std::thread::current()).is_ok(), "each worker sets its thread once");
     pool.serve(me)
 }
 

@@ -546,7 +546,7 @@ SME2 chunked-message kernel and the NEON `hash_messages_raw`, which gained
 a flags argument): the mode's flags ride in the low byte of each kernel's
 packed flags, beside CHUNK_START / CHUNK_END / PARENT / ROOT, so every mode
 costs the same (perf_regress on the VM: level). `initialize()` runs the
-self-test alone; `initialize_multithreaded()` also starts the pool.
+self-test alone; `initialize_multithreaded(None)` also starts the pool.
 
 **The queue, as rebuilt from scratch** (September 28, 2026; branch
 candidate/queue-simple; `src/queue.rs` module docs have the mechanism).
@@ -2186,7 +2186,8 @@ or tested beyond tests/queue_no_alloc.rs:
   subtree it sends to the pool. Hasher::update_reader past 64 KiB: a
   1 MiB buffer (src/io.rs), freed at return; update_mmap*: the mapping.
 - **Once per process**: the pool (its first multithreaded call, or
-  initialize_multithreaded): one thread per CPU beyond the first, and the
+  initialize_multithreaded): one fewer than the threads it asks for (by
+  default, one per CPU beyond the first), and the
   SME2 thread where SME2 is, each with std's default stack (2 MiB of
   address space, touched as used); the task list, a VecDeque that grows
   to the most tasks ever queued at once (each queue makes room for what

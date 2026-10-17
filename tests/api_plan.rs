@@ -59,7 +59,7 @@ const LARGE: [usize; 5] = [(512 << 10) - 1, 512 << 10, 1 << 20, (1 << 20) + 1, (
 
 #[test]
 fn one_message_every_form_matches_the_vectors() {
-    blake3_servil::initialize_multithreaded();
+    blake3_servil::initialize_multithreaded(None);
     for (len, expected) in vectors() {
         let data = input(len);
         assert_eq!(blake3_servil::hash(&data), Hash::from(expected[0]), "hash, {len} bytes");
@@ -81,7 +81,7 @@ fn one_message_every_form_matches_the_vectors() {
 /// against the reference implementation.
 #[test]
 fn a_message_in_pieces_matches_the_reference() {
-    blake3_servil::initialize_multithreaded();
+    blake3_servil::initialize_multithreaded(None);
     let hashers = |m: usize| match m {
         0 => blake3_servil::Hasher::new(),
         1 => blake3_servil::Hasher::new_keyed(KEY),
@@ -118,7 +118,7 @@ fn a_message_in_pieces_matches_the_reference() {
 
 #[test]
 fn one_message_large_inputs_match_the_reference() {
-    blake3_servil::initialize_multithreaded();
+    blake3_servil::initialize_multithreaded(None);
     for len in LARGE {
         let data = input(len);
         assert_eq!(blake3_servil::hash_multithreaded(&data), Hash::from(reference(0, &data)), "hash_multithreaded, {len} bytes");
@@ -148,7 +148,7 @@ fn padded_batch(count: usize, len: usize) -> (Vec<u8>, Vec<Vec<u8>>) {
 
 #[test]
 fn batches_every_form_match_the_reference() {
-    blake3_servil::initialize_multithreaded();
+    blake3_servil::initialize_multithreaded(None);
     for (count, len) in [(1, 64), (2, 64), (4, 64), (12, 64), (16, 64), (17, 64), (1000, 64), (12288, 64), (13000, 64), (5, 0), (7, 1), (9, 63), (33, 100), (20, 1024), (3, 1025), (40, 4000), (2, 70000), (20, 60000)] {
         let (buffer, messages) = padded_batch(count, len);
         let expected: Vec<Vec<[u8; 32]>> = (0..3).map(|m| messages.iter().map(|message| reference(m, message)).collect()).collect();
@@ -171,7 +171,7 @@ fn batches_every_form_match_the_reference() {
 #[test]
 #[should_panic]
 fn a_batch_whose_buffer_is_not_whole_slots_is_refused() {
-    blake3_servil::initialize_multithreaded();
+    blake3_servil::initialize_multithreaded(None);
     let mut out = [[0u8; 32]; 2];
     blake3_servil::hash_many(&[0u8; 100], 64, &mut out);
 }
@@ -188,7 +188,7 @@ fn zeros(n: usize) -> Vec<Hash> {
 #[test]
 #[cfg_attr(target_family = "wasm", ignore = "a stream needs threads, which this target lacks")]
 fn a_stream_puts_every_digest_in_its_place_and_hands_the_places_back_in_order() {
-    blake3_servil::initialize_multithreaded();
+    blake3_servil::initialize_multithreaded(None);
     let lens: Vec<usize> = vectors().iter().map(|(len, _)| *len).chain(LARGE).collect();
     let messages: Vec<Vec<u8>> = lens.iter().map(|&len| input(len)).collect();
     for (m, mode) in modes().into_iter().enumerate() {
@@ -217,7 +217,7 @@ fn a_stream_puts_every_digest_in_its_place_and_hands_the_places_back_in_order() 
 #[test]
 #[cfg_attr(target_family = "wasm", ignore = "a stream needs threads, which this target lacks")]
 fn a_streams_batches_fill_the_callers_places() {
-    blake3_servil::initialize_multithreaded();
+    blake3_servil::initialize_multithreaded(None);
     let cases = [(64, 1), (64, 4096), (100, 7), (1024, 300), (1500, 33)];
     let batches: Vec<(Vec<u8>, Vec<Vec<u8>>)> = cases.iter().map(|&(len, count)| padded_batch(count, len)).collect();
     for (m, mode) in modes().into_iter().enumerate() {
@@ -248,7 +248,7 @@ fn a_streams_batches_fill_the_callers_places() {
 #[test]
 #[cfg_attr(target_family = "wasm", ignore = "a stream needs threads, which this target lacks")]
 fn bursts_of_large_batches_after_pauses_complete() {
-    blake3_servil::initialize_multithreaded();
+    blake3_servil::initialize_multithreaded(None);
     let (buffer, messages) = padded_batch(4096, 64);
     let expected: Vec<[u8; 32]> = messages.iter().map(|message| reference(0, message)).collect();
     let mut places = vec![zeros(4096); 4];
@@ -272,7 +272,7 @@ fn bursts_of_large_batches_after_pauses_complete() {
 #[test]
 #[cfg_attr(target_family = "wasm", ignore = "a stream needs threads, which this target lacks")]
 fn a_stream_cycles_a_fixed_set_of_places() {
-    blake3_servil::initialize_multithreaded();
+    blake3_servil::initialize_multithreaded(None);
     let messages: Vec<Vec<u8>> = (0..1000).map(|i| input(1 + i * 7 % 3000)).collect();
     let mut places = zeros(4);
     let free = std::cell::RefCell::new(places.iter_mut().collect::<Vec<_>>());
@@ -308,7 +308,7 @@ fn a_stream_cycles_a_fixed_set_of_places() {
 #[test]
 #[cfg_attr(target_family = "wasm", ignore = "a stream needs threads, which this target lacks")]
 fn streams_on_several_threads_keep_their_own_order() {
-    blake3_servil::initialize_multithreaded();
+    blake3_servil::initialize_multithreaded(None);
     std::thread::scope(|scope| {
         for t in 0..4usize {
             scope.spawn(move || {
@@ -334,7 +334,7 @@ fn streams_on_several_threads_keep_their_own_order() {
 #[test]
 #[cfg_attr(target_family = "wasm", ignore = "a stream needs threads, which this target lacks")]
 fn a_panicking_handler_unwinds_and_the_pool_goes_on() {
-    blake3_servil::initialize_multithreaded();
+    blake3_servil::initialize_multithreaded(None);
     let message = input(100_000);
     let result = std::panic::catch_unwind(|| {
         let mut places = zeros(8);
