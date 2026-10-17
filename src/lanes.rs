@@ -771,7 +771,7 @@ impl Pool {
 /// stream on the earlier pool: none cost small messages 9-12% (a park and
 /// a wake at every gap); 20 us cost 22% more CPU time a run for no speed;
 /// a cap on how many workers spin did not help.
-const SPIN: std::time::Duration = std::time::Duration::from_micros(5);
+const SPIN: std::time::Duration = std::time::Duration::from_micros(0);
 
 /// Look for work for up to SPIN: whether some appeared.
 fn spin_for_work() -> bool {
