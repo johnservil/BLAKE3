@@ -111,15 +111,20 @@ fn hash_some(args: &Args, next: &AtomicUsize, done: &mut dyn FnMut(usize, anyhow
                     continue;
                 }
             };
-            buffer.clear();
-            buffer.resize(size + 1, 0);
+            // Room for the size and one byte more; grown, never cleared: the
+            // bytes past what a read returns are never hashed.
+            if buffer.len() < size + 1 {
+                buffer.resize(size + 1, 0);
+            }
             let output = match read_to_end(&file, &mut buffer, 0, true) {
                 Ok((n, true)) => Ok(hashed(args, &buffer[..n])),
                 Ok((at, false)) => {
                     // Sound: advice on an open descriptor.
                     unsafe { libc::posix_fadvise(file.as_raw_fd(), at as i64, 0, libc::POSIX_FADV_WILLNEED) };
-                    let mut bytes = vec![0; buffer.len()];
-                    bytes[..at].copy_from_slice(&buffer[..at]);
+                    // What was read, and room for the rest (the size and one
+                    // byte more, or more where the content already ran past).
+                    let mut bytes = buffer[..at].to_vec();
+                    bytes.resize(at.max(size) + 1, 0);
                     missed.push(Missed { index: i, file, bytes, at });
                     continue;
                 }
