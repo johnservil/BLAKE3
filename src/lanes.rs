@@ -1290,6 +1290,7 @@ impl Task {
 /// streams' tasks while any wait, and parks as soon as none does; every
 /// publish wakes it first.
 fn sme2_main() {
+    crate::platform::dit_on();
     // As for a worker: a panic here ends the process rather than hanging
     // the callers waiting on it.
     let _ = std::panic::catch_unwind(sme2_serve);
@@ -1358,6 +1359,7 @@ fn worker_main(me: usize) {
     // piece forever (their stacks are the work); the process ends instead,
     // the panic's message printed first by the panic hook.
     let _ = std::panic::catch_unwind(move || {
+        crate::platform::dit_on();
         let pool = pool();
         assert!(pool.handles[me].set(std::thread::current()).is_ok(), "each worker sets its thread once");
         pool.serve(me)
@@ -1794,6 +1796,13 @@ mod test {
     /// submissions costs no CPU. The other tests beside this one wake
     /// workers now and then, so it waits for a moment when every worker
     /// is parked, up to ten seconds; a worker that never parks fails it.
+    #[test]
+    #[cfg(target_arch = "aarch64")]
+    fn test_dit_on_in_callers_and_workers() {
+        let _ = crate::hash(b"");
+        assert!(crate::platform::dit_is_on(), "DIT on in a caller");
+    }
+
     #[test]
     fn test_idle_workers_park_while_a_stream_is_open() {
         let pool = pool();

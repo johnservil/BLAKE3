@@ -157,6 +157,7 @@ impl Platform {
     /// which every call makes anyway.
     #[inline]
     pub fn detect() -> Self {
+        dit_on();
         let mut code = DETECTED.load(core::sync::atomic::Ordering::Relaxed);
         if code == 0 {
             code = not_initialized();
@@ -842,4 +843,24 @@ mod x86_features_test {
         assert_eq!(features & AVX2 != 0, std::is_x86_feature_detected!("avx2"));
         assert_eq!(features & AVX512 != 0, std::is_x86_feature_detected!("avx512f") && std::is_x86_feature_detected!("avx512vl"));
     }
+}
+
+/// The DIT experiment: data-independent timing on for this thread
+/// (PSTATE.DIT, `msr DIT, #1`), which stays on for the thread's life.
+#[inline(always)]
+pub(crate) fn dit_on() {
+    #[cfg(all(target_arch = "aarch64", not(miri)))]
+    // Sound: sets one PSTATE bit, which changes only instruction timing.
+    unsafe {
+        core::arch::asm!(".inst 0xd503415f", options(nomem, nostack, preserves_flags))
+    }
+}
+
+/// Whether DIT is on for this thread (`mrs x0, DIT`, bit 24).
+#[cfg(all(test, target_arch = "aarch64", not(miri)))]
+pub(crate) fn dit_is_on() -> bool {
+    let v: u64;
+    // Sound: reads one PSTATE bit.
+    unsafe { core::arch::asm!(".inst 0xd53b42a0", out("x0") v, options(nomem, nostack, preserves_flags)) };
+    v >> 24 & 1 == 1
 }
