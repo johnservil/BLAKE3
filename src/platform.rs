@@ -208,7 +208,8 @@ impl Platform {
         // that cares which one ran reads it back from detect().
         #[cfg(blake3_sme2)]
         {
-            if sme2_detected() {
+            // Probe: the NEON platform, as on a CPU without SME2.
+            if false && sme2_detected() {
                 return Platform::SME2;
             }
         }
