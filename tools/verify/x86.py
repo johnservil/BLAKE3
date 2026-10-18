@@ -66,9 +66,13 @@ def disassemble(so, start, stop):
     code = {}
     for i, (addr, mnem, ops, target) in enumerate(rows):
         nxt = rows[i + 1][0] if i + 1 < len(rows) else stop
-        # A rip-relative operand: its absolute address from the comment.
-        ops = [o.replace("[rip]", f"[abs {target:#x}]") if "[rip" in o else o for o in ops]
-        ops = [re.sub(r"\[rip [+-] 0x[0-9a-f]+\]", f"[abs {target:#x}]", o) if "[rip" in o else o for o in ops]
+
+        def absolute(mt):
+            # A rip-relative operand: the next instruction's address plus
+            # the displacement, as the CPU computes it.
+            disp = int(mt.group(2), 16) if mt.group(2) else 0
+            return f"[abs {nxt + (-disp if mt.group(1) == '-' else disp):#x}]"
+        ops = [re.sub(r"\[rip(?: ([+-]) (0x[0-9a-f]+))?\]", absolute, o) for o in ops]
         code[addr] = (mnem, ops, nxt)
     return code
 
@@ -131,6 +135,18 @@ class Machine(aarch64.Machine):
         self.facts = []          # the standard's small terms (counter words): see the module's doc
         self.fact_symbols = set()
 
+    # Memory: aarch64's, the stack bounded below by rsp (less the red
+    # zone, 128 bytes under SysV).
+    red_zone = 0
+
+    def access(self, addr, n, write):
+        rsp = self.x["rsp"]
+        self.x["sp"] = Ptr("stack", rsp.offset - self.red_zone) if isinstance(rsp, Ptr) else rsp
+        try:
+            return super().access(addr, n, write)
+        finally:
+            del self.x["sp"]
+
     # General registers.
     def gread(self, name):
         base, bits = SUB[name]
@@ -165,7 +181,7 @@ class Machine(aarch64.Machine):
         """Write `new` (its width's lanes) to a vector register: VEX and
         EVEX forms zero the lanes above; legacy SSE keeps them."""
         n = int(re.match(r"[xyz]mm(\d+)", name).group(1))
-        new = [self.normal(simplify(x)) for x in new]
+        new = [self.normal(x) for x in new]
         if vex:
             self.v[n] = new + [BitVecVal(0, 32)] * (16 - len(new))
         else:
@@ -254,8 +270,8 @@ def load_lanes(m, op, w):
         word = m.load(addr, 4)
         return [word] * w
     n = 4 * w if size is None else size
-    val = m.load(addr, n)
-    return [Extract(32 * i + 31, 32 * i, val) for i in range(n // 4)]
+    # Each lane as its four bytes, in lean_spec.join's form.
+    return [m.load(addr + 4 * i, 4) for i in range(n // 4)]
 
 
 def src_lanes(m, op, w):
@@ -287,12 +303,16 @@ def ptr_add(a, b, sub=False):
         if not sub or a.region != b.region:
             raise Unproved("arithmetic on two pointers")
         return simplify(as_bv(a.offset) - as_bv(b.offset))
+    def num(v):
+        c = concrete(v)
+        return (c if c < 1 << 63 else c - (1 << 64)) if c is not None else v
     if isinstance(b, Ptr):
         if sub:
             raise Unproved("a pointer subtracted from a number")
-        return b + a
+        return b + num(a)
     if isinstance(a, Ptr):
-        return a + (simplify(-as_bv(b)) if sub else b)
+        nb = num(b)
+        return a + ((-nb if isinstance(nb, int) else simplify(-as_bv(nb))) if sub else nb)
     return simplify(a - b if sub else a + b)
 
 
@@ -373,6 +393,25 @@ def blend_words(a, b, imm8):
     return out
 
 
+def shift_part(t):
+    """(x, k) when t is x << k (k > 0), (x, -k) when x >> k; else None."""
+    from z3 import is_app_of, Z3_OP_BSHL, Z3_OP_BLSHR
+    for op, sign in ((Z3_OP_BSHL, 1), (Z3_OP_BLSHR, -1)):
+        if is_app_of(t, op) and is_bv_value(t.arg(1)):
+            return t.arg(0), sign * t.arg(1).as_long()
+    return None
+
+
+def orr(x, y):
+    """x | y; the rotation itself when they are x << (32 - k) and x >> k
+    of one x (the kernels' rotate by 12 and 7), as canon.py knows it."""
+    px, py = shift_part(x), shift_part(y)
+    if px and py and px[0].eq(py[0]) and px[1] * py[1] < 0 and abs(px[1]) + abs(py[1]) == 32:
+        right = -px[1] if px[1] < 0 else -py[1]
+        return RotateRight(px[0], right)
+    return x | y
+
+
 def kbit(m, k, j):
     return Extract(j, j, m.k[k]) == 1
 
@@ -425,12 +464,22 @@ def step(m, pc, mnem, ops, nxt):
         b = gval(m, ops[1], bits)
         if mnem in ("add", "sub", "cmp"):
             r = ptr_add(a, b, sub=mnem != "add")
-            if mnem in ("sub", "cmp"):
+            if mnem == "cmp" or (mnem == "sub" and not (isinstance(a, Ptr) or isinstance(b, Ptr))):
                 m.flags = ("sub",) + flag_operands(a, b)
+            elif mnem == "sub":
+                m.flags = None  # pointer arithmetic: no condition follows it here
             else:
                 m.flags = ("logic", r) if not isinstance(r, Ptr) else None
             if mnem != "cmp":
                 m.gwrite(ops[0], r)
+            return nxt
+        if mnem == "and" and isinstance(a, Ptr) and a.region == "stack" and isinstance(a.offset, int) and concrete(b) is not None:
+            # Aligning the stack pointer: the stack region starts 64-byte
+            # aligned (Setup), so its offsets align as its addresses do.
+            mask = concrete(b)
+            assert (1 << 64) - mask <= 64, "an alignment of at most 64 bytes"
+            m.gwrite(ops[0], Ptr("stack", a.offset & mask & 0xFFFFFFFFFFFFFFFF))
+            m.flags = None
             return nxt
         if isinstance(a, Ptr) or isinstance(b, Ptr):
             raise Unproved(f"{mnem} on a pointer")
@@ -542,7 +591,7 @@ def vector(m, mnem, base, vex, ops, nxt):
     elif base in ("paddd", "psubd", "pxor", "pxord", "por", "pand"):
         a, b = A(), B()
         op = {"paddd": lambda x, y: x + y, "psubd": lambda x, y: x - y, "pxor": lambda x, y: x ^ y,
-              "pxord": lambda x, y: x ^ y, "por": lambda x, y: x | y, "pand": lambda x, y: x & y}[base]
+              "pxord": lambda x, y: x ^ y, "por": orr, "pand": lambda x, y: x & y}[base]
         new = [op(x, y) for x, y in zip(a, b)]
     elif base in ("pslld", "psrld", "prord"):
         a, k = A(), imm(rest[-1])
@@ -661,7 +710,11 @@ def run(m, entry, max_steps=2_000_000):
             raise Unproved(f"execution reached {pc:#x}, outside the code under proof")
         mnem, ops, nxt = m.code[pc]
         EXECUTED.add((mnem, tuple(ops)))
-        pc = step(m, pc, mnem, ops, nxt)
+        here = pc
+        try:
+            pc = step(m, pc, mnem, ops, nxt)
+        except Unproved as e:
+            raise Unproved(f"{e} (at {here:#x}: {mnem} {', '.join(ops)})") from None
         if pc == "ret":
             to = m.load(m.x["rsp"], 8)
             m.x["rsp"] = m.x["rsp"] + 8

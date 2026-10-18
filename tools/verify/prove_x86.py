@@ -66,6 +66,7 @@ class Setup:
         regions["image"] = Region("image", max(img) + 1, False, lambda o: BitVecVal(img.get(o, 0), 8))
         regions["stack"] = Region("stack", STACK + 8 * 16, True, None)
         self.m = m = x86.Machine(code, regions)
+        m.red_zone = 0 if windows else 128
         self.windows = windows
         for r in x86.GPR:
             m.x[r] = BitVec(f"{r}_in", 64)
@@ -108,13 +109,15 @@ def u8(name):
     return BitVec(name, 8)
 
 
-def counter_facts(m, counter, n):
-    """The standard's counter words for counter + i, i below n (x86.py's
-    `facts`)."""
+def d_row_facts(m, counter, n, words):
+    """The standard's d-row words (x86.py's `facts`): the counter's halves
+    for counter + i, i below n, and the block length and flags `words`
+    (32-bit terms of the 8-bit symbols)."""
     for i in range(n):
-        c = simplify(counter + i)
-        m.facts += [simplify(Extract(31, 0, c)), simplify(Extract(63, 32, c))]
-    m.fact_symbols |= {"counter"}
+        c = counter + i if i else counter
+        m.facts += [Extract(31, 0, c), Extract(63, 32, c)]
+    m.facts += list(words)
+    m.fact_symbols |= {"counter"} | {s for w in words for s in aarch64.term_symbols(w)}
 
 
 def prove_compress(so, isa, windows, xof):
@@ -129,7 +132,7 @@ def prove_compress(so, isa, windows, xof):
     args = [Ptr("cv", 0), Ptr("block", 0), ZeroExt(56, block_len), counter, ZeroExt(56, flags)] + ([Ptr("out", 0)] if xof else [])
     name = f"blake3_compress_{'xof' if xof else 'in_place'}_{isa}"
     s = Setup(so, name, regions, args, windows)
-    counter_facts(s.m, counter, 1)
+    d_row_facts(s.m, counter, 1, [ZeroExt(24, block_len), ZeroExt(24, flags)])
     m = s.run()
     want = spec.compress(spec.words(cv), spec.words(block), counter, ZeroExt(24, block_len), ZeroExt(24, flags))
     region, n = (m.regions["out"], 16) if xof else (m.regions["cv"], 8)
@@ -163,7 +166,7 @@ def prove_hash_many(so, isa, windows, n, blocks, increment):
     args = [Ptr("table", 0), BitVecVal(n, 64), BitVecVal(blocks, 64), Ptr("key", 0), counter,
             BitVecVal(1 if increment else 0, 64), ZeroExt(56, flags), ZeroExt(56, start), ZeroExt(56, end), Ptr("out", 0)]
     s = Setup(so, f"blake3_hash_many_{isa}", regions, args, windows)
-    counter_facts(s.m, counter, n if increment else 1)
+    d_row_facts(s.m, counter, n if increment else 1, [ZeroExt(24, flags | start | end), ZeroExt(24, flags | start), ZeroExt(24, flags | end), ZeroExt(24, flags), BitVecVal(64, 32)])
     m = s.run()
     out = m.regions["out"]
     if set(out.bytes) != set(range(32 * n)):
