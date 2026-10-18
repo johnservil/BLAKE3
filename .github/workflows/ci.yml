@@ -204,3 +204,14 @@ jobs:
       env:
         MIRIFLAGS: "-Zmiri-num-cpus=4 -Zmiri-ignore-leaks"
 
+
+  x86_model:
+    # A pull request from a branch of this repository: its push runs CI already.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
+    name: "the x86-64 proofs' model against the CPU"
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - run: grep -o -w 'avx512f\|avx512vl\|avx2\|sse4_1' /proc/cpuinfo | sort -u
+    - run: sudo apt-get install -y llvm lld clang && pip install z3-solver
+    - run: python3 tools/verify/cross_check_x86.py

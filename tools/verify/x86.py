@@ -17,6 +17,7 @@ one is replaced by it, so the rounds' terms meet the specification's in
 one normal form (canon.py). The replacement is the proved equality.
 """
 
+import os
 import re
 import subprocess
 
@@ -26,8 +27,18 @@ from z3 import (BitVec, BitVecVal, Concat, Extract, LShR, RotateRight, ZeroExt, 
 import aarch64
 from aarch64 import Ptr, Region, Unproved, decide, as_bv, concrete
 
-LLVM_OBJDUMP = "/usr/lib/llvm-19/bin/llvm-objdump"
-LLD = "/usr/lib/llvm-19/bin/ld.lld"
+def tool(name):
+    """LLVM's `name`, the newest version installed (17 or later)."""
+    import shutil
+    for v in ("", "-19", "-18", "-17"):
+        for path in (f"/usr/lib/llvm{v}/bin/{name}", shutil.which(f"{name}{v}") or ""):
+            if path and os.path.exists(path):
+                return path
+    raise AssertionError(f"no {name}: install LLVM 17 or later")
+
+
+LLVM_OBJDUMP = tool("llvm-objdump")
+LLD = tool("ld.lld")
 
 GPR = ["rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "rsp"] + [f"r{i}" for i in range(8, 16)]
 SUB = {}
@@ -678,7 +689,7 @@ def vector(m, mnem, base, vex, ops, nxt):
         new = (blk * 4)[:w]
     elif base == "pbroadcastd":
         s = srcs[0]
-        word = m.lanes(s)[0] if is_vreg(s) else load_lanes(m, s, 1)[0]
+        word = m.lanes(s)[0] if is_vreg(s) else m.gread(s) if s in SUB else load_lanes(m, s, 1)[0]
         new = [word] * w
     elif base in ("inserti128", "insertf128", "inserti32x4", "inserti64x4"):
         a, k = A(), imm(rest[-1])

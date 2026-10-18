@@ -25,8 +25,8 @@ from prove_hybrid import byte_symbols, same, table_cvs
 import lean_spec as spec
 
 ROOT_DIR = os.path.join(os.path.dirname(__file__), "..", "..")
-CLANG = "clang-19"
-LLVM_ML = "llvm-ml-19"
+CLANG = x86.tool("clang")
+LLVM_ML = x86.tool("llvm-ml")
 STACK = 1 << 16
 WIDTH = {"sse41": 4, "avx2": 8, "avx512": 16}
 SYSV_ARGS = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"]
@@ -41,7 +41,7 @@ def assemble(isa, windows):
         subprocess.run([LLVM_ML, "-m64", "-c", src, f"-Fo{obj}"], check=True, stdout=subprocess.DEVNULL)
         # llvm-ml writes COFF; lld links it as a Windows DLL image.
         so = os.path.join(d, f"{isa}.dll")
-        subprocess.run(["/usr/lib/llvm-19/bin/lld-link", "/dll", "/noentry", "/force:unresolved", "/debug:symtab", f"/out:{so}", obj],
+        subprocess.run([x86.tool("lld-link"), "/dll", "/noentry", "/force:unresolved", "/debug:symtab", f"/out:{so}", obj],
                        check=True, stdout=subprocess.DEVNULL)
         return so
     obj = os.path.join(d, f"{isa}.o")
@@ -141,6 +141,30 @@ def prove_compress(so, isa, windows, xof):
     return m.steps
 
 
+def prove_xof_many(so, n):
+    """xof_many(cv, block, block_len, counter, flags, out, n) (AVX-512,
+    Unix): block i of out the whole output of block at counter + i."""
+    cv, block = byte_symbols("cv", 32), byte_symbols("block", 64)
+    counter, block_len, flags = BitVec("counter", 64), u8("block_len"), u8("flags")
+    regions = {"cv": Region("cv", 32, False, lambda o: cv[o]), "block": Region("block", 64, False, lambda o: block[o]),
+               "out": Region("out", 64 * n, True, None)}
+    args = [Ptr("cv", 0), Ptr("block", 0), ZeroExt(56, block_len), counter, ZeroExt(56, flags), Ptr("out", 0), BitVecVal(n, 64)]
+    s = Setup(so, "blake3_xof_many_avx512", regions, args, False)
+    d_row_facts(s.m, counter, n, [ZeroExt(24, block_len), ZeroExt(24, flags)])
+    m = s.run()
+    out = m.regions["out"]
+    if set(out.bytes) != set(range(64 * n)):
+        raise Unproved("the output is not exactly written")
+    words = spec.words(cv)
+    for i in range(n):
+        want = spec.compress(words, spec.words(block), counter + i if i else counter, ZeroExt(24, block_len), ZeroExt(24, flags))
+        got = spec.words([out.bytes[64 * i + j] for j in range(64)])
+        for w in range(16):
+            if not same(got[w], want[w]):
+                raise Unproved(f"block {i}, output word {w} differs from the specification")
+    return m.steps
+
+
 def prove_hash_many(so, isa, windows, n, blocks, increment):
     """hash_many(inputs, n, blocks, key, counter, increment, flags,
     flags_start, flags_end, out): input i hashed from key over `blocks`
@@ -187,6 +211,8 @@ def cases(only):
                 for blocks in (1, 2, 16):
                     out.append((isa, windows, "hash_many", (n, blocks, True)))
             out.append((isa, windows, "hash_many", (WIDTH[isa], 1, False)))
+    for n in range(1, 33):
+        out.append(("avx512", False, "xof_many", n))
     return [c for c in out if not only or c[0] in only or c[2] in only or ("windows" if c[1] else "unix") in only]
 
 
@@ -200,7 +226,9 @@ def prove_case(case):
     so = OBJS[(isa, windows)]
     t = time.time()
     try:
-        if kind in ("compress", "xof"):
+        if kind == "xof_many":
+            steps, what = prove_xof_many(so, arg), f"xof_many, {arg} blocks"
+        elif kind in ("compress", "xof"):
             steps = prove_compress(so, isa, windows, kind == "xof")
             what = kind
         else:
