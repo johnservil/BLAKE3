@@ -751,3 +751,25 @@ fn test_inputs_around_the_read_piece() {
         assert_eq!(&output[..64], expected, "stdin of {len} bytes");
     }
 }
+
+/// `--num-threads 1` reads and hashes on one thread (no pool), from stdin
+/// and from a file read rather than mapped, over several pieces: the same
+/// digests as the default, and no file reported changed.
+#[test]
+fn test_one_thread_matches_the_default() {
+    let input: Vec<u8> = (0..3_000_000u32).map(|i| (i % 251) as u8).collect();
+    blake3::initialize();
+    let expected = blake3::hash(&input).to_hex().to_string();
+    for threads in [None, Some("1")] {
+        let args: Vec<&str> = threads.map_or(vec!["--no-names"], |n| vec!["--no-names", "--num-threads", n]);
+        let out = cmd(b3sum_exe(), &args).stdin_bytes(input.clone()).read().unwrap();
+        assert_eq!(out, expected, "stdin, --num-threads {threads:?}");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("file");
+        std::fs::write(&path, &input).unwrap();
+        let mut file_args = args.clone();
+        file_args.extend(["--no-mmap", path.to_str().unwrap()]);
+        let out = cmd(b3sum_exe(), &file_args).read().unwrap();
+        assert_eq!(out, expected, "a file read, --num-threads {threads:?}");
+    }
+}

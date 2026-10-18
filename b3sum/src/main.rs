@@ -382,10 +382,12 @@ fn update_from(hasher: &mut blake3::Hasher, mut reader: impl Read + Send) -> io:
         let mut len = fill(&mut reader, first)?;
         if threads().get() == 1 {
             // Each piece read, then hashed, on this thread.
+            let mut total = 0u64;
             loop {
                 update(hasher, &first[..len], POOL_LEN);
+                total += len as u64;
                 if len < PIECE {
-                    return Ok(());
+                    return Ok(total);
                 }
                 len = fill(&mut reader, first)?;
             }
