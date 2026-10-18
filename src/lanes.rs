@@ -1237,6 +1237,7 @@ impl Task {
 /// streams' tasks while any wait, and parks as soon as none does; every
 /// publish wakes it first.
 fn sme2_main() {
+    crate::platform::dit_on();
     assert!(SME2_THREAD.set(std::thread::current()).is_ok(), "one SME2 thread");
     loop {
         if let Some(task) = sources::take_stream_task() {
@@ -1293,6 +1294,7 @@ pub(crate) fn run_task(task: Task) {
 }
 
 fn worker_main(me: usize) {
+    crate::platform::dit_on();
     let pool = pool();
     assert!(pool.handles[me].set(std::thread::current()).is_ok(), "each worker sets its thread once");
     pool.serve(me)
@@ -1673,6 +1675,13 @@ mod test {
     /// submissions costs no CPU. The other tests beside this one wake
     /// workers now and then, so it waits for a moment when every worker
     /// is parked, up to ten seconds; a worker that never parks fails it.
+    #[test]
+    #[cfg(target_arch = "aarch64")]
+    fn test_dit_on_in_callers_and_workers() {
+        let _ = crate::hash(b"");
+        assert!(crate::platform::dit_is_on(), "DIT on in a caller");
+    }
+
     #[test]
     fn test_idle_workers_park_while_a_stream_is_open() {
         let pool = pool();
