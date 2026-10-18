@@ -176,9 +176,9 @@ impl Kernels for PlatformKernels<'_> {
     #[inline(always)]
     fn chunk_root(&self, input: &[u8]) -> Cv {
         // The scalar kernel, on every AArch64 core (crate::hash_one_chunk_root).
-        #[cfg(blake3_neon_hybrid)]
+        #[cfg(blake3_neon)]
         return crate::hash_one_chunk_root(input, self.key, self.flags).0;
-        #[cfg(not(blake3_neon_hybrid))]
+        #[cfg(not(blake3_neon))]
         return crate::ChunkState::new(self.key, 0, self.flags, self.platform).update(input).output().root_bytes();
     }
 

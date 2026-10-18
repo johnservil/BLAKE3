@@ -1181,7 +1181,10 @@ mod platform_hash_many {
             let reversed: Vec<&[u8; N]> = forward.iter().rev().copied().collect();
             let strided: Vec<&[u8; N]> = (0..count).map(|i| buf[2 * i * N..][..N].try_into().unwrap()).collect();
             for table in [&forward, &reversed, &strided] {
-                for increment in [IncrementCounter::Yes, IncrementCounter::No] {
+                // The shapes hash_many takes: incrementing counters for whole
+                // chunks only.
+                let increments: &[IncrementCounter] = if N == crate::CHUNK_LEN { &[IncrementCounter::Yes, IncrementCounter::No] } else { &[IncrementCounter::No] };
+                for &increment in increments {
                     for counter in [0, u32::MAX as u64 - 5] {
                         let mut want = vec![0u8; count * OUT_LEN];
                         crate::portable::hash_many(table, &crate::test::TEST_KEY_WORDS, counter, increment, flags, start, end, &mut want);
@@ -1453,7 +1456,7 @@ fn test_hasher_io_write() {
 /// length the batch dispatch distinguishes (a block, blocks to a chunk,
 /// two chunks, more).
 #[test]
-#[cfg(all(feature = "std", blake3_neon_hybrid))]
+#[cfg(all(feature = "std", blake3_neon))]
 fn test_kernel_reports_match_the_dispatch() {
     use crate::{Ran, RAN};
     let kind = |name: &str| -> u32 {

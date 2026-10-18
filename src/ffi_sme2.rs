@@ -182,27 +182,9 @@ pub unsafe fn hash_many<const N: usize>(
         };
         // The remainder is fewer than sixteen inputs: the NEON kernels
         // (integer + vector hybrids, see neon_hybrid.rs) are the fastest
-        // path there, for the shapes they cover (whole chunks, one-block
-        // parents). They need the SHA-3 extension; the C kernel, which takes
-        // every shape, is the fallback.
-        let hybrid_shape = crate::neon_hybrid::covers(N, increment_counter);
-        if hybrid_shape && crate::neon_hybrid::sha3_detected() {
-            unsafe {
-                crate::neon_hybrid::hash_many(
-                    &inputs[done..],
-                    key,
-                    rest_counter,
-                    increment_counter,
-                    flags,
-                    flags_start,
-                    flags_end,
-                    &mut out[done * OUT_LEN..],
-                );
-            }
-            return;
-        }
+        // path there.
         unsafe {
-            crate::neon::hash_many(
+            crate::neon_hybrid::hash_many(
                 &inputs[done..],
                 key,
                 rest_counter,

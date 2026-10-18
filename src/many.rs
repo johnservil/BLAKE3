@@ -68,7 +68,7 @@ pub(crate) fn hash_many_on(input: &[u8], len: usize, key: &CVWords, flags: u8, o
     if chunked(len) && platform_is_sme2(platform) && (outputs.len() >= 16 || outputs.len() >= sme2_chunked_min(len)) {
         return hash_chunked(input, len, key, flags, outputs, platform);
     }
-    #[cfg(blake3_neon_hybrid)]
+    #[cfg(blake3_neon)]
     if (CHUNK_LEN + 1..=2 * CHUNK_LEN).contains(&len) && outputs.len() >= 2 && neon_plans() {
         return hash_two_chunks(input, len, key, flags, outputs);
     }
@@ -181,7 +181,7 @@ fn hash_chunked(input: &[u8], len: usize, key: &CVWords, flags: u8, outputs: &mu
 /// side: 2000 B x 2 1018 / 927, x 3 1036 / 653, x 4 1050 / 697, x 8 690
 /// (SME2 from 7); 1100 B x 3 442 / 379. Commonware's four NEON lanes: 2000
 /// B x 4 824 (Mac P-core 914 against servil's 1050 before, job 283).
-#[cfg(blake3_neon_hybrid)]
+#[cfg(blake3_neon)]
 #[inline(never)]
 fn hash_two_chunks(input: &[u8], len: usize, key: &CVWords, flags: u8, outputs: &mut [[u8; OUT_LEN]]) {
     use crate::PARENT;
@@ -454,12 +454,12 @@ fn fill_table<'a, 's, const N: usize>(slots: &'s mut Slots<'a, N>, messages: &'a
 /// `last_len` bytes.
 #[inline(always)]
 fn neon_plans_last_len<const N: usize>(lanes: &[&[u8; N]], key: &CVWords, flags: u8, last_len: usize, outputs: &mut [[u8; OUT_LEN]]) {
-    #[cfg(blake3_neon_hybrid)]
+    #[cfg(blake3_neon)]
     // Sound: the caller found the SHA-3 extension (neon_plans).
     unsafe {
         crate::neon_hybrid::hash_many_last_len(lanes, key, 0, IncrementCounter::No, flags, CHUNK_START, CHUNK_END | ROOT, last_len, outputs.as_flattened_mut())
     };
-    #[cfg(not(blake3_neon_hybrid))]
+    #[cfg(not(blake3_neon))]
     {
         let _ = (lanes, key, flags, last_len, outputs);
         unreachable!("the NEON plans exist on AArch64 alone");
@@ -558,9 +558,9 @@ fn hash_four_at_a_time<const N: usize>(lanes: &[&[u8; N]], key: &CVWords, flags:
 /// messages of whole blocks at one counter).
 #[inline(always)]
 fn neon_plans() -> bool {
-    #[cfg(blake3_neon_hybrid)]
+    #[cfg(blake3_neon)]
     return crate::neon_hybrid::sha3_detected();
-    #[cfg(not(blake3_neon_hybrid))]
+    #[cfg(not(blake3_neon))]
     false
 }
 
@@ -895,7 +895,7 @@ mod test {
     /// The C NEON kernel's arrangement (the one CPUs without the SHA-3
     /// extension run: groups of four, a spare fourth lane for three left
     /// over, the integer kernel for one or two), on NEON and SME2.
-    #[cfg(blake3_neon_hybrid)]
+    #[cfg(blake3_neon)]
     #[test]
     fn test_hash_blocks_without_plans() {
         #[allow(unused_mut)]
@@ -968,7 +968,7 @@ mod test {
                         hash_many_on(&input, len, key_words, *flags, &mut out, platform);
                         assert_eq!(out, want, "{platform:?}, flags {flags}, {count} x {len} B");
                     }
-                    #[cfg(blake3_neon_hybrid)]
+                    #[cfg(blake3_neon)]
                     if len == 4 * BLOCK_LEN {
                         let mut out = vec![[0u8; OUT_LEN]; count];
                         hash_blocks::<{ 4 * BLOCK_LEN }>(&input, key_words, *flags, &mut out, Platform::neon().unwrap(), false, BLOCK_LEN);

@@ -1,4 +1,4 @@
-use crate::{BLOCK_LEN, CVWords, IncrementCounter, portable};
+use crate::{BLOCK_LEN, CHUNK_LEN, CVWords, IncrementCounter, portable};
 
 cfg_if::cfg_if! {
     if #[cfg(target_arch = "x86_64")] {
@@ -12,11 +12,9 @@ cfg_if::cfg_if! {
     } else if #[cfg(blake3_sme2)] {
         // See sme2::DEGREE.
         pub const MAX_SIMD_DEGREE: usize = crate::sme2::DEGREE;
-    } else if #[cfg(blake3_neon_hybrid)] {
+    } else if #[cfg(blake3_neon)] {
         // See neon_hybrid::GROUP.
         pub const MAX_SIMD_DEGREE: usize = 16;
-    } else if #[cfg(blake3_neon)] {
-        pub const MAX_SIMD_DEGREE: usize = 4;
     } else if #[cfg(blake3_wasm32_simd)] {
         pub const MAX_SIMD_DEGREE: usize = 4;
     } else {
@@ -39,10 +37,8 @@ cfg_if::cfg_if! {
         }
     } else if #[cfg(blake3_sme2)] {
         pub const MAX_SIMD_DEGREE_OR_2: usize = crate::sme2::DEGREE;
-    } else if #[cfg(blake3_neon_hybrid)] {
-        pub const MAX_SIMD_DEGREE_OR_2: usize = 16;
     } else if #[cfg(blake3_neon)] {
-        pub const MAX_SIMD_DEGREE_OR_2: usize = 4;
+        pub const MAX_SIMD_DEGREE_OR_2: usize = 16;
     } else if #[cfg(blake3_wasm32_simd)] {
         pub const MAX_SIMD_DEGREE_OR_2: usize = 4;
     } else {
@@ -281,10 +277,8 @@ impl Platform {
             #[cfg(blake3_avx512_ffi)]
             #[cfg(target_arch = "x86_64")]
             Platform::AVX512 => "AVX-512 hash_many (16-way)",
-            #[cfg(all(blake3_neon, blake3_neon_hybrid))]
+            #[cfg(blake3_neon)]
             Platform::NEON => "integer + NEON hybrid kernels (16 chunks per call)",
-            #[cfg(all(blake3_neon, not(blake3_neon_hybrid)))]
-            Platform::NEON => "NEON hash_many (4-way)",
             #[cfg(blake3_sme2)]
             Platform::SME2 => "SME2 hash_many",
             #[cfg(blake3_wasm32_simd)]
@@ -304,16 +298,9 @@ impl Platform {
             Platform::AVX512 => 16,
             // Sixteen chunks per call reach the k10 kernel (see
             // neon_hybrid); the four-lane C kernel takes four.
-            #[cfg(all(blake3_neon, blake3_neon_hybrid))]
-            Platform::NEON => {
-                if crate::neon_hybrid::sha3_detected() {
-                    16
-                } else {
-                    4
-                }
-            }
-            #[cfg(all(blake3_neon, not(blake3_neon_hybrid)))]
-            Platform::NEON => 4,
+            // Both kernel families take 16 inputs a call.
+            #[cfg(blake3_neon)]
+            Platform::NEON => 16,
             #[cfg(blake3_sme2)]
             Platform::SME2 => crate::sme2::DEGREE,
             #[cfg(blake3_wasm32_simd)]
@@ -346,12 +333,10 @@ impl Platform {
             },
             // The scalar kernel k1 keeps the state in registers; it runs on
             // every AArch64 core, so the NEON and SME2 platforms share it.
-            #[cfg(all(blake3_neon, blake3_neon_hybrid))]
+            #[cfg(blake3_neon)]
             Platform::NEON => {
                 crate::neon_hybrid::compress_in_place(cv, block, block_len, counter, flags)
             }
-            #[cfg(all(blake3_neon, not(blake3_neon_hybrid)))]
-            Platform::NEON => portable::compress_in_place(cv, block, block_len, counter, flags),
             #[cfg(blake3_sme2)]
             Platform::SME2 => {
                 crate::neon_hybrid::compress_in_place(cv, block, block_len, counter, flags)
@@ -378,7 +363,7 @@ impl Platform {
         assert!((1..=16).contains(&count));
         assert!(blocks.len() >= count * BLOCK_LEN);
         // The integer-only kernel runs on every AArch64 core.
-        #[cfg(blake3_neon_hybrid)]
+        #[cfg(blake3_neon)]
         {
             unsafe {
                 crate::neon_hybrid::compress_blocks(
@@ -465,6 +450,12 @@ impl Platform {
         // Every kernel hashes whole blocks: an input of another length
         // would lose its tail, so it cannot compile.
         const { assert!(N > 0 && N % BLOCK_LEN == 0, "hash_many inputs are whole blocks") };
+        // The shapes the crate makes, which every kernel takes: whole chunks
+        // at counters counting up, or 1 to 16 whole blocks at one counter.
+        assert!(
+            if increment_counter.yes() { N == CHUNK_LEN } else { N <= CHUNK_LEN },
+            "hash_many takes whole chunks at incrementing counters, or 1 to 16 blocks at one counter"
+        );
         match self {
             Platform::Portable => portable::hash_many(
                 inputs,
@@ -522,7 +513,7 @@ impl Platform {
             // Assumed to be safe if the "neon" feature is on.
             #[cfg(blake3_neon)]
             Platform::NEON => unsafe {
-                crate::neon::hash_many(
+                crate::neon_hybrid::hash_many(
                     inputs,
                     key,
                     counter,
@@ -606,7 +597,7 @@ impl Platform {
                 // has it: CPUs without SME2, and SME2's leftovers.
                 #[cfg(all(blake3_neon, target_arch = "aarch64"))]
                 let out = if !matches!(self, Platform::Portable) {
-                    let done = crate::neon_xof::xof_many(cv, block, block_len, counter, flags, out);
+                    let done = crate::neon_hybrid::xof_many(cv, block, block_len, counter, flags, out);
                     counter += (done / BLOCK_LEN) as u64;
                     &mut out[done..]
                 } else {
@@ -808,7 +799,7 @@ pub fn sse41_detected() -> bool {
 
 /// The core's virtual counter (CNTVCT_EL0, which user code reads
 /// directly): control, not measurement.
-#[cfg(all(blake3_neon_hybrid, feature = "std"))]
+#[cfg(all(blake3_neon, feature = "std"))]
 #[inline]
 pub(crate) fn counter() -> u64 {
     let now: u64;
@@ -821,7 +812,7 @@ pub(crate) fn counter() -> u64 {
 /// The counter's ticks in 100 us (CNTFRQ_EL0 / 10,000: 2400 on Apple's
 /// cores), read once: reading the frequency costs about 10 cycles on an M4
 /// Max (probe/stamp-cost, job 1015), the counter itself next to nothing.
-#[cfg(all(blake3_neon_hybrid, feature = "std"))]
+#[cfg(all(blake3_neon, feature = "std"))]
 #[inline]
 pub(crate) fn ticks_in_100_us() -> u64 {
     static TICKS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
@@ -842,7 +833,7 @@ pub(crate) fn ticks_in_100_us() -> u64 {
 /// fetches its kernel's lines from DRAM one miss after another: hash() of
 /// 8 KiB took 4.8 us so on an M4 Max, and 2.8 with this prefetch (job 971),
 /// where code already near costs it a few cycles a line.
-#[cfg(all(blake3_neon_hybrid, feature = "std"))]
+#[cfg(all(blake3_neon, feature = "std"))]
 #[inline]
 pub(crate) fn prefetch_code((start, end): (usize, usize)) {
     debug_assert!(start < end && end - start < 64 * 1024, "a kernel's code");

@@ -196,6 +196,43 @@ def prove_table(obj, name, n, blocks, per_input_counter):
     return m.steps
 
 
+def prove_xof(obj, n):
+    """x<n>(inputs, 1, cv, counter, packed, out): every table entry the
+    same block; lane i's whole output, the block compressed from cv at
+    counter + i with flags | start | end and block length last_len (all 16
+    words), to out[64 i..]."""
+    block = byte_symbols("block", 64)
+    cv = byte_symbols("key", 32)
+    regions = {"block": Region("block", 64, False, lambda o: block[o]),
+               "key": Region("key", 32, False, lambda o: cv[o]),
+               "out": Region("out", 64 * n, True, None)}
+    table = Region("table", 8 * n, False, None)
+    for i in range(n):
+        for j in range(8):
+            table.bytes[8 * i + j] = (Ptr("block", 0), j)
+    regions["table"] = table
+    name = f"blake3_hybrid_x{n}"
+    s = Setup(obj, name, name + "_end", regions)
+    counter = BitVec("counter", 64)
+    flags, start, end, last_len = (BitVec(x, 8) for x in ("flags", "start", "end", "last_len"))
+    m = s.m
+    m.x[0], m.x[1], m.x[2], m.x[3] = Ptr("table", 0), BitVecVal(1, 64), Ptr("key", 0), counter
+    m.x[4] = ZeroExt(32, Concat(last_len, end, start, flags))
+    m.x[5] = Ptr("out", 0)
+    s.run_and_check_abi()
+    out = m.regions["out"]
+    if set(out.bytes) != set(range(64 * n)):
+        raise Unproved("the output is not exactly written")
+    words, f = spec.words(cv), ZeroExt(24, flags | start | end)
+    for i in range(n):
+        want = spec.compress(words, spec.words(block), counter + i, ZeroExt(24, last_len), f)
+        got = spec.words([out.bytes[64 * i + j] for j in range(64)])
+        for w in range(16):
+            if not same(got[w], want[w]):
+                raise Unproved(f"block {i}, output word {w} differs from the specification")
+    return m.steps
+
+
 def prove_partial(obj, n, pblocks):
     """q<n>(inputs, 16, key, counter, packed, out, partial): n whole chunks
     and a partial chunk of `pblocks` blocks (zero-padded) whose last block
@@ -252,12 +289,14 @@ def cases(only):
     for blocks in range(1, 17):
         for alias in (False, True):
             out.append(("c1", blocks, alias))
-    for name in [f"k{n}" for n in range(2, 11)] + [f"p{n}" for n in (2, 3, 4, 5, 7, 8, 9)]:
+    for name in ([f"k{n}" for n in range(2, 11)] + [f"p{n}" for n in (2, 3, 4, 5, 7, 8, 9)]
+                 + [f"kn{n}" for n in (2, 4, 5, 6, 8)] + [f"pn{n}" for n in (2, 4, 5, 6, 10)]):
         for blocks in (range(1, 17) if name[0] == "k" else [1]):
             out.append((name, blocks, False))
     for n in range(1, 10):
         for pblocks in range(1, 17):
             out.append((f"q{n}", pblocks, False))
+    out += [("x4", 1, False), ("x8", 1, False)]
     return [c for c in out if not only or c[0] in only]
 
 
@@ -275,8 +314,10 @@ def prove_case(case):
             steps = prove_c1(OBJ, blocks, alias)
         elif name[0] == "q":
             steps = prove_partial(OBJ, int(name[1:]), blocks)
+        elif name[0] == "x":
+            steps = prove_xof(OBJ, int(name[1:]))
         else:
-            steps = prove_table(OBJ, f"blake3_hybrid_{name}", int(name[1:]), blocks, name[0] == "k")
+            steps = prove_table(OBJ, f"blake3_hybrid_{name}", int(name.lstrip("kpn")), blocks, name[0] == "k")
     except Unproved as e:
         return case, f"NOT PROVED: {e}"
     what = f"partial chunk of {blocks} blocks" if name[0] == "q" else f"{blocks} blocks" + (", out = key" if alias else "")

@@ -1,5 +1,6 @@
-//! `hash_many` for AArch64 with NEON and the SHA-3 extension, built from the
-//! kernels in c/blake3_neon_hybrid_aarch64.S.
+//! `hash_many` for AArch64, built from the kernels in
+//! c/blake3_neon_hybrid_aarch64.S: with the SHA-3 extension the table
+//! below, without it the scalar and quad kernels alone (`PLAIN_PLANS`).
 //!
 //! Each kernel hashes a fixed number of inputs given as a pointer table. Chunk
 //! kernels (`k<n>`) take whole 1024-byte chunks with a counter that
@@ -300,6 +301,40 @@ mod asm {
             out: *mut u8,
         );
     }
+    /// The kernels on scalars and quads alone, which need no SHA-3.
+    macro_rules! plain {
+        ($($name:ident),*) => {
+            unsafe extern "C" {
+                $(pub fn $name(inputs: *const *const u8, blocks: u64, key: *const u32, counter: u64, packed_flags: u64, out: *mut u8);)*
+            }
+        };
+    }
+    plain!(blake3_hybrid_kn2, blake3_hybrid_kn4, blake3_hybrid_kn5, blake3_hybrid_kn6, blake3_hybrid_kn8);
+    plain!(blake3_hybrid_pn2, blake3_hybrid_pn4, blake3_hybrid_pn5, blake3_hybrid_pn6, blake3_hybrid_pn10);
+    // Extended output, four and eight blocks: (table, 1, cv, counter,
+    // packed, out), 64 bytes a block.
+    plain!(blake3_hybrid_x4, blake3_hybrid_x8);
+}
+
+/// Fill `out`'s whole groups of four 64-byte blocks with extended output
+/// (block i: `block` compressed from `cv` at `counter + i` with `flags` and
+/// `block_len`, both halves of the state), eight blocks a call where they
+/// fit (x8), then four (x4); the bytes filled, a multiple of 256. Every
+/// AArch64 CPU runs them (quads, which need no SHA-3).
+pub fn xof_many(cv: &CVWords, block: &[u8; BLOCK_LEN], block_len: u8, mut counter: u64, flags: u8, out: &mut [u8]) -> usize {
+    let table = [block.as_ptr(); 8];
+    let packed = flags as u64 | (block_len as u64) << 24;
+    let mut done = 0;
+    while out.len() - done >= 4 * BLOCK_LEN {
+        let (kernel, blocks): (Kernel, usize) = if out.len() - done >= 8 * BLOCK_LEN { (asm::blake3_hybrid_x8, 8) } else { (asm::blake3_hybrid_x4, 4) };
+        crate::ran_kernel(crate::Ran::Hybrid, kernel as *const ());
+        // Sound: every table entry points at the 64-byte block; the kernel
+        // writes 64 bytes a block within `out[done..]`.
+        unsafe { kernel(table.as_ptr(), 1, cv.as_ptr(), counter, packed, out[done..].as_mut_ptr()) };
+        counter = counter.wrapping_add(blocks as u64);
+        done += blocks * BLOCK_LEN;
+    }
+    done
 }
 
 /// Every kernel shares one signature: `(inputs, blocks, key, counter,
@@ -392,6 +427,75 @@ const PARENT_PLANS: [&[usize]; 17] = [
     &[8, 7],
     &[8, 8],
 ];
+
+/// The kernels without SHA-3 per exact input count: scalars and quads
+/// alone (k1, k9, k10, p8, and p9 among them).
+const PLAIN_CHUNK_KERNELS: [Option<Kernel>; 11] = [
+    None,
+    Some(asm::blake3_hybrid_k1),
+    Some(asm::blake3_hybrid_kn2),
+    None,
+    Some(asm::blake3_hybrid_kn4),
+    Some(asm::blake3_hybrid_kn5),
+    Some(asm::blake3_hybrid_kn6),
+    None,
+    Some(asm::blake3_hybrid_kn8),
+    Some(asm::blake3_hybrid_k9),
+    Some(asm::blake3_hybrid_k10),
+];
+
+const PLAIN_PARENT_KERNELS: [Option<Kernel>; 11] = [
+    None,
+    Some(asm::blake3_hybrid_k1),
+    Some(asm::blake3_hybrid_pn2),
+    None,
+    Some(asm::blake3_hybrid_pn4),
+    Some(asm::blake3_hybrid_pn5),
+    Some(asm::blake3_hybrid_pn6),
+    None,
+    Some(asm::blake3_hybrid_p8),
+    Some(asm::blake3_hybrid_p9),
+    Some(asm::blake3_hybrid_pn10),
+];
+
+/// Kernel sizes per count 1..=16 without SHA-3, chunks and parents alike:
+/// 3 and 7 run a kernel and k1 after it.
+const PLAIN_PLANS: [&[usize]; 17] = [
+    &[],
+    &[1],
+    &[2],
+    &[2, 1],
+    &[4],
+    &[5],
+    &[6],
+    &[6, 1],
+    &[8],
+    &[9],
+    &[10],
+    &[10, 1],
+    &[10, 2],
+    &[9, 4],
+    &[10, 4],
+    &[10, 5],
+    &[10, 6],
+];
+
+/// A set of kernels and the plans that compose them, for chunks and for
+/// parents: one with SHA-3, one without.
+struct Family {
+    chunk_plans: &'static [&'static [usize]; 17],
+    chunk_kernels: &'static [Option<Kernel>],
+    parent_plans: &'static [&'static [usize]; 17],
+    parent_kernels: &'static [Option<Kernel>],
+}
+
+static WITH_SHA3: Family = Family { chunk_plans: &CHUNK_PLANS, chunk_kernels: &CHUNK_KERNELS, parent_plans: &PARENT_PLANS, parent_kernels: &PARENT_KERNELS };
+static PLAIN: Family = Family { chunk_plans: &PLAIN_PLANS, chunk_kernels: &PLAIN_CHUNK_KERNELS, parent_plans: &PLAIN_PLANS, parent_kernels: &PLAIN_PARENT_KERNELS };
+
+/// This CPU's family.
+fn family() -> &'static Family {
+    if sha3_detected() { &WITH_SHA3 } else { &PLAIN }
+}
 
 #[cfg(feature = "std")]
 /// Where each kernel's code ends (labels the generator puts after each).
@@ -534,8 +638,8 @@ pub fn prefetch_parent_code(mut values: usize) {
 
 /// True when the CPU has the SHA-3 extension that provides `xar`. Every
 /// Apple M-series core and every Armv8.2+ core with `FEAT_SHA3` does. The
-/// scalar kernel `k1` needs no extension; it is the pair and quad kernels
-/// that rotate with `xar`.
+/// pair kernels rotate with `xar`; the scalar and quad kernels need no
+/// extension.
 pub fn sha3_detected() -> bool {
     #[cfg(feature = "std")]
     {
@@ -662,18 +766,21 @@ type PartialKernel = unsafe extern "C" fn(*const *const u8, u64, *const u32, u64
 #[cfg(all(test, feature = "std"))]
 pub(crate) fn entries() -> std::vec::Vec<(std::string::String, *const ())> {
     let mut out = std::vec::Vec::new();
-    for (size, k) in CHUNK_KERNELS.iter().enumerate() {
+    let family = family();
+    for (size, k) in family.chunk_kernels.iter().enumerate() {
         if let Some(k) = k {
-            out.push((std::format!("k{size}"), *k as *const ()));
+            out.push((std::format!("chunk kernel {size}"), *k as *const ()));
         }
     }
-    for (size, k) in PARENT_KERNELS.iter().enumerate() {
+    for (size, k) in family.parent_kernels.iter().enumerate() {
         if let Some(k) = k {
-            out.push((std::format!("p{size}"), *k as *const ()));
+            out.push((std::format!("parent kernel {size}"), *k as *const ()));
         }
     }
-    for n in 1..=9 {
-        out.push((std::format!("q{n}"), partial_kernel(n) as *const ()));
+    if sha3_detected() {
+        for n in 1..=9 {
+            out.push((std::format!("q{n}"), partial_kernel(n) as *const ()));
+        }
     }
     out.push(("c1".into(), asm::blake3_hybrid_c1 as *const ()));
     out
@@ -880,7 +987,7 @@ pub fn covers(n: usize, increment_counter: IncrementCounter) -> bool {
 /// counter (parents, separate messages) on the parent plans. Other shapes
 /// ([`covers`] false) are not produced by this crate and stop the program.
 ///
-/// Unsafe because the CPU must have NEON and the SHA-3 extension.
+/// Unsafe because the CPU must have NEON.
 pub unsafe fn hash_many<const N: usize>(
     inputs: &[&[u8; N]],
     key: &CVWords,
@@ -896,9 +1003,26 @@ pub unsafe fn hash_many<const N: usize>(
 
 /// [`hash_many`] with each input's last block `last_len` bytes long (1 to
 /// 64; its bytes past that zero): separate messages in slots of whole
-/// blocks. Unsafe because the CPU must have NEON and the SHA-3 extension.
+/// blocks. Unsafe because the CPU must have NEON.
 #[allow(clippy::too_many_arguments)]
 pub unsafe fn hash_many_last_len<const N: usize>(
+    inputs: &[&[u8; N]],
+    key: &CVWords,
+    counter: u64,
+    increment_counter: IncrementCounter,
+    flags: u8,
+    flags_start: u8,
+    flags_end: u8,
+    last_len: usize,
+    out: &mut [u8],
+) {
+    unsafe { hash_many_in(family(), inputs, key, counter, increment_counter, flags, flags_start, flags_end, last_len, out) }
+}
+
+/// [`hash_many_last_len`] on the kernels of `family`.
+#[allow(clippy::too_many_arguments)]
+unsafe fn hash_many_in<const N: usize>(
+    family: &Family,
     inputs: &[&[u8; N]],
     key: &CVWords,
     counter: u64,
@@ -913,8 +1037,8 @@ pub unsafe fn hash_many_last_len<const N: usize>(
     assert!((1..=BLOCK_LEN).contains(&last_len), "a last block of 1 to 64 bytes");
     let (plans, kernels, counter_step): (&[&[usize]; 17], &[Option<Kernel>], u64) =
         match (N, increment_counter.yes()) {
-            (CHUNK_LEN, true) => (&CHUNK_PLANS, &CHUNK_KERNELS, 1),
-            _ if covers(N, increment_counter) => (&PARENT_PLANS, &PARENT_KERNELS, 0),
+            (CHUNK_LEN, true) => (family.chunk_plans, family.chunk_kernels, 1),
+            _ if covers(N, increment_counter) => (family.parent_plans, family.parent_kernels, 0),
             _ => panic!(
                 "hash_many shape the NEON kernels do not cover: N = {N}, increment = {}",
                 increment_counter.yes()
@@ -952,7 +1076,7 @@ pub unsafe fn hash_many_last_len<const N: usize>(
 /// last block `last_len` bytes (1 to 64, zero past it), from a table of
 /// `count` pointers: the parent plans, as [`hash_many_last_len`] runs them
 /// for inputs of a const length, `flags` on every block. Unsafe because the CPU must have NEON and
-/// the SHA-3 extension and every pointer must reach `blocks` blocks.
+/// every pointer must reach `blocks` blocks.
 #[allow(clippy::too_many_arguments)]
 pub unsafe fn hash_messages_raw(table: *const *const u8, count: usize, blocks: usize, key: &CVWords, counter: u64, flags: u8, flags_start: u8, flags_end: u8, last_len: usize, out: &mut [u8]) {
     assert!(out.len() >= count * OUT_LEN, "room for every digest");
@@ -961,7 +1085,8 @@ pub unsafe fn hash_messages_raw(table: *const *const u8, count: usize, blocks: u
     let mut done = 0;
     while done < count {
         let n = core::cmp::min(GROUP, count - done);
-        unsafe { run_plan(PARENT_PLANS[n], &PARENT_KERNELS, table.add(done), blocks, key, counter, 0, packed, &mut out[done * OUT_LEN..]) };
+        let family = family();
+        unsafe { run_plan(family.parent_plans[n], family.parent_kernels, table.add(done), blocks, key, counter, 0, packed, &mut out[done * OUT_LEN..]) };
         done += n;
     }
 }
@@ -995,6 +1120,30 @@ mod test {
         }
     }
 
+    /// Against the portable compressor, block by block: counters whose low
+    /// word wraps inside a group, flag sets every mode uses, short and full
+    /// blocks, lengths that leave blocks past the groups (left untouched).
+    #[test]
+    fn test_xof_many_matches_portable() {
+        let cv: CVWords = core::array::from_fn(|i| 0x9E37_79B9u32.wrapping_mul(i as u32 + 3));
+        let mut block = [0u8; BLOCK_LEN];
+        crate::test::paint_test_input(&mut block);
+        for counter in [0u64, 7, 0xFFFF_FFFE, u64::MAX - 5] {
+            for (block_len, flags) in [(64u8, crate::ROOT), (21, crate::ROOT | crate::CHUNK_END), (0, crate::ROOT | crate::KEYED_HASH | crate::PARENT)] {
+                for blocks in [4usize, 5, 8, 11, 12, 16, 20] {
+                    let mut out = std::vec![0u8; blocks * BLOCK_LEN];
+                    let done = xof_many(&cv, &block, block_len, counter, flags, &mut out);
+                    assert_eq!(done, blocks / 4 * 4 * BLOCK_LEN);
+                    for (i, got) in out[..done].chunks_exact(BLOCK_LEN).enumerate() {
+                        let want = crate::portable::compress_xof(&cv, &block, block_len, counter.wrapping_add(i as u64), flags);
+                        assert_eq!(got, &want[..], "counter {counter} + {i}, block_len {block_len}, flags {flags:#x}");
+                    }
+                    assert!(out[done..].iter().all(|&b| b == 0), "nothing past the groups");
+                }
+            }
+        }
+    }
+
     #[test]
     fn test_hash_many() {
         if !sha3_detected() {
@@ -1007,9 +1156,13 @@ mod test {
     /// so each plan and each kernel is exercised on its own.
     #[test]
     fn test_every_count_against_portable() {
-        if !sha3_detected() {
-            return;
+        let families: &[&Family] = if sha3_detected() { &[&WITH_SHA3, &PLAIN] } else { &[&PLAIN] };
+        for family in families {
+            every_count_against_portable(family);
         }
+    }
+
+    fn every_count_against_portable(family: &Family) {
         let mut input = [0u8; 16 * CHUNK_LEN];
         crate::test::paint_test_input(&mut input);
         for n in 1..=16 {
@@ -1037,7 +1190,8 @@ mod test {
                     &mut want,
                 );
                 unsafe {
-                    hash_many(
+                    hash_many_in(
+                        family,
                         &chunks,
                         IV,
                         counter,
@@ -1045,6 +1199,7 @@ mod test {
                         KEYED_HASH,
                         CHUNK_START,
                         CHUNK_END,
+                        BLOCK_LEN,
                         &mut got,
                     )
                 };
@@ -1064,7 +1219,8 @@ mod test {
                     &mut want,
                 );
                 unsafe {
-                    hash_many(
+                    hash_many_in(
+                        family,
                         &parents,
                         IV,
                         counter,
@@ -1072,6 +1228,7 @@ mod test {
                         KEYED_HASH | PARENT,
                         0,
                         0,
+                        BLOCK_LEN,
                         &mut got,
                     )
                 };

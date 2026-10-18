@@ -497,19 +497,14 @@ mod test {
     }
 
     /// The self-test runs every assembly entry point this machine has:
-    /// the hybrids' with SHA-3 (else the NEON kernel), and SME2's with
-    /// SME2. It runs again when another test held the SME2 turn.
+    /// the hybrids' (with SHA-3 or without), and SME2's with SME2. It runs again when another test held the SME2 turn.
     #[test]
-    #[cfg(blake3_neon_hybrid)]
+    #[cfg(blake3_neon)]
     fn test_self_test_runs_every_kernel() {
         use crate::{Ran, RAN, RAN_ENTRIES};
         let mut want: std::vec::Vec<(std::string::String, *const ())> = std::vec::Vec::new();
-        if crate::neon_hybrid::sha3_detected() {
-            assert!(!crate::neon_hybrid::entries().is_empty(), "the hybrids' entries");
-            want.extend(crate::neon_hybrid::entries());
-        } else {
-            want.push(("the NEON kernel".into(), crate::neon::ffi::blake3_hash_many_neon as *const ()));
-        }
+        assert!(!crate::neon_hybrid::entries().is_empty(), "the hybrids' entries");
+        want.extend(crate::neon_hybrid::entries());
         #[cfg(blake3_sme2)]
         if crate::platform::sme2_detected() {
             assert!(!crate::sme2::entries().is_empty(), "SME2's entries");

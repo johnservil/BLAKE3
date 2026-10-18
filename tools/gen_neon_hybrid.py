@@ -31,7 +31,9 @@ C ABI, every kernel:
   last_len (0..=64) is the block length recorded for the final block (every
   earlier block records 64; the final block's 64 bytes are read regardless,
   so a short block arrives zero-padded); 32 bytes per input to out in input
-  order. Requires NEON and the SHA-3 extension (`xar`). x18 untouched.
+  order. The pair kernels need the SHA-3 extension (`xar`); the scalar and
+  quad kernels (k1, k9, k10, p8, p9, and the kn, pn, and x kernels) run on
+  every AArch64 CPU. x18 untouched.
   blake3_hybrid_c1 is k1 with the input pointer itself in x0 instead of a
   one-entry table, and a seventh argument in x6: the address of the last
   block, read from there instead of the input. The entry for a single
@@ -472,6 +474,38 @@ class Quad(Unit):
                 out.append(f"str q{t[4 + j]}, [{outp}, #{32 * self.slots[j] + 4 * half}]")
         return out
 
+    def store_xof(self, outp, keyp, t, spilled):
+        """The whole output after the block: rows 0-7 already the chaining
+        value; rows 8-15 each with key word i - 8 (`keyp`), then all 16 rows
+        stored transposed, lane j's 64 bytes at outp + 64 * slots[j]. `t`:
+        four temps; `spilled`: four free registers for a spilled d row."""
+        out = []
+        rows = [int(self.v(i)[1:]) for i in range(12)]
+        if self.spill_d:
+            for i in range(4):
+                out.append(f"ldr q{spilled[i]}, [sp, #{F_DSPILL + 16 * i}]")
+            rows += spilled
+        else:
+            rows += [int(self.v(i)[1:]) for i in range(12, 16)]
+        for i in range(8):
+            out += [f"add x4, {keyp}, #{4 * i}", f"ld1r {{v{t[0]}.4s}}, [x4]",
+                    f"eor v{rows[8 + i]}.16b, v{rows[8 + i]}.16b, v{t[0]}.16b"]
+        for g in range(4):
+            h = rows[4 * g:4 * g + 4]
+            out += [
+                f"trn1 v{t[0]}.4s, v{h[0]}.4s, v{h[1]}.4s",
+                f"trn2 v{t[1]}.4s, v{h[0]}.4s, v{h[1]}.4s",
+                f"trn1 v{t[2]}.4s, v{h[2]}.4s, v{h[3]}.4s",
+                f"trn2 v{t[3]}.4s, v{h[2]}.4s, v{h[3]}.4s",
+                f"trn1 v{h[0]}.2d, v{t[0]}.2d, v{t[2]}.2d",
+                f"trn1 v{h[1]}.2d, v{t[1]}.2d, v{t[3]}.2d",
+                f"trn2 v{h[2]}.2d, v{t[0]}.2d, v{t[2]}.2d",
+                f"trn2 v{h[3]}.2d, v{t[1]}.2d, v{t[3]}.2d",
+            ]
+            for j in range(4):
+                out.append(f"str q{h[j]}, [{outp}, #{64 * self.slots[j] + 16 * g}]")
+        return out
+
 
 MACROS = r"""
 // Scalar half-G: a, b, c, d state words; m message temp; mx the message
@@ -820,12 +854,16 @@ def lean_kernel(name, sc, last):
 ROLLED_K1 = True
 
 
-def kernel(name, scalars, units, partial=False):
+def kernel(name, scalars, units, partial=False, xof=False):
     """A kernel over whole chunks. With `partial`, the last scalar hashes a
     partial chunk: its block count and final block length arrive in x6 as
     `blocks | last_len << 8` (blocks in 1..=the others' count, last_len in
     1..=64, its input read as whole zero-padded blocks), and it runs beside
-    the others for its own blocks only; a second loop finishes the rest."""
+    the others for its own blocks only; a second loop finishes the rest.
+    With `xof` (quads alone, one block), each lane's whole 64-byte output
+    goes out: the low half the chaining value, the high half the c and d
+    rows with the key, lane j's at out + 64 * slot."""
+    assert not xof or (not scalars and not partial)
     if not units and len(scalars) == 1:
         assert not partial
         return lean_kernel(name, scalars[0], last="x25")
@@ -845,6 +883,10 @@ def kernel(name, scalars, units, partial=False):
     e(f"str x5, [sp, #{F_OUT}]")
     if partial:
         e(f"str x6, [sp, #{F_PART}]")
+    if xof:
+        # The key pointer, for the output's high half (F_PART serves only
+        # partial kernels).
+        e(f"str x2, [sp, #{F_PART}]")
     # Running input pointers, advanced by one block per iteration: in a
     # register where the scalar has one, in the frame otherwise.
     pregs = {sc.slot: sc.preg for sc in scalars if sc.preg}
@@ -1019,7 +1061,13 @@ def kernel(name, scalars, units, partial=False):
     e(f"ldr x2, [sp, #{F_OUT}]")
     for sc in (scalars[:-1] if partial else scalars):
         L += sc.store("x2")
-    if units:
+    if xof:
+        e(f"ldr x3, [sp, #{F_PART}]")
+        for k, u in enumerate(units):
+            # The second unit's spilled d rows come back through the first
+            # unit's registers, free once its output is stored.
+            L += u.store_xof("x2", "x3", [28, 29, 30, 31], [0, 1, 2, 3] if k else None)
+    elif units:
         temps = [n for u in units for n in u.state[8:]] + [int(units[0].mtemp[1:]), int(units[0].dtemp[1:])]
         for u in units:
             L += u.store("x2", temps)
@@ -1092,6 +1140,23 @@ def build():
         "q7": kernel("blake3_hybrid_q7", sc2(0, 7), [quad(0, (1, 2, 3, 4)), pair(1, (5, 6))], partial=True),
         "q8": kernel("blake3_hybrid_q8", sc1(8), [quad(0, (0, 1, 2, 3)), quad(1, (4, 5, 6, 7))], partial=True),
         "q9": kernel("blake3_hybrid_q9", sc2(0, 9), [quad(0, (1, 2, 3, 4)), quad(1, (5, 6, 7, 8))], partial=True),
+        # kn<n>, pn<n>: chunks and parents on scalars and quads alone, which
+        # need no SHA-3 (the quads rotate with rev32, tbl, and shl + sri):
+        # with k1, k9, k10, p8, and p9, every count on a CPU without SHA-3.
+        "kn2": kernel("blake3_hybrid_kn2", sc2(0, 1), []),
+        "kn4": kernel("blake3_hybrid_kn4", [], [quad(0, (0, 1, 2, 3))]),
+        "kn5": kernel("blake3_hybrid_kn5", sc1(0), [quad(0, (1, 2, 3, 4))]),
+        "kn6": kernel("blake3_hybrid_kn6", sc2(0, 1), [quad(0, (2, 3, 4, 5))]),
+        "kn8": kernel("blake3_hybrid_kn8", [], [quad(0, (0, 1, 2, 3)), quad(1, (4, 5, 6, 7))]),
+        "pn2": kernel("blake3_hybrid_pn2", psc2(0, 1), []),
+        "pn4": kernel("blake3_hybrid_pn4", [], [pquad(0, (0, 1, 2, 3))]),
+        "pn5": kernel("blake3_hybrid_pn5", psc1(0), [pquad(0, (1, 2, 3, 4))]),
+        "pn6": kernel("blake3_hybrid_pn6", psc2(0, 1), [pquad(0, (2, 3, 4, 5))]),
+        "pn10": kernel("blake3_hybrid_pn10", psc2(0, 1), [pquad(0, (2, 3, 4, 5)), pquad(1, (6, 7, 8, 9))]),
+        # x<n>: extended output, n blocks of one block's output at counters
+        # counter + i (every table entry the same block), both halves.
+        "x4": kernel("blake3_hybrid_x4", [], [quad(0, (0, 1, 2, 3))], xof=True),
+        "x8": kernel("blake3_hybrid_x8", [], [quad(0, (0, 1, 2, 3)), quad(1, (4, 5, 6, 7))], xof=True),
     }
 
 
@@ -1114,7 +1179,10 @@ HEADER = """\
 // pairs; k7 scalar + quad + pair; k8 two scalars + quad + pair; k9
 // scalar + two quads; k10 two scalars + two quads. p<n> hashes n
 // contiguous 64-byte parent blocks with one shared counter: p2 pair, p4
-// two scalars + pair (as k4), p8 two quads. Messages are transposed onto
+// two scalars + pair (as k4), p8 two quads; kn<n> and pn<n> the chunk and
+// parent counts on scalars and quads alone, for CPUs without SHA-3; x4 and
+// x8 extended output, every lane the same block at its own counter, 64
+// bytes a lane. Messages are transposed onto
 // the stack each block and the second NEON unit's d row lives there too,
 // which is what lets two units of state share 32 vector registers.
 //
@@ -1129,8 +1197,9 @@ HEADER = """\
 // last_len (0..=64) is the block length the last block records (earlier
 // blocks record 64; the last block's 64 bytes are read regardless, so a
 // short block arrives zero-padded); out receives 32 bytes per input in
-// input order. The CPU must have NEON and the SHA-3 extension (xar). x18
-// is untouched; AAPCS64 otherwise.
+// input order (x kernels: 64 bytes per lane). The pair kernels need the
+// SHA-3 extension (xar); the others run on every AArch64 CPU. x18 is
+// untouched; AAPCS64 otherwise.
 
 #if defined(__ELF__) && defined(__linux__)
 .section .note.GNU-stack,"",%progbits
