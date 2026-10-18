@@ -936,6 +936,10 @@ fn hash_all_at_once(input: &[u8], key: &CVWords, chunk_counter: u64, flags: u8, 
 ///
 /// The first hash in a process first runs a self-test (see the crate's
 /// documentation), under 0.2 ms; [`initialize`] moves it to start-up.
+// Inlined into its caller: its one call, out of line, sat apart from
+// hash_serial, one more code line to fetch from DRAM in a call after a pause
+// (i7-12700K, after idling, 64 B: -16.5%, 8 fresh layouts a side).
+#[inline]
 pub fn hash(input: &[u8]) -> Hash {
     hash_serial(input, IV, 0)
 }
