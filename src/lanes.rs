@@ -97,15 +97,8 @@ pub(crate) const MIN_SPLIT_LEN: usize = if cfg!(miri) { 16 * 1024 } else { 512 *
 /// The shortest piece: eight chunks, a hybrid kernel's worth.
 const MIN_PIECE_LEN: usize = 8 * CHUNK_LEN;
 
-/// The longest piece: 1 MiB. A worker faults a mapped input from storage
-/// in order within its piece, so the kernel's readahead ramps over it; at
-/// 128 KiB, twenty workers taking pieces in turn interleaved their faults,
-/// and a 1 GiB file b3sum read from storage was cached in small folios,
-/// which made every later mapping of it fault and unmap page by page (a
-/// later b3sum run 46.2 ms, now 40.0; the read itself level, i7-12700K,
-/// ext4; bench-hashes-validation/b3sum-thp). The one-shot cells from
-/// 1 MiB to 128 MiB measured level (perf_regress, 12 layouts a side).
-const MAX_PIECE_LEN: usize = 1024 * CHUNK_LEN;
+/// The longest piece.
+const MAX_PIECE_LEN: usize = 128 * CHUNK_LEN;
 
 /// Between polls a thread spins in user space, and every YIELD_EVERY it
 /// hands the CPU to any runnable thread (a caller the OS has queued
