@@ -13,9 +13,10 @@ the bugs those steps found and what formal verification we have tried.
 | x86-64: Linux, macOS, Windows (MSVC) | upstream's assembly, unchanged, and the fork's own kernels in Rust intrinsics | tested |
 | WebAssembly | upstream's portable Rust (SIMD128 with the `wasm32_simd` feature) | tested |
 
-- **The Arm kernels are proved correct.** Every assembly kernel on Arm
-  is proved to compute the BLAKE3 standard's compression for every
-  input, key, counter, and flags value, as the CPU runs it: 368 proofs
+- **The Arm kernels are proved correct.** Every kernel on Arm is
+  assembly, and each is proved to compute the BLAKE3 standard's
+  compression for every input, key, counter, and flags value, as the CPU
+  runs it: 455 proofs
   that a solver checks against a specification of the standard in Lean.
   Each kernel also reads and writes only its own buffers.
 - **Secrets do not steer the Arm kernels.** The same proofs show that
@@ -310,13 +311,13 @@ Z3 (an AArch64 Linux machine with PyPy and `python3-z3`, Clang and
 llvm-objdump 17 or later; details in [`tools/verify/README.md`](tools/verify/README.md)):
 
 ```sh
-pypy3 tools/verify/prove_hybrid.py   # ends "327 of 327 cases proved"
+pypy3 tools/verify/prove_hybrid.py   # ends "414 of 414 cases proved"
 pypy3 tools/verify/prove_sme2.py     # ends "38 of 38 cases proved" (the longest, the chunk kernel at every group count, 15 minutes)
 pypy3 tools/verify/prove_sme2.py xof_every messages_every x2_every  # ends "3 of 3 cases proved": the other kernels at every group count (x2_every about 50 minutes)
 pypy3 tools/verify/mutants.py        # wrong kernels, each rejected
 ```
 
-All of them, 368 cases, run on the fork's VM after every change to a
+All of them, 455 cases, run on the fork's VM after every change to a
 kernel or the proof tools lands (`tools/verify/long-proofs.sh`), reported
 on GitHub as the commit's status "long proofs"; a failure is fixed
 before the next such change. Each case is proved when Z3

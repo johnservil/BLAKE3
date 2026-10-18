@@ -31,6 +31,15 @@
   go to official BLAKE3; with them go the `neon`, `prefer_intrinsics`,
   `no_sse2`, `no_sse41`, and `digest` features, and upstream's C library.
   GCC 12 is the oldest C compiler supported.
+- **Every Arm kernel is generated assembly, and proved.** CPUs without
+  the SHA-3 extension (Cortex-A72, Neoverse N1) run the integer + NEON
+  kernels built on scalar and quad units (`kn`, `pn`), in place of
+  upstream's C NEON kernel, which goes with its headers; extended output
+  on NEON runs the `x4` and `x8` kernels, in place of Rust intrinsics. An
+  assembler that knows armv8.2-a+sha3 is required (GNU as 2.30, LLVM 7),
+  or the `pure` feature. `platform::Platform::hash_many` takes the shapes
+  the crate makes on every platform: whole chunks at incrementing
+  counters, or 1 to 16 blocks at one counter.
 - **Breaking: the deprecated `guts` module goes** (`hazmat` serves it).
 - `Mode::DeriveKeyMaterial` takes a derived key's context already hashed
   (`hazmat::hash_derive_key_context`), for many calls with one context.
