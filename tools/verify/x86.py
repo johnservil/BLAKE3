@@ -53,7 +53,7 @@ def disassemble(so, start, stop):
                           f"--stop-address={stop}", so], capture_output=True, text=True, check=True).stdout
     rows = []
     for line in out.splitlines():
-        m = re.match(r"\s+([0-9a-f]+):\s*\t(\S+)(?:\t(.*))?$", line)
+        m = re.match(r"\s*([0-9a-f]+):\s*\t(\S+)(?:\t(.*))?$", line)
         if not m:
             continue
         addr, mnem, rest = int(m.group(1), 16), m.group(2), (m.group(3) or "")
@@ -95,23 +95,53 @@ def split(ops):
     return out
 
 
+def sections(so):
+    """{name: (address, size)} of the image's sections."""
+    out = subprocess.run([LLVM_OBJDUMP, "-h", so], capture_output=True, text=True, check=True).stdout
+    secs = {}
+    for line in out.splitlines():
+        p = line.split()
+        if len(p) >= 4 and p[0].isdigit():
+            secs[p[1]] = (int(p[3], 16), int(p[2], 16))
+    return secs
+
+
 def symbols(so):
+    """{name: address}: ELF's absolute values; COFF's (a Windows image)
+    relative to their section, .text here."""
     out = subprocess.run([LLVM_OBJDUMP, "-t", so], capture_output=True, text=True, check=True).stdout
     syms = {}
+    text = sections(so)[".text"][0]
     for line in out.splitlines():
         parts = line.split()
         if len(parts) >= 2 and re.match(r"^[0-9a-f]{16}$", parts[0]):
             syms[parts[-1]] = int(parts[0], 16)
+        coff = re.match(r"^\[\s*\d+\]\(sec\s+1\).* 0x([0-9a-f]+) (\S+)$", line)
+        if coff:
+            syms[coff.group(2)] = text + int(coff.group(1), 16)
     return syms
 
 
 def text_end(so):
-    out = subprocess.run([LLVM_OBJDUMP, "-h", so], capture_output=True, text=True, check=True).stdout
+    addr, size = sections(so)[".text"]
+    return addr + size
+
+
+def image(so):
+    """The image's loaded bytes, {address: int}: code and constants."""
+    names = [n for n in sections(so) if n in (".text", ".rodata", ".rdata", ".data")]
+    out = subprocess.run([LLVM_OBJDUMP, "-s"] + [f"--section={n}" for n in names] + [so],
+                         capture_output=True, text=True, check=True).stdout
+    data = {}
     for line in out.splitlines():
-        p = line.split()
-        if len(p) >= 4 and p[1] == ".text":
-            return int(p[3], 16) + int(p[2], 16)
-    raise AssertionError("no .text")
+        mt = re.match(r"^ ([0-9a-f]+) ((?:[0-9a-f]{2,8} ){1,4})", line + " ")
+        if not mt:
+            continue
+        addr = int(mt.group(1), 16)
+        hexs = "".join(mt.group(2).split())
+        for i in range(0, len(hexs), 2):
+            data[addr + i // 2] = int(hexs[i:i + 2], 16)
+    return data
 
 
 def term_size(t, limit):

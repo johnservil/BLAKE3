@@ -41,17 +41,13 @@ def assemble(isa, windows):
         subprocess.run([LLVM_ML, "-m64", "-c", src, f"-Fo{obj}"], check=True, stdout=subprocess.DEVNULL)
         # llvm-ml writes COFF; lld links it as a Windows DLL image.
         so = os.path.join(d, f"{isa}.dll")
-        subprocess.run(["/usr/lib/llvm-19/bin/lld-link", "/dll", "/noentry", "/force:unresolved", f"/out:{so}", obj],
+        subprocess.run(["/usr/lib/llvm-19/bin/lld-link", "/dll", "/noentry", "/force:unresolved", "/debug:symtab", f"/out:{so}", obj],
                        check=True, stdout=subprocess.DEVNULL)
         return so
     obj = os.path.join(d, f"{isa}.o")
     subprocess.run([CLANG, "-c", "--target=x86_64-linux-gnu", os.path.join(ROOT_DIR, f"c/blake3_{isa}_x86-64_unix.S"),
                     "-o", obj], check=True)
     return x86.link(obj)
-
-
-def image(so):
-    return aarch64.image_bytes(so)
 
 
 class Setup:
@@ -61,9 +57,9 @@ class Setup:
         syms = x86.symbols(so)
         self.entry = syms[entry]
         code = x86.disassemble(so, self.entry, x86.text_end(so))
-        img = image(so)
+        img = x86.image(so)
         regions = dict(regions)
-        regions["image"] = Region("image", max(img) + 1, False, lambda o: BitVecVal(img.get(o, 0), 8))
+        regions["image"] = Region("image", max(img) + 1, False, lambda o: BitVecVal(img[o], 8))
         regions["stack"] = Region("stack", STACK + 8 * 16, True, None)
         self.m = m = x86.Machine(code, regions)
         m.red_zone = 0 if windows else 128
