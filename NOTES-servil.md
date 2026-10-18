@@ -3085,3 +3085,37 @@ The group induction takes about 40 of the 44 minutes (2627 s as a long-proof cas
 plain chunk kernel's; the table's 144-byte stride (`URem`/`UDiv` in the
 entry function, where the plain kernel masks with 127) is the likely
 cost, untested.
+
+## One kernel form on Arm: generated assembly (October 18, 2026)
+
+Zooko asked why the fork carries both assembly and intrinsics. Upstream
+does (assembly by default, intrinsics for `pure` builds), and the fork
+had added two intrinsics kernels of its own: `src/neon_xof.rs` (Rust NEON,
+the extended output) and, on x86, Devon's pass of whole chunks with a
+partial one (`rust_sse41`/`rust_avx2`, add5010). Upstream's C NEON kernel
+(`c/blake3_neon.c`) also served every NEON `hash_many` call on CPUs
+without SME2 (M1-M3), and every call on CPUs without SHA-3. A kernel in
+intrinsics is whatever the compiler emits, so no proof covers it; the
+fork's practice is generated assembly, proved as assembled.
+
+On Arm now:
+- The generator's quad unit rotates with `rev32`, `tbl`, and `shl + sri`,
+  so kernels of scalars and quads need no SHA-3 (k1, k9, k10, p8, p9
+  already were). `kn2`, `kn4`, `kn5`, `kn6`, `kn8` and `pn2`, `pn4`,
+  `pn5`, `pn6`, `pn10` complete a second family (`PLAIN`), chosen by
+  `sha3_detected()`; counts 3 and 7 run a kernel and k1 after it.
+- `x4` and `x8` are quad kernels with an `xof` output stage: every table
+  entry the same block, one block, rows 8-15 with the key, all 16 rows
+  stored transposed.
+- `Platform::hash_many` takes the crate's shapes on every platform (whole
+  chunks at incrementing counters, or 1 to 16 blocks at one counter),
+  which every kernel serves; the C kernel's one remaining role (any shape)
+  went with it.
+- `blake3_neon_hybrid` folded into `blake3_neon`: an assembler that knows
+  armv8.2-a+sha3 is required where NEON is built.
+
+All of them prove with the existing tools (`prove_table`, and
+`prove_xof` for the 64-byte outputs): 414 cases in `prove_hybrid.py`.
+Measured: perf_regress against servil, the VM and the Mac (job 1628), no
+cell slower (the gate's machines run SME2, which the change reaches only
+in its leftovers and extended output past whole groups).
