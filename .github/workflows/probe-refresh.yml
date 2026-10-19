@@ -1,0 +1,25 @@
+name: probe-refresh
+on:
+  push:
+    branches: [probe/refresh-avx512]
+jobs:
+  avx512:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-latest, ubuntu-latest, ubuntu-latest, windows-latest, windows-latest]
+        n: [0]
+    runs-on: ${{ matrix.os }}
+    steps:
+    - uses: actions/checkout@v4
+    - uses: dtolnay/rust-toolchain@stable
+    - name: cpu
+      shell: bash
+      run: (grep -m1 "model name" /proc/cpuinfo 2>/dev/null || wmic cpu get name 2>/dev/null || true)
+    - name: tests, with the refresh branch's AVX-512 file
+      shell: bash
+      run: |
+        cargo test --release --lib -- --nocapture platform::x86_features_test 2>&1 | tail -3
+        cargo test --release --lib 2>&1 | tail -15
+        cargo test --lib 2>&1 | tail -15
+        cargo test --release --test api_plan 2>&1 | tail -5
