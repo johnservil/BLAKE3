@@ -1,7 +1,7 @@
-# Probe: official BLAKE3 master's x86-64 assembly
+# Probe: official BLAKE3 1.8.7 release assembly
 
 This branch is `servil` with four files replaced by the exact files from
-BLAKE3-team/BLAKE3 `master` at f55849f89cd85083c1c9daa2c5de20766f309c00:
+BLAKE3-team/BLAKE3 release 1.8.7, tag commit f3149ec5bb5449af877ba20377a11008ff499fa2:
 
 - `c/blake3_avx2_x86-64_unix.S`
 - `c/blake3_avx2_x86-64_windows_msvc.asm`
