@@ -1,0 +1,33 @@
+name: probe-upstream-1.8.7
+on:
+  push:
+    branches: [probe/upstream-1.8.7, probe/upstream-1.8.7-minimal-fix]
+  workflow_dispatch:
+jobs:
+  guard-page:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-latest, ubuntu-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+    - uses: actions/checkout@v4
+    - uses: dtolnay/rust-toolchain@stable
+    - run: grep -m1 "model name" /proc/cpuinfo
+    - name: safe Platform::hash_many with inputs ending at guard pages
+      shell: bash
+      run: |
+        mkdir -p /tmp/guard-probe/src
+        cat > /tmp/guard-probe/Cargo.toml <<'TOML'
+        [package]
+        name = "guard-probe"
+        version = "0.1.0"
+        edition = "2021"
+        [dependencies]
+        blake3 = { path = "." }
+        libc = "0.2"
+        [workspace]
+        TOML
+        sed -i "s#path = \".\"#path = \"$GITHUB_WORKSPACE\"#" /tmp/guard-probe/Cargo.toml
+        cp probe-upstream/src/main.rs /tmp/guard-probe/src/main.rs
+        cargo run --release --manifest-path /tmp/guard-probe/Cargo.toml
