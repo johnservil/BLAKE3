@@ -11,3 +11,7 @@ BLAKE3-team/BLAKE3 release 1.8.7, tag commit f3149ec5bb5449af877ba20377a11008ff4
 It exists only to run this fork's tests, including
 `test_hash_many_each_input_against_a_guard_page`, against those kernels.
 It is not a candidate for merging.
+
+The `probe/official-1.8.7-fix` branch is this branch plus only the
+load-width changes: each full-width load whose upper bytes are overwritten
+by the following insert now loads the 16 bytes it keeps.

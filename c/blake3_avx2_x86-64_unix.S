@@ -1349,29 +1349,29 @@ blake3_hash_many_avx2:
         cmp     rdx, r15
         cmovne  eax, r14d
         mov     dword ptr [rsp+0x200], eax
-        vmovups ymm2, ymmword ptr [r8+rdx-0x40]
+        vmovups xmm2, xmmword ptr [r8+rdx-0x40]
         vinsertf128 ymm2, ymm2, xmmword ptr [r9+rdx-0x40], 0x01
-        vmovups ymm3, ymmword ptr [r8+rdx-0x30]
+        vmovups xmm3, xmmword ptr [r8+rdx-0x30]
         vinsertf128 ymm3, ymm3, xmmword ptr [r9+rdx-0x30], 0x01
         vshufps ymm4, ymm2, ymm3, 136
         vshufps ymm5, ymm2, ymm3, 221
-        vmovups ymm2, ymmword ptr [r8+rdx-0x20]
+        vmovups xmm2, xmmword ptr [r8+rdx-0x20]
         vinsertf128 ymm2, ymm2, xmmword ptr [r9+rdx-0x20], 0x01
-        vmovups ymm3, ymmword ptr [r8+rdx-0x10]
+        vmovups xmm3, xmmword ptr [r8+rdx-0x10]
         vinsertf128 ymm3, ymm3, xmmword ptr [r9+rdx-0x10], 0x01
         vshufps ymm6, ymm2, ymm3, 136
         vshufps ymm7, ymm2, ymm3, 221
         vpshufd ymm6, ymm6, 0x93
         vpshufd ymm7, ymm7, 0x93
-        vmovups ymm10, ymmword ptr [r10+rdx-0x40]
+        vmovups xmm10, xmmword ptr [r10+rdx-0x40]
         vinsertf128 ymm10, ymm10, xmmword ptr [r11+rdx-0x40], 0x01
-        vmovups ymm11, ymmword ptr [r10+rdx-0x30]
+        vmovups xmm11, xmmword ptr [r10+rdx-0x30]
         vinsertf128 ymm11, ymm11, xmmword ptr [r11+rdx-0x30], 0x01
         vshufps ymm12, ymm10, ymm11, 136
         vshufps ymm13, ymm10, ymm11, 221
-        vmovups ymm10, ymmword ptr [r10+rdx-0x20]
+        vmovups xmm10, xmmword ptr [r10+rdx-0x20]
         vinsertf128 ymm10, ymm10, xmmword ptr [r11+rdx-0x20], 0x01
-        vmovups ymm11, ymmword ptr [r10+rdx-0x10]
+        vmovups xmm11, xmmword ptr [r10+rdx-0x10]
         vinsertf128 ymm11, ymm11, xmmword ptr [r11+rdx-0x10], 0x01
         vshufps ymm14, ymm10, ymm11, 136
         vshufps ymm15, ymm10, ymm11, 221
@@ -1577,15 +1577,15 @@ blake3_hash_many_avx2:
         vbroadcasti128 ymm2, xmmword ptr [BLAKE3_IV+rip]
         vpbroadcastd ymm8, dword ptr [rsp+0x200]
         vpblendd ymm3, ymm13, ymm8, 0x88
-        vmovups ymm8, ymmword ptr [r8+rdx-0x40]
+        vmovups xmm8, xmmword ptr [r8+rdx-0x40]
         vinsertf128 ymm8, ymm8, xmmword ptr [r9+rdx-0x40], 0x01
-        vmovups ymm9, ymmword ptr [r8+rdx-0x30]
+        vmovups xmm9, xmmword ptr [r8+rdx-0x30]
         vinsertf128 ymm9, ymm9, xmmword ptr [r9+rdx-0x30], 0x01
         vshufps ymm4, ymm8, ymm9, 136
         vshufps ymm5, ymm8, ymm9, 221
-        vmovups ymm8, ymmword ptr [r8+rdx-0x20]
+        vmovups xmm8, xmmword ptr [r8+rdx-0x20]
         vinsertf128 ymm8, ymm8, xmmword ptr [r9+rdx-0x20], 0x01
-        vmovups ymm9, ymmword ptr [r8+rdx-0x10]
+        vmovups xmm9, xmmword ptr [r8+rdx-0x10]
         vinsertf128 ymm9, ymm9, xmmword ptr [r9+rdx-0x10], 0x01
         vshufps ymm6, ymm8, ymm9, 136
         vshufps ymm7, ymm8, ymm9, 221
