@@ -1093,7 +1093,7 @@ mod platform_hash_many {
 // after one), outputs likewise, so a kernel that reads or writes one byte
 // outside its buffers stops the test with a fault. The assembly kernels'
 // accesses are invisible to the sanitizers; these are not.
-#[cfg(all(feature = "std", target_arch = "aarch64", any(target_vendor = "apple", target_os = "linux")))]
+#[cfg(all(feature = "std", any(target_arch = "aarch64", target_arch = "x86_64"), any(target_vendor = "apple", target_os = "linux")))]
 mod guard_pages {
     use crate::*;
 

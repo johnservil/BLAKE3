@@ -124,6 +124,10 @@ zeroize = { version = "1", default-features = false, optional = true }
 [target.'cfg(all(target_arch = "aarch64", any(target_vendor = "apple", target_os = "linux")))'.dependencies]
 libc = { version = "0.2", default-features = false }
 
+# The guard-page tests (src/test.rs) on x86-64 too.
+[target.'cfg(all(target_arch = "x86_64", any(target_vendor = "apple", target_os = "linux")))'.dev-dependencies]
+libc = { version = "0.2", default-features = false }
+
 [dev-dependencies]
 rand = "0.10.0"
 hmac = "0.13.0"
