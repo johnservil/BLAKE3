@@ -1139,6 +1139,39 @@ mod guard_pages {
         g
     }
 
+    /// Every platform's `hash_many` with each input in its own pages,
+    /// flush against an inaccessible page: a kernel that reads past an
+    /// input's end (into what, in a contiguous buffer, would be the next
+    /// input) faults here. 1 to 17 inputs of 1, 2 and 16 blocks, at one
+    /// counter and at incrementing ones, on every kernel this CPU runs.
+    #[test]
+    fn test_hash_many_each_input_against_a_guard_page() {
+        fn check<const N: usize>(platforms: &[platform::Platform], increment: IncrementCounter) {
+            for count in 1..=17 {
+                let mut pages: Vec<Guarded> = (0..count).map(|_| filled(N, true)).collect();
+                let inputs: Vec<&[u8; N]> = pages.iter_mut().map(|g| -> &[u8; N] { unsafe { &*(g.bytes().as_ptr() as *const [u8; N]) } }).collect();
+                let mut want = vec![0u8; count * OUT_LEN];
+                platform::Platform::Portable.hash_many::<N>(&inputs, IV, 0, increment, 0, CHUNK_START, CHUNK_END, &mut want);
+                for &platform in platforms {
+                    let mut got = vec![0u8; count * OUT_LEN];
+                    platform.hash_many::<N>(&inputs, IV, 0, increment, 0, CHUNK_START, CHUNK_END, &mut got);
+                    assert!(got == want, "{platform:?}, {count} inputs of {N} bytes");
+                }
+            }
+        }
+        #[allow(unused_mut)]
+        let mut platforms: Vec<platform::Platform> = Vec::new();
+        #[cfg(target_arch = "x86_64")]
+        platforms.extend([platform::Platform::sse41(), platform::Platform::avx2(), platform::Platform::avx512()].into_iter().flatten());
+        #[cfg(target_arch = "aarch64")]
+        platforms.extend([platform::Platform::neon(), platform::Platform::sme2()].into_iter().flatten());
+        eprintln!("kernels checked: {platforms:?}");
+        check::<BLOCK_LEN>(&platforms, IncrementCounter::No);
+        check::<{ 2 * BLOCK_LEN }>(&platforms, IncrementCounter::No);
+        check::<CHUNK_LEN>(&platforms, IncrementCounter::No);
+        check::<CHUNK_LEN>(&platforms, IncrementCounter::Yes);
+    }
+
     #[test]
     fn test_hash_inside_guard_pages() {
         let mut lens: Vec<usize> = (0..=2 * CHUNK_LEN + 70).collect();
