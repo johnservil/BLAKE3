@@ -1165,6 +1165,22 @@ mod guard_pages {
         platforms.extend([platform::Platform::sse41(), platform::Platform::avx2(), platform::Platform::avx512()].into_iter().flatten());
         #[cfg(target_arch = "aarch64")]
         platforms.extend([platform::Platform::neon(), platform::Platform::sme2()].into_iter().flatten());
+        // The kernels this CPU has are the ones checked: none left out.
+        #[cfg(target_arch = "x86_64")]
+        {
+            assert_eq!(
+                platforms.iter().any(|p| matches!(p, platform::Platform::AVX2)),
+                std::is_x86_feature_detected!("avx2"),
+                "AVX2 checked where the CPU has it: {platforms:?}"
+            );
+            #[cfg(blake3_avx512_ffi)]
+            assert_eq!(
+                platforms.iter().any(|p| matches!(p, platform::Platform::AVX512)),
+                std::is_x86_feature_detected!("avx512f") && std::is_x86_feature_detected!("avx512vl"),
+                "AVX-512 checked where the CPU has it: {platforms:?}"
+            );
+            assert!(cfg!(blake3_avx2_ffi) || cfg!(blake3_avx2_rust), "an AVX2 kernel built");
+        }
         eprintln!("kernels checked: {platforms:?}");
         check::<BLOCK_LEN>(&platforms, IncrementCounter::No);
         check::<{ 2 * BLOCK_LEN }>(&platforms, IncrementCounter::No);
