@@ -1153,6 +1153,7 @@ mod guard_pages {
                 let mut want = vec![0u8; count * OUT_LEN];
                 platform::Platform::Portable.hash_many::<N>(&inputs, IV, 0, increment, 0, CHUNK_START, CHUNK_END, &mut want);
                 for &platform in platforms {
+                    eprintln!("probe: {platform:?}, {count} inputs of {N} bytes, increment {}", increment.yes());
                     let mut got = vec![0u8; count * OUT_LEN];
                     platform.hash_many::<N>(&inputs, IV, 0, increment, 0, CHUNK_START, CHUNK_END, &mut got);
                     assert!(got == want, "{platform:?}, {count} inputs of {N} bytes");

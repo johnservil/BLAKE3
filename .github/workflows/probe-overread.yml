@@ -1,0 +1,18 @@
+name: probe-overread
+on: workflow_dispatch
+jobs:
+  guard-pages:
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: ["", "--release"]
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: dtolnay/rust-toolchain@stable
+    - run: grep -m1 "model name" /proc/cpuinfo; grep -m1 flags /proc/cpuinfo | tr ' ' '\n' | grep -E "^(sse4_1|avx2|avx512f|avx512vl)$"
+    - run: |
+        for t in test_hash_many_each_input_against_a_guard_page test_hash_inside_guard_pages test_hash_many_inside_guard_pages test_xof_inside_guard_pages; do
+          echo "=== $t"
+          cargo test ${{ matrix.profile }} --lib -- --exact test::guard_pages::$t --nocapture --test-threads 1 2>&1 | tail -5 || true
+        done
