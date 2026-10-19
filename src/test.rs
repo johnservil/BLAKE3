@@ -1186,6 +1186,14 @@ mod guard_pages {
         check::<{ 2 * BLOCK_LEN }>(&platforms, IncrementCounter::No);
         check::<CHUNK_LEN>(&platforms, IncrementCounter::No);
         check::<CHUNK_LEN>(&platforms, IncrementCounter::Yes);
+        // The probe's report, in CI's log (a test's stderr is captured):
+        // reaching here means no kernel faulted.
+        #[cfg(target_arch = "x86_64")]
+        panic!(
+            "probe report: no fault; kernels checked {platforms:?}; avx2 {}, avx512f {}",
+            std::is_x86_feature_detected!("avx2"),
+            std::is_x86_feature_detected!("avx512f")
+        );
     }
 
     #[test]
