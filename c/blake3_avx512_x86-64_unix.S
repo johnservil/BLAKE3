@@ -2082,21 +2082,21 @@ blake3_hash_many_avx512:
         vmovdqa32 zmm2, zmm15
         vpbroadcastd zmm8, dword ptr [rsp+0x22*0x4]
         vpblendmd zmm3 {k4}, zmm13, zmm8
-        vmovups xmm8, xmmword ptr [r8+rdx-0x1*0x40]
+        vmovups zmm8, zmmword ptr [r8+rdx-0x1*0x40]
         vinserti32x4 zmm8, zmm8, xmmword ptr [r9+rdx-0x4*0x10], 0x01
         vinserti32x4 zmm8, zmm8, xmmword ptr [r10+rdx-0x4*0x10], 0x02
         vinserti32x4 zmm8, zmm8, xmmword ptr [r11+rdx-0x4*0x10], 0x03
-        vmovups xmm9, xmmword ptr [r8+rdx-0x30]
+        vmovups zmm9, zmmword ptr [r8+rdx-0x30]
         vinserti32x4 zmm9, zmm9, xmmword ptr [r9+rdx-0x3*0x10], 0x01
         vinserti32x4 zmm9, zmm9, xmmword ptr [r10+rdx-0x3*0x10], 0x02
         vinserti32x4 zmm9, zmm9, xmmword ptr [r11+rdx-0x3*0x10], 0x03
         vshufps zmm4, zmm8, zmm9, 136
         vshufps zmm5, zmm8, zmm9, 221
-        vmovups xmm8, xmmword ptr [r8+rdx-0x20]
+        vmovups zmm8, zmmword ptr [r8+rdx-0x20]
         vinserti32x4 zmm8, zmm8, xmmword ptr [r9+rdx-0x2*0x10], 0x01
         vinserti32x4 zmm8, zmm8, xmmword ptr [r10+rdx-0x2*0x10], 0x02
         vinserti32x4 zmm8, zmm8, xmmword ptr [r11+rdx-0x2*0x10], 0x03
-        vmovups xmm9, xmmword ptr [r8+rdx-0x10]
+        vmovups zmm9, zmmword ptr [r8+rdx-0x10]
         vinserti32x4 zmm9, zmm9, xmmword ptr [r9+rdx-0x1*0x10], 0x01
         vinserti32x4 zmm9, zmm9, xmmword ptr [r10+rdx-0x1*0x10], 0x02
         vinserti32x4 zmm9, zmm9, xmmword ptr [r11+rdx-0x1*0x10], 0x03
@@ -2207,15 +2207,15 @@ blake3_hash_many_avx512:
         vbroadcasti128 ymm2, xmmword ptr [BLAKE3_IV+rip]
         vpbroadcastd ymm8, dword ptr [rsp+0x88]
         vpblendd ymm3, ymm13, ymm8, 0x88
-        vmovups xmm8, xmmword ptr [r8+rdx-0x40]
+        vmovups ymm8, ymmword ptr [r8+rdx-0x40]
         vinsertf128 ymm8, ymm8, xmmword ptr [r9+rdx-0x40], 0x01
-        vmovups xmm9, xmmword ptr [r8+rdx-0x30]
+        vmovups ymm9, ymmword ptr [r8+rdx-0x30]
         vinsertf128 ymm9, ymm9, xmmword ptr [r9+rdx-0x30], 0x01
         vshufps ymm4, ymm8, ymm9, 136
         vshufps ymm5, ymm8, ymm9, 221
-        vmovups xmm8, xmmword ptr [r8+rdx-0x20]
+        vmovups ymm8, ymmword ptr [r8+rdx-0x20]
         vinsertf128 ymm8, ymm8, xmmword ptr [r9+rdx-0x20], 0x01
-        vmovups xmm9, xmmword ptr [r8+rdx-0x10]
+        vmovups ymm9, ymmword ptr [r8+rdx-0x10]
         vinsertf128 ymm9, ymm9, xmmword ptr [r9+rdx-0x10], 0x01
         vshufps ymm6, ymm8, ymm9, 136
         vshufps ymm7, ymm8, ymm9, 221
@@ -2562,6 +2562,7 @@ _blake3_xof_many_avx512:
         mov    r10,QWORD PTR [rsp+0x8]
         cmp    r10,0x1
         ja     2f
+        jb     4f
         vmovdqu xmm0,XMMWORD PTR [rdi]
         vmovdqu xmm1,XMMWORD PTR [rdi+0x10]
         movzx  eax,r8b
@@ -2643,7 +2644,8 @@ _blake3_xof_many_avx512:
         vmovdqu XMMWORD PTR [r9+0x10],xmm1
         vmovdqu XMMWORD PTR [r9+0x20],xmm2
         vmovdqu XMMWORD PTR [r9+0x30],xmm3
-        ret    
+4:
+        ret
 .p2align 6
 2:
         push   rbp
@@ -3587,10 +3589,10 @@ _blake3_xof_many_avx512:
         test   r10,r10
         jne    2f
 9:
-        vzeroupper 
+        vzeroupper
         mov    rsp,rbp
         pop    rbp
-        ret    
+        ret
 2:
         test   r10,0x8
         je     2f
