@@ -1,0 +1,23 @@
+name: probe-official-master
+on:
+  push:
+    branches: [probe/official-master-asm]
+  workflow_dispatch:
+jobs:
+  guard-pages:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-latest, ubuntu-latest, ubuntu-latest, windows-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+    - uses: actions/checkout@v4
+    - uses: dtolnay/rust-toolchain@stable
+    - name: CPU and kernels
+      shell: bash
+      run: (grep -m1 "model name" /proc/cpuinfo 2>/dev/null || true)
+    - name: guard-page and hash_many tests only
+      shell: bash
+      run: |
+        cargo test --release --lib -- --nocapture test::guard_pages 2>&1 | tail -30
+        cargo test --release --lib -- --nocapture test_hash_many 2>&1 | tail -30
