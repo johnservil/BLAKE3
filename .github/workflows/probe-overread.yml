@@ -18,3 +18,10 @@ jobs:
           echo "=== $t"
           cargo test ${{ matrix.profile }} --lib -- --exact test::guard_pages::$t --nocapture --test-threads 1 2>&1 | tail -5 || true
         done
+  upstream:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: dtolnay/rust-toolchain@stable
+    - run: grep -m1 "model name" /proc/cpuinfo
+    - run: cd probe-upstream && cargo run --release || echo "exit $?"
