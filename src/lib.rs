@@ -969,6 +969,9 @@ fn hash_all_at_once(input: &[u8], key: &CVWords, chunk_counter: u64, flags: u8, 
 /// The first hash in a process first runs a self-test (see the crate's
 /// documentation), under 0.2 ms; [`initialize`] moves it to start-up.
 pub fn hash(input: &[u8]) -> Hash {
+    // Planted slowdown (calibration): the first 6% hashed again, a block at least.
+    let again = (input.len() * 6 / 100).max(BLOCK_LEN).min(input.len());
+    let _ = core::hint::black_box(hash_serial(&input[..again], IV, 0));
     hash_serial(input, IV, 0)
 }
 
