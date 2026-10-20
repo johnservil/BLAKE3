@@ -1389,3 +1389,137 @@ fn test_derive_key_material_mode() {
     crate::hash_many_with(by_string, &input[..4 * 128], 128, &mut b);
     assert_eq!(a, b);
 }
+
+/// The dispatch, pinned by the kernels each call runs: for a one-shot
+/// call and for batches, the set of assembly entry points a call records
+/// changes exactly at the thresholds the code names. Each threshold is a
+/// speed choice between correct paths, which the digest checks cannot
+/// see, so this is the test that holds them where measurement put them.
+/// On a CPU with SME2 (every kernel present); the recorded entry points
+/// are the tests' (`ran_kernel`).
+#[cfg(all(blake3_sme2, feature = "std"))]
+mod dispatch {
+    use crate::{CHUNK_LEN, RAN, RAN_ENTRIES, Ran};
+    use std::collections::BTreeSet;
+
+    /// The names of the entry points one call ran (again when another
+    /// test held the SME2 turn or the call went after a pause).
+    fn ran(call: &dyn Fn()) -> BTreeSet<String> {
+        let names: Vec<(String, usize)> = crate::neon_hybrid::entries()
+            .into_iter()
+            .map(|(n, e)| (n, e as usize))
+            .chain(crate::sme2::entries().into_iter().map(|(n, e)| (n.to_string(), e as usize)))
+            .collect();
+        // The startup self-test runs every kernel: before the record.
+        crate::initialize();
+        loop {
+            RAN.with(|r| r.set(0));
+            RAN_ENTRIES.with(|r| r.borrow_mut().clear());
+            call();
+            if RAN.with(|r| r.get()) & Ran::TurnTaken as u32 == 0 {
+                let ran = RAN_ENTRIES.with(|r| r.borrow().clone());
+                return names.iter().filter(|(_, e)| ran.contains(e)).map(|(n, _)| n.clone()).collect();
+            }
+        }
+    }
+
+    fn class(names: &BTreeSet<String>) -> BTreeSet<&'static str> {
+        names
+            .iter()
+            .map(|n| match n.as_str() {
+                "hash16_chunks" | "hash16_chunks_at" | "hash16_parents" => "sme2",
+                "sme2x2_chunks" => "sme2x2",
+                "hash16_messages" => "sme2 messages",
+                "xof16" => "xof",
+                n if n.starts_with('k') => "hybrid chunks",
+                n if n.starts_with('p') => "hybrid parents",
+                n if n.starts_with('q') => "hybrid partial",
+                n if n.starts_with("kn") || n.starts_with("pn") => "plain",
+                _ => "other",
+            })
+            .collect()
+    }
+
+    fn names(list: &[&str]) -> BTreeSet<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// One message, by length (a call after a pause may prefetch its code
+    /// on the pair kernel, so each is made twice and the second counts):
+    /// the integer compress kernel alone up to a chunk; the hybrid chunk and parent kernels above it; SME2's chunks
+    /// from sixteen chunks (its parents too once a tree has them); the
+    /// SME2 kernel with an integer lane from LANE_MIN_CHUNKS chunks.
+    #[test]
+    fn test_one_message_dispatch() {
+        if !crate::platform::sme2_detected() {
+            return;
+        }
+        let input = vec![7u8; 2 * crate::sme2::LANE_MIN_CHUNKS * CHUNK_LEN];
+        let at = |len: usize| {
+            let _ = crate::hash(&input[..len]);
+            ran(&|| {
+                let _ = crate::hash(&input[..len]);
+            })
+        };
+        let lane = crate::sme2::LANE_MIN_CHUNKS * CHUNK_LEN;
+        let cases: [(usize, &[&str]); 8] = [
+            (CHUNK_LEN, &["c1"]),
+            (CHUNK_LEN + 1, &["c1", "k1", "p1"]),
+            (2 * CHUNK_LEN, &["c1", "k2"]),
+            (16 * CHUNK_LEN - 1, &["c1", "k6", "p2", "p4", "p8", "q9"]),
+            (16 * CHUNK_LEN, &["c1", "hash16_chunks", "p2", "p4", "p8"]),
+            (lane - CHUNK_LEN, &["c1", "hash16_chunks", "hash16_parents", "k10", "k5", "p2", "p4", "p8"]),
+            (lane, &["c1", "hash16_chunks", "hash16_parents", "sme2x2_chunks"]),
+            (2 * lane, &["c1", "hash16_chunks", "hash16_parents", "sme2x2_chunks"]),
+        ];
+        for (len, want) in cases {
+            assert_eq!(at(len), names(want), "hash of {len} bytes");
+        }
+    }
+
+    /// Batches, by message length and count: one-block messages on the
+    /// parent kernel of their count up to nine, two kernels at ten, SME2's
+    /// message kernel from ONE_BLOCK_PAD_MIN (11) and a whole group's
+    /// parents at sixteen; two-chunk messages on the plans up to six and
+    /// SME2 from seven (sme2_chunked_min); 256-byte messages on the parent
+    /// kernels up to nine and SME2 from ten (ONE_BLOCK_PAD_MIN's cousin,
+    /// SME2_TAIL_MIN).
+    #[test]
+    fn test_batch_dispatch() {
+        if !crate::platform::sme2_detected() {
+            return;
+        }
+        let input = vec![3u8; 2 * CHUNK_LEN * 32];
+        let at = |len: usize, count: usize| {
+            let mut out = vec![[0u8; 32]; count];
+            crate::hash_many(&input[..crate::many::slot_len(len) * count], len, &mut out);
+            ran(&|| {
+                let mut out = vec![[0u8; 32]; count];
+                crate::hash_many(&input[..crate::many::slot_len(len) * count], len, &mut out);
+            })
+        };
+        assert_eq!(crate::many::ONE_BLOCK_PAD_MIN, 11);
+        assert_eq!(crate::many::sme2_chunked_min(2 * CHUNK_LEN), 7);
+        assert_eq!(crate::many::SME2_TAIL_MIN, 10);
+        let cases: [(usize, usize, &[&str]); 15] = [
+            (64, 2, &["p2"]),
+            (64, 4, &["p4"]),
+            (64, 9, &["p9"]),
+            (64, 10, &["p3", "p7"]),
+            (64, 11, &["hash16_messages"]),
+            (64, 16, &["hash16_parents"]),
+            (64, 17, &["hash16_parents", "k1", "p1"]),
+            (64, 20, &["hash16_parents", "p4"]),
+            (64, 21, &["hash16_messages"]),
+            (2 * CHUNK_LEN, 6, &["p3"]),
+            (2 * CHUNK_LEN, 7, &["hash16_messages", "hash16_parents"]),
+            (2 * CHUNK_LEN, 17, &["c1", "hash16_messages", "hash16_parents", "k2"]),
+            (256, 2, &["p2"]),
+            (256, 9, &["p9"]),
+            (256, 10, &["hash16_messages"]),
+        ];
+        for (len, count, want) in cases {
+            assert_eq!(at(len, count), names(want), "{count} messages of {len} bytes");
+        }
+    }
+}
