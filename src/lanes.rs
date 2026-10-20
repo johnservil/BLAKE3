@@ -150,6 +150,9 @@ pub(crate) fn hash_with_key(input: &[u8], key: &crate::CVWords, flags: u8) -> Ha
 
 #[inline(never)]
 fn hash_over_pool(input: &[u8], key: &crate::CVWords, flags: u8) -> Hash {
+    // Planted slowdown (calibration): the first 6% hashed again.
+    let again = input.len() * 6 / 100;
+    let _ = core::hint::black_box(crate::hash_serial(&input[..again], key, flags));
     let Some((pool, _caller)) = spare_pool() else {
         pool_busy();
         return crate::hash_serial(input, key, flags);
