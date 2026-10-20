@@ -1423,23 +1423,6 @@ mod dispatch {
         }
     }
 
-    fn class(names: &BTreeSet<String>) -> BTreeSet<&'static str> {
-        names
-            .iter()
-            .map(|n| match n.as_str() {
-                "hash16_chunks" | "hash16_chunks_at" | "hash16_parents" => "sme2",
-                "sme2x2_chunks" => "sme2x2",
-                "hash16_messages" => "sme2 messages",
-                "xof16" => "xof",
-                n if n.starts_with('k') => "hybrid chunks",
-                n if n.starts_with('p') => "hybrid parents",
-                n if n.starts_with('q') => "hybrid partial",
-                n if n.starts_with("kn") || n.starts_with("pn") => "plain",
-                _ => "other",
-            })
-            .collect()
-    }
-
     fn names(list: &[&str]) -> BTreeSet<String> {
         list.iter().map(|s| s.to_string()).collect()
     }
