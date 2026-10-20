@@ -68,6 +68,10 @@ name = "stream_collect_parked_workers"
 required-features = ["std"]
 
 [[test]]
+name = "stream_collect_with_workers"
+required-features = ["std"]
+
+[[test]]
 name = "stream_no_alloc"
 harness = false
 required-features = ["std"]

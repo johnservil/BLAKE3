@@ -533,15 +533,14 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
     /// starts hashing.
     pub fn collect(&mut self) {
         self.publish();
-        if self.deliver() == 0 && self.slot.is_some() && self.s.source.waiting() > 0 {
-            // A task waits and nothing came back: make sure some worker is
-            // awake to take it. publish wakes a worker only for two waiting
-            // tasks (a caller usually finishes one itself), and a caller
-            // looping on collect hashes nothing, so with every worker parked
-            // (they spin 5 us for a stream's next task, then park) and no
-            // SME2 thread it waited forever: GitHub's 4-CPU x86 runners,
-            // tests/stream_collect_parked_workers.
-            crate::lanes::wake_one_worker();
+        // Nothing back: a worker for any task still waiting (the caller
+        // takes none here; in steady flow the workers are awake and this
+        // costs a comparison). Workers spin 5 us for a stream's next task
+        // and then park, and publish wakes one only for two waiting tasks,
+        // so without this a caller looping on collect waited forever where
+        // no SME2 thread takes stream tasks (tests/stream_collect_parked_workers).
+        if self.deliver() == 0 && self.slot.is_some() {
+            self.s.source.wake_for_waiting();
         }
     }
 

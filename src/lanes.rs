@@ -621,12 +621,6 @@ pub(crate) fn splits() -> bool {
     pool().threads > 1
 }
 
-/// Wake one parked worker, if any (a stream whose caller waits on a task
-/// no worker is awake to take). Requires the pool.
-pub(crate) fn wake_one_worker() {
-    pool().wake_one();
-}
-
 /// The pool, once [`initialize`] has created it.
 static POOL: OnceLock<Pool> = OnceLock::new();
 
@@ -940,8 +934,21 @@ pub(crate) mod sources {
             }
         }
 
-        pub(crate) fn waiting(&self) -> usize {
+        fn waiting(&self) -> usize {
             self.published.load(Ordering::Acquire).saturating_sub(self.claimed.load(Ordering::Acquire))
+        }
+
+        /// Wake a parked worker for a task this stream has published that no
+        /// thread has taken: `publish` wakes one for the second task in
+        /// waiting, expecting the caller to take a lone one, and a caller
+        /// that only collects never does (it waited forever, the workers
+        /// asleep: the C API's stream test on an i7-12700K and on GitHub's
+        /// 4-CPU runners; Devon Jonte, #99).
+        pub(crate) fn wake_for_waiting(&self) {
+            let pool = pool();
+            if self.waiting() > 0 && pool.any_parked() {
+                pool.wake_one();
+            }
         }
 
         /// Count `n` of the caller's job's pieces finished (their outputs
