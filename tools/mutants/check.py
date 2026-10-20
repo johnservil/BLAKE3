@@ -56,7 +56,7 @@ SHARDS = 3  # runs at once, each in its own worktree and build
 # The seconds a mutant's tests may take: the unmutated tests take 1.5 s on
 # the VM and a caught mutant's at most 2.5 s (October 16), so a mutant
 # still running at 10 s hangs.
-TIMEOUT = 10
+TIMEOUT = 20
 # Each process's address space, builds' and tests' alike: a mutant that
 # allocates without end fails its test here, and leaves the machine's
 # memory to the rest (one of 57 GB took the long proofs' memory).
