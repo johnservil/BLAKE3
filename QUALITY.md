@@ -13,8 +13,7 @@ different ways.
 The fastest parts are small routines called kernels, some of them
 written in assembly.
 
-For almost all of the new Arm kernels, the project uses formal
-verification. Instead of testing selected inputs, a computer-checked
+For the Arm kernels, the project uses formal verification. Instead of testing selected inputs, a computer-checked
 proof compares the actual machine instructions with a written
 specification of BLAKE3 and shows that the result is correct for every
 input. The proof also shows that a kernel stays within the memory it is
