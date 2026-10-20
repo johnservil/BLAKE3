@@ -1737,10 +1737,7 @@ impl Hasher {
         OutputReader::new(self.final_output())
     }
 
-    /// Return the total number of bytes hashed so far.
-    ///
-    /// [`hazmat::HasherExt::set_input_offset`] does not affect this value. This only counts bytes
-    /// passed to [`update`](Hasher::update).
+    /// The number of bytes passed to [`update`](Hasher::update) so far.
     pub fn count(&self) -> u64 {
         self.core.count() + self.staged as u64
     }
@@ -1946,8 +1943,9 @@ impl HasherCore {
         }
     }
 
-    /// Start the subtree at byte `offset` of the message (hazmat's
-    /// set_input_offset, on a fresh core).
+    /// Start the subtree at byte `offset` of the message (the outboard's
+    /// positioned subtrees; hazmat's set_input_offset in the tests).
+    #[cfg(any(feature = "std", test))]
     pub(crate) fn set_input_offset(&mut self, offset: u64) -> &mut Self {
         assert_eq!(self.count(), 0, "hasher has already accepted input");
         assert_eq!(offset % CHUNK_LEN as u64, 0, "offset ({offset}) must be a chunk boundary (divisible by {CHUNK_LEN})",);
