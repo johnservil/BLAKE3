@@ -13,7 +13,7 @@ hold, so a mismatch is a failed proof, never a false one.
 """
 
 import sys
-from z3 import (Z3_OP_BADD, Z3_OP_BXOR, Z3_OP_ROTATE_RIGHT, Z3_OP_ROTATE_LEFT, Z3_OP_EXTRACT,
+from z3 import (If, is_bool, Z3_OP_BADD, Z3_OP_BXOR, Z3_OP_ROTATE_RIGHT, Z3_OP_ROTATE_LEFT, Z3_OP_EXTRACT,
                 Z3_OP_CONCAT, Z3_OP_ZERO_EXT, Z3_OP_EXT_ROTATE_RIGHT, Z3_OP_EXT_ROTATE_LEFT,
                 Z3_OP_UNINTERPRETED, BitVecVal, BitVec, Solver, unsat, sat, Or, substitute, simplify, is_bv_value)
 import random
@@ -133,7 +133,11 @@ def leaf(t):
     """A term with no rounds in it: equal leaves get one id. Leaves whose
     values agree at sample points are proved equal by the solver, under the
     context's assumptions; the points only choose which pairs to try. The
-    polynomial normal form first makes most equal leaves identical."""
+    polynomial normal form first makes most equal leaves identical. A Bool
+    (a mask lane's compare, in the AVX-512 XOF at four blocks and more) is
+    canonicalised as the one-bit vector it selects."""
+    if is_bool(t):
+        t = If(t, BitVecVal(1, 1), BitVecVal(0, 1))
     t = simplify(t, som=True, bv_sort_ac=True)
     syms = {}
     symbols_of(t, syms, set())
