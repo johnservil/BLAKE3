@@ -621,6 +621,12 @@ pub(crate) fn splits() -> bool {
     pool().threads > 1
 }
 
+/// Wake one parked worker, if any (a stream whose caller waits on a task
+/// no worker is awake to take). Requires the pool.
+pub(crate) fn wake_one_worker() {
+    pool().wake_one();
+}
+
 /// The pool, once [`initialize`] has created it.
 static POOL: OnceLock<Pool> = OnceLock::new();
 
@@ -934,7 +940,7 @@ pub(crate) mod sources {
             }
         }
 
-        fn waiting(&self) -> usize {
+        pub(crate) fn waiting(&self) -> usize {
             self.published.load(Ordering::Acquire).saturating_sub(self.claimed.load(Ordering::Acquire))
         }
 
