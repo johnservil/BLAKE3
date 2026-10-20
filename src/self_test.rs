@@ -389,13 +389,16 @@ fn chunk_values(platform: Platform, input: &[u8], key: &[u8; 32], out: &mut [u8]
     out.len()
 }
 
-/// Run every case and panic on the first that differs from the reference.
-fn run() {
+/// Run every case and panic on the first that differs from the reference;
+/// how many cases ran (every one of CASES).
+fn run() -> usize {
     compiled_features_present();
     let platform = Platform::detect_unchecked();
+    let mut checked = 0;
     chain(
         |case, input, previous, out| outputs(platform, case, input, previous, out),
         |index, folded| {
+            checked += 1;
             assert!(
                 folded == EXPECTED[index],
                 "blake3-servil startup self-test failed: case {index}, {} (platform {}): this build or this CPU \
@@ -405,6 +408,7 @@ fn run() {
             );
         },
     );
+    checked
 }
 
 /// Stop when this binary was compiled to assume an instruction that this
@@ -484,6 +488,13 @@ fn ensure_slow() {
 #[cfg(all(test, feature = "std"))]
 mod test {
     use super::*;
+
+    /// The startup run checks every case, on every platform (a run that
+    /// skipped them would pass by doing nothing).
+    #[test]
+    fn test_self_test_run_checks_every_case() {
+        assert_eq!(run(), CASES.len());
+    }
 
     /// `initialize` runs the self-test, which passes.
     #[test]
