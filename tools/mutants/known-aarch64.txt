@@ -3,7 +3,6 @@
 # fails on any other survivor and on any listed one now caught.
 # A line: file <TAB> mutant (function and change) <TAB> places <TAB> reason.
 files: src/each.rs src/ffi_neon.rs src/ffi_neon_hybrid.rs src/ffi_sme2.rs src/hasher.rs src/hazmat.rs src/io.rs src/lanes.rs src/lib.rs src/many.rs src/neon_xof.rs src/outboard.rs src/pair.rs src/platform.rs src/portable.rs src/self_test.rs src/traits.rs src/tree.rs
-src/each.rs	replace / with * in hash_each_on	1	speed: moves a threshold between equally correct paths (with more rounds, the extra ones hash nothing)
 src/each.rs	replace < with <= in hash_each_multithreaded_with	1	speed: moves a threshold between equally correct paths
 src/each.rs	replace < with == in hash_each_multithreaded_with	1	speed: moves a threshold between equally correct paths
 src/each.rs	replace >= with < in hash_each_on	1	speed: moves a threshold between equally correct paths (with more rounds, the extra ones hash nothing)
@@ -14,7 +13,6 @@ src/ffi_neon_hybrid.rs	replace % with / in prefetch_message_code	2	speed: whethe
 src/ffi_neon_hybrid.rs	replace && with || in prefetch_message_code	1	speed: whether and what to prefetch after a pause (no effect on results)
 src/ffi_neon_hybrid.rs	replace && with || in prefetch_tree_code	1	speed: whether and what to prefetch after a pause (no effect on results)
 src/ffi_neon_hybrid.rs	replace * with + in partial_pays	1	speed: moves a threshold between equally correct paths (the partial kernel computes every count from 1 to 15, 10 too; 10 runs faster without it)
-src/ffi_neon_hybrid.rs	replace * with / in partial_pays	1	speed: moves a threshold between equally correct paths (the partial kernel computes every count from 1 to 15, 10 too; 10 runs faster without it)
 src/ffi_neon_hybrid.rs	replace + with * in prefetch_parent_code	1	speed: whether and what to prefetch after a pause (no effect on results)
 src/ffi_neon_hybrid.rs	replace + with * in prefetch_tree_code	1	speed: whether and what to prefetch after a pause (no effect on results)
 src/ffi_neon_hybrid.rs	replace + with - in prefetch_parent_code	1	speed: whether and what to prefetch after a pause (no effect on results)
@@ -25,7 +23,7 @@ src/ffi_neon_hybrid.rs	replace > with < in prefetch_tree_code	2	speed: whether a
 src/ffi_neon_hybrid.rs	replace > with == in prefetch_message_code	2	speed: whether and what to prefetch after a pause (no effect on results)
 src/ffi_neon_hybrid.rs	replace > with == in prefetch_parent_code	1	speed: whether and what to prefetch after a pause (no effect on results)
 src/ffi_neon_hybrid.rs	replace > with == in prefetch_tree_code	2	speed: whether and what to prefetch after a pause (no effect on results)
-src/ffi_neon_hybrid.rs	replace > with >= in partial_pays	2	speed: moves a threshold between equally correct paths (the partial kernel computes every count from 1 to 15, 10 too; 10 runs faster without it)
+src/ffi_neon_hybrid.rs	replace > with >= in partial_pays	1	speed: moves a threshold between equally correct paths (the partial kernel computes every count from 1 to 15, 10 too; 10 runs faster without it)
 src/ffi_neon_hybrid.rs	replace > with >= in prefetch_message_code	2	speed: whether and what to prefetch after a pause (no effect on results)
 src/ffi_neon_hybrid.rs	replace > with >= in prefetch_parent_code	1	speed: whether and what to prefetch after a pause (no effect on results)
 src/ffi_neon_hybrid.rs	replace > with >= in prefetch_tree_code	2	speed: whether and what to prefetch after a pause (no effect on results)
@@ -35,7 +33,6 @@ src/ffi_neon_hybrid.rs	replace prefetch_message_code with ()	1	speed: whether an
 src/ffi_neon_hybrid.rs	replace prefetch_pair_code with ()	1	speed: whether and what to prefetch after a pause (no effect on results)
 src/ffi_neon_hybrid.rs	replace prefetch_parent_code with ()	1	speed: whether and what to prefetch after a pause (no effect on results)
 src/ffi_neon_hybrid.rs	replace prefetch_tree_code with ()	1	speed: whether and what to prefetch after a pause (no effect on results)
-src/ffi_neon_hybrid.rs	replace sha3_detected -> bool with false	1	detection, on a machine with SHA-3: a wrong no runs the NEON kernels (equally correct), a wrong yes is this machine's answer
 src/ffi_neon_hybrid.rs	replace sha3_detected -> bool with true	1	detection, on a machine with SHA-3: a wrong no runs the NEON kernels (equally correct), a wrong yes is this machine's answer
 src/ffi_neon_hybrid.rs	replace | with ^ in compress_in_place	1	equivalent: | and ^ agree on flag bits that never overlap
 src/ffi_sme2.rs	replace prefetch_code with ()	1	speed: whether and what to prefetch after a pause (no effect on results)
@@ -64,11 +61,12 @@ src/lanes.rs	delete match arm CHUNK_LEN in Task::run_members	1	speed: chooses be
 src/lanes.rs	delete match arm crate::BLOCK_LEN in Task::run_members	1	speed: chooses between equally correct paths (a member length's own kernel, or the general one)
 src/lanes.rs	replace != with == in Pool::any_parked	1	OPEN: the pool's scheduling under interleavings the tests leave to chance; Loom would force them (bench-hashes NEXT-STEPS, "Mutation testing beside the proofs")
 src/lanes.rs	replace != with == in Pool::wake_one	1	OPEN: the pool's scheduling under interleavings the tests leave to chance; Loom would force them (bench-hashes NEXT-STEPS, "Mutation testing beside the proofs")
-src/lanes.rs	replace & with | in Pool::wake_one	1	OPEN: the pool's scheduling under interleavings the tests leave to chance; Loom would force them (bench-hashes NEXT-STEPS, "Mutation testing beside the proofs")
+src/lanes.rs	replace & with | in Pool::wake_one	2	OPEN: the pool's scheduling under interleavings the tests leave to chance; Loom would force them (bench-hashes NEXT-STEPS, "Mutation testing beside the proofs")
 src/lanes.rs	replace && with || in Pool::run_job	1	OPEN: the pool's scheduling under interleavings the tests leave to chance; Loom would force them (bench-hashes NEXT-STEPS, "Mutation testing beside the proofs")
 src/lanes.rs	replace && with || in hash_each	1	OPEN: the pool's scheduling under interleavings the tests leave to chance; Loom would force them (bench-hashes NEXT-STEPS, "Mutation testing beside the proofs")
 src/lanes.rs	replace && with || in sources::Source::finished	1	OPEN: the pool's scheduling under interleavings the tests leave to chance; Loom would force them (bench-hashes NEXT-STEPS, "Mutation testing beside the proofs")
 src/lanes.rs	replace && with || in sources::Source::publish	1	OPEN: the pool's scheduling under interleavings the tests leave to chance; Loom would force them (bench-hashes NEXT-STEPS, "Mutation testing beside the proofs")
+src/lanes.rs	replace && with || in sources::Source::wake_for_waiting	1	another machine: the wake a caller looping on collect() needs where no SME2 thread takes stream tasks (CI's x86 jobs run stream_collect_with_workers; here the SME2 thread takes the task)
 src/lanes.rs	replace && with || in sources::run_one	1	OPEN: the pool's scheduling under interleavings the tests leave to chance; Loom would force them (bench-hashes NEXT-STEPS, "Mutation testing beside the proofs")
 src/lanes.rs	replace * with +	1	OPEN: the pool's scheduling under interleavings the tests leave to chance; Loom would force them (bench-hashes NEXT-STEPS, "Mutation testing beside the proofs")
 src/lanes.rs	replace * with + in cut_messages	1	speed: how the work is cut among threads (every cut tiles the input, as the code's assertions and the tests check)
@@ -101,14 +99,18 @@ src/lanes.rs	replace / with * in sme2_prefix	1	speed: how the work is cut among 
 src/lanes.rs	replace < with <= in Pool::wake_for	1	OPEN: the pool's scheduling under interleavings the tests leave to chance; Loom would force them (bench-hashes NEXT-STEPS, "Mutation testing beside the proofs")
 src/lanes.rs	replace < with <= in group_cvs	1	OPEN: the pool's scheduling under interleavings the tests leave to chance; Loom would force them (bench-hashes NEXT-STEPS, "Mutation testing beside the proofs")
 src/lanes.rs	replace < with <= in hash_each	1	OPEN: the pool's scheduling under interleavings the tests leave to chance; Loom would force them (bench-hashes NEXT-STEPS, "Mutation testing beside the proofs")
+src/lanes.rs	replace < with <= in hash_many	2	speed: MIN_SPLIT_LEN, the threshold from which a call leaves its thread (equally correct either way)
+src/lanes.rs	replace < with <= in hash_with_key	1	speed: MIN_SPLIT_LEN, the threshold from which a call leaves its thread (equally correct either way)
 src/lanes.rs	replace < with <= in sources::Source::wait	1	OPEN: the pool's scheduling under interleavings the tests leave to chance; Loom would force them (bench-hashes NEXT-STEPS, "Mutation testing beside the proofs")
 src/lanes.rs	replace < with == in Pool::wake_for	1	OPEN: the pool's scheduling under interleavings the tests leave to chance; Loom would force them (bench-hashes NEXT-STEPS, "Mutation testing beside the proofs")
 src/lanes.rs	replace < with == in group_cvs	1	OPEN: the pool's scheduling under interleavings the tests leave to chance; Loom would force them (bench-hashes NEXT-STEPS, "Mutation testing beside the proofs")
 src/lanes.rs	replace < with == in hash_each	1	OPEN: the pool's scheduling under interleavings the tests leave to chance; Loom would force them (bench-hashes NEXT-STEPS, "Mutation testing beside the proofs")
+src/lanes.rs	replace < with == in hash_many	2	speed: MIN_SPLIT_LEN, the threshold from which a call leaves its thread (equally correct either way)
 src/lanes.rs	replace < with == in sources::Source::wait	1	OPEN: the pool's scheduling under interleavings the tests leave to chance; Loom would force them (bench-hashes NEXT-STEPS, "Mutation testing beside the proofs")
 src/lanes.rs	replace < with > in Pool::wake_for	1	OPEN: the pool's scheduling under interleavings the tests leave to chance; Loom would force them (bench-hashes NEXT-STEPS, "Mutation testing beside the proofs")
 src/lanes.rs	replace < with > in cut_with_prefix	1	speed: how the work is cut among threads (every cut tiles the input, as the code's assertions and the tests check)
 src/lanes.rs	replace < with > in hash_each	1	OPEN: the pool's scheduling under interleavings the tests leave to chance; Loom would force them (bench-hashes NEXT-STEPS, "Mutation testing beside the proofs")
+src/lanes.rs	replace < with > in hash_many	2	speed: MIN_SPLIT_LEN, the threshold from which a call leaves its thread (equally correct either way)
 src/lanes.rs	replace < with > in sources::Source::wait	1	OPEN: the pool's scheduling under interleavings the tests leave to chance; Loom would force them (bench-hashes NEXT-STEPS, "Mutation testing beside the proofs")
 src/lanes.rs	replace << with >> in sources::Source::register	1	OPEN: the pool's scheduling under interleavings the tests leave to chance; Loom would force them (bench-hashes NEXT-STEPS, "Mutation testing beside the proofs")
 src/lanes.rs	replace << with >> in sources::Source::unregister	1	OPEN: the pool's scheduling under interleavings the tests leave to chance; Loom would force them (bench-hashes NEXT-STEPS, "Mutation testing beside the proofs")
@@ -121,11 +123,14 @@ src/lanes.rs	replace > with < in Pool::wake_for	1	OPEN: the pool's scheduling un
 src/lanes.rs	replace > with < in cut_with_prefix	1	speed: how the work is cut among threads (every cut tiles the input, as the code's assertions and the tests check)
 src/lanes.rs	replace > with < in initialize	1	speed: whether the pool starts its SME2 thread (without it the NEON workers do its share; the same results)
 src/lanes.rs	replace > with < in sme2_main	1	OPEN: the pool's scheduling under interleavings the tests leave to chance; Loom would force them (bench-hashes NEXT-STEPS, "Mutation testing beside the proofs")
+src/lanes.rs	replace > with < in sources::Source::wake_for_waiting	1	another machine: the wake a caller looping on collect() needs where no SME2 thread takes stream tasks (CI's x86 jobs run stream_collect_with_workers; here the SME2 thread takes the task)
 src/lanes.rs	replace > with < in sources::open	1	OPEN: the pool's scheduling under interleavings the tests leave to chance; Loom would force them (bench-hashes NEXT-STEPS, "Mutation testing beside the proofs")
 src/lanes.rs	replace > with < in sources::visible	1	OPEN: the pool's scheduling under interleavings the tests leave to chance; Loom would force them (bench-hashes NEXT-STEPS, "Mutation testing beside the proofs")
+src/lanes.rs	replace > with < in splits	1	speed: with splits false every stream and call runs on its caller (the one-CPU path), which gives the same digests
 src/lanes.rs	replace > with == in Pool::run_job	1	OPEN: the pool's scheduling under interleavings the tests leave to chance; Loom would force them (bench-hashes NEXT-STEPS, "Mutation testing beside the proofs")
 src/lanes.rs	replace > with == in Pool::wake_for	1	OPEN: the pool's scheduling under interleavings the tests leave to chance; Loom would force them (bench-hashes NEXT-STEPS, "Mutation testing beside the proofs")
 src/lanes.rs	replace > with == in sme2_main	1	OPEN: the pool's scheduling under interleavings the tests leave to chance; Loom would force them (bench-hashes NEXT-STEPS, "Mutation testing beside the proofs")
+src/lanes.rs	replace > with == in sources::Source::wake_for_waiting	1	another machine: the wake a caller looping on collect() needs where no SME2 thread takes stream tasks (CI's x86 jobs run stream_collect_with_workers; here the SME2 thread takes the task)
 src/lanes.rs	replace > with == in sources::open	1	OPEN: the pool's scheduling under interleavings the tests leave to chance; Loom would force them (bench-hashes NEXT-STEPS, "Mutation testing beside the proofs")
 src/lanes.rs	replace > with >= in Pool::run_job	1	OPEN: the pool's scheduling under interleavings the tests leave to chance; Loom would force them (bench-hashes NEXT-STEPS, "Mutation testing beside the proofs")
 src/lanes.rs	replace > with >= in Pool::wake_for	1	OPEN: the pool's scheduling under interleavings the tests leave to chance; Loom would force them (bench-hashes NEXT-STEPS, "Mutation testing beside the proofs")
@@ -133,8 +138,8 @@ src/lanes.rs	replace > with >= in Task::run	1	OPEN: the pool's scheduling under 
 src/lanes.rs	replace > with >= in cut_with_prefix	1	speed: how the work is cut among threads (every cut tiles the input, as the code's assertions and the tests check)
 src/lanes.rs	replace > with >= in pool_busy	1	OPEN: the pool's scheduling under interleavings the tests leave to chance; Loom would force them (bench-hashes NEXT-STEPS, "Mutation testing beside the proofs")
 src/lanes.rs	replace > with >= in sme2_main	1	OPEN: the pool's scheduling under interleavings the tests leave to chance; Loom would force them (bench-hashes NEXT-STEPS, "Mutation testing beside the proofs")
+src/lanes.rs	replace > with >= in sources::Source::wake_for_waiting	1	another machine: the wake a caller looping on collect() needs where no SME2 thread takes stream tasks (CI's x86 jobs run stream_collect_with_workers; here the SME2 thread takes the task)
 src/lanes.rs	replace > with >= in sources::open	1	OPEN: the pool's scheduling under interleavings the tests leave to chance; Loom would force them (bench-hashes NEXT-STEPS, "Mutation testing beside the proofs")
-src/lanes.rs	replace > with >= in splits	1	one CPU or many: this machine has many (check-builds' one-CPU tests run the other side)
 src/lanes.rs	replace >= with < in Task::run_members	1	speed: chooses between equally correct paths (a member length's own kernel, or the general one)
 src/lanes.rs	replace >= with < in poll_pause	1	OPEN: the pool's scheduling under interleavings the tests leave to chance; Loom would force them (bench-hashes NEXT-STEPS, "Mutation testing beside the proofs")
 src/lanes.rs	replace >= with < in sme2_prefix	1	speed: how the work is cut among threads (every cut tiles the input, as the code's assertions and the tests check)
@@ -154,8 +159,10 @@ src/lanes.rs	replace sme2_prefix -> usize with 0	1	speed: how the work is cut am
 src/lanes.rs	replace sme2_prefix -> usize with 1	1	speed: how the work is cut among threads (every cut tiles the input, as the code's assertions and the tests check)
 src/lanes.rs	replace sources::<impl Drop for Held>::drop with ()	1	OPEN: the pool's scheduling under interleavings the tests leave to chance; Loom would force them (bench-hashes NEXT-STEPS, "Mutation testing beside the proofs")
 src/lanes.rs	replace sources::Source::register -> Option<usize> with None	1	OPEN: the pool's scheduling under interleavings the tests leave to chance; Loom would force them (bench-hashes NEXT-STEPS, "Mutation testing beside the proofs")
+src/lanes.rs	replace sources::Source::take_task -> Option<Task> with None	1	speed: the stream's tasks then all run on the caller at finish (the same digests); the SME2 thread and workers idle
 src/lanes.rs	replace sources::Source::unregister with ()	1	OPEN: the pool's scheduling under interleavings the tests leave to chance; Loom would force them (bench-hashes NEXT-STEPS, "Mutation testing beside the proofs")
 src/lanes.rs	replace sources::Source::waiting -> usize with 0	1	OPEN: the pool's scheduling under interleavings the tests leave to chance; Loom would force them (bench-hashes NEXT-STEPS, "Mutation testing beside the proofs")
+src/lanes.rs	replace sources::Source::wake_for_waiting with ()	1	another machine: the wake a caller looping on collect() needs where no SME2 thread takes stream tasks (CI's x86 jobs run stream_collect_with_workers; here the SME2 thread takes the task)
 src/lanes.rs	replace sources::closed with ()	1	OPEN: the pool's scheduling under interleavings the tests leave to chance; Loom would force them (bench-hashes NEXT-STEPS, "Mutation testing beside the proofs")
 src/lanes.rs	replace sources::open -> bool with false	1	OPEN: the pool's scheduling under interleavings the tests leave to chance; Loom would force them (bench-hashes NEXT-STEPS, "Mutation testing beside the proofs")
 src/lanes.rs	replace sources::open -> bool with true	1	OPEN: the pool's scheduling under interleavings the tests leave to chance; Loom would force them (bench-hashes NEXT-STEPS, "Mutation testing beside the proofs")
@@ -164,22 +171,21 @@ src/lanes.rs	replace sources::run_one -> bool with false	1	OPEN: the pool's sche
 src/lanes.rs	replace sources::take_stream_task -> Option<Task> with None	1	OPEN: the pool's scheduling under interleavings the tests leave to chance; Loom would force them (bench-hashes NEXT-STEPS, "Mutation testing beside the proofs")
 src/lanes.rs	replace sources::visible -> bool with false	1	OPEN: the pool's scheduling under interleavings the tests leave to chance; Loom would force them (bench-hashes NEXT-STEPS, "Mutation testing beside the proofs")
 src/lanes.rs	replace spin_for_work -> bool with false	1	speed: how long an idle worker spins before it parks (no effect on results)
-src/lanes.rs	replace splits -> bool with true	1	one CPU or many: this machine has many (check-builds' one-CPU tests run the other side)
+src/lanes.rs	replace splits -> bool with false	1	speed: with splits false every stream and call runs on its caller (the one-CPU path), which gives the same digests
 src/lanes.rs	replace wake_sme2 with ()	1	OPEN: the pool's scheduling under interleavings the tests leave to chance; Loom would force them (bench-hashes NEXT-STEPS, "Mutation testing beside the proofs")
 src/lanes.rs	replace | with & in Task::run_equal_members	1	speed: chooses between equally correct paths (a member length's own kernel, or the general one)
 src/lanes.rs	replace | with ^ in Task::run_equal_members	4	equivalent: | and ^ agree on flag bits that never overlap
 src/lanes.rs	replace || with && in hash_each	1	OPEN: the pool's scheduling under interleavings the tests leave to chance; Loom would force them (bench-hashes NEXT-STEPS, "Mutation testing beside the proofs")
+src/lanes.rs	replace || with && in hash_many	1	speed: MIN_SPLIT_LEN, the threshold from which a call leaves its thread (equally correct either way)
 src/lanes.rs	replace || with && in sources::visible	1	OPEN: the pool's scheduling under interleavings the tests leave to chance; Loom would force them (bench-hashes NEXT-STEPS, "Mutation testing beside the proofs")
 src/lib.rs	delete ! in <impl hasher::Hooks for HasherHooks<'_>>::subtree_cv	1	speed: chooses between equally correct paths
 src/lib.rs	delete ! in HasherCore::update_pooled	1	speed: whether the update takes the SME2 turn
-src/lib.rs	delete ! in batch_after_pause	2	speed: whether and what to prefetch after a pause (no effect on results)
+src/lib.rs	delete ! in batch_after_pause	1	speed: whether and what to prefetch after a pause (no effect on results)
 src/lib.rs	delete ! in prefetch_kernels	1	speed: whether and what to prefetch after a pause (no effect on results)
 src/lib.rs	delete ! in prefetch_update_kernels	2	speed: whether and what to prefetch after a pause (no effect on results)
 src/lib.rs	delete match arm (Platform::AVX2, 6..= 7) in spare_lane	1	x86 only: compiled out on AArch64 (CI's x86 tests reach it)
 src/lib.rs	delete match arm (Platform::SSE41 | Platform::AVX2, 3) in spare_lane	1	x86 only: compiled out on AArch64 (CI's x86 tests reach it)
-src/lib.rs	replace % with + in kernel_report_many	1	another machine or build: the report's branches for CPUs without SHA-3 (CI's QEMU job runs the report test there), for builds without the hybrids, and for x86
 src/lib.rs	replace % with + in prefetch_kernels	1	speed: whether and what to prefetch after a pause (no effect on results)
-src/lib.rs	replace % with / in kernel_report_many	1	another machine or build: the report's branches for CPUs without SHA-3 (CI's QEMU job runs the report test there), for builds without the hybrids, and for x86
 src/lib.rs	replace % with / in prefetch_kernels	1	speed: whether and what to prefetch after a pause (no effect on results)
 src/lib.rs	replace && with || in Hasher::update	1	speed: whether and what to prefetch after a pause (no effect on results)
 src/lib.rs	replace && with || in HasherCore::update_pooled	1	speed: whether the update takes the SME2 turn
@@ -188,23 +194,17 @@ src/lib.rs	replace && with || in prefetch_kernels	2	speed: whether and what to p
 src/lib.rs	replace && with || in prefetch_update_kernels	1	speed: whether and what to prefetch after a pause (no effect on results)
 src/lib.rs	replace * with +	2	speed: the lengths PREFETCH_BELOW and SME2_SIZED_LEN, between equally correct paths
 src/lib.rs	replace * with + in compress_chunks_parallel	1	x86 only: compiled out on AArch64 (CI's x86 tests reach it)
-src/lib.rs	replace * with + in kernel_report_many	4	another machine or build: the report's branches for CPUs without SHA-3 (CI's QEMU job runs the report test there), for builds without the hybrids, and for x86
 src/lib.rs	replace * with + in spare_lane	1	x86 only: compiled out on AArch64 (CI's x86 tests reach it)
 src/lib.rs	replace * with /	2	speed: the lengths PREFETCH_BELOW and SME2_SIZED_LEN, between equally correct paths
 src/lib.rs	replace * with / in Hasher::gather_part	1	speed: whether the Hasher stages input or hashes it at once (equally correct)
 src/lib.rs	replace * with / in compress_chunks_parallel	1	x86 only: compiled out on AArch64 (CI's x86 tests reach it)
-src/lib.rs	replace * with / in kernel_report_many	4	another machine or build: the report's branches for CPUs without SHA-3 (CI's QEMU job runs the report test there), for builds without the hybrids, and for x86
 src/lib.rs	replace * with / in spare_lane	1	x86 only: compiled out on AArch64 (CI's x86 tests reach it)
 src/lib.rs	replace + with * in Hasher::update	1	speed: whether and what to prefetch after a pause (no effect on results)
 src/lib.rs	replace + with * in compress_chunks_parallel	1	x86 only: compiled out on AArch64 (CI's x86 tests reach it)
 src/lib.rs	replace + with * in hash_serial_from	1	speed: moves a threshold between equally correct paths
-src/lib.rs	replace + with * in kernel_report	2	another machine or build: the report's branches for CPUs without SHA-3 (CI's QEMU job runs the report test there), for builds without the hybrids, and for x86
-src/lib.rs	replace + with * in kernel_report_many	2	another machine or build: the report's branches for CPUs without SHA-3 (CI's QEMU job runs the report test there), for builds without the hybrids, and for x86
 src/lib.rs	replace + with - in Hasher::update	1	speed: whether and what to prefetch after a pause (no effect on results)
 src/lib.rs	replace + with - in compress_chunks_parallel	1	x86 only: compiled out on AArch64 (CI's x86 tests reach it)
 src/lib.rs	replace + with - in hash_serial_from	1	speed: moves a threshold between equally correct paths
-src/lib.rs	replace + with - in kernel_report	2	another machine or build: the report's branches for CPUs without SHA-3 (CI's QEMU job runs the report test there), for builds without the hybrids, and for x86
-src/lib.rs	replace + with - in kernel_report_many	2	another machine or build: the report's branches for CPUs without SHA-3 (CI's QEMU job runs the report test there), for builds without the hybrids, and for x86
 src/lib.rs	replace += with *= in prefetch_update_kernels	2	speed: whether and what to prefetch after a pause (no effect on results)
 src/lib.rs	replace -= with /= in prefetch_update_kernels	2	speed: whether and what to prefetch after a pause (no effect on results)
 src/lib.rs	replace / with % in prefetch_kernels	1	speed: whether and what to prefetch after a pause (no effect on results)
@@ -212,28 +212,18 @@ src/lib.rs	replace / with % in prefetch_update_kernels	1	speed: whether and what
 src/lib.rs	replace / with * in HasherCore::update_part_with_results	1	equivalent: a power of two times or over 2 has the same one bit, so the stack merges alike
 src/lib.rs	replace / with * in prefetch_kernels	1	speed: whether and what to prefetch after a pause (no effect on results)
 src/lib.rs	replace / with * in prefetch_update_kernels	1	speed: whether and what to prefetch after a pause (no effect on results)
-src/lib.rs	replace < with <= in kernel_report_multithreaded	1	equivalent: no kernel starts at the split's length exactly
 src/lib.rs	replace << with >>	1	equivalent: 1 << 0 and 1 >> 0 are both 1
 src/lib.rs	replace <impl hasher::Hooks for HasherHooks<'_>>::subtree_cv -> Option<CVBytes> with None	1	speed: chooses between equally correct paths
 src/lib.rs	replace == with != in Hasher::update	1	speed: whether and what to prefetch after a pause (no effect on results)
 src/lib.rs	replace == with != in compress_chunks_parallel	1	x86 only: compiled out on AArch64 (CI's x86 tests reach it)
-src/lib.rs	replace == with != in kernel_report	1	the report's prose: which sentence explains a kernel (no test pins the words)
-src/lib.rs	replace == with != in kernel_report_many	2	another machine or build: the report's branches for CPUs without SHA-3 (CI's QEMU job runs the report test there), for builds without the hybrids, and for x86
 src/lib.rs	replace == with != in prefetch_kernels	1	speed: whether and what to prefetch after a pause (no effect on results)
-src/lib.rs	replace > with < in code_may_be_cold	1	speed: whether and what to prefetch after a pause (no effect on results)
-src/lib.rs	replace > with < in kernel_report	1	another machine or build: the report's branches for CPUs without SHA-3 (CI's QEMU job runs the report test there), for builds without the hybrids, and for x86
-src/lib.rs	replace > with < in kernel_report_many	1	another machine or build: the report's branches for CPUs without SHA-3 (CI's QEMU job runs the report test there), for builds without the hybrids, and for x86
 src/lib.rs	replace > with < in prefetch_update_kernels	1	speed: whether and what to prefetch after a pause (no effect on results)
 src/lib.rs	replace > with < in spare_lane	1	x86 only: compiled out on AArch64 (CI's x86 tests reach it)
 src/lib.rs	replace > with == in code_may_be_cold	1	speed: whether and what to prefetch after a pause (no effect on results)
-src/lib.rs	replace > with == in kernel_report	1	another machine or build: the report's branches for CPUs without SHA-3 (CI's QEMU job runs the report test there), for builds without the hybrids, and for x86
-src/lib.rs	replace > with == in kernel_report_many	1	another machine or build: the report's branches for CPUs without SHA-3 (CI's QEMU job runs the report test there), for builds without the hybrids, and for x86
 src/lib.rs	replace > with == in prefetch_update_kernels	1	speed: whether and what to prefetch after a pause (no effect on results)
 src/lib.rs	replace > with == in spare_lane	1	x86 only: compiled out on AArch64 (CI's x86 tests reach it)
 src/lib.rs	replace > with >= in HasherCore::update_part_with_results	2	equivalent for its one caller: a held group is exactly 16 KiB (16 chunks), so no length it compares equals one chunk
 src/lib.rs	replace > with >= in code_may_be_cold	1	speed: whether and what to prefetch after a pause (no effect on results)
-src/lib.rs	replace > with >= in kernel_report	1	another machine or build: the report's branches for CPUs without SHA-3 (CI's QEMU job runs the report test there), for builds without the hybrids, and for x86
-src/lib.rs	replace > with >= in kernel_report_many	1	another machine or build: the report's branches for CPUs without SHA-3 (CI's QEMU job runs the report test there), for builds without the hybrids, and for x86
 src/lib.rs	replace > with >= in prefetch_update_kernels	1	speed: whether and what to prefetch after a pause (no effect on results)
 src/lib.rs	replace > with >= in spare_lane	1	x86 only: compiled out on AArch64 (CI's x86 tests reach it)
 src/lib.rs	replace >= with < in <impl hasher::Hooks for HasherHooks<'_>>::children	1	speed: chooses between equally correct paths
@@ -269,7 +259,6 @@ src/many.rs	delete match arm 3 in hash_four_at_a_time	1	another machine: the pat
 src/many.rs	replace != with == in across_from	1	x86 only: compiled out on AArch64 (CI's x86 tests reach it)
 src/many.rs	replace != with == in hash_four_at_a_time	1	another machine: the path without the NEON plans (CPUs without the SHA-3 extension; CI's QEMU job runs it)
 src/many.rs	replace % with + in across_from	1	x86 only: compiled out on AArch64 (CI's x86 tests reach it)
-src/many.rs	replace % with + in hash_chunked	1	speed: moves a threshold between equally correct paths
 src/many.rs	replace % with + in hash_four_at_a_time	1	another machine: the path without the NEON plans (CPUs without the SHA-3 extension; CI's QEMU job runs it)
 src/many.rs	replace % with / in across_from	1	x86 only: compiled out on AArch64 (CI's x86 tests reach it)
 src/many.rs	replace % with / in hash_chunked	1	speed: moves a threshold between equally correct paths
@@ -281,13 +270,11 @@ src/many.rs	replace && with || in sme2_sized	5	speed: moves a threshold between 
 src/many.rs	replace * with + in hash_across	2	x86 only: compiled out on AArch64 (CI's x86 tests reach it)
 src/many.rs	replace * with + in hash_group_across	5	x86 only: compiled out on AArch64 (CI's x86 tests reach it)
 src/many.rs	replace * with + in hash_long_or_single	1	x86 only: compiled out on AArch64 (CI's x86 tests reach it)
-src/many.rs	replace * with + in hash_many_on	1	speed: moves a threshold between equally correct paths
 src/many.rs	replace * with + in subtree_across	1	x86 only: compiled out on AArch64 (CI's x86 tests reach it)
 src/many.rs	replace * with / in hash_across	2	x86 only: compiled out on AArch64 (CI's x86 tests reach it)
 src/many.rs	replace * with / in hash_four_at_a_time	1	another machine: the path without the NEON plans (CPUs without the SHA-3 extension; CI's QEMU job runs it)
 src/many.rs	replace * with / in hash_group_across	5	x86 only: compiled out on AArch64 (CI's x86 tests reach it)
 src/many.rs	replace * with / in hash_long_or_single	1	x86 only: compiled out on AArch64 (CI's x86 tests reach it)
-src/many.rs	replace * with / in hash_many_on	1	speed: moves a threshold between equally correct paths
 src/many.rs	replace * with / in subtree_across	1	x86 only: compiled out on AArch64 (CI's x86 tests reach it)
 src/many.rs	replace + with * in hash_across	1	x86 only: compiled out on AArch64 (CI's x86 tests reach it)
 src/many.rs	replace + with * in hash_blocks	1	another machine: the path without the NEON plans (CPUs without the SHA-3 extension; CI's QEMU job runs it)
@@ -327,16 +314,15 @@ src/many.rs	replace > with < in sme2_sized	2	speed: moves a threshold between eq
 src/many.rs	replace > with == in hash_blocks	1	speed: moves a threshold between equally correct paths; and an SME2 call with no lanes, which does nothing
 src/many.rs	replace > with == in hash_chunked	1	speed: moves a threshold between equally correct paths
 src/many.rs	replace > with == in hash_group_across	2	x86 only: compiled out on AArch64 (CI's x86 tests reach it)
-src/many.rs	replace > with == in hash_run	1	speed: moves a threshold between equally correct paths
 src/many.rs	replace > with == in sme2_sized	2	speed: moves a threshold between equally correct paths
 src/many.rs	replace > with >= in hash_blocks	2	speed: moves a threshold between equally correct paths; and an SME2 call with no lanes, which does nothing
 src/many.rs	replace > with >= in hash_chunked	1	speed: moves a threshold between equally correct paths
 src/many.rs	replace > with >= in hash_four_at_a_time	1	another machine: the path without the NEON plans (CPUs without the SHA-3 extension; CI's QEMU job runs it)
 src/many.rs	replace > with >= in hash_group_across	2	x86 only: compiled out on AArch64 (CI's x86 tests reach it)
+src/many.rs	replace > with >= in hash_many_on	1	speed: moves a threshold between equally correct paths (test::dispatch pins the others)
 src/many.rs	replace > with >= in hash_run	1	speed: moves a threshold between equally correct paths
 src/many.rs	replace > with >= in sme2_sized	2	speed: moves a threshold between equally correct paths
 src/many.rs	replace >= with < in hash_long_or_single	1	x86 only: compiled out on AArch64 (CI's x86 tests reach it)
-src/many.rs	replace >= with < in hash_many_on	2	speed: moves a threshold between equally correct paths
 src/many.rs	replace >= with < in hash_run_short	1	speed: moves a threshold between equally correct paths
 src/many.rs	replace >= with < in sme2_sized	6	speed: moves a threshold between equally correct paths
 src/many.rs	replace across_from -> Option<usize> with None	1	x86 only: compiled out on AArch64 (CI's x86 tests reach it)
@@ -396,7 +382,6 @@ src/platform.rs	replace != with == in avx512_detected	1	x86 only: never called o
 src/platform.rs	replace != with == in read_x86_features	2	x86 only: never called on AArch64 (CI's x86 tests reach it)
 src/platform.rs	replace != with == in sme2_reported	2	detection, on a machine with SME2: a wrong no runs NEON (equally correct), a wrong yes is this machine's answer (a machine without SME2 would stop on it)
 src/platform.rs	replace != with == in sse41_detected	1	x86 only: never called on AArch64 (CI's x86 tests reach it)
-src/platform.rs	replace != with == in ticks_in_100_us	1	speed: whether and what to prefetch after a pause (no effect on results)
 src/platform.rs	replace != with == in x86_features	1	x86 only: never called on AArch64 (CI's x86 tests reach it)
 src/platform.rs	replace & with ^ in avx2_detected	1	x86 only: never called on AArch64 (CI's x86 tests reach it)
 src/platform.rs	replace & with ^ in avx512_detected	1	x86 only: never called on AArch64 (CI's x86 tests reach it)
@@ -418,7 +403,6 @@ src/platform.rs	replace * with / in le_bytes_from_words_64	1	equivalent: 0 * 4 a
 src/platform.rs	replace * with / in words_from_le_bytes_32	1	equivalent: 0 * 4 and 0 / 4 are both 0
 src/platform.rs	replace * with / in words_from_le_bytes_64	1	equivalent: 0 * 4 and 0 / 4 are both 0
 src/platform.rs	replace += with *= in prefetch_code	1	speed: whether and what to prefetch after a pause (no effect on results)
-src/platform.rs	replace / with % in ticks_in_100_us	1	speed: whether and what to prefetch after a pause (no effect on results)
 src/platform.rs	replace / with * in ticks_in_100_us	1	speed: whether and what to prefetch after a pause (no effect on results)
 src/platform.rs	replace < with <= in prefetch_code	1	speed: whether and what to prefetch after a pause (no effect on results)
 src/platform.rs	replace < with == in prefetch_code	1	speed: whether and what to prefetch after a pause (no effect on results)
@@ -433,6 +417,7 @@ src/platform.rs	replace Platform::compress_name -> &'static str with ""	1	a name
 src/platform.rs	replace Platform::compress_name -> &'static str with "xyzzy"	1	a name for the kernel report and legends (no test pins the names)
 src/platform.rs	replace Platform::hash_many_name -> &'static str with ""	1	a name for the kernel report and legends (no test pins the names)
 src/platform.rs	replace Platform::hash_many_name -> &'static str with "xyzzy"	1	a name for the kernel report and legends (no test pins the names)
+src/platform.rs	replace Platform::name -> &'static str with ""	1	a name for reports and legends, with no reader since the kernel reports went
 src/platform.rs	replace Platform::name -> &'static str with "xyzzy"	1	a name for the kernel report and legends (no test pins the names)
 src/platform.rs	replace avx2_detected -> bool with false	1	another architecture's: compiled for AArch64 as a stub (x86, wasm32)
 src/platform.rs	replace avx2_detected -> bool with true	1	another architecture's: compiled for AArch64 as a stub (x86, wasm32)
@@ -451,8 +436,6 @@ src/platform.rs	replace sme2_reported -> bool with false	2	detection, on a machi
 src/platform.rs	replace sme2_reported -> bool with true	2	detection, on a machine with SME2: a wrong no runs NEON (equally correct), a wrong yes is this machine's answer (a machine without SME2 would stop on it)
 src/platform.rs	replace sse41_detected -> bool with false	1	another architecture's: compiled for AArch64 as a stub (x86, wasm32)
 src/platform.rs	replace sse41_detected -> bool with true	1	another architecture's: compiled for AArch64 as a stub (x86, wasm32)
-src/platform.rs	replace ticks_in_100_us -> u64 with 0	1	speed: whether and what to prefetch after a pause (no effect on results)
-src/platform.rs	replace ticks_in_100_us -> u64 with 1	1	speed: whether and what to prefetch after a pause (no effect on results)
 src/platform.rs	replace x86_features -> u8 with 0	1	x86 only: never called on AArch64 (CI's x86 tests reach it)
 src/platform.rs	replace x86_features -> u8 with 1	1	x86 only: never called on AArch64 (CI's x86 tests reach it)
 src/platform.rs	replace | with & in Platform::compress_blocks	1	another build: the loop for builds without the AArch64 integer kernel (the pure build's tests reach it)
@@ -479,4 +462,4 @@ src/tree.rs	replace * with + in root_children	1	speed: the arrays' size (each ch
 src/tree.rs	replace * with / in root_children	1	speed: the arrays' size (each choice holds the values; only the stack frame changes)
 src/tree.rs	replace / with * in root_children	2	speed: the arrays' size (each choice holds the values; only the stack frame changes)
 src/tree.rs	replace < with <= in wide	1	equivalent: degrees are powers of two, and at degree 2 both arms give 2
-src/tree.rs	replace <impl Kernels for PlatformKernels<'_>>::children -> Option<[Cv; 2]> with None	1	speed: chooses between equally correct paths (the walk computes the children itself)
+src/tree.rs	replace <impl Kernels for PlatformKernels<'_>>::subtree -> Option<usize> with None	1	speed: subtrees then hash on the walk's one-chunk path, the same digests
