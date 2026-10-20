@@ -1,0 +1,31 @@
+name: probe-capi-hang
+on:
+  push:
+    branches: [candidate/minimalism-0.8]
+  workflow_dispatch:
+jobs:
+  capi:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: dtolnay/rust-toolchain@stable
+    - run: nproc; grep -m1 "model name" /proc/cpuinfo; sudo apt-get install -y -q gdb >/dev/null
+    - name: build the C libraries and b3-check
+      working-directory: ./capi
+      run: |
+        cargo build --release --lib
+        cc -std=c11 -O1 -g -I. tests/check.c -L target/release -Wl,-rpath,$PWD/target/release -lb3_servil -o /tmp/b3-check
+        ln -sf libb3_servil.so target/release/libb3_servil.so.0.8
+    - name: run with a thread dump on hang
+      run: |
+        /tmp/b3-check > /tmp/out.txt 2>&1 &
+        pid=$!
+        for i in $(seq 1 30); do sleep 1; kill -0 $pid 2>/dev/null || break; done
+        if kill -0 $pid 2>/dev/null; then
+          echo "HUNG after 30 s; threads:"
+          sudo gdb -p $pid -batch -ex "thread apply all bt 12" 2>/dev/null | grep -E "^Thread|^#" | cut -c1-200
+          kill -9 $pid
+          tail -5 /tmp/out.txt
+          exit 1
+        fi
+        echo "finished: $(tail -1 /tmp/out.txt)"
