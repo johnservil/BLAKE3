@@ -1,0 +1,6 @@
+# The mutants known to survive the library's tests on x86-64 (an i7-12700K,
+# AVX2 without AVX-512), each with its reason; tools/mutants/check.py
+# fails on any other survivor and on any listed one now caught.
+# A line: file <TAB> mutant (function and change) <TAB> places <TAB> reason.
+files: src/each.rs src/ffi_avx2.rs src/ffi_sse41.rs src/hasher.rs src/hazmat.rs src/io.rs src/lanes.rs src/lib.rs src/many.rs src/outboard.rs src/pair.rs src/platform.rs src/portable.rs src/rust_avx2.rs src/rust_sse41.rs src/self_test.rs src/tree.rs
+src/lib.rs	replace | with ^ in ran	1	test-only record of which kernels ran; on x86 nothing reads it (AArch64's kernel-coverage test does)

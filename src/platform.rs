@@ -816,6 +816,30 @@ mod sme2_turn_test {
 }
 
 #[cfg(all(test, target_arch = "x86_64", not(miri)))]
+mod x86_degree_test {
+    use super::*;
+
+    /// The detected platform hashes as many chunks at once as the widest
+    /// kernel this CPU has (the standard library's detection, an
+    /// independent reading, says which): a degree of 1 would hash
+    /// correctly, one chunk at a time.
+    #[test]
+    fn test_detected_degree_is_the_widest_kernel() {
+        let expected = if cfg!(blake3_avx512_ffi) && std::is_x86_feature_detected!("avx512f") && std::is_x86_feature_detected!("avx512vl") {
+            16
+        } else if std::is_x86_feature_detected!("avx2") {
+            8
+        } else if std::is_x86_feature_detected!("sse4.1") {
+            4
+        } else {
+            1
+        };
+        assert_eq!(Platform::detect().simd_degree(), expected);
+        assert_eq!(Platform::Portable.simd_degree(), 1);
+    }
+}
+
+#[cfg(all(test, target_arch = "x86_64", not(miri)))]
 mod x86_features_test {
     /// The CPUID read finds what the standard library's detection, an
     /// independent reading, finds.
