@@ -1,0 +1,24 @@
+name: probe-qemu-stream-panics
+on: [push, workflow_dispatch]
+jobs:
+  loop:
+    runs-on: ubuntu-24.04-arm
+    env:
+      CC: clang
+    steps:
+    - uses: actions/checkout@v4
+    - uses: dtolnay/rust-toolchain@stable
+    - uses: taiki-e/install-action@nextest
+    - run: sudo apt-get update && sudo apt-get install -y qemu-user && qemu-aarch64 --version
+    - run: cargo nextest run --lib --features=serde,zeroize --no-run
+      env:
+        CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER: qemu-aarch64 -cpu cortex-a72
+    - name: the panicking test, 40 times, each in a fresh process under QEMU
+      env:
+        CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER: qemu-aarch64 -cpu cortex-a72
+      run: |
+        fails=0; for i in $(seq 40); do cargo nextest run --lib --features=serde,zeroize -E 'test(=stream::test::test_stream_panics)' > out.txt 2>&1 || { fails=$((fails+1)); grep -m1 "QEMU internal" out.txt; }; done; echo "fresh processes: $fails of 40 crashed"
+    - name: the same test 40 times in one process under QEMU (libtest's harness, as cargo test ran it)
+      run: |
+        exe=$(cargo nextest list --lib --features=serde,zeroize --message-format json | python3 -c "import json,sys; d=json.load(sys.stdin); print([s['binary-path'] for s in d['rust-suites'].values() if s['kind']=='lib'][0])")
+        fails=0; for i in $(seq 40); do NEXTEST=1 qemu-aarch64 -cpu cortex-a72 "$exe" --exact stream::test::test_stream_panics stream::test::test_stream_against_hash_with > out.txt 2>&1 || { fails=$((fails+1)); grep -m1 "QEMU internal" out.txt; }; done; echo "with another test in the process: $fails of 40 crashed"
