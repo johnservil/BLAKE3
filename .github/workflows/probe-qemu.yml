@@ -13,14 +13,7 @@ jobs:
     - run: cargo nextest run --lib --features=serde,zeroize --no-run
       env:
         CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER: qemu-aarch64 -cpu cortex-a72
-    - name: the panicking test, 40 fresh processes, four at a time (as nextest runs them on 4 cores)
-      env:
-        CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER: qemu-aarch64 -cpu cortex-a72
+    - name: CI's QEMU step exactly (the library's and the integration tests), after its native run, five times
       run: |
-        exe=$(cargo nextest list --lib --features=serde,zeroize --message-format json | python3 -c "import json,sys; d=json.load(sys.stdin); print([s['binary-path'] for s in d['rust-suites'].values() if s['kind']=='lib'][0])")
-        seq 40 | xargs -P4 -I{} sh -c 'NEXTEST=1 qemu-aarch64 -cpu cortex-a72 '"$exe"' --exact stream::test::test_stream_panics > out{}.txt 2>&1 || echo crashed{}' | sort | uniq -c | wc -l | xargs -I{} echo "four at a time: {} of 40 crashed"; grep -h "QEMU internal" out*.txt | sort | uniq -c
-    - name: the whole library suite under QEMU and nextest, five times
-      env:
-        CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER: qemu-aarch64 -cpu cortex-a72
-      run: |
-        for i in 1 2 3 4 5; do cargo nextest run --lib --features=serde,zeroize --no-fail-fast 2>&1 | grep -E "SIGSEGV|QEMU internal|Summary" | head -3; done
+        cargo nextest run --lib --tests --features=serde,zeroize 2>&1 | grep -E "Summary"
+        for i in 1 2 3 4 5; do CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER="qemu-aarch64 -cpu cortex-a72" cargo nextest run --lib --tests --features=serde,zeroize --no-fail-fast 2>&1 | grep -E "SIGSEGV|QEMU internal|Summary" | head -3; done
