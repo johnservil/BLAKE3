@@ -600,8 +600,8 @@ MACROS = r"""
 .endm
 
 // Whole G with its d word packed in the top half of xsrc: taken into w
-// (xw its x form) and, after the G's last c write, packed into the top half
-// of xdst, c's own x register.
+// (xw its x form) and packed into the top half of xdst, c's own x register,
+// last: after the G's last c write, and off the b chain, which reads c.
 .macro SGP a, b, c, w, xw, m, p, mx, my, xsrc, xdst
     lsr \xw, \xsrc, #32
     ldr \m, [\p, #\mx]
@@ -618,9 +618,9 @@ MACROS = r"""
     eor \w, \w, \a
     ror \w, \w, #8
     add \c, \c, \w
-    bfi \xdst, \xw, #32, #32
     eor \b, \b, \c
     ror \b, \b, #7
+    bfi \xdst, \xw, #32, #32
 .endm
 
 // The same with the d word whole in the hole register w.
@@ -639,9 +639,9 @@ MACROS = r"""
     eor \w, \w, \a
     ror \w, \w, #8
     add \c, \c, \w
-    bfi \xdst, \xw, #32, #32
     eor \b, \b, \c
     ror \b, \b, #7
+    bfi \xdst, \xw, #32, #32
 .endm
 
 // Pair G (dup layout: each 32-bit word twice per 64-bit lane, so xar on
