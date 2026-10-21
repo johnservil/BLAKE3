@@ -348,26 +348,6 @@ src/outboard.rs	delete ! in Verifier::check	1	speed: whether the check takes the
 src/outboard.rs	delete ! in outboard	1	speed: whether the outboard takes the SME2 turn
 src/outboard.rs	replace && with || in Verifier::check	1	equivalent: only the root lacks an expected value, and in the encoding's pre-order a batch's first node with one starts where its first group does
 src/outboard.rs	replace | with ^ in groups_cvs_into	1	equivalent: | and ^ agree on flag bits that never overlap
-src/pair.rs	delete match arm Platform::AVX2 in takes_platform	1	x86 only: compiled out on AArch64 (CI's x86 tests reach it) (the two-input path runs on AVX2 and AVX-512 only)
-src/pair.rs	delete match arm Platform::AVX512 in takes_platform	1	x86 only: compiled out on AArch64 (CI's x86 tests reach it) (the two-input path runs on AVX2 and AVX-512 only)
-src/pair.rs	replace * with + in parent	3	x86 only: compiled out on AArch64 (CI's x86 tests reach it) (the two-input path runs on AVX2 and AVX-512 only)
-src/pair.rs	replace * with + in takes	1	x86 only: compiled out on AArch64 (CI's x86 tests reach it) (the two-input path runs on AVX2 and AVX-512 only)
-src/pair.rs	replace * with / in parent	3	x86 only: compiled out on AArch64 (CI's x86 tests reach it) (the two-input path runs on AVX2 and AVX-512 only)
-src/pair.rs	replace * with / in takes	1	x86 only: compiled out on AArch64 (CI's x86 tests reach it) (the two-input path runs on AVX2 and AVX-512 only)
-src/pair.rs	replace + with * in parent	1	x86 only: compiled out on AArch64 (CI's x86 tests reach it) (the two-input path runs on AVX2 and AVX-512 only)
-src/pair.rs	replace + with * in takes	2	x86 only: compiled out on AArch64 (CI's x86 tests reach it) (the two-input path runs on AVX2 and AVX-512 only)
-src/pair.rs	replace + with - in parent	1	x86 only: compiled out on AArch64 (CI's x86 tests reach it) (the two-input path runs on AVX2 and AVX-512 only)
-src/pair.rs	replace + with - in takes	2	x86 only: compiled out on AArch64 (CI's x86 tests reach it) (the two-input path runs on AVX2 and AVX-512 only)
-src/pair.rs	replace - with + in parent	2	x86 only: compiled out on AArch64 (CI's x86 tests reach it) (the two-input path runs on AVX2 and AVX-512 only)
-src/pair.rs	replace - with / in parent	2	x86 only: compiled out on AArch64 (CI's x86 tests reach it) (the two-input path runs on AVX2 and AVX-512 only)
-src/pair.rs	replace / with % in parent	1	x86 only: compiled out on AArch64 (CI's x86 tests reach it) (the two-input path runs on AVX2 and AVX-512 only)
-src/pair.rs	replace / with * in parent	1	x86 only: compiled out on AArch64 (CI's x86 tests reach it) (the two-input path runs on AVX2 and AVX-512 only)
-src/pair.rs	replace parent -> [u8; BLOCK_LEN] with [0; BLOCK_LEN]	1	x86 only: compiled out on AArch64 (CI's x86 tests reach it) (the two-input path runs on AVX2 and AVX-512 only)
-src/pair.rs	replace parent -> [u8; BLOCK_LEN] with [1; BLOCK_LEN]	1	x86 only: compiled out on AArch64 (CI's x86 tests reach it) (the two-input path runs on AVX2 and AVX-512 only)
-src/pair.rs	replace takes -> bool with false	1	x86 only: compiled out on AArch64 (CI's x86 tests reach it) (the two-input path runs on AVX2 and AVX-512 only)
-src/pair.rs	replace takes_platform -> bool with false	1	x86 only: compiled out on AArch64 (CI's x86 tests reach it) (the two-input path runs on AVX2 and AVX-512 only)
-src/pair.rs	replace | with & in parent	1	x86 only: compiled out on AArch64 (CI's x86 tests reach it) (the two-input path runs on AVX2 and AVX-512 only)
-src/pair.rs	replace | with ^ in parent	1	equivalent: | and ^ agree on flag bits that never overlap
 src/platform.rs	delete ! in Platform::xof_many	1	speed: chooses between equally correct paths
 src/platform.rs	delete ! in sme2_detect_uncached	1	detection, on a machine with SME2: a wrong no runs NEON (equally correct), a wrong yes is this machine's answer (a machine without SME2 would stop on it)
 src/platform.rs	delete match arm 1 in sme2_detected	1	detection, on a machine with SME2: a wrong no runs NEON (equally correct), a wrong yes is this machine's answer (a machine without SME2 would stop on it)

@@ -346,14 +346,6 @@ src/outboard.rs	delete ! in Verifier::check	1	speed: whether the check takes the
 src/outboard.rs	delete ! in outboard	1	speed: whether the outboard takes the SME2 turn
 src/outboard.rs	replace && with || in Verifier::check	1	equivalent: only the root lacks an expected value, and in the encoding's pre-order a batch's first node with one starts where its first group does
 src/outboard.rs	replace | with ^ in groups_cvs_into	1	equivalent: | and ^ agree on flag bits that never overlap (the mode flags and PARENT)
-src/pair.rs	delete match arm Platform::AVX2 in takes_platform	1	equally correct paths: the two-chunk path and the serial path agree
-src/pair.rs	delete match arm Platform::AVX512 in takes_platform	1	equally correct paths: the two-chunk path and the serial path agree
-src/pair.rs	replace * with + in takes	1	equally correct paths: the two-chunk path and the serial path agree
-src/pair.rs	replace * with / in takes	1	equally correct paths: the two-chunk path and the serial path agree
-src/pair.rs	replace + with * in takes	1	equally correct paths: the two-chunk path and the serial path agree
-src/pair.rs	replace takes -> bool with false	1	equally correct paths: the two-chunk path and the serial path agree
-src/pair.rs	replace takes_platform -> bool with false	1	equally correct paths: the two-chunk path and the serial path agree
-src/pair.rs	replace | with ^ in parent	1	equivalent: | and ^ agree on flag bits that never overlap
 src/platform.rs	delete ! in Platform::xof_many	1	speed: chooses between equally correct paths
 src/platform.rs	delete ! in Sme2Turn::take	1	SME2 only: on x86 no SME2 turn is held; take returns the platform unchanged and drop releases nothing
 src/platform.rs	delete ! in sme2_detect_uncached	1	detection, on a machine with SME2: a wrong no runs NEON (equally correct), a wrong yes is this machine's answer (a machine without SME2 would stop on it)

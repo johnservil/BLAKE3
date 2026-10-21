@@ -132,15 +132,15 @@ pub(crate) const CASES: &[(Case, &str)] = &[
 /// assembly has one-block, extended-output, and many-input kernels
 /// (compress_in_place, compress_xof, hash_many, and on AVX-512 xof_many),
 /// which these reach on every x86 platform (AVX2: all 3 of its entries,
-/// counted with gdb in October 2026), with pair.rs's two-input path, the passes of
-/// whole chunks and a partial one (rust_sse41 and rust_avx2), the tree,
+/// counted with gdb in October 2026), with the generated passes of whole
+/// chunks and a partial one (ffi_partial: four lanes and eight), the tree,
 /// the Hasher, a batch and its tail, and the three modes. The logic around
 /// the kernels is the tests' and the proofs' to establish; this checks the
 /// build and the machine running it.
 #[cfg(not(target_arch = "aarch64"))]
 pub(crate) const CASES: &[(Case, &str)] = &[
     (Hash { offset: 1, len: 65 }, "a block and a byte, unaligned: the one-block kernel"),
-    (Keyed { len: KIB + 65 }, "keyed, a chunk and a block and a byte (the shortest the two-input path takes): the two-input path (AVX2, AVX-512)"),
+    (Keyed { len: KIB + 65 }, "keyed, a chunk and a block and a byte (the shortest the one-chunk pass takes): the four-lane pass with a partial chunk (AVX2, AVX-512)"),
     (Hash { offset: 3, len: 4 * KIB + 65 }, "four chunks and a block, unaligned: the chunk kernel over chunks, their parents, the tree"),
     (Hash { offset: 0, len: 3 * KIB + 100 }, "three chunks and a partial one: the four-lane pass with a partial chunk"),
     (

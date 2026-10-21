@@ -1,6 +1,4 @@
 use crate::{BLOCK_LEN, CHUNK_LEN, CVBytes, CVWords};
-#[cfg(target_arch = "x86_64")]
-use crate::{IncrementCounter, OUT_LEN};
 
 include!("../tools/require_nextest.rs");
 use arrayvec::ArrayVec;
@@ -50,9 +48,6 @@ pub const TEST_CASES: &[usize] = &[
 
 pub const TEST_CASES_MAX: usize = 100 * CHUNK_LEN;
 
-#[cfg(target_arch = "x86_64")]
-pub const TEST_KEY_WORDS: CVWords = [1952540791, 1752440947, 1816469605, 1752394102, 1919907616, 1868963940, 1919295602, 1684956521];
-
 // Paint the input with a repeating byte pattern. We use a cycle length of 251,
 // because that's the largest prime number less than 256. This makes it
 // unlikely to swapping any two adjacent input blocks or chunks will give the
@@ -76,121 +71,6 @@ pub(crate) fn every_platform() -> Vec<crate::platform::Platform> {
 pub fn paint_test_input(buf: &mut [u8]) {
     for (i, b) in buf.iter_mut().enumerate() {
         *b = (i % 251) as u8;
-    }
-}
-
-#[cfg(target_arch = "x86_64")]
-type CompressInPlaceFn = unsafe fn(cv: &mut CVWords, block: &[u8; BLOCK_LEN], block_len: u8, counter: u64, flags: u8);
-
-#[cfg(target_arch = "x86_64")]
-type CompressXofFn = unsafe fn(cv: &CVWords, block: &[u8; BLOCK_LEN], block_len: u8, counter: u64, flags: u8) -> [u8; 64];
-
-#[cfg(target_arch = "x86_64")]
-// A shared helper function for platform-specific tests.
-pub fn test_compress_fn(compress_in_place_fn: CompressInPlaceFn, compress_xof_fn: CompressXofFn) {
-    let initial_state = TEST_KEY_WORDS;
-    let block_len: u8 = 61;
-    let mut block = [0; BLOCK_LEN];
-    paint_test_input(&mut block[..block_len as usize]);
-    // Use a counter with set bits in both 32-bit words.
-    let counter = (5u64 << 32) + 6;
-    let flags = crate::CHUNK_END | crate::ROOT | crate::KEYED_HASH;
-
-    let portable_out = crate::portable::compress_xof(&initial_state, &block, block_len, counter as u64, flags);
-
-    let mut test_state = initial_state;
-    unsafe { compress_in_place_fn(&mut test_state, &block, block_len, counter as u64, flags) };
-    let test_state_bytes = crate::hasher::le_bytes(&test_state);
-    let test_xof = unsafe { compress_xof_fn(&initial_state, &block, block_len, counter as u64, flags) };
-
-    assert_eq!(&portable_out[..32], &test_state_bytes[..]);
-    assert_eq!(&portable_out[..], &test_xof[..]);
-}
-
-#[cfg(target_arch = "x86_64")]
-type HashManyFn<A> =
-    unsafe fn(inputs: &[&A], key: &CVWords, counter: u64, increment_counter: IncrementCounter, flags: u8, flags_start: u8, flags_end: u8, out: &mut [u8]);
-
-#[cfg(target_arch = "x86_64")]
-// A shared helper function for platform-specific tests.
-pub fn test_hash_many_fn(hash_many_chunks_fn: HashManyFn<[u8; CHUNK_LEN]>, hash_many_parents_fn: HashManyFn<[u8; 2 * OUT_LEN]>) {
-    // Test a few different initial counter values.
-    // - 0: The base case.
-    // - u32::MAX: The low word of the counter overflows for all inputs except the first.
-    // - i32::MAX: *No* overflow. But carry bugs in tricky SIMD code can screw this up, if you XOR
-    //   when you're supposed to ANDNOT...
-    let initial_counters = [0, u32::MAX as u64, i32::MAX as u64];
-    for counter in initial_counters {
-        #[cfg(feature = "std")]
-        dbg!(counter);
-
-        // 31 (16 + 8 + 4 + 2 + 1) inputs
-        const NUM_INPUTS: usize = 31;
-        let mut input_buf = [0; CHUNK_LEN * NUM_INPUTS];
-        crate::test::paint_test_input(&mut input_buf);
-
-        // First hash chunks.
-        let mut chunks = ArrayVec::<&[u8; CHUNK_LEN], NUM_INPUTS>::new();
-        for i in 0..NUM_INPUTS {
-            chunks.push((&input_buf[i * CHUNK_LEN..][..CHUNK_LEN]).try_into().unwrap());
-        }
-        let mut portable_chunks_out = [0; NUM_INPUTS * OUT_LEN];
-        crate::portable::hash_many(
-            &chunks,
-            &TEST_KEY_WORDS,
-            counter,
-            IncrementCounter::Yes,
-            crate::KEYED_HASH,
-            crate::CHUNK_START,
-            crate::CHUNK_END,
-            &mut portable_chunks_out,
-        );
-
-        let mut test_chunks_out = [0; NUM_INPUTS * OUT_LEN];
-        unsafe {
-            hash_many_chunks_fn(
-                &chunks[..],
-                &TEST_KEY_WORDS,
-                counter,
-                IncrementCounter::Yes,
-                crate::KEYED_HASH,
-                crate::CHUNK_START,
-                crate::CHUNK_END,
-                &mut test_chunks_out,
-            );
-        }
-        for n in 0..NUM_INPUTS {
-            #[cfg(feature = "std")]
-            dbg!(n);
-            assert_eq!(&portable_chunks_out[n * OUT_LEN..][..OUT_LEN], &test_chunks_out[n * OUT_LEN..][..OUT_LEN]);
-        }
-
-        // Then hash parents.
-        let mut parents = ArrayVec::<&[u8; 2 * OUT_LEN], NUM_INPUTS>::new();
-        for i in 0..NUM_INPUTS {
-            parents.push((&input_buf[i * 2 * OUT_LEN..][..2 * OUT_LEN]).try_into().unwrap());
-        }
-        let mut portable_parents_out = [0; NUM_INPUTS * OUT_LEN];
-        crate::portable::hash_many(
-            &parents,
-            &TEST_KEY_WORDS,
-            counter,
-            IncrementCounter::No,
-            crate::KEYED_HASH | crate::PARENT,
-            0,
-            0,
-            &mut portable_parents_out,
-        );
-
-        let mut test_parents_out = [0; NUM_INPUTS * OUT_LEN];
-        unsafe {
-            hash_many_parents_fn(&parents[..], &TEST_KEY_WORDS, counter, IncrementCounter::No, crate::KEYED_HASH | crate::PARENT, 0, 0, &mut test_parents_out);
-        }
-        for n in 0..NUM_INPUTS {
-            #[cfg(feature = "std")]
-            dbg!(n);
-            assert_eq!(&portable_parents_out[n * OUT_LEN..][..OUT_LEN], &test_parents_out[n * OUT_LEN..][..OUT_LEN]);
-        }
     }
 }
 
@@ -769,7 +649,7 @@ mod guard_pages {
             platform::sme2_detected(),
             "SME2 checked where the build and the CPU have it: {platforms:?}"
         );
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(blake3_avx2_ffi)]
         {
             assert_eq!(
                 platforms.iter().any(|p| matches!(p, platform::Platform::AVX2)),
@@ -782,7 +662,6 @@ mod guard_pages {
                 platform::avx512_detected(),
                 "AVX-512 checked where the build and the CPU have it: {platforms:?}"
             );
-            assert!(cfg!(blake3_avx2_ffi) || cfg!(blake3_avx2_rust), "an AVX2 kernel built");
         }
         check::<BLOCK_LEN>(&platforms, IncrementCounter::No);
         check::<{ 2 * BLOCK_LEN }>(&platforms, IncrementCounter::No);

@@ -275,7 +275,7 @@ const ACROSS_CHUNKS: usize = 16;
 #[cfg(target_arch = "x86_64")]
 pub(crate) fn across_from(len: usize, platform: Platform) -> Option<usize> {
     let chunks = len.div_ceil(CHUNK_LEN);
-    if !(2..ACROSS_CHUNKS).contains(&chunks) || !crate::pair::takes_platform(platform) {
+    if !(2..ACROSS_CHUNKS).contains(&chunks) || !takes_platform(platform) {
         return None;
     }
     let chain = chunks < platform.simd_degree() && (len % CHUNK_LEN != 0 || chunks == 2);
@@ -330,20 +330,7 @@ pub(crate) fn hash_group_across(messages: &[&[u8]], len: usize, key: &CVWords, f
             if before_last > 0 {
                 // Sound: each pointer reaches before_last whole blocks of its message.
                 let ptrs: arrayvec::ArrayVec<*const u8, GROUP> = (0..count).map(|m| message(m)[full * CHUNK_LEN..].as_ptr()).collect();
-                unsafe {
-                    crate::pair::hash_many_blocks(
-                        platform,
-                        &ptrs,
-                        before_last,
-                        key,
-                        full as u64,
-                        false,
-                        flags,
-                        CHUNK_START,
-                        0,
-                        so_far[..count].as_flattened_mut(),
-                    )
-                };
+                unsafe { hash_many_blocks(platform, &ptrs, before_last, key, full as u64, false, flags, CHUNK_START, 0, so_far[..count].as_flattened_mut()) };
             }
             for m in 0..count {
                 let mut cv = if before_last > 0 { crate::platform::words_from_le_bytes_32(&so_far[m]) } else { *key };
@@ -626,6 +613,70 @@ fn platform_is_sme2(platform: Platform) -> bool {
     {
         let _ = platform;
         false
+    }
+}
+
+// The AVX2 and AVX-512 assembly's hash_many at a block count chosen at
+// run time, for the batches across messages above.
+
+/// Whether [`hash_many_blocks`] runs on `platform`: AVX2 or AVX-512, whose
+/// assembly is in this build.
+#[inline]
+#[cfg(target_arch = "x86_64")]
+#[cfg_attr(not(any(blake3_avx2_ffi, blake3_avx512_ffi)), allow(unused_variables, unreachable_code))]
+fn takes_platform(platform: Platform) -> bool {
+    match platform {
+        #[cfg(blake3_avx2_ffi)]
+        Platform::AVX2 => true,
+        #[cfg(blake3_avx512_ffi)]
+        Platform::AVX512 => true,
+        _ => false,
+    }
+}
+
+/// The platform's assembly `hash_many`, with the block count at run time
+/// (AVX2 and AVX-512; elsewhere each input in turn). Unsafe: each of `inputs` reaches `blocks`
+/// blocks, and the CPU has the platform.
+#[allow(clippy::too_many_arguments)]
+#[cfg(target_arch = "x86_64")]
+#[cfg_attr(not(any(blake3_avx2_ffi, blake3_avx512_ffi)), allow(unused_variables, unreachable_code))]
+unsafe fn hash_many_blocks(
+    platform: Platform,
+    inputs: &[*const u8],
+    blocks: usize,
+    key: &CVWords,
+    counter: u64,
+    increment: bool,
+    flags: u8,
+    flags_start: u8,
+    flags_end: u8,
+    out: &mut [u8],
+) {
+    assert!(out.len() >= inputs.len() * OUT_LEN && (1..=CHUNK_LEN / BLOCK_LEN).contains(&blocks));
+    if !takes_platform(platform) {
+        // Elsewhere one input after another on the platform's compression
+        // (for the tests of hash_many's batches on every platform).
+        for (i, &p) in inputs.iter().enumerate() {
+            let mut cv = *key;
+            for b in 0..blocks {
+                // Sound: `p` reaches `blocks` blocks.
+                let block: &[u8; BLOCK_LEN] = unsafe { &*(p.add(b * BLOCK_LEN) as *const [u8; BLOCK_LEN]) };
+                let f = flags | if b == 0 { flags_start } else { 0 } | if b + 1 == blocks { flags_end } else { 0 };
+                platform.compress_in_place(&mut cv, block, BLOCK_LEN as u8, counter + if increment { i as u64 } else { 0 }, f);
+            }
+            out[i * OUT_LEN..][..OUT_LEN].copy_from_slice(&crate::hasher::le_bytes(&cv));
+        }
+        return;
+    }
+    let (n, input, key, out) = (inputs.len(), inputs.as_ptr(), key.as_ptr(), out.as_mut_ptr());
+    match platform {
+        #[cfg(blake3_avx2_ffi)]
+        Platform::AVX2 => unsafe { crate::avx2::ffi::blake3_hash_many_avx2(input, n, blocks, key, counter, increment, flags, flags_start, flags_end, out) },
+        #[cfg(blake3_avx512_ffi)]
+        Platform::AVX512 => unsafe {
+            crate::avx512::ffi::blake3_hash_many_avx512(input, n, blocks, key, counter, increment, flags, flags_start, flags_end, out)
+        },
+        _ => unreachable!("takes_platform admitted AVX2 or AVX-512"),
     }
 }
 

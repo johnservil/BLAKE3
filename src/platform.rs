@@ -49,9 +49,9 @@ cfg_if::cfg_if! {
 /// proofs start from the value `initialize` records.
 pub enum Platform {
     Portable = 1,
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(blake3_sse41_ffi)]
     SSE41 = 3,
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(blake3_avx2_ffi)]
     AVX2 = 4,
     #[cfg(blake3_avx512_ffi)]
     #[cfg(target_arch = "x86_64")]
@@ -196,9 +196,11 @@ impl Platform {
                     return Platform::AVX512;
                 }
             }
+            #[cfg(blake3_avx2_ffi)]
             if avx2_detected() {
                 return Platform::AVX2;
             }
+            #[cfg(blake3_sse41_ffi)]
             if sse41_detected() {
                 return Platform::SSE41;
             }
@@ -227,9 +229,9 @@ impl Platform {
     pub fn name(&self) -> &'static str {
         match self {
             Platform::Portable => "portable",
-            #[cfg(target_arch = "x86_64")]
+            #[cfg(blake3_sse41_ffi)]
             Platform::SSE41 => "SSE4.1",
-            #[cfg(target_arch = "x86_64")]
+            #[cfg(blake3_avx2_ffi)]
             Platform::AVX2 => "AVX2",
             #[cfg(blake3_avx512_ffi)]
             #[cfg(target_arch = "x86_64")]
@@ -247,7 +249,7 @@ impl Platform {
     pub fn compress_name(&self) -> &'static str {
         match self {
             Platform::Portable => "portable compression",
-            #[cfg(target_arch = "x86_64")]
+            #[cfg(blake3_sse41_ffi)]
             Platform::SSE41 | Platform::AVX2 => "SSE4.1 compression",
             #[cfg(blake3_avx512_ffi)]
             #[cfg(target_arch = "x86_64")]
@@ -264,9 +266,9 @@ impl Platform {
     pub fn hash_many_name(&self) -> &'static str {
         match self {
             Platform::Portable => "portable hash_many",
-            #[cfg(target_arch = "x86_64")]
+            #[cfg(blake3_sse41_ffi)]
             Platform::SSE41 => "SSE4.1 hash_many (4-way)",
-            #[cfg(target_arch = "x86_64")]
+            #[cfg(blake3_avx2_ffi)]
             Platform::AVX2 => "AVX2 hash_many (8-way)",
             #[cfg(blake3_avx512_ffi)]
             #[cfg(target_arch = "x86_64")]
@@ -281,9 +283,9 @@ impl Platform {
     pub fn simd_degree(&self) -> usize {
         let degree = match self {
             Platform::Portable => 1,
-            #[cfg(target_arch = "x86_64")]
+            #[cfg(blake3_sse41_ffi)]
             Platform::SSE41 => 4,
-            #[cfg(target_arch = "x86_64")]
+            #[cfg(blake3_avx2_ffi)]
             Platform::AVX2 => 8,
             #[cfg(blake3_avx512_ffi)]
             #[cfg(target_arch = "x86_64")]
@@ -303,7 +305,7 @@ impl Platform {
         match self {
             Platform::Portable => portable::compress_in_place(cv, block, block_len, counter, flags),
             // Safe because detect() checked for platform support.
-            #[cfg(target_arch = "x86_64")]
+            #[cfg(blake3_sse41_ffi)]
             Platform::SSE41 | Platform::AVX2 => unsafe { crate::sse41::compress_in_place(cv, block, block_len, counter, flags) },
             // Safe because detect() checked for platform support.
             #[cfg(blake3_avx512_ffi)]
@@ -346,7 +348,7 @@ impl Platform {
         match self {
             Platform::Portable => portable::compress_xof(cv, block, block_len, counter, flags),
             // Safe because detect() checked for platform support.
-            #[cfg(target_arch = "x86_64")]
+            #[cfg(blake3_sse41_ffi)]
             Platform::SSE41 | Platform::AVX2 => unsafe { crate::sse41::compress_xof(cv, block, block_len, counter, flags) },
             // Safe because detect() checked for platform support.
             #[cfg(blake3_avx512_ffi)]
@@ -393,10 +395,10 @@ impl Platform {
         match self {
             Platform::Portable => portable::hash_many(inputs, key, counter, increment_counter, flags, flags_start, flags_end, out),
             // Safe because detect() checked for platform support.
-            #[cfg(target_arch = "x86_64")]
+            #[cfg(blake3_sse41_ffi)]
             Platform::SSE41 => unsafe { crate::sse41::hash_many(inputs, key, counter, increment_counter, flags, flags_start, flags_end, out) },
             // Safe because detect() checked for platform support.
-            #[cfg(target_arch = "x86_64")]
+            #[cfg(blake3_avx2_ffi)]
             Platform::AVX2 => unsafe { crate::avx2::hash_many(inputs, key, counter, increment_counter, flags, flags_start, flags_end, out) },
             // Safe because detect() checked for platform support.
             #[cfg(blake3_avx512_ffi)]
@@ -463,16 +465,26 @@ impl Platform {
 
     // Explicit platform constructors, for benchmarks.
 
-    #[cfg(target_arch = "x86_64")]
-    #[cfg(test)]
+    /// The SSE41 platform where this build has its kernels and the CPU its
+    /// instructions.
+    #[cfg(all(test, target_arch = "x86_64"))]
     pub fn sse41() -> Option<Self> {
-        if sse41_detected() { Some(Self::SSE41) } else { None }
+        #[cfg(blake3_sse41_ffi)]
+        if sse41_detected() {
+            return Some(Self::SSE41);
+        }
+        None
     }
 
-    #[cfg(target_arch = "x86_64")]
-    #[cfg(test)]
+    /// The AVX2 platform where this build has its kernels and the CPU its
+    /// instructions.
+    #[cfg(all(test, target_arch = "x86_64"))]
     pub fn avx2() -> Option<Self> {
-        if avx2_detected() { Some(Self::AVX2) } else { None }
+        #[cfg(blake3_avx2_ffi)]
+        if avx2_detected() {
+            return Some(Self::AVX2);
+        }
+        None
     }
 
     #[cfg(blake3_avx512_ffi)]
@@ -512,6 +524,9 @@ mod x86_bits {
 
 #[cfg(target_arch = "x86_64")]
 #[inline(always)]
+// Read by the x86 kernels' dispatch and the tests; a build without the
+// assembly (pure) dispatches to none.
+#[cfg_attr(not(blake3_sse41_ffi), allow(dead_code))]
 fn x86_features() -> u8 {
     use core::sync::atomic::{AtomicU8, Ordering};
     static FEATURES: AtomicU8 = AtomicU8::new(0);
@@ -529,6 +544,9 @@ fn x86_features() -> u8 {
 /// CPU with AVX has leaf 7.
 #[cfg(target_arch = "x86_64")]
 #[cold]
+// Read by the x86 kernels' dispatch and the tests; a build without the
+// assembly (pure) dispatches to none.
+#[cfg_attr(not(blake3_sse41_ffi), allow(dead_code))]
 fn read_x86_features() -> u8 {
     use core::arch::x86_64 as arch;
     use x86_bits::*;
@@ -579,6 +597,9 @@ pub fn avx512_detected() -> bool {
 
 #[cfg(target_arch = "x86_64")]
 #[inline(always)]
+// Read by the x86 kernels' dispatch and the tests; a build without the
+// assembly (pure) dispatches to none.
+#[cfg_attr(not(blake3_sse41_ffi), allow(dead_code))]
 pub fn avx2_detected() -> bool {
     if cfg!(miri) {
         return false;
@@ -596,6 +617,9 @@ pub fn avx2_detected() -> bool {
 
 #[cfg(target_arch = "x86_64")]
 #[inline(always)]
+// Read by the x86 kernels' dispatch and the tests; a build without the
+// assembly (pure) dispatches to none.
+#[cfg_attr(not(blake3_sse41_ffi), allow(dead_code))]
 pub fn sse41_detected() -> bool {
     if cfg!(miri) {
         return false;
