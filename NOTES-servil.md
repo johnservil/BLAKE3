@@ -3111,8 +3111,18 @@ in the nonstop cells (one message after other work at 4 KiB: x1.014,
 level), where instructions' latency sets the time. At 4 KiB hash() runs
 c1, k4 and p2 (the dispatch record); the lengths around it, none slower,
 run k1, k3, k5, k8, q3, q4 with the same c1, p1, p2, and never k4: k4, the
-hybrid kernel for four chunks, is the suspect. Open: timing each kernel
-with DIT on and off, and which of k4's instructions it is.
+hybrid kernel for four chunks, is the suspect, and a probe on the VM
+(each kernel timed in-process, DIT set on or off in a fresh thread, three
+alternations, clocks::measure) confirms it: hash_many on NEON with 3, 4, 5
+and 8 whole chunks, DIT on against off, x1.000, x1.059, x1.008, x1.007; k4
+alone 1178 -> 1255 ns a call (x1.065). k4 is two scalar lanes beside a
+NEON pair, the one kernel whose time the integer side sets (the file's
+header: elsewhere the scalar lanes finish inside the NEON time), so some
+integer instruction DIT makes constant-time is slower. No other plan for
+four chunks beats k4 under DIT: kn4 (a quad) 1470 -> 1478 ns, k3 + k1
+1661 -> 1658, k2 + k2 1712 -> 1713. So DIT's whole cost is inside k4;
+removing it means another instruction choice for k4's scalar lanes in the
+generator (and its proof again). Which instruction is still open.
 
 ## One kernel form on Arm: generated assembly (October 18, 2026)
 
