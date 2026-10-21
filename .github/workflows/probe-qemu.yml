@@ -13,12 +13,14 @@ jobs:
     - run: cargo nextest run --lib --features=serde,zeroize --no-run
       env:
         CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER: qemu-aarch64 -cpu cortex-a72
-    - name: the panicking test, 40 times, each in a fresh process under QEMU
+    - name: the panicking test, 40 fresh processes, four at a time (as nextest runs them on 4 cores)
       env:
         CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER: qemu-aarch64 -cpu cortex-a72
       run: |
-        fails=0; for i in $(seq 40); do cargo nextest run --lib --features=serde,zeroize -E 'test(=stream::test::test_stream_panics)' > out.txt 2>&1 || { fails=$((fails+1)); grep -m1 "QEMU internal" out.txt; }; done; echo "fresh processes: $fails of 40 crashed"
-    - name: the same test 40 times in one process under QEMU (libtest's harness, as cargo test ran it)
-      run: |
         exe=$(cargo nextest list --lib --features=serde,zeroize --message-format json | python3 -c "import json,sys; d=json.load(sys.stdin); print([s['binary-path'] for s in d['rust-suites'].values() if s['kind']=='lib'][0])")
-        fails=0; for i in $(seq 40); do NEXTEST=1 qemu-aarch64 -cpu cortex-a72 "$exe" --exact stream::test::test_stream_panics stream::test::test_stream_against_hash_with > out.txt 2>&1 || { fails=$((fails+1)); grep -m1 "QEMU internal" out.txt; }; done; echo "with another test in the process: $fails of 40 crashed"
+        seq 40 | xargs -P4 -I{} sh -c 'NEXTEST=1 qemu-aarch64 -cpu cortex-a72 '"$exe"' --exact stream::test::test_stream_panics > out{}.txt 2>&1 || echo crashed{}' | sort | uniq -c | wc -l | xargs -I{} echo "four at a time: {} of 40 crashed"; grep -h "QEMU internal" out*.txt | sort | uniq -c
+    - name: the whole library suite under QEMU and nextest, five times
+      env:
+        CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER: qemu-aarch64 -cpu cortex-a72
+      run: |
+        for i in 1 2 3 4 5; do cargo nextest run --lib --features=serde,zeroize --no-fail-fast 2>&1 | grep -E "SIGSEGV|QEMU internal|Summary" | head -3; done
