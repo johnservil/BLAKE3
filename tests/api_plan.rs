@@ -6,7 +6,7 @@
 //! expected answer with this crate.
 //!
 //! Keep: it detects, by hanging, mutants the mutation check skips
-//! (tools/mutants/hangs.txt: register, unregister, wake_one).
+//! (tools/mutants/hangs.txt: register, unregister, wake_one, find, run_one).
 
 use blake3_servil::{Hash, Mode};
 

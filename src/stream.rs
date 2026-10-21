@@ -961,6 +961,8 @@ mod test {
 
     /// A few messages through a stream, small enough for Miri: the handover
     /// of entries to the pool's threads and back, checked for data races.
+    /// Keep: it detects, by hanging, mutants the mutation check skips
+    /// (tools/mutants/hangs.txt: Task::run, run_task).
     #[test]
     fn test_miri_stream() {
         let input = std::vec![3u8; 3 * PIECE + 5];

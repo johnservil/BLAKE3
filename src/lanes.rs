@@ -1409,6 +1409,8 @@ mod test {
     /// implementation: every platform this machine runs, the three modes,
     /// equal and mixed lengths, unaligned inputs; the slots beside the
     /// outputs untouched.
+    /// Keep: it detects, by hanging, mutants the mutation check skips
+    /// (tools/mutants/hangs.txt: Task::run).
     #[test]
     fn equal_members_match_the_reference() {
         #[allow(unused_mut)]
