@@ -24,8 +24,7 @@
 //!
 //!     cargo run --release --example host_lab
 //!
-//! on an AArch64 machine (an Apple M4 has SME2, which blake3_servil uses for
-//! batches of 16 or more; without it the fork runs its integer + NEON kernels).
+//! on an Apple M4 (blake3_servil uses its SME2 unit for batches of 16 or more).
 //! It prints the table and writes it to binius-compare.txt.
 
 #[path = "binius/blake3_portable.rs"]
@@ -64,10 +63,10 @@ fn binius_many<const L: usize>(input: &[u8], len: usize, out: &mut [[u8; 32]]) {
 
 type Many = fn(&[u8], usize, &mut [[u8; 32]]);
 
-const SIDES: [(&str, Many); 3] = [
-    ("servil hash_many", blake3_servil::hash_many),
-    ("binius 16 lanes", binius_many::<16>),
-    ("binius 12 lanes", binius_many::<12>),
+// binius' Blake3HashSuite takes 16 lanes.
+const SIDES: [(&str, Many); 2] = [
+    ("binius64", binius_many::<16>),
+    ("blake3-servil", blake3_servil::hash_many),
 ];
 
 /// A Merkle tree over `leaves` of `leaf_len` bytes, unkeyed, with `many`
@@ -196,6 +195,7 @@ fn main() {
         }
         say(String::new());
         say(if what == "batch" { format!("{count} messages of {len} B, one call") } else { format!("Merkle tree, {count} leaves of {len} B, every layer to the root") });
+        // Each side against binius64's time: below 1 is faster.
         let base = means[0].iter().sum::<u128>() / ROUNDS as u128;
         for (s, &(name, _)) in SIDES.iter().enumerate() {
             let mean = means[s].iter().sum::<u128>() / ROUNDS as u128; // Q64.64 ns a call
