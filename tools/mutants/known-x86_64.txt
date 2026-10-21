@@ -257,3 +257,53 @@ src/tree.rs	replace <impl Kernels for PlatformKernels<'_>>::subtree -> Option<us
 src/tree.rs	replace && with || in <impl Kernels for PlatformKernels<'_>>::subtree	1	SME2 only: the block is cfg(blake3_sme2), compiled out on x86
 src/tree.rs	replace <impl Kernels for PlatformKernels<'_>>::children -> Option<[Cv; 2]> with None	1	equivalent on x86: PlatformKernels::children returns None already (its SME2 block is compiled out)
 src/tree.rs	replace && with || in <impl Kernels for PlatformKernels<'_>>::children	1	SME2 only: the block is cfg(blake3_sme2), compiled out on x86
+src/platform.rs	replace && with || in Sme2Turn::take	1	SME2 only: on x86 no SME2 turn is held; take returns the platform unchanged and drop releases nothing
+src/platform.rs	delete ! in Sme2Turn::take	1	SME2 only: on x86 no SME2 turn is held; take returns the platform unchanged and drop releases nothing
+src/platform.rs	replace <impl Drop for Sme2Turn>::drop with ()	1	SME2 only: on x86 no SME2 turn is held; take returns the platform unchanged and drop releases nothing
+src/platform.rs	replace Platform::name -> &'static str with ""	1	a name for reports and legends, with no reader since the kernel reports went
+src/platform.rs	replace Platform::name -> &'static str with "xyzzy"	1	a name for the kernel report and legends (no test pins the names)
+src/platform.rs	replace Platform::compress_name -> &'static str with ""	1	a name for the kernel report and legends (no test pins the names)
+src/platform.rs	replace Platform::compress_name -> &'static str with "xyzzy"	1	a name for the kernel report and legends (no test pins the names)
+src/platform.rs	replace Platform::hash_many_name -> &'static str with ""	1	a name for the kernel report and legends (no test pins the names)
+src/platform.rs	replace Platform::hash_many_name -> &'static str with "xyzzy"	1	a name for the kernel report and legends (no test pins the names)
+src/platform.rs	replace | with ^ in Platform::compress_blocks	1	equivalent: | and ^ agree on flag bits that never overlap
+src/platform.rs	delete match arm Platform::AVX512 in Platform::xof_many	1	x86 only: compiled out on AArch64 (CI's x86 tests reach it)
+src/platform.rs	replace >= with < in Platform::xof_many	1	speed: moves a threshold between equally correct paths
+src/platform.rs	replace * with + in Platform::xof_many	1	speed: moves a threshold between equally correct paths
+src/platform.rs	replace * with / in Platform::xof_many	1	speed: moves a threshold between equally correct paths
+src/platform.rs	replace += with -= in Platform::xof_many	2	code for another machine: the SME2 and NEON blocks in xof_many are compiled out on x86
+src/platform.rs	replace += with *= in Platform::xof_many	2	code for another machine: the SME2 and NEON blocks in xof_many are compiled out on x86
+src/platform.rs	replace / with % in Platform::xof_many	2	code for another machine: the SME2 and NEON blocks in xof_many are compiled out on x86
+src/platform.rs	replace / with * in Platform::xof_many	2	code for another machine: the SME2 and NEON blocks in xof_many are compiled out on x86
+src/platform.rs	delete ! in Platform::xof_many	1	speed: chooses between equally correct paths
+src/platform.rs	replace & with | in read_x86_features	4	x86 only: never called on AArch64 (CI's x86 tests reach it)
+src/platform.rs	replace & with ^ in read_x86_features	4	x86 only: never called on AArch64 (CI's x86 tests reach it)
+src/platform.rs	replace | with & in read_x86_features	3	x86 only: never called on AArch64 (CI's x86 tests reach it)
+src/platform.rs	replace | with ^ in read_x86_features	3	x86 only: never called on AArch64 (CI's x86 tests reach it)
+src/platform.rs	replace << with >> in read_x86_features	5	x86 only: never called on AArch64 (CI's x86 tests reach it)
+src/platform.rs	replace && with || in read_x86_features	2	x86 only: never called on AArch64 (CI's x86 tests reach it)
+src/platform.rs	replace == with != in read_x86_features	2	x86 only: never called on AArch64 (CI's x86 tests reach it)
+src/platform.rs	replace |= with &= in read_x86_features	1	x86 only: never called on AArch64 (CI's x86 tests reach it)
+src/platform.rs	replace avx512_detected -> bool with false	1	another architecture's: compiled for AArch64 as a stub (x86, wasm32)
+src/platform.rs	replace avx2_detected -> bool with true	1	another architecture's: compiled for AArch64 as a stub (x86, wasm32)
+src/platform.rs	replace & with | in avx2_detected	1	x86 only: never called on AArch64 (CI's x86 tests reach it)
+src/platform.rs	replace & with ^ in avx2_detected	1	x86 only: never called on AArch64 (CI's x86 tests reach it)
+src/platform.rs	replace sse41_detected -> bool with true	1	another architecture's: compiled for AArch64 as a stub (x86, wasm32)
+src/platform.rs	replace sse41_detected -> bool with false	1	another architecture's: compiled for AArch64 as a stub (x86, wasm32)
+src/platform.rs	replace != with == in sse41_detected	1	x86 only: never called on AArch64 (CI's x86 tests reach it)
+src/platform.rs	replace & with | in sse41_detected	1	x86 only: never called on AArch64 (CI's x86 tests reach it)
+src/platform.rs	replace & with ^ in sse41_detected	1	x86 only: never called on AArch64 (CI's x86 tests reach it)
+src/platform.rs	replace counter -> u64 with 0	1	speed: whether and what to prefetch after a pause (no effect on results)
+src/platform.rs	replace counter -> u64 with 1	1	speed: whether and what to prefetch after a pause (no effect on results)
+src/platform.rs	replace ticks_in_100_us -> u64 with 0	1	AArch64 only: ticks_in_100_us is cfg(blake3_neon), compiled out on x86
+src/platform.rs	replace ticks_in_100_us -> u64 with 1	1	AArch64 only: ticks_in_100_us is cfg(blake3_neon), compiled out on x86
+src/platform.rs	replace != with == in ticks_in_100_us	1	AArch64 only: ticks_in_100_us is cfg(blake3_neon), compiled out on x86
+src/platform.rs	replace / with % in ticks_in_100_us	1	AArch64 only: ticks_in_100_us is cfg(blake3_neon), compiled out on x86
+src/platform.rs	replace / with * in ticks_in_100_us	1	speed: whether and what to prefetch after a pause (no effect on results)
+src/platform.rs	replace prefetch_code with ()	1	speed: whether and what to prefetch after a pause (no effect on results)
+src/platform.rs	replace < with == in prefetch_code	1	speed: whether and what to prefetch after a pause (no effect on results)
+src/platform.rs	replace < with > in prefetch_code	1	speed: whether and what to prefetch after a pause (no effect on results)
+src/platform.rs	replace < with <= in prefetch_code	1	speed: whether and what to prefetch after a pause (no effect on results)
+src/platform.rs	replace += with -= in prefetch_code	1	AArch64 only: prefetch_code is cfg(blake3_neon), compiled out on x86; prefetching changes no result
+src/platform.rs	replace += with *= in prefetch_code	1	speed: whether and what to prefetch after a pause (no effect on results)
+src/platform.rs	replace * with / in words_from_le_bytes_32	1	equivalent: 0 * 4 and 0 / 4 are both 0
