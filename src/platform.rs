@@ -167,11 +167,6 @@ impl Platform {
         if code == 0 {
             code = not_initialized();
         }
-        // Every thread that hashes comes here first: data-independent
-        // timing goes on for it where the CPU has it.
-        if code & DIT != 0 {
-            dit_on();
-        }
         // Sound: DETECTED holds 0 or a Platform's discriminant, with DIT
         // (`record`).
         unsafe { core::mem::transmute::<u8, Platform>(code & !DIT) }
@@ -849,24 +844,76 @@ fn dit_detected() -> bool {
     }
 }
 
-/// Data-independent timing on for this thread (PSTATE.DIT, `msr DIT, #1`),
-/// so an instruction's time depends on no data it handles. It stays on for
-/// the thread's life; [`Platform::detect`] sets it in every thread that
-/// hashes, on a CPU that has it.
-#[inline(always)]
-fn dit_on() {
-    #[cfg(all(target_arch = "aarch64", not(miri)))]
-    // Sound: sets one PSTATE bit, which changes only instruction timing.
-    unsafe {
-        core::arch::asm!(".inst 0xd503415f", options(nomem, nostack, preserves_flags))
+/// Data-independent timing (PSTATE.DIT) for one public call, as Apple's
+/// corecrypto does it (`CC_ENSURE_DIT_ENABLED`): on a CPU that has it, a
+/// call that finds it off turns it on and, as it returns (or unwinds),
+/// off again; a call that finds it on, set by an outer call or by the
+/// caller, leaves it alone. So a caller's thread comes back as it went in,
+/// and every instruction of the call runs in time independent of its data.
+/// Before `initialize` the CPU is not yet known, and the guard does
+/// nothing.
+#[must_use]
+pub(crate) struct Dit(bool);
+
+impl Dit {
+    #[inline(always)]
+    pub(crate) fn on() -> Dit {
+        if DETECTED.load(core::sync::atomic::Ordering::Relaxed) & DIT != 0 && !dit_is_on() {
+            dit_set(true);
+            return Dit(true);
+        }
+        Dit(false)
+    }
+
+    /// Data-independent timing on for the rest of this thread's life: the
+    /// crate's own threads (the pool's workers and SME2 thread), which run
+    /// no caller's code.
+    #[cfg(feature = "std")]
+    pub(crate) fn on_for_life() {
+        if DETECTED.load(core::sync::atomic::Ordering::Relaxed) & DIT != 0 {
+            dit_set(true);
+        }
     }
 }
 
-/// Whether DIT is on for this thread (`mrs x0, DIT`, bit 24).
-#[cfg(all(test, target_arch = "aarch64", not(miri)))]
+impl Drop for Dit {
+    #[inline(always)]
+    fn drop(&mut self) {
+        if self.0 {
+            dit_set(false);
+        }
+    }
+}
+
+/// PSTATE.DIT set (`msr DIT, #1`) or cleared (`msr DIT, #0`), on a CPU that
+/// has it: the caller checks [`DIT`].
+#[inline(always)]
+fn dit_set(on: bool) {
+    // Sound: sets or clears one PSTATE bit, which changes only instruction
+    // timing. No `nomem`: the compiler keeps the call's memory accesses on
+    // their side of the switch.
+    #[cfg(all(target_arch = "aarch64", not(miri)))]
+    unsafe {
+        if on {
+            core::arch::asm!(".inst 0xd503415f", options(nostack, preserves_flags))
+        } else {
+            core::arch::asm!(".inst 0xd503405f", options(nostack, preserves_flags))
+        }
+    }
+    let _ = on;
+}
+
+/// Whether DIT is on for this thread (`mrs x0, DIT`, bit 24), on a CPU that
+/// has it.
+#[inline(always)]
 pub(crate) fn dit_is_on() -> bool {
-    let v: u64;
-    // Sound: reads one PSTATE bit.
-    unsafe { core::arch::asm!(".inst 0xd53b42a0", out("x0") v, options(nomem, nostack, preserves_flags)) };
-    v >> 24 & 1 == 1
+    #[cfg(all(target_arch = "aarch64", not(miri)))]
+    {
+        let v: u64;
+        // Sound: reads one PSTATE bit.
+        unsafe { core::arch::asm!(".inst 0xd53b42a0", out("x0") v, options(nomem, nostack, preserves_flags)) };
+        v >> 24 & 1 == 1
+    }
+    #[cfg(not(all(target_arch = "aarch64", not(miri))))]
+    false
 }

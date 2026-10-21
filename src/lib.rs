@@ -484,6 +484,7 @@ impl Zeroize for Hash {
 impl PartialEq for Hash {
     #[inline]
     fn eq(&self, other: &Hash) -> bool {
+        let _dit = crate::platform::Dit::on();
         constant_time_eq::constant_time_eq_32(&self.0, &other.0)
     }
 }
@@ -492,6 +493,7 @@ impl PartialEq for Hash {
 impl PartialEq<[u8; OUT_LEN]> for Hash {
     #[inline]
     fn eq(&self, other: &[u8; OUT_LEN]) -> bool {
+        let _dit = crate::platform::Dit::on();
         constant_time_eq::constant_time_eq_32(&self.0, other)
     }
 }
@@ -500,6 +502,7 @@ impl PartialEq<[u8; OUT_LEN]> for Hash {
 impl PartialEq<[u8]> for Hash {
     #[inline]
     fn eq(&self, other: &[u8]) -> bool {
+        let _dit = crate::platform::Dit::on();
         constant_time_eq::constant_time_eq(&self.0, other)
     }
 }
@@ -919,6 +922,7 @@ fn hash_all_at_once(input: &[u8], key: &CVWords, chunk_counter: u64, flags: u8, 
 // (i7-12700K, after idling, 64 B: -16.5%, 8 fresh layouts a side).
 #[inline]
 pub fn hash(input: &[u8]) -> Hash {
+    let _dit = crate::platform::Dit::on();
     hash_serial(input, IV, 0)
 }
 
@@ -958,6 +962,7 @@ pub fn hash(input: &[u8]) -> Hash {
 /// panics.
 #[cfg(feature = "std")]
 pub fn hash_multithreaded(input: &[u8]) -> Hash {
+    let _dit = crate::platform::Dit::on();
     lanes::require();
     lanes::hash(input)
 }
@@ -1042,6 +1047,7 @@ pub type ContextKey = [u8; KEY_LEN];
 /// assert_eq!(derived, blake3_servil::hash_with(Mode::DeriveKey("foo"), b"bar"));
 /// ```
 pub fn hash_derive_key_context(context: &str) -> ContextKey {
+    let _dit = crate::platform::Dit::on();
     hash_serial(context.as_bytes(), IV, DERIVE_KEY_CONTEXT).0
 }
 
@@ -1101,6 +1107,7 @@ impl Mode<'_> {
 /// assert_eq!(blake3_servil::hash_with(Mode::Keyed(&key), b"foo").as_bytes().len(), 32);
 /// ```
 pub fn hash_with(mode: Mode, input: &[u8]) -> Hash {
+    let _dit = crate::platform::Dit::on();
     let (key, flags) = mode.key_and_flags();
     hash_serial(input, &key, flags)
 }
@@ -1116,6 +1123,7 @@ pub fn hash_with(mode: Mode, input: &[u8]) -> Hash {
 /// ```
 #[cfg(feature = "std")]
 pub fn hash_multithreaded_with(mode: Mode, input: &[u8]) -> Hash {
+    let _dit = crate::platform::Dit::on();
     lanes::require();
     let (key, flags) = mode.key_and_flags();
     lanes::hash_with_key(input, &key, flags)
@@ -1342,6 +1350,7 @@ fn hash_serial_on(input: &[u8], key: &CVWords, flags: u8, platform: Platform) ->
 /// each. Messages longer than 15 KiB cost what [`hash`] costs. For the
 /// same hashes over several cores, see [`hash_many_multithreaded`].
 pub fn hash_many(input: &[u8], message_len: usize, out: &mut [[u8; OUT_LEN]]) {
+    let _dit = crate::platform::Dit::on();
     hash_many_serial(input, message_len, IV, 0, out);
 }
 
@@ -1382,6 +1391,7 @@ fn hash_many_serial_from(platform: Platform, input: &[u8], message_len: usize, k
 /// shares the cores with other callers as [`hash_multithreaded`] does.
 #[cfg(feature = "std")]
 pub fn hash_many_multithreaded(input: &[u8], message_len: usize, out: &mut [[u8; OUT_LEN]]) {
+    let _dit = crate::platform::Dit::on();
     lanes::require();
     lanes::hash_many(input, message_len, IV, 0, out);
 }
@@ -1398,6 +1408,7 @@ pub fn hash_many_multithreaded(input: &[u8], message_len: usize, out: &mut [[u8;
 /// assert_eq!(macs[5], *blake3_servil::hash_with(blake3_servil::Mode::Keyed(&key), &[1u8; 64]).as_bytes());
 /// ```
 pub fn hash_many_with(mode: Mode, input: &[u8], message_len: usize, out: &mut [[u8; OUT_LEN]]) {
+    let _dit = crate::platform::Dit::on();
     let (key, flags) = mode.key_and_flags();
     hash_many_serial(input, message_len, &key, flags, out);
 }
@@ -1415,6 +1426,7 @@ pub fn hash_many_with(mode: Mode, input: &[u8], message_len: usize, out: &mut [[
 /// ```
 #[cfg(feature = "std")]
 pub fn hash_many_multithreaded_with(mode: Mode, input: &[u8], message_len: usize, out: &mut [[u8; OUT_LEN]]) {
+    let _dit = crate::platform::Dit::on();
     lanes::require();
     let (key, flags) = mode.key_and_flags();
     lanes::hash_many(input, message_len, &key, flags, out);
@@ -1657,6 +1669,7 @@ impl Hasher {
     /// Construct a new `Hasher` in a [`Mode`]: the keyed hash, or key
     /// derivation with a context string or a context hashed once.
     pub fn new_with(mode: Mode) -> Self {
+        let _dit = crate::platform::Dit::on();
         let (key, flags) = mode.key_and_flags();
         Self::from_core(HasherCore::new_internal(&key, flags))
     }
@@ -1666,6 +1679,7 @@ impl Hasher {
     /// This is functionally the same as overwriting the `Hasher` with a new
     /// one, using the same key or context string if any.
     pub fn reset(&mut self) -> &mut Self {
+        let _dit = crate::platform::Dit::on();
         self.core.reset();
         self.staged = 0;
         self
@@ -1681,6 +1695,7 @@ impl Hasher {
     /// little faster; for a file or reader, see
     /// [`update_reader`](#method.update_reader).
     pub fn update(&mut self, input: &[u8]) -> &mut Self {
+        let _dit = crate::platform::Dit::on();
         // A fresh hasher's first update is a one-shot call's work (a
         // Hasher per message, the digest traits): it prefetches its code
         // after a pause, as hash() does.
@@ -1710,6 +1725,7 @@ impl Hasher {
     /// ```
     #[cfg(feature = "std")]
     pub fn update_multithreaded(&mut self, input: &[u8]) -> &mut Self {
+        let _dit = crate::platform::Dit::on();
         lanes::require();
         self.gather(input, true)
     }
@@ -1720,6 +1736,7 @@ impl Hasher {
     /// This method is idempotent. Calling it twice will give the same result.
     /// You can also add more input and finalize again.
     pub fn finalize(&self) -> Hash {
+        let _dit = crate::platform::Dit::on();
         assert_eq!(self.core.initial_chunk_counter, 0, "set_input_offset must be used with finalize_non_root",);
         self.final_output().root_hash()
     }
@@ -1732,6 +1749,7 @@ impl Hasher {
     ///
     /// [`OutputReader`]: struct.OutputReader.html
     pub fn finalize_xof(&self) -> OutputReader {
+        let _dit = crate::platform::Dit::on();
         assert_eq!(self.core.initial_chunk_counter, 0, "set_input_offset must be used with finalize_non_root",);
         OutputReader::new(self.final_output())
     }
@@ -1779,6 +1797,7 @@ impl Hasher {
     /// ```
     #[cfg(feature = "std")]
     pub fn update_reader(&mut self, reader: impl std::io::Read) -> std::io::Result<&mut Self> {
+        let _dit = crate::platform::Dit::on();
         io::copy_wide(reader, self)?;
         Ok(self)
     }
@@ -2078,6 +2097,7 @@ impl OutputReader {
     ///
     /// [`Read::read`]: #method.read
     pub fn fill(&mut self, mut buf: &mut [u8]) {
+        let _dit = crate::platform::Dit::on();
         if buf.is_empty() {
             return;
         }

@@ -33,6 +33,7 @@ const GROUP_CHUNKS: u64 = (GROUP_LEN / CHUNK_LEN) as u64;
 /// assert!(verify_range_with(Mode::Hash, &hash, input.len() as u64, &outboard, 2, range));
 /// ```
 pub fn outboard_with(mode: Mode, input: &[u8]) -> (Hash, Vec<u8>) {
+    let _dit = crate::platform::Dit::on();
     outboard(mode, input, false)
 }
 
@@ -47,6 +48,7 @@ pub fn outboard_with(mode: Mode, input: &[u8]) -> (Hash, Vec<u8>) {
 /// assert_eq!(blake3_servil::outboard_multithreaded_with(Mode::Hash, &input), blake3_servil::outboard_with(Mode::Hash, &input));
 /// ```
 pub fn outboard_multithreaded_with(mode: Mode, input: &[u8]) -> (Hash, Vec<u8>) {
+    let _dit = crate::platform::Dit::on();
     crate::lanes::require();
     outboard(mode, input, true)
 }
@@ -83,6 +85,7 @@ fn outboard(mode: Mode, input: &[u8], pooled: bool) -> (Hash, Vec<u8>) {
 /// about twice that (its path's parents). Requires an outboard of the length `len`
 /// gives, and a range within the message, nonempty unless the message is.
 pub fn verify_range_with(mode: Mode, hash: &Hash, len: u64, outboard: &[u8], first: u64, bytes: &[u8]) -> bool {
+    let _dit = crate::platform::Dit::on();
     let chunks = chunks_of(len);
     let groups = groups_of(chunks);
     assert_eq!(outboard.len() as u64, 64 * (groups - 1), "an outboard of 64 bytes for each group but one");
@@ -139,6 +142,7 @@ pub struct Verifier {
 impl Verifier {
     /// A verifier for the message of `len` bytes whose hash in `mode` is `hash`.
     pub fn new(mode: Mode, hash: &Hash, len: u64) -> Verifier {
+        let _dit = crate::platform::Dit::on();
         let (key, flags) = mode.key_and_flags();
         let chunks = chunks_of(len);
         Verifier {
@@ -166,6 +170,7 @@ impl Verifier {
     /// (for the empty message, after one call, with no bytes). Requires at
     /// most `remaining` bytes, and a verifier that has returned true.
     pub fn update(&mut self, encoded: &[u8], verified: impl FnMut(&[u8])) -> bool {
+        let _dit = crate::platform::Dit::on();
         self.take_piece(encoded, verified, false)
     }
 
@@ -174,6 +179,7 @@ impl Verifier {
     /// the calling thread, as `update`).
     #[cfg(feature = "std")]
     pub fn update_multithreaded(&mut self, encoded: &[u8], verified: impl FnMut(&[u8])) -> bool {
+        let _dit = crate::platform::Dit::on();
         crate::lanes::require();
         self.take_piece(encoded, verified, true)
     }

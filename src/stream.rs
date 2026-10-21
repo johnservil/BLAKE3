@@ -149,6 +149,7 @@ struct Out<const N: usize>(UnsafeCell<[u8; N]>);
 /// assert_eq!(digests[7], blake3_servil::hash(&messages[7]));
 /// ```
 pub fn stream<'env, D: FnMut(&'env mut [Hash]), T>(mode: Mode, done: D, body: impl for<'s> FnOnce(&'s mut Stream<'env, D>) -> T) -> T {
+    let _dit = crate::platform::Dit::on();
     let mut stream = Stream::open(mode, done);
     let result = body(&mut stream);
     assert_eq!(stream.delivered, stream.next, "a stream's body calls finish last");
@@ -162,6 +163,7 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
     /// programs call [`stream`], whose scope holds the contract for them.
     #[doc(hidden)]
     pub fn open(mode: Mode, done: D) -> Self {
+        let _dit = crate::platform::Dit::on();
         crate::lanes::require();
         let (key, flags) = mode.key_and_flags();
         let s = Storage::take();
@@ -297,6 +299,7 @@ unsafe impl<D: Send> Send for Stream<'_, D> {}
 impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
     /// Hash `message` where it is, its digest into `out`.
     pub fn submit(&mut self, message: &'env [u8], out: &'env mut Hash) {
+        let _dit = crate::platform::Dit::on();
         let out: *mut Hash = out;
         let pieces = message.len().div_ceil(PIECE).max(1);
         for i in 0..pieces {
@@ -314,6 +317,7 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
     /// stream keeps 4 MiB of them, and `submit_with` waits for room as
     /// `submit` does.
     pub fn submit_with(&mut self, len: usize, mut fill: impl FnMut(usize, &mut [u8]), out: &'env mut Hash) {
+        let _dit = crate::platform::Dit::on();
         let out: *mut Hash = out;
         let pieces = len.div_ceil(PIECE).max(1);
         for i in 0..pieces {
@@ -343,6 +347,7 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
     /// stream does not use it; it is here so that a stream that schedules
     /// by it later changes no caller.
     pub fn submit_reader(&mut self, mut reader: impl std::io::Read, size_hint: Option<u64>, out: &'env mut Hash) -> std::io::Result<u64> {
+        let _dit = crate::platform::Dit::on();
         let _ = size_hint;
         let out: *mut Hash = out;
         let start = self.head;
@@ -414,6 +419,7 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
     /// the messages' order: `out` holds one per message. The batch goes in
     /// parts of up to 64 KiB, each one entry; `out` comes back whole.
     pub fn submit_batch(&mut self, batch: &'env [u8], message_len: usize, out: &'env mut [Hash]) {
+        let _dit = crate::platform::Dit::on();
         let slot = crate::many::slot_len(message_len);
         assert_eq!(Some(batch.len()), slot.checked_mul(out.len()), "a batch's digest space holds one digest per message");
         crate::many::assert_slots(batch, message_len, out.len());
@@ -438,6 +444,7 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
     /// bytes) into all of `room`, a part of up to 64 KiB at a time. As
     /// [`submit_with`](Stream::submit_with) and [`submit_batch`](Stream::submit_batch).
     pub fn submit_batch_with(&mut self, message_len: usize, mut fill: impl FnMut(usize, &mut [u8]), out: &'env mut [Hash]) {
+        let _dit = crate::platform::Dit::on();
         let slot = crate::many::slot_len(message_len);
         let whole = (out.as_mut_ptr(), out.len());
         let per_part = (TASK_LEN / slot).max(1);
@@ -532,6 +539,7 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
     /// waiting; and hand the open task to the pool, so what it holds
     /// starts hashing.
     pub fn collect(&mut self) {
+        let _dit = crate::platform::Dit::on();
         self.publish();
         // Nothing back: a worker for any task still waiting (the caller
         // takes none here; in steady flow the workers are awake and this
@@ -547,6 +555,7 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
     /// Hand back every place, in order, once its digests are done: this
     /// thread hashes any task no thread has taken, and waits for the rest.
     pub fn finish(&mut self) {
+        let _dit = crate::platform::Dit::on();
         self.publish();
         while self.delivered < self.next {
             self.help();

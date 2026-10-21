@@ -28,6 +28,7 @@ use crate::{CHUNK_END, CHUNK_LEN, CHUNK_START, CVBytes, CVWords, ChunkState, Has
 /// ```
 #[cfg(feature = "std")]
 pub fn hash_each_multithreaded_with(mode: Mode, items: &[&[u8]], out: &mut [[u8; OUT_LEN]]) {
+    let _dit = crate::platform::Dit::on();
     crate::lanes::require();
     assert_eq!(items.len(), out.len(), "one digest per item");
     let (key, flags) = mode.key_and_flags();
@@ -68,6 +69,7 @@ impl Hasher {
     /// assert_eq!((&out[0], &out[1]), (blake3_servil::hash(b"abc").as_bytes(), blake3_servil::hash(b"xyz").as_bytes()));
     /// ```
     pub fn update_each(hashers: &mut [Hasher], pieces: &[(usize, &[u8])]) {
+        let _dit = crate::platform::Dit::on();
         update_turn(hashers, pieces, false);
     }
 
@@ -77,6 +79,7 @@ impl Hasher {
     /// Requires each `i < hashers.len()`.
     #[cfg(feature = "std")]
     pub fn update_each_multithreaded(hashers: &mut [Hasher], pieces: &[(usize, &[u8])]) {
+        let _dit = crate::platform::Dit::on();
         crate::lanes::require();
         update_turn(hashers, pieces, true);
     }
@@ -85,6 +88,7 @@ impl Hasher {
     /// `hashers[which[k]].finalize()`. Requires `out.len() == which.len()`
     /// and each index `< hashers.len()`.
     pub fn finalize_each(hashers: &[Hasher], which: &[usize], out: &mut [[u8; OUT_LEN]]) {
+        let _dit = crate::platform::Dit::on();
         assert_eq!(which.len(), out.len(), "one digest per message named");
         for (&i, out) in which.iter().zip(out) {
             *out = *hashers[i].finalize().as_bytes();
@@ -225,6 +229,7 @@ const ALONE_CHUNKS: usize = 16;
 /// assert_eq!(&out[42], blake3_servil::hash(&items[42]).as_bytes());
 /// ```
 pub fn hash_each_with(mode: Mode, items: &[&[u8]], out: &mut [[u8; OUT_LEN]]) {
+    let _dit = crate::platform::Dit::on();
     assert_eq!(items.len(), out.len(), "one digest per item");
     let (key, flags) = mode.key_and_flags();
     hash_each_on(&key, flags, items, out, Platform::detect(), |item| crate::hash_with(mode, item));

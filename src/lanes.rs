@@ -1288,8 +1288,8 @@ impl Task {
 /// streams' tasks while any wait, and parks as soon as none does; every
 /// publish wakes it first.
 fn sme2_main() {
-    // Data-independent timing on for this thread, where the CPU has it.
-    let _ = Platform::detect();
+    // The crate's own thread: data-independent timing on for its life.
+    crate::platform::Dit::on_for_life();
     // As for a worker: a panic here ends the process rather than hanging
     // the callers waiting on it.
     let _ = std::panic::catch_unwind(sme2_serve);
@@ -1358,8 +1358,8 @@ fn worker_main(me: usize) {
     // piece forever (their stacks are the work); the process ends instead,
     // the panic's message printed first by the panic hook.
     let _ = std::panic::catch_unwind(move || {
-        // Data-independent timing on for this thread, where the CPU has it.
-        let _ = Platform::detect();
+        // The crate's own thread: data-independent timing on for its life.
+        crate::platform::Dit::on_for_life();
         let pool = pool();
         assert!(pool.handles[me].set(std::thread::current()).is_ok(), "each worker sets its thread once");
         pool.serve(me)
@@ -1724,28 +1724,29 @@ mod test {
         });
     }
 
-    /// Data-independent timing is on in every thread that has hashed, where
-    /// the CPU has it (std's detection says).
+    /// Data-independent timing as Apple's corecrypto does it, where the
+    /// CPU has it: off in a caller's thread before and after a call, on
+    /// during it (the guard's own reading), and left on where the caller
+    /// turned it on.
     #[test]
     #[cfg(all(target_arch = "aarch64", not(miri)))]
-    fn test_dit_on_in_callers_and_workers() {
-        let _ = crate::hash(b"");
-        if !std::arch::is_aarch64_feature_detected!("dit") {
-            assert!(!crate::platform::dit_is_on(), "DIT left alone on a CPU without it");
-            return;
-        }
-        assert!(crate::platform::dit_is_on(), "DIT on in a caller");
-        let ons: std::vec::Vec<bool> = (0..4)
-            .map(|_| {
-                std::thread::spawn(|| {
-                    let _ = crate::hash(b"x");
-                    crate::platform::dit_is_on()
-                })
-                .join()
-                .unwrap()
-            })
-            .collect();
-        assert!(ons.iter().all(|&on| on), "DIT on in every thread that hashed");
+    fn test_dit_scoped_to_each_call() {
+        crate::initialize();
+        let has = std::arch::is_aarch64_feature_detected!("dit");
+        std::thread::spawn(move || {
+            assert!(!crate::platform::dit_is_on(), "a new thread starts with DIT off");
+            let _ = crate::hash(b"abc");
+            assert!(!crate::platform::dit_is_on(), "a call leaves DIT as it found it");
+            {
+                let _dit = crate::platform::Dit::on();
+                assert_eq!(crate::platform::dit_is_on(), has, "on during a call, where the CPU has it");
+                let _ = crate::hash(b"abc");
+                assert_eq!(crate::platform::dit_is_on(), has, "an inner call leaves an outer call's DIT on");
+            }
+            assert!(!crate::platform::dit_is_on(), "off again after the outer call");
+        })
+        .join()
+        .unwrap();
     }
 
     /// Idle workers park while a stream is open: each one that finds no
