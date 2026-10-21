@@ -159,11 +159,16 @@ jobs:
     - uses: dtolnay/rust-toolchain@stable
     - uses: taiki-e/install-action@nextest
     - run: cargo nextest run --lib --tests --features=serde,zeroize
-    - run: sudo apt-get update && sudo apt-get install -y qemu-user
-    # test_stream_panics crashes QEMU itself now and then (its process ends
-    # with the pool's threads running; #113): it runs natively above, and its
-    # subject, a stream handler's panic, is the same on every CPU.
-    - run: cargo nextest run --lib --tests --features=serde,zeroize -E 'not test(=stream::test::test_stream_panics)'
+    # QEMU 11.1.2, Debian's static build, pinned by its checksum: the
+    # runner's own (Ubuntu's 8.2.2) crashed itself now and then emulating a
+    # test's intended panic (#113).
+    - name: QEMU 11.1.2
+      run: |
+        curl -sSfLO http://deb.debian.org/debian/pool/main/q/qemu/qemu-user_11.1.2+ds-3_arm64.deb
+        echo "e278d393447a97b548728918af8e395a33086f5b7100138e38cf06a41766612e  qemu-user_11.1.2+ds-3_arm64.deb" | sha256sum -c
+        ar x qemu-user_11.1.2+ds-3_arm64.deb data.tar.xz && tar xJf data.tar.xz ./usr/bin/qemu-aarch64
+        sudo install usr/bin/qemu-aarch64 /usr/local/bin/qemu-aarch64 && qemu-aarch64 --version
+    - run: cargo nextest run --lib --tests --features=serde,zeroize
       env:
         CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER: qemu-aarch64 -cpu cortex-a72
     - name: C API
