@@ -3106,8 +3106,13 @@ LentMessages +6.1%, mt shared LentMessages +6.2% (every pair +4.2% to
 +7.5%). No other cell slower. Over the 180 cells `compare` reads, the
 median x0.999 (10th percentile x0.966, 90th x1.023). The same path as the
 VM's (4 KiB, four chunks), the same size of cost: so DIT costs one path
-about 6% on both machines, and nothing measurable elsewhere. Open, as on
-the VM: which kernel and instruction at 4 KiB.
+about 6% on both machines, and nothing measurable elsewhere. The cost shows
+in the nonstop cells (one message after other work at 4 KiB: x1.014,
+level), where instructions' latency sets the time. At 4 KiB hash() runs
+c1, k4 and p2 (the dispatch record); the lengths around it, none slower,
+run k1, k3, k5, k8, q3, q4 with the same c1, p1, p2, and never k4: k4, the
+hybrid kernel for four chunks, is the suspect. Open: timing each kernel
+with DIT on and off, and which of k4's instructions it is.
 
 ## One kernel form on Arm: generated assembly (October 18, 2026)
 
