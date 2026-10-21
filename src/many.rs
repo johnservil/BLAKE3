@@ -1038,6 +1038,8 @@ mod test {
     /// left over, one call each for one or two), run here with `plans`
     /// false on every platform this CPU has, so the AArch64 tests and
     /// mutants reach it too.
+    /// Keep: it detects, by hanging, mutants the mutation check skips
+    /// (tools/mutants/hangs.txt: hash_four_at_a_time).
     #[test]
     fn test_hash_blocks_without_plans() {
         #[allow(unused_mut)]

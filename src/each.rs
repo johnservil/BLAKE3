@@ -330,7 +330,7 @@ mod test {
     /// split's own length, a few of 512 KiB and more), every mode: the
     /// multithreaded form gives hash_each_with's digests.
     /// Keep: it detects, by hanging, mutants the mutation check skips
-    /// (tools/mutants/hangs.txt: hash_each, initialize, Source::take, Source::finished, Source::wait).
+    /// (tools/mutants/hangs.txt: hash_each, initialize, Source::take, Source::finished, Source::wait, slot_len, hash_many_on, hash_run).
     #[test]
     fn test_hash_each_multithreaded() {
         let mut input = vec![0u8; 3 << 20];

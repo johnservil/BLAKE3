@@ -46,3 +46,12 @@ src/lanes.rs	replace sources::run_one -> bool with false	tests/api_plan.rs	no wo
 src/lanes.rs	replace Task::run with ()	lanes::test::equal_members_match_the_reference	a task is taken and not run; the stream waits for its digest
 src/lanes.rs	replace > with >= in Task::run	stream::test::test_miri_stream	a task with no members takes the batch path; the stream waits for it
 src/lanes.rs	replace run_task with ()	stream::test::test_miri_stream	a waiting task is not run by the caller; the stream waits for it
+src/many.rs	replace slot_len -> usize with 0	each::test::test_hash_each_matches_hash_with	a slot of no bytes; the batch loops take slots forever
+src/many.rs	replace slot_len -> usize with 1	each::test::test_hash_each_matches_hash_with	a slot of one byte; the batch loops take slots forever
+src/many.rs	replace hash_many_on with ()	each::test::test_hash_each_matches_hash_with	a batch call that hashes nothing; its caller never completes it
+src/many.rs	replace * with / in hash_many_on	each::test::test_hash_each_matches_hash_with	the one-block batch is cut into single blocks; its caller never completes it
+src/many.rs	replace hash_run with ()	each::test::test_hash_each_matches_hash_with	a one-block batch that hashes nothing; its caller never completes it
+src/many.rs	replace | with & in hash_run	each::test::test_hash_each_matches_hash_with	a one-block batch's flags are masked; its caller never completes it
+src/many.rs	replace * with + in hash_four_at_a_time	many::test::test_hash_blocks_without_plans	the four-at-a-time cut runs past the lanes; the call never returns
+src/many.rs	replace / with % in hash_four_at_a_time	many::test::test_hash_blocks_without_plans	the four-at-a-time cut leaves most lanes; the call never returns
+src/many.rs	replace + with - in hash_four_at_a_time	many::test::test_hash_blocks_without_plans	the spare lane is read before the lanes; the call never returns
