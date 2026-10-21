@@ -10,7 +10,7 @@ different ways.
 
 ## Proofs of the kernels
 
-The fastest parts are small routines called kernels, some of them
+The fastest parts are small routines called kernels, every one of them
 written in assembly.
 
 For every Arm kernel, the project uses formal
@@ -20,14 +20,15 @@ result is correct for every input. The proof also shows that a kernel stays with
 given and that the instructions it chooses depend on the input's length,
 not on its contents.
 
-On Intel and AMD processors, the assembly kernels (upstream BLAKE3's,
-unchanged) are being proved the same way. Their single compressions are
-proved. Their batch kernels are proved for the input sizes and counts
-checked so far, but not yet for every count, and one form of extended
-output is still open.
+On Intel and AMD processors, every kernel is assembly too. The fork's
+own kernels there are proved the same way. Upstream BLAKE3's kernels,
+which the fork uses unchanged, are being proved: their single
+compressions are proved, their batch kernels for the input sizes and
+counts checked so far but not yet for every count, and one form of
+extended output is still open.
 
-The proofs do not cover the fork's own Intel and AMD kernels, written in
-Rust, or the Rust code that prepares work and combines results.
+The proofs do not cover the Rust code that prepares work and combines
+results.
 
 ## Tests, and tests of the tests
 
@@ -89,9 +90,9 @@ mistakes in some of the tools and models used to construct the proofs.
 ## What remains uncertain
 
 No human has carefully reviewed every line, and nobody outside the
-project has audited the code. Where the Intel and AMD proofs are not yet
-complete, and in the fork's own Intel and AMD kernels and the Rust code
-around the proved kernels, tests carry the checking alone.
+project has audited the code. Where the proofs of upstream's Intel and
+AMD kernels are not yet complete, and in the Rust code around the proved
+kernels, tests carry the checking alone.
 These checks reduce risk, but they cannot guarantee that no bug remains.
 
 ## Run the checks
