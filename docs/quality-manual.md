@@ -84,28 +84,34 @@ tests; the tests check the calls into them, and every other platform.)
   change between equally correct paths (a speed threshold, listed as
   such), or code that does nothing (removed).
 
-**Contracts are `debug_assert!`s; hangs get an `assert!`.** A contract
-(a precondition, an internal consistency) is checked with
-`debug_assert!`: a breach is the caller's fault, and a release pays
-nothing for the check. The one exception is a check whose absence would
-let a breach *hang* rather than fail: those are plain `assert!`s, because
-a hang is the failure we cannot stand, for users and for mutation testing
-alike (a mutant that broke a loop's progress used to hang the tests until
-the tool's timeout, 30 s each, 85 of them in a run; now it fails at once).
-Most such checks are *loop variants* (Meyer's term, from Design by
-Contract: a quantity that falls on every pass and cannot fall forever),
-asserted beside the loop: the verifier's list of nodes advances on every
-node taken, the `Hasher`'s stage takes at least a byte per pass, a file
-copy that goes on has read at least a byte. Each costs one comparison per
-pass, far below the hashing beside it. A panic on a pool worker ends the
-process for the same reason: the caller waiting for that worker's piece
-would otherwise wait forever. Where a hang could only be turned into a
-failure by more than one such assert, the mutant is skipped instead:
-`tools/mutants/hangs.txt` lists each with the test it was seen to hang,
-and that test carries a comment pointing back, so the test stays and the
-skipped mutation stays understood. The mutants profile builds the release
-configuration, so a mutant that only a debug assertion or an overflow
-check would catch counts as uncaught, as it would be for a user.
+**Contracts and hangs.** Contract checks use `debug_assert!`. If a caller
+breaks a precondition, a debug build stops. A release build omits the
+check and pays nothing for it.
+
+Some checks use plain `assert!` in every build. They guard progress in
+loops. Without them, bad internal state could make a loop repeat forever.
+The user would get no result and no error.
+
+Most of these checks are loop variants. Meyer used that term in Design by
+Contract for a quantity that decreases on every pass and cannot decrease
+forever. Each verifier pass removes the node at the top of its list. Any
+children put there are one level closer to the leaves. Each pass through
+the `Hasher`'s staging loop consumes at least one byte. Each continuing
+pass through the file-copy loop has read at least one byte. Each check
+costs one comparison per pass.
+
+A panic on a pool worker ends the process. Otherwise, the caller waiting
+for that worker's piece could wait forever.
+
+Some mutants still hang. Turning those hangs into immediate failures
+would take more than one local check. The mutation check skips them and
+records them in `tools/mutants/hangs.txt`. Each entry names a test that
+hangs on the mutant. That test carries a comment pointing back to the
+entry.
+
+The mutants profile uses the release configuration. A mutant caught only
+by a debug assertion or an overflow check counts as uncaught. Release
+users get no such check.
 
 **Which tests do the catching.** Each mutant's log names every test
 that failed on it (`cargo test --no-fail-fast`, so every test binary
