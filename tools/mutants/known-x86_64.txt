@@ -155,3 +155,89 @@ src/lanes.rs	replace > with == in sme2_serve	1	SME2 only: sme2_serve never runs 
 src/lanes.rs	replace > with < in sme2_serve	1	SME2 only: sme2_serve never runs on x86 (no SME2 thread starts); whether a gathered task takes the SME2 turn
 src/lanes.rs	replace > with >= in sme2_serve	1	SME2 only: sme2_serve never runs on x86 (no SME2 thread starts); whether a gathered task takes the SME2 turn
 src/lanes.rs	replace wake_sme2 with ()	1	OPEN: the pool's scheduling under interleavings the tests leave to chance; Loom would force them (bench-hashes NEXT-STEPS, "Mutation testing beside the proofs")
+src/many.rs	replace >= with < in hash_many_on	4	equally correct paths and code for another machine: the one-block early path and the slot path agree; the SME2 and NEON branches and the non-x86 fallback are compiled out on x86
+src/many.rs	replace && with || in hash_many_on	4	equally correct paths and code for another machine: the one-block early path and the slot path agree; the SME2 and NEON branches and the non-x86 fallback are compiled out on x86
+src/many.rs	replace + with - in hash_many_on	1	equally correct paths and code for another machine: the one-block early path and the slot path agree; the SME2 and NEON branches and the non-x86 fallback are compiled out on x86
+src/many.rs	replace + with * in hash_many_on	1	equally correct paths and code for another machine: the one-block early path and the slot path agree; the SME2 and NEON branches and the non-x86 fallback are compiled out on x86
+src/many.rs	replace * with + in hash_many_on	2	equally correct paths and code for another machine: the one-block early path and the slot path agree; the SME2 and NEON branches and the non-x86 fallback are compiled out on x86
+src/many.rs	replace * with / in hash_many_on	2	equally correct paths and code for another machine: the one-block early path and the slot path agree; the SME2 and NEON branches and the non-x86 fallback are compiled out on x86
+src/many.rs	replace hash_chunked with ()	1	SME2 only: hash_chunked is cfg(blake3_sme2), compiled out on x86
+src/many.rs	replace % with / in hash_chunked	1	speed: moves a threshold between equally correct paths
+src/many.rs	replace % with + in hash_chunked	1	speed: moves a threshold between equally correct paths
+src/many.rs	replace > with == in hash_chunked	1	speed: moves a threshold between equally correct paths
+src/many.rs	replace > with < in hash_chunked	1	speed: moves a threshold between equally correct paths
+src/many.rs	replace > with >= in hash_chunked	1	speed: moves a threshold between equally correct paths
+src/many.rs	replace - with + in hash_chunked	3	speed: moves a threshold between equally correct paths
+src/many.rs	replace - with / in hash_chunked	3	speed: moves a threshold between equally correct paths
+src/many.rs	replace >= with < in hash_chunked	1	SME2 only: hash_chunked is cfg(blake3_sme2), compiled out on x86
+src/many.rs	replace * with + in hash_chunked	3	SME2 only: hash_chunked is cfg(blake3_sme2), compiled out on x86
+src/many.rs	replace * with / in hash_chunked	3	SME2 only: hash_chunked is cfg(blake3_sme2), compiled out on x86
+src/many.rs	replace + with - in hash_chunked	2	SME2 only: hash_chunked is cfg(blake3_sme2), compiled out on x86
+src/many.rs	replace + with * in hash_chunked	2	SME2 only: hash_chunked is cfg(blake3_sme2), compiled out on x86
+src/many.rs	replace hash_two_chunks with ()	1	NEON only: hash_two_chunks is cfg(blake3_neon), compiled out on x86
+src/many.rs	replace - with + in hash_two_chunks	3	NEON only: hash_two_chunks is cfg(blake3_neon), compiled out on x86
+src/many.rs	replace - with / in hash_two_chunks	3	NEON only: hash_two_chunks is cfg(blake3_neon), compiled out on x86
+src/many.rs	replace * with + in hash_two_chunks	4	NEON only: hash_two_chunks is cfg(blake3_neon), compiled out on x86
+src/many.rs	replace * with / in hash_two_chunks	4	NEON only: hash_two_chunks is cfg(blake3_neon), compiled out on x86
+src/many.rs	replace + with - in hash_two_chunks	1	NEON only: hash_two_chunks is cfg(blake3_neon), compiled out on x86
+src/many.rs	replace + with * in hash_two_chunks	1	NEON only: hash_two_chunks is cfg(blake3_neon), compiled out on x86
+src/many.rs	replace | with & in hash_two_chunks	1	NEON only: hash_two_chunks is cfg(blake3_neon), compiled out on x86
+src/many.rs	replace | with ^ in hash_two_chunks	1	equivalent: | and ^ agree on flag bits that never overlap
+src/many.rs	replace >= with < in hash_long_or_single	1	x86 only: compiled out on AArch64 (CI's x86 tests reach it)
+src/many.rs	replace across_from -> Option<usize> with None	1	x86 only: compiled out on AArch64 (CI's x86 tests reach it)
+src/many.rs	delete ! in across_from	1	x86 only: compiled out on AArch64 (CI's x86 tests reach it)
+src/many.rs	replace && with || in across_from	1	x86 only: compiled out on AArch64 (CI's x86 tests reach it)
+src/many.rs	replace < with == in across_from	1	x86 only: compiled out on AArch64 (CI's x86 tests reach it)
+src/many.rs	replace < with > in across_from	1	x86 only: compiled out on AArch64 (CI's x86 tests reach it)
+src/many.rs	replace < with <= in across_from	1	x86 only: compiled out on AArch64 (CI's x86 tests reach it)
+src/many.rs	replace || with && in across_from	1	x86 only: compiled out on AArch64 (CI's x86 tests reach it)
+src/many.rs	replace != with == in across_from	1	x86 only: compiled out on AArch64 (CI's x86 tests reach it)
+src/many.rs	replace % with / in across_from	1	x86 only: compiled out on AArch64 (CI's x86 tests reach it)
+src/many.rs	replace % with + in across_from	1	x86 only: compiled out on AArch64 (CI's x86 tests reach it)
+src/many.rs	replace == with != in across_from	1	x86 only: compiled out on AArch64 (CI's x86 tests reach it)
+src/many.rs	replace | with ^ in hash_group_across	2	equivalent: | and ^ agree on flag bits that never overlap
+src/many.rs	replace | with ^ in subtree_across	2	equivalent: | and ^ agree on flag bits that never overlap
+src/many.rs	replace sme2_sized -> bool with true	1	speed: moves a threshold between equally correct paths
+src/many.rs	replace sme2_sized -> bool with false	1	speed: moves a threshold between equally correct paths
+src/many.rs	replace || with && in sme2_sized	4	speed: moves a threshold between equally correct paths
+src/many.rs	replace >= with < in sme2_sized	6	speed: moves a threshold between equally correct paths
+src/many.rs	replace && with || in sme2_sized	5	speed: moves a threshold between equally correct paths
+src/many.rs	replace > with == in sme2_sized	2	speed: moves a threshold between equally correct paths
+src/many.rs	replace > with < in sme2_sized	2	speed: moves a threshold between equally correct paths
+src/many.rs	replace > with >= in sme2_sized	2	speed: moves a threshold between equally correct paths
+src/many.rs	replace <= with > in sme2_sized	2	speed: moves a threshold between equally correct paths
+src/many.rs	replace && with || in hash_run	1	SME2 only: the padded SME2 branch in hash_run is compiled out on x86
+src/many.rs	replace >= with < in hash_run	1	SME2 only: the padded SME2 branch in hash_run is compiled out on x86
+src/many.rs	replace % with / in hash_run	1	SME2 only: the padded SME2 branch in hash_run is compiled out on x86
+src/many.rs	replace % with + in hash_run	1	SME2 only: the padded SME2 branch in hash_run is compiled out on x86
+src/many.rs	replace > with == in hash_run	1	SME2 only: the padded SME2 branch in hash_run is compiled out on x86
+src/many.rs	replace > with < in hash_run	1	SME2 only: the padded SME2 branch in hash_run is compiled out on x86
+src/many.rs	replace > with >= in hash_run	1	speed: moves a threshold between equally correct paths
+src/many.rs	replace | with ^ in hash_run	3	equivalent: | and ^ agree on flag bits that never overlap
+src/many.rs	replace hash_run_padded with ()	1	SME2 only: hash_run_padded is cfg(blake3_sme2), compiled out on x86
+src/many.rs	replace + with - in hash_run_padded	1	SME2 only: hash_run_padded is cfg(blake3_sme2), compiled out on x86
+src/many.rs	replace + with * in hash_run_padded	1	SME2 only: hash_run_padded is cfg(blake3_sme2), compiled out on x86
+src/many.rs	replace | with & in hash_run_padded	1	SME2 only: hash_run_padded is cfg(blake3_sme2), compiled out on x86
+src/many.rs	replace | with ^ in hash_run_padded	1	equivalent: | and ^ agree on flag bits that never overlap
+src/many.rs	replace && with || in hash_run_short	1	speed: moves a threshold between equally correct paths
+src/many.rs	replace >= with < in hash_run_short	1	speed: moves a threshold between equally correct paths
+src/many.rs	replace neon_plans_last_len with ()	1	NEON only: its body is cfg(blake3_neon); on x86 neon_plans() is false and it is not called
+src/many.rs	replace | with & in neon_plans_last_len	1	NEON only: its body is cfg(blake3_neon); on x86 neon_plans() is false and it is not called
+src/many.rs	replace | with ^ in neon_plans_last_len	1	equivalent: | and ^ agree on flag bits that never overlap
+src/many.rs	replace > with == in hash_blocks	2	speed: moves a threshold between equally correct paths; and an SME2 call with no lanes, which does nothing
+src/many.rs	replace > with >= in hash_blocks	2	speed: moves a threshold between equally correct paths; and an SME2 call with no lanes, which does nothing
+src/many.rs	replace - with + in hash_blocks	1	another machine: the path without the NEON plans (CPUs without the SHA-3 extension; CI's QEMU job runs it)
+src/many.rs	replace - with / in hash_blocks	1	another machine: the path without the NEON plans (CPUs without the SHA-3 extension; CI's QEMU job runs it)
+src/many.rs	replace | with & in hash_blocks	1	SME2 only: the SME2 block in hash_blocks is cfg(blake3_sme2), compiled out on x86
+src/many.rs	replace | with ^ in hash_blocks	1	equivalent: | and ^ agree on flag bits that never overlap
+src/many.rs	replace | with ^ in hash_four_at_a_time	1	equivalent: | and ^ agree on flag bits that never overlap
+src/many.rs	replace && with || in hash_four_at_a_time	1	speed: the arrangement for whole blocks without the NEON plans (x86-64, WebAssembly; test_hash_blocks_without_plans runs it here): every grouping gives the same digests
+src/many.rs	replace != with == in hash_four_at_a_time	1	speed: the arrangement for whole blocks without the NEON plans (x86-64, WebAssembly; test_hash_blocks_without_plans runs it here): every grouping gives the same digests
+src/many.rs	replace % with / in hash_four_at_a_time	1	speed: the arrangement for whole blocks without the NEON plans (x86-64, WebAssembly; test_hash_blocks_without_plans runs it here): every grouping gives the same digests
+src/many.rs	replace % with + in hash_four_at_a_time	1	speed: the arrangement for whole blocks without the NEON plans (x86-64, WebAssembly; test_hash_blocks_without_plans runs it here): every grouping gives the same digests
+src/many.rs	replace * with / in hash_four_at_a_time	1	speed: the arrangement for whole blocks without the NEON plans (x86-64, WebAssembly; test_hash_blocks_without_plans runs it here): every grouping gives the same digests
+src/many.rs	replace > with >= in hash_four_at_a_time	1	speed: the arrangement for whole blocks without the NEON plans (x86-64, WebAssembly; test_hash_blocks_without_plans runs it here): every grouping gives the same digests
+src/many.rs	delete match arm 3 in hash_four_at_a_time	1	speed: the arrangement for whole blocks without the NEON plans (x86-64, WebAssembly; test_hash_blocks_without_plans runs it here): every grouping gives the same digests
+src/many.rs	replace - with + in hash_four_at_a_time	1	speed: the arrangement for whole blocks without the NEON plans (x86-64, WebAssembly; test_hash_blocks_without_plans runs it here): every grouping gives the same digests
+src/many.rs	replace neon_plans -> bool with false	1	equivalent on x86: neon_plans() is already false
+src/many.rs	replace platform_is_sme2 -> bool with false	1	equivalent on x86: platform_is_sme2() is already false
