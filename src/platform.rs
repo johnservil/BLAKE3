@@ -819,16 +819,16 @@ mod x86_degree_test {
     use super::*;
 
     /// The detected platform hashes as many chunks at once as the widest
-    /// kernel this CPU has (the standard library's detection, an
-    /// independent reading, says which): a degree of 1 would hash
-    /// correctly, one chunk at a time.
+    /// kernel this build and CPU have (the standard library's detection, an
+    /// independent reading, says which the CPU has; a pure build has none):
+    /// a degree of 1 would hash correctly, one chunk at a time.
     #[test]
     fn test_detected_degree_is_the_widest_kernel() {
         let expected = if cfg!(blake3_avx512_ffi) && std::is_x86_feature_detected!("avx512f") && std::is_x86_feature_detected!("avx512vl") {
             16
-        } else if std::is_x86_feature_detected!("avx2") {
+        } else if cfg!(blake3_avx2_ffi) && std::is_x86_feature_detected!("avx2") {
             8
-        } else if std::is_x86_feature_detected!("sse4.1") {
+        } else if cfg!(blake3_sse41_ffi) && std::is_x86_feature_detected!("sse4.1") {
             4
         } else {
             1

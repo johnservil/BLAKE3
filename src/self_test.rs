@@ -140,7 +140,10 @@ pub(crate) const CASES: &[(Case, &str)] = &[
 #[cfg(not(target_arch = "aarch64"))]
 pub(crate) const CASES: &[(Case, &str)] = &[
     (Hash { offset: 1, len: 65 }, "a block and a byte, unaligned: the one-block kernel"),
-    (Keyed { len: KIB + 65 }, "keyed, a chunk and a block and a byte (the shortest the one-chunk pass takes): the four-lane pass with a partial chunk (AVX2, AVX-512)"),
+    (
+        Keyed { len: KIB + 65 },
+        "keyed, a chunk and a block and a byte (the shortest the one-chunk pass takes): the four-lane pass with a partial chunk (AVX2, AVX-512)",
+    ),
     (Hash { offset: 3, len: 4 * KIB + 65 }, "four chunks and a block, unaligned: the chunk kernel over chunks, their parents, the tree"),
     (Hash { offset: 0, len: 3 * KIB + 100 }, "three chunks and a partial one: the four-lane pass with a partial chunk"),
     (
