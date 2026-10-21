@@ -3096,6 +3096,19 @@ Zooko asked for the cost of turning DIT on (PSTATE.DIT, `msr DIT, #1`). Probe `p
 
 So DIT costs nothing measurable on the VM except one path, 4 KiB (four chunks), where some instruction DIT makes constant-time is slower. Open: which kernel and instruction (a probe of the 4 KiB path with and without DIT), and the Mac, where the M4's DIT, not the host's virtualisation of it, decides.
 
+## DIT on the M4 Max (October 21, 2026)
+
+Mac job 1652: `probe/dit-oct21` (632031d, the probe on servil 800944e)
+against servil, every cell, 8 pairs, bench-hashes c78c05a, `bench-hashes
+check`. Judged slower (3% margin), every one a 4 KiB cell: servil st solo
+ContinuousMessages +5.6%, st shared ContinuousMessages +6.1%, st shared
+LentMessages +6.1%, mt shared LentMessages +6.2% (every pair +4.2% to
++7.5%). No other cell slower. Over the 180 cells `compare` reads, the
+median x0.999 (10th percentile x0.966, 90th x1.023). The same path as the
+VM's (4 KiB, four chunks), the same size of cost: so DIT costs one path
+about 6% on both machines, and nothing measurable elsewhere. Open, as on
+the VM: which kernel and instruction at 4 KiB.
+
 ## One kernel form on Arm: generated assembly (October 18, 2026)
 
 Zooko asked why the fork carries both assembly and intrinsics. Upstream
