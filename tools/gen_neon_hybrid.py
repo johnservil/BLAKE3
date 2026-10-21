@@ -47,6 +47,8 @@ The generated file is committed so that building needs no Python; CI checks
 that it matches the generator's output.
 """
 
+import itertools
+
 IV = [0x6A09E667, 0xBB67AE85, 0x3C6EF372, 0xA54FF53A, 0x510E527F, 0x9B05688C, 0x1F83D9AB, 0x5BE0CD19]
 SCHEDULE = [
     [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
@@ -70,9 +72,8 @@ F_TOTAL = 168    # total blocks
 F_OUT = 176      # out pointer
 F_IVT = 184      # IV[0..4] as words (16 bytes) -- scalar c row
 F_SCTPL = 200    # per scalar chunk: counter (64-bit) for the d row; two 16-byte slots
-F_SDSPILL = 232  # per scalar chunk: spilled d row (16 bytes); two slots
-F_IVDUP = 272    # IV[0..4], each broadcast to a 128-bit vector (64 bytes)
-F_UNIT = 336     # per NEON unit: 32 bytes of constants (ctr_lo, ctr_hi)
+F_IVDUP = 240    # IV[0..4], each broadcast to a 128-bit vector (64 bytes)
+F_UNIT = F_IVDUP + 64  # per NEON unit: 32 bytes of constants (ctr_lo, ctr_hi)
 UNIT_CONST = 32
 F_ROT8 = F_UNIT + 2 * UNIT_CONST      # tbl constant for rotate-right-8 (16 bytes)
 F_DSPILL = F_ROT8 + 16                # spilled d row of NEON unit 1 (64 bytes)
@@ -97,53 +98,85 @@ def x(reg):
 
 class Scalar:
     """One chunk on the integer registers: a, b, c rows in 12 registers and
-    the d row either in 4 more or spilled to the stack (its live range within
-    a G is short: read at `d ^= a`, dead after `c += d`). One message temp;
-    with a spilled d row, one d temp. `w2`..`w5` are free during the rounds."""
+    the d row either in 4 more or packed. Packed, each d word lives in the
+    top half of a c word's x register (a c write is a w write, which zeroes
+    that half, so a G packs its d word back into its own c register after
+    its last c write), and one more register, the hole, holds a d word
+    whole while its next host is busy. A G whose c register still holds
+    another d word first moves that word into the hole. Each G then takes
+    its d word into the d temp (or works on it in the hole) and packs it
+    after; `self.loc[j]` is where d word j lives: a c index, or "hole".
+    Packing costs two ALU instructions a G where a spill to the stack cost
+    a store and a reload, and a reload of a value just stored is slow
+    under DIT (no store-to-load forwarding). One message temp. `w2`..`w5`
+    are free outside the rounds, the hole and the temps among them."""
 
-    def __init__(self, index, slot, state, mtemp, dtemp=None, ctr_step=1, preg=None):
+    def __init__(self, index, slot, state, mtemp, dtemp=None, ctr_step=1, preg=None, hole=None):
         self.index, self.slot = index, slot
         self.ctr_step = ctr_step
         self.preg = preg  # x register holding this input's running pointer, or None (frame slot)
         self.state = state  # 12 or 16 w-registers: a0..3 b0..3 c0..3 [d0..3]
-        self.mtemp, self.dtemp = mtemp, dtemp
-        self.spill_d = len(state) == 12
+        self.mtemp, self.dtemp, self.hole = mtemp, dtemp, hole
+        self.packed = len(state) == 12
+        assert not self.packed or (dtemp and hole and preg), "a packed d row needs a d temp, a hole and a pointer register"
         self.tpl = F_SCTPL + 16 * index
-        self.dmem = F_SDSPILL + 16 * index
+        self.loc = None
 
     def r(self, i):
-        if i >= 12 and self.spill_d:
-            return self.dtemp
+        assert i < 12 or not self.packed
         return self.state[i]
-
-    def d_load(self, di):
-        return [f"ldr {self.dtemp}, [sp, #{self.dmem + 4 * (di - 12)}]"] if self.spill_d else []
-
-    def d_store(self, di):
-        return [f"str {self.dtemp}, [sp, #{self.dmem + 4 * (di - 12)}]"] if self.spill_d else []
 
     def half_g(self, half, ai, bi, ci, di, word):
         """Half a G (one message word, one rotate pair) as a macro call. The
         message load (through the input's running pointer at [sp, #ptr])
         is part of the macro; see MACROS."""
         a, b, c, d, m = self.r(ai), self.r(bi), self.r(ci), self.r(di), self.mtemp[1:]
-        assert not self.spill_d, "spilled scalars emit whole Gs"
+        assert not self.packed, "packed scalars emit whole Gs"
         name = "SGA" if half == 0 else "SGB"
         if self.preg:
             return [f"{name}_R {a}, {b}, {c}, {d}, w{m}, {self.preg}, {4 * word}"]
         return [f"{name} {a}, {b}, {c}, {d}, {m}, {F_PTR + 8 * self.slot}, {4 * word}"]
 
+    def moves(self, order, gs):
+        """Moves into the hole a step's Gs make in `order`, or 99 where the
+        hole would have to hold two words."""
+        loc, n = list(self.loc), 0
+        for i in order:
+            (_, _, ci, di), _, _ = gs[i]
+            k, l = ci - 8, di - 12
+            held = [j for j in range(4) if loc[j] == k and j != l]
+            if held:
+                if "hole" in loc:
+                    return 99
+                loc[held[0]] = "hole"
+                n += 1
+            loc[l] = k
+        return n
+
     def half_step(self, quads, sched, base):
         out = []
-        if self.spill_d:
-            # Whole Gs: a spilled d word is loaded and stored once per G.
-            for (ai, bi, ci, di), k in zip(quads, range(0, 8, 2)):
-                a, b, c, d, m = self.r(ai), self.r(bi), self.r(ci), self.r(di), self.mtemp[1:]
-                mx, my, doff = 4 * sched[base + k], 4 * sched[base + k + 1], self.dmem + 4 * (di - 12)
-                if self.preg:
-                    out.append(f"SG_SPILL_R {a}, {b}, {c}, {d}, w{m}, {self.preg}, {mx}, {my}, {doff}")
+        if self.packed:
+            # Whole Gs, one element each, so lanes interleave by G and may
+            # share the message and d temps. The order of a step's four Gs
+            # is free: the one needing fewest moves into the hole goes.
+            gs = [(q, sched[base + k], sched[base + k + 1]) for q, k in zip(quads, range(0, 8, 2))]
+            order = min(itertools.permutations(range(4)), key=lambda o: self.moves(o, gs))
+            assert self.moves(order, gs) < 99
+            for i in order:
+                (ai, bi, ci, di), mx, my = gs[i]
+                k, l = ci - 8, di - 12
+                c = self.state[ci]
+                held = [j for j in range(4) if self.loc[j] == k and j != l]
+                if held:
+                    out.append(f"lsr {x(self.hole)}, {x(c)}, #32")
+                    self.loc[held[0]] = "hole"
+                a, b, m = self.r(ai), self.r(bi), self.mtemp
+                if self.loc[l] == "hole":
+                    out.append(f"SGH {a}, {b}, {c}, {self.hole}, {x(self.hole)}, {m}, {self.preg}, {4 * mx}, {4 * my}, {x(c)}")
                 else:
-                    out.append(f"SG_SPILL {a}, {b}, {c}, {d}, {m}, {F_PTR + 8 * self.slot}, {mx}, {my}, {doff}")
+                    src = x(self.state[8 + self.loc[l]])
+                    out.append(f"SGP {a}, {b}, {c}, {self.dtemp}, {x(self.dtemp)}, {m}, {self.preg}, {4 * mx}, {4 * my}, {src}, {x(c)}")
+                self.loc[l] = k
             return out
         # The four first halves, then the four second halves: independent
         # ops sit closer together in the instruction stream, which is worth
@@ -162,7 +195,7 @@ class Scalar:
         (Cortex-A53) then issues while the loads complete instead of waiting
         on each one (llvm-mca: 2261 -> 833 cycles per compression on the A53;
         A72 and Neoverse N1 level)."""
-        assert self.preg and not self.spill_d and len(temps) == 4
+        assert self.preg and not self.packed and len(temps) == 4
         out = []
         for half, (r1, r2) in ((0, (16, 12)), (1, (8, 7))):
             gs = [tuple(self.r(i) for i in q) for q in quads]
@@ -192,7 +225,7 @@ class Scalar:
             out.append(f"ldp {self.r(i)}, {self.r(i + 1)}, [x2, #{4 * i}]")
         offset = self.slot * self.ctr_step
         if ctr:
-            assert not self.spill_d
+            assert not self.packed
             if offset:
                 out.append(f"add {ctr}, {ctr}, #{offset}")
             return out
@@ -228,12 +261,17 @@ class Scalar:
             f"ldp {c[2]}, {c[3]}, [sp, #{F_IVT + 8}]",
             f"ldr x4, [sp, #{self.tpl}]",
         ]
-        if self.spill_d:
+        if self.packed:
+            # d word i into the top half of c word i, after the c row's
+            # loads (a w write zeroes the top half).
             out += [
-                f"str x4, [sp, #{self.dmem}]",
-                f"str {blen}, [sp, #{self.dmem + 8}]",
-                f"str {flags}, [sp, #{self.dmem + 12}]",
+                f"bfi {x(c[0])}, x4, #32, #32",
+                "lsr x4, x4, #32",
+                f"bfi {x(c[1])}, x4, #32, #32",
+                f"bfi {x(c[2])}, {x(blen)}, #32, #32",
+                f"bfi {x(c[3])}, {x(flags)}, #32, #32",
             ]
+            self.loc = [0, 1, 2, 3]
         else:
             d = self.state[12:16]
             out += [
@@ -247,9 +285,9 @@ class Scalar:
     def block_end(self):
         s = self.state
         out = [f"eor {s[i]}, {s[i]}, {s[i + 8]}" for i in range(4)]
-        if self.spill_d:
+        if self.packed:
             for i in range(4):
-                out += self.d_load(12 + i)
+                out.append(f"lsr {x(self.dtemp)}, {x(s[8 + self.loc[i]])}, #32")
                 out.append(f"eor {s[4 + i]}, {s[4 + i]}, {self.dtemp}")
         else:
             out += [f"eor {s[4 + i]}, {s[4 + i]}, {s[12 + i]}" for i in range(4)]
@@ -561,47 +599,47 @@ MACROS = r"""
     ror \b, \b, #7
 .endm
 
-// Whole G with the d word spilled at [sp, #doff]; d is a temp register.
-.macro SG_SPILL a, b, c, d, m, p, mx, my, doff
-    ldr x\m, [sp, #\p]
-    ldr w\m, [x\m, #\mx]
-    ldr \d, [sp, #\doff]
-    add \a, \a, w\m
-    add \a, \a, \b
-    eor \d, \d, \a
-    ror \d, \d, #16
-    add \c, \c, \d
-    eor \b, \b, \c
-    ror \b, \b, #12
-    ldr x\m, [sp, #\p]
-    ldr w\m, [x\m, #\my]
-    add \a, \a, w\m
-    add \a, \a, \b
-    eor \d, \d, \a
-    ror \d, \d, #8
-    add \c, \c, \d
-    str \d, [sp, #\doff]
-    eor \b, \b, \c
-    ror \b, \b, #7
-.endm
-
-.macro SG_SPILL_R a, b, c, d, m, p, mx, my, doff
+// Whole G with its d word packed in the top half of xsrc: taken into w
+// (xw its x form) and, after the G's last c write, packed into the top half
+// of xdst, c's own x register.
+.macro SGP a, b, c, w, xw, m, p, mx, my, xsrc, xdst
+    lsr \xw, \xsrc, #32
     ldr \m, [\p, #\mx]
-    ldr \d, [sp, #\doff]
     add \a, \a, \m
     add \a, \a, \b
-    eor \d, \d, \a
-    ror \d, \d, #16
-    add \c, \c, \d
+    eor \w, \w, \a
+    ror \w, \w, #16
+    add \c, \c, \w
     eor \b, \b, \c
     ror \b, \b, #12
     ldr \m, [\p, #\my]
     add \a, \a, \m
     add \a, \a, \b
-    eor \d, \d, \a
-    ror \d, \d, #8
-    add \c, \c, \d
-    str \d, [sp, #\doff]
+    eor \w, \w, \a
+    ror \w, \w, #8
+    add \c, \c, \w
+    bfi \xdst, \xw, #32, #32
+    eor \b, \b, \c
+    ror \b, \b, #7
+.endm
+
+// The same with the d word whole in the hole register w.
+.macro SGH a, b, c, w, xw, m, p, mx, my, xdst
+    ldr \m, [\p, #\mx]
+    add \a, \a, \m
+    add \a, \a, \b
+    eor \w, \w, \a
+    ror \w, \w, #16
+    add \c, \c, \w
+    eor \b, \b, \c
+    ror \b, \b, #12
+    ldr \m, [\p, #\my]
+    add \a, \a, \m
+    add \a, \a, \b
+    eor \w, \w, \a
+    ror \w, \w, #8
+    add \c, \c, \w
+    bfi \xdst, \xw, #32, #32
     eor \b, \b, \c
     ror \b, \b, #7
 .endm
@@ -727,7 +765,7 @@ def callee_saved(scalars, units, extra=()):
     the one-block calls that compress_in_place makes."""
     highest = 18
     for sc in scalars:
-        for reg in sc.state + [sc.mtemp, sc.dtemp or "w0", sc.preg or "x0"] + list(extra):
+        for reg in sc.state + [sc.mtemp, sc.dtemp or "w0", sc.hole or "w0", sc.preg or "x0"] + list(extra):
             highest = max(highest, int(reg[1:]))
     count = highest - 18
     count += count % 2
@@ -781,7 +819,7 @@ def lean_kernel(name, sc, last):
     zero-padded copy and the kernel hashes the chunk in one call. Register
     `last` holds that address across the loop."""
     assert sc.preg and sc.preg not in ("x0", "x1", "x2", "x3", "x4", "x5", "x6")
-    assert not sc.spill_d
+    assert not sc.packed
     cname = name.replace("_k1", "_c1")
     GLOBALS.extend([cname, f"_{cname}"])
     # Rolled: one round in a loop, each word's offset from a table of the
@@ -1084,14 +1122,15 @@ def build():
     # One scalar chunk: 16 state registers w6..w17, w19..w22; message temp w23.
     one = [f"w{i}" for i in list(range(6, 18)) + list(range(19, 23))]
     sc1 = lambda slot: [Scalar(0, slot, one, "w23", preg="x24")]
-    # Two scalar chunks with spilled d rows: 12 + 12 state registers in
-    # w6..w17 and w19..w30; message temps w2/w3... those are flag temps at
-    # block start only, so w2..w5 serve as message and d temps in the rounds.
+    # Two scalar chunks with packed d rows: 12 + 12 state registers in
+    # w6..w17 and w19..w30. w2..w5 hold the flags and length at block start
+    # only, so in the rounds w2 and w3 are the message and d temps both lanes
+    # share (they interleave by whole G), and w4 and w5 the lanes' holes.
     two_a = [f"w{i}" for i in range(6, 18)]
     two_b = [f"w{i}" for i in range(19, 31)]
     # x0 (the pointer table, dead after the prologue) and x1 (the block
     # count, moved to the frame) carry the two running pointers.
-    sc2 = lambda s0, s1: [Scalar(0, s0, two_a, "w2", "w3", preg="x0"), Scalar(1, s1, two_b, "w4", "w5", preg="x1")]
+    sc2 = lambda s0, s1: [Scalar(0, s0, two_a, "w2", "w3", preg="x0", hole="w4"), Scalar(1, s1, two_b, "w2", "w3", preg="x1", hole="w5")]
     # NEON unit 0 keeps all 16 rows; unit 1 spills its d row. v28 message
     # temp, v29 d temp, v30 rotate temp, v31 rot8 table.
     u0 = list(range(0, 16))
@@ -1106,7 +1145,7 @@ def build():
     pquad = lambda idx, slots: Quad(idx, slots, u0 if idx == 0 else u1, idx == 1, "v28", "v29", rtemp="v30", **P)
     # A parent (or one-block message) on the integer units beside NEON parents.
     psc1 = lambda slot: [Scalar(0, slot, one, "w23", preg="x24", ctr_step=0)]
-    psc2 = lambda s0, s1: [Scalar(0, s0, two_a, "w2", "w3", preg="x0", ctr_step=0), Scalar(1, s1, two_b, "w4", "w5", preg="x1", ctr_step=0)]
+    psc2 = lambda s0, s1: [Scalar(0, s0, two_a, "w2", "w3", preg="x0", ctr_step=0, hole="w4"), Scalar(1, s1, two_b, "w2", "w3", preg="x1", ctr_step=0, hole="w5")]
     return {
         "p2": kernel("blake3_hybrid_p2", [], [plone((0, 1))]),
         "p4": kernel("blake3_hybrid_p4", psc2(0, 1), [plone((2, 3))]),

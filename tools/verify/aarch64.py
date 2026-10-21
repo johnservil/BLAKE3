@@ -17,7 +17,7 @@ import re
 import subprocess
 from z3 import (BitVec, BitVecVal, Concat, Extract, LShR, RotateRight, ZeroExt,
                 SignExt, ULT, simplify, is_bv_value, BoolRef, Not, And, Or, If, UGE, ULE, Solver, unsat,
-                is_true, is_false, Z3_OP_UNINTERPRETED)
+                is_true, is_false, Z3_OP_UNINTERPRETED, Z3_OP_EXTRACT, Z3_OP_ZERO_EXT, Z3_OP_CONCAT)
 
 
 class Unproved(Exception):
@@ -127,6 +127,36 @@ class Region:
 ZERO64 = BitVecVal(0, 64)
 
 
+
+def bits(hi, lo, t):
+    """Bits hi..lo of t, taken through the Concat, ZeroExt and Extract
+    terms it is built of: a d word packed in a register's top half
+    (bfi) and taken out again (lsr) is the word itself, as the normal
+    form needs it (canon.py works on 32-bit words)."""
+    if lo == 0 and hi == t.size() - 1:
+        return t
+    kind = t.decl().kind()
+    if kind == Z3_OP_EXTRACT:
+        _, l2 = t.params()
+        return bits(hi + l2, lo + l2, t.arg(0))
+    if kind == Z3_OP_ZERO_EXT:
+        u = t.arg(0)
+        if lo >= u.size():
+            return BitVecVal(0, hi - lo + 1)
+        if hi < u.size():
+            return bits(hi, lo, u)
+        return Concat(BitVecVal(0, hi - u.size() + 1), bits(u.size() - 1, lo, u))
+    if kind == Z3_OP_CONCAT:
+        parts, top = [], t.size()
+        for k in range(t.num_args()):
+            a = t.arg(k)
+            plo = top - a.size()
+            if lo <= top - 1 and hi >= plo:
+                parts.append(bits(min(hi, top - 1) - plo, max(lo, plo) - plo, a))
+            top = plo
+        return parts[0] if len(parts) == 1 else Concat(*parts)
+    return Extract(hi, lo, t)
+
 class Machine:
     def __init__(self, code, regions):
         """`code`: {address: (mnemonic, operands)}; `regions`: {name: Region}."""
@@ -150,7 +180,7 @@ class Machine:
             return val
         if isinstance(val, Ptr):
             raise Unproved(f"32-bit read of a pointer in {name}")
-        return Extract(31, 0, val)
+        return bits(31, 0, val)
 
     def set(self, name, val):
         if name in ("xzr", "wzr"):
@@ -752,10 +782,10 @@ def step(m, pc, mnem, ops):
         old, src = m.reg(ops[0]), m.reg(ops[1])
         parts = []
         if lsb + n < w:
-            parts.append(Extract(w - 1, lsb + n, old))
-        parts.append(Extract(n - 1, 0, src))
+            parts.append(bits(w - 1, lsb + n, old))
+        parts.append(bits(n - 1, 0, src))
         if lsb > 0:
-            parts.append(Extract(lsb - 1, 0, old))
+            parts.append(bits(lsb - 1, 0, old))
         m.set(ops[0], Concat(*parts))
         return None
     if mnem in ("lsr", "lsl"):
@@ -768,7 +798,10 @@ def step(m, pc, mnem, ops):
             if isinstance(n, Ptr):
                 raise Unproved("a shift by a pointer")
             n = n & (w - 1)
-        m.set(ops[0], LShR(a, n) if mnem == "lsr" else a << n)
+        if mnem == "lsr" and isinstance(n, int) and 0 < n < w:
+            m.set(ops[0], ZeroExt(n, bits(w - 1, n, a)))
+        else:
+            m.set(ops[0], LShR(a, n) if mnem == "lsr" else a << n)
         return None
     if mnem == "ubfx":
         lsb, n = imm(ops[2]), imm(ops[3])
