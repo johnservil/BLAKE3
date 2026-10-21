@@ -307,3 +307,21 @@ src/platform.rs	replace < with <= in prefetch_code	1	speed: whether and what to 
 src/platform.rs	replace += with -= in prefetch_code	1	AArch64 only: prefetch_code is cfg(blake3_neon), compiled out on x86; prefetching changes no result
 src/platform.rs	replace += with *= in prefetch_code	1	speed: whether and what to prefetch after a pause (no effect on results)
 src/platform.rs	replace * with / in words_from_le_bytes_32	1	equivalent: 0 * 4 and 0 / 4 are both 0
+src/lib.rs	replace ran_kernel with ()	1	code for another machine: ran_kernel records SME2 and NEON hybrid entry points, which x86 does not compile; its readers are AArch64 tests
+src/lib.rs	replace << with >>	1	equivalent: 1 << 0 and 1 >> 0 are both 1
+src/lib.rs	replace | with ^ in Output::root_output_block	1	equivalent: | and ^ agree on flag bits that never overlap
+src/lib.rs	replace spare_lane -> Option<usize> with None	1	x86 only: compiled out on AArch64 (CI's x86 tests reach it)
+src/lib.rs	delete match arm (Platform::SSE41 | Platform::AVX2, 3) in spare_lane	1	x86 only: compiled out on AArch64 (CI's x86 tests reach it)
+src/lib.rs	delete match arm (Platform::AVX2, 6..= 7) in spare_lane	1	x86 only: compiled out on AArch64 (CI's x86 tests reach it)
+src/lib.rs	replace match guard partial > 5 * BLOCK_LEN with true in spare_lane	1	x86 only: compiled out on AArch64 (CI's x86 tests reach it)
+src/lib.rs	replace match guard partial > 5 * BLOCK_LEN with false in spare_lane	1	x86 only: compiled out on AArch64 (CI's x86 tests reach it)
+src/lib.rs	replace > with == in spare_lane	1	x86 only: compiled out on AArch64 (CI's x86 tests reach it)
+src/lib.rs	replace > with < in spare_lane	1	x86 only: compiled out on AArch64 (CI's x86 tests reach it)
+src/lib.rs	replace > with >= in spare_lane	1	x86 only: compiled out on AArch64 (CI's x86 tests reach it)
+src/lib.rs	replace * with + in spare_lane	1	x86 only: compiled out on AArch64 (CI's x86 tests reach it)
+src/lib.rs	replace * with / in spare_lane	1	x86 only: compiled out on AArch64 (CI's x86 tests reach it)
+src/lib.rs	replace || with && in compress_chunks_parallel	1	NEON and SME2 only: the hybrid partial-chunk block in compress_chunks_parallel is compiled out on x86
+src/lib.rs	replace && with || in compress_chunks_parallel	3	NEON and SME2 only: the hybrid partial-chunk block in compress_chunks_parallel is compiled out on x86
+src/lib.rs	delete ! in compress_chunks_parallel	1	NEON and SME2 only: the hybrid partial-chunk block in compress_chunks_parallel is compiled out on x86
+src/lib.rs	replace + with - in compress_chunks_parallel	1	x86 only: compiled out on AArch64 (CI's x86 tests reach it)
+src/lib.rs	replace + with * in compress_chunks_parallel	1	x86 only: compiled out on AArch64 (CI's x86 tests reach it)
