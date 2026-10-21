@@ -131,9 +131,15 @@ impl Drop for Sme2Turn {
     }
 }
 
-/// The platform `initialize` detected, as its discriminant (1 and up), or 0
-/// before `initialize` has run.
+/// The platform `initialize` detected, as its discriminant (1 and up), with
+/// [`DIT`] where the CPU has data-independent timing; 0 before `initialize`
+/// has run.
 static DETECTED: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
+
+/// [`DETECTED`]'s top bit: the CPU has data-independent timing (Arm's
+/// FEAT_DIT, Armv8.4; the Cortex-A72 and other older cores lack it, and the
+/// instruction that turns it on would stop the process there).
+const DIT: u8 = 0x80;
 
 /// A call before `initialize`: the caller broke the contract. The crate's
 /// own unit tests, many small programs in one, initialize here instead.
@@ -161,14 +167,20 @@ impl Platform {
         if code == 0 {
             code = not_initialized();
         }
-        // Sound: DETECTED holds 0 or a Platform's discriminant (`record`).
-        unsafe { core::mem::transmute::<u8, Platform>(code) }
+        // Every thread that hashes comes here first: data-independent
+        // timing goes on for it where the CPU has it.
+        if code & DIT != 0 {
+            dit_on();
+        }
+        // Sound: DETECTED holds 0 or a Platform's discriminant, with DIT
+        // (`record`).
+        unsafe { core::mem::transmute::<u8, Platform>(code & !DIT) }
     }
 
     /// Make `self` what [`Platform::detect`] returns from now on, in every
     /// thread: `initialize` does, once its self-test has passed.
     pub(crate) fn record(self) {
-        DETECTED.store(self as u8, core::sync::atomic::Ordering::Relaxed);
+        DETECTED.store(self as u8 | if dit_detected() { DIT } else { 0 }, core::sync::atomic::Ordering::Relaxed);
     }
 
     /// [`Platform::detect`] without the startup self-test.
@@ -818,4 +830,43 @@ mod x86_features_test {
         assert_eq!(features & AVX2 != 0, std::is_x86_feature_detected!("avx2"));
         assert_eq!(features & AVX512 != 0, std::is_x86_feature_detected!("avx512f") && std::is_x86_feature_detected!("avx512vl"));
     }
+}
+
+/// Whether the CPU has data-independent timing (FEAT_DIT): detected at run
+/// time with std, else as the build's target features say.
+fn dit_detected() -> bool {
+    #[cfg(all(target_arch = "aarch64", not(miri), feature = "std"))]
+    {
+        std::arch::is_aarch64_feature_detected!("dit")
+    }
+    #[cfg(all(target_arch = "aarch64", not(miri), not(feature = "std")))]
+    {
+        cfg!(target_feature = "dit")
+    }
+    #[cfg(not(all(target_arch = "aarch64", not(miri))))]
+    {
+        false
+    }
+}
+
+/// Data-independent timing on for this thread (PSTATE.DIT, `msr DIT, #1`),
+/// so an instruction's time depends on no data it handles. It stays on for
+/// the thread's life; [`Platform::detect`] sets it in every thread that
+/// hashes, on a CPU that has it.
+#[inline(always)]
+fn dit_on() {
+    #[cfg(all(target_arch = "aarch64", not(miri)))]
+    // Sound: sets one PSTATE bit, which changes only instruction timing.
+    unsafe {
+        core::arch::asm!(".inst 0xd503415f", options(nomem, nostack, preserves_flags))
+    }
+}
+
+/// Whether DIT is on for this thread (`mrs x0, DIT`, bit 24).
+#[cfg(all(test, target_arch = "aarch64", not(miri)))]
+pub(crate) fn dit_is_on() -> bool {
+    let v: u64;
+    // Sound: reads one PSTATE bit.
+    unsafe { core::arch::asm!(".inst 0xd53b42a0", out("x0") v, options(nomem, nostack, preserves_flags)) };
+    v >> 24 & 1 == 1
 }
