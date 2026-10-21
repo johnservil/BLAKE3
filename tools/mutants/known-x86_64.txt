@@ -241,3 +241,9 @@ src/many.rs	delete match arm 3 in hash_four_at_a_time	1	speed: the arrangement f
 src/many.rs	replace - with + in hash_four_at_a_time	1	speed: the arrangement for whole blocks without the NEON plans (x86-64, WebAssembly; test_hash_blocks_without_plans runs it here): every grouping gives the same digests
 src/many.rs	replace neon_plans -> bool with false	1	equivalent on x86: neon_plans() is already false
 src/many.rs	replace platform_is_sme2 -> bool with false	1	equivalent on x86: platform_is_sme2() is already false
+src/each.rs	replace < with == in hash_each_multithreaded_with	1	speed: moves a threshold between equally correct paths
+src/each.rs	replace < with <= in hash_each_multithreaded_with	1	speed: moves a threshold between equally correct paths
+src/each.rs	replace | with ^ in hash_held	1	equivalent: | and ^ agree on flag bits that never overlap
+src/each.rs	replace hash_held with ()	1	compiled out: the copy of hash_held without std (check-builds' no_std tests reach it)
+src/each.rs	replace >= with < in hash_each_on	1	speed: moves a threshold between equally correct paths (with more rounds, the extra ones hash nothing)
+src/each.rs	replace / with * in hash_each_on	1	speed: moves a threshold between equally correct paths (with more rounds, the extra ones hash nothing)
