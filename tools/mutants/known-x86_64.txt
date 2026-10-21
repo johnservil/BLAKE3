@@ -247,3 +247,13 @@ src/each.rs	replace | with ^ in hash_held	1	equivalent: | and ^ agree on flag bi
 src/each.rs	replace hash_held with ()	1	compiled out: the copy of hash_held without std (check-builds' no_std tests reach it)
 src/each.rs	replace >= with < in hash_each_on	1	speed: moves a threshold between equally correct paths (with more rounds, the extra ones hash nothing)
 src/each.rs	replace / with * in hash_each_on	1	speed: moves a threshold between equally correct paths (with more rounds, the extra ones hash nothing)
+src/tree.rs	replace < with <= in wide	1	equivalent: degrees are powers of two, and at degree 2 both arms give 2
+src/tree.rs	replace + with - in wide	1	SME2 only: the argument is `ahead`, consumed by the SME2 subtree path; on x86 subtree() returns None and serial calls pass 0
+src/tree.rs	replace + with * in wide	1	SME2 only: the argument is `ahead`, consumed by the SME2 subtree path; on x86 subtree() returns None and serial calls pass 0
+src/tree.rs	replace * with + in root_children	1	speed: the arrays' size (each choice holds the values; only the stack frame changes)
+src/tree.rs	replace * with / in root_children	1	speed: the arrays' size (each choice holds the values; only the stack frame changes)
+src/tree.rs	replace / with * in root_children	2	speed: the arrays' size (each choice holds the values; only the stack frame changes)
+src/tree.rs	replace <impl Kernels for PlatformKernels<'_>>::subtree -> Option<usize> with None	1	speed: subtrees then hash on the walk's one-chunk path, the same digests
+src/tree.rs	replace && with || in <impl Kernels for PlatformKernels<'_>>::subtree	1	SME2 only: the block is cfg(blake3_sme2), compiled out on x86
+src/tree.rs	replace <impl Kernels for PlatformKernels<'_>>::children -> Option<[Cv; 2]> with None	1	equivalent on x86: PlatformKernels::children returns None already (its SME2 block is compiled out)
+src/tree.rs	replace && with || in <impl Kernels for PlatformKernels<'_>>::children	1	SME2 only: the block is cfg(blake3_sme2), compiled out on x86
