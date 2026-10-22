@@ -840,18 +840,4 @@ mod test {
             }
         }
     }
-
-    /// The committed assembly is the generator's output. Skipped where
-    /// Python is absent.
-    #[test]
-    #[cfg(feature = "std")]
-    fn test_assembly_matches_generator() {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-        let output = match std::process::Command::new("python3").arg(root.join("tools/gen_neon_hybrid.py")).output() {
-            Ok(output) if output.status.success() => output.stdout,
-            _ => return,
-        };
-        let committed = std::fs::read(root.join("c/blake3_neon_hybrid_aarch64.S")).unwrap();
-        assert!(output == committed, "c/blake3_neon_hybrid_aarch64.S is stale; run tools/gen_neon_hybrid.py");
-    }
 }

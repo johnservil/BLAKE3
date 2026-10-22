@@ -28,6 +28,7 @@ RUSTFLAGS="-D warnings" step cargo nextest run --cargo-quiet --release --manifes
 RUSTFLAGS="-D warnings" step cargo check -q --tests --examples --target x86_64-unknown-linux-gnu
 RUSTFLAGS="-D warnings" step cargo check -q --tests --target x86_64-unknown-linux-gnu --no-default-features
 RUSTFLAGS="-D warnings" step cargo check -q --tests --target x86_64-unknown-linux-gnu --features pure
-# The generated x86-64 kernels are their generator's output (tools/gen_x86.py).
+# Every generated kernel file is its generator's output.
+step sh -c 'pypy3 tools/gen_neon_hybrid.py | cmp - c/blake3_neon_hybrid_aarch64.S && pypy3 tools/gen_sme2_hybrid.py | cmp - c/blake3_sme2_hybrid_aarch64.S'
 step sh -c 'pypy3 tools/gen_x86.py unix | cmp - c/blake3_partial_x86-64_unix.S && pypy3 tools/gen_x86.py msvc | cmp - c/blake3_partial_x86-64_windows_msvc.asm'
 echo "check-builds: every build passes"

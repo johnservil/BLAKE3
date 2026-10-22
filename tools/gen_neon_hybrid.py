@@ -87,8 +87,9 @@ Run from the repository root:
 
     pypy3 tools/gen_neon_hybrid.py > c/blake3_neon_hybrid_aarch64.S
 
-The generated file is committed so that building needs no Python; CI checks
-that it matches the generator's output.
+The generated file is committed so that building needs no Python;
+tools/check-builds.sh and the long proofs check that it matches the
+generator's output.
 """
 
 IV = [0x6A09E667, 0xBB67AE85, 0x3C6EF372, 0xA54FF53A, 0x510E527F, 0x9B05688C, 0x1F83D9AB, 0x5BE0CD19]
