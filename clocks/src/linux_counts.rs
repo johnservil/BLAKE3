@@ -125,7 +125,13 @@ pub fn read() -> Option<Counts> {
     }
     GROUPS.with(|groups| {
         let (p, e) = groups.as_ref()?;
-        Some(Counts { p: p.read()?, e: match e { Some(e) => e.read()?, None => Level::default() } })
+        Some(Counts {
+            p: p.read()?,
+            e: match e {
+                Some(e) => e.read()?,
+                None => Level::default(),
+            },
+        })
     })
 }
 
