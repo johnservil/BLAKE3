@@ -377,8 +377,11 @@ mod tests {
 
     /// The check above can fail: a sibling spinning beside the child, a
     /// process that run did not start, reads as other programs' load in
-    /// the windows while the child runs.
+    /// the windows while the child runs. (On Linux, which counts other
+    /// programs from their own CPU time, a process this one started is its
+    /// own however it was started: load::tests checks that directly.)
     #[test]
+    #[cfg(not(target_os = "linux"))]
     fn a_sibling_beside_the_child_reads_as_load() {
         let _one = one();
         let background = background_milli_cpus();

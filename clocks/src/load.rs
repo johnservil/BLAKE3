@@ -1,12 +1,18 @@
 //! Other programs' load on the machine while this process measures,
 //! recorded by every measurement in this crate, with nothing to call.
 //!
-//! **What it counts.** The OS counts the CPU time every CPU spent busy;
-//! this process counts its own (every thread). Their difference over a
-//! stretch of wall time is how many CPUs other programs kept busy, in
-//! milli-CPUs (1000: one CPU busy throughout). On Linux the OS also
-//! counts steal time, which a hypervisor took from a VM's CPUs for other
-//! work on the host, load a guest sees no other way.
+//! **What it counts.** How many CPUs other programs kept busy over a
+//! stretch of wall time, in milli-CPUs (1000: one CPU busy throughout).
+//! On Linux it sums their CPU time from /proc: every process but kernel
+//! threads and this one's own tree, each with the children it has waited
+//! for. Kernel work no process is charged with (kernel threads, other
+//! CPUs' interrupts), much of it caused by this process's own children,
+//! is no other program's. Where /proc does not show the whole machine (a
+//! PID namespace, hidepid: no kernel thread listed), and on macOS, it is
+//! the CPU time every CPU spent busy less this process's own (every
+//! thread and child). On Linux the OS
+//! also counts steal time, which a hypervisor took from a VM's CPUs for
+//! other work on the host, load a guest sees no other way.
 //!
 //! **When it reads.** A reading costs system calls, which take far longer
 //! than a short timed call, so it never happens inside a timed interval
@@ -97,16 +103,9 @@ impl Reading {
 /// The window between two readings.
 fn between(from: Reading, to: Reading) -> Window {
     assert!(to.at_ns > from.at_ns, "a window lasts some time");
-    let (busy_ns, steal_ns) = imp::busy_and_steal_ns(from.machine, to.machine);
+    let (other_ns, steal_ns) = imp::other_and_steal_ns(from.machine, to.machine, to.own_ns - from.own_ns);
     let milli = |ns: u64| u64::try_from(u128::from(ns) * 1000 / u128::from(to.at_ns - from.at_ns)).expect("load fits in u64");
-    // Tick rounding can put the machine's busy time a little under this
-    // process's own; that reads as none.
-    Window {
-        start_ns: from.at_ns,
-        end_ns: to.at_ns,
-        other_milli_cpus: milli(busy_ns.saturating_sub(to.own_ns - from.own_ns)),
-        steal_milli_cpus: milli(steal_ns),
-    }
+    Window { start_ns: from.at_ns, end_ns: to.at_ns, other_milli_cpus: milli(other_ns), steal_milli_cpus: milli(steal_ns) }
 }
 
 struct State {
@@ -285,12 +284,33 @@ pub fn describe(windows: &[Window]) -> String {
 
 #[cfg(target_os = "linux")]
 mod imp {
-    /// Machine CPU times since boot in ticks, all CPUs summed: busy (not
-    /// idle, not waiting on I/O) and stolen by a hypervisor.
+    /// Linux counts every process's CPU time, so other programs' load is
+    /// summed from theirs, not inferred from the machine's busy time less
+    /// ours. The inference counted, as other programs, kernel work our own
+    /// children caused and no process is charged with: kernel threads
+    /// cleaning up after them, and other CPUs' interrupt handling. On an
+    /// EPYC 9255 official b3sum run once per file (a thread pool over 48
+    /// CPUs each time) made 0.61 CPUs of it, where the sum reads 0.00, and
+    /// another program hashing back to back reads 1.00 either way
+    /// (October 24, 2026).
+    ///
+    /// The sum needs every process in view. In a PID namespace (firejail,
+    /// a container) or under /proc's hidepid, /proc lists a few processes
+    /// while /proc/stat counts the whole machine, so the sum would read a
+    /// busy machine as quiet. Kernel threads are listed only where the
+    /// whole machine's processes are: where a reading saw none, the load
+    /// is inferred as before, the machine's busy time less this process's.
+    ///
+    /// CPU times in ticks, all CPUs summed: the machine's busy (not idle,
+    /// not waiting on I/O) and stolen by a hypervisor; and `others`, where
+    /// /proc shows kernel threads, every process but kernel threads, this
+    /// one and its descendants, each with the time of the children it has
+    /// waited for (so a short-lived program still counts, in its parent's).
     #[derive(Clone, Copy)]
     pub struct CpuTimes {
         pub(super) busy: u64,
         pub(super) steal: u64,
+        pub(super) others: Option<u64>,
     }
 
     fn ticks_per_second() -> u64 {
@@ -308,12 +328,116 @@ mod imp {
             stat.lines().next()?.strip_prefix("cpu ")?.split_whitespace().map(|field| field.parse().expect("/proc/stat counts are integers")).collect();
         // user nice system idle iowait irq softirq steal (guest time is inside user).
         assert!(fields.len() >= 8, "/proc/stat's cpu line has at least eight fields");
-        Some(CpuTimes { busy: fields[0] + fields[1] + fields[2] + fields[5] + fields[6], steal: fields[7] })
+        let others = scan().filter(|scan| scan.kernel_threads_seen).map(|scan| sum_other(std::process::id(), &scan.procs));
+        Some(CpuTimes { busy: fields[0] + fields[1] + fields[2] + fields[5] + fields[6], steal: fields[7], others })
     }
 
-    pub fn busy_and_steal_ns(from: CpuTimes, to: CpuTimes) -> (u64, u64) {
+    /// One process's /proc/PID/stat: (parent, whether a kernel thread,
+    /// utime + stime + cutime + cstime in ticks).
+    pub(super) fn parse_stat(stat: &str) -> Option<(u32, bool, u64)> {
+        // The command name, in parentheses, may hold anything: fields
+        // resume after its last ')'.
+        let rest = stat.get(stat.rfind(')')? + 2..)?;
+        let f: Vec<&str> = rest.split_whitespace().collect();
+        // Fields 3.. of proc(5): state ppid ... flags(9) ... utime(14) stime cutime cstime.
+        let ppid = f.get(1)?.parse().ok()?;
+        const PF_KTHREAD: u64 = 0x0020_0000;
+        let kernel = f.get(6)?.parse::<u64>().ok()? & PF_KTHREAD != 0;
+        let ticks = f.get(11..15)?.iter().map(|t| t.parse::<u64>().ok()).sum::<Option<u64>>()?;
+        Some((ppid, kernel, ticks))
+    }
+
+    /// Kernel threads seen, by pid: skipped while their pid stays listed
+    /// (most of /proc on a many-CPU machine: 542 of 574 on the EPYC 9255).
+    /// Pids are handed out in turn up to pid_max before any is reused, so
+    /// a listed pid stays the kernel thread it was within a run.
+    static KERNEL_THREADS: std::sync::Mutex<Option<std::collections::HashSet<u32>>> = std::sync::Mutex::new(None);
+
+    /// Whether `pid`, as /proc lists it now, counts as another program's;
+    /// None where /proc shows no kernel threads (the sum is not used).
+    #[cfg(test)]
+    pub(super) fn counts_as_other(pid: u32) -> Option<bool> {
+        let scan = scan().expect("/proc");
+        scan.kernel_threads_seen.then(|| scan.procs.contains_key(&pid) && !ours(std::process::id(), pid, &scan.procs))
+    }
+
+    /// /proc's processes but kernel threads (pid to parent, false, ticks;
+    /// a process gone between the listing and its stat is skipped), and
+    /// whether any kernel thread was listed.
+    struct Scan {
+        procs: std::collections::HashMap<u32, (u32, bool, u64)>,
+        kernel_threads_seen: bool,
+    }
+
+    fn scan() -> Option<Scan> {
+        let mut kernel = KERNEL_THREADS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let kernel = kernel.get_or_insert_with(Default::default);
+        let mut listed = std::collections::HashSet::new();
+        let mut procs = std::collections::HashMap::new();
+        let mut path = String::new();
+        let mut stat = String::new();
+        for entry in std::fs::read_dir("/proc").ok()?.flatten() {
+            let Some(pid) = entry.file_name().to_str().and_then(|name| name.parse::<u32>().ok()) else { continue };
+            listed.insert(pid);
+            if kernel.contains(&pid) {
+                continue;
+            }
+            use std::fmt::Write as _;
+            use std::io::Read as _;
+            path.clear();
+            write!(path, "/proc/{pid}/stat").unwrap();
+            stat.clear();
+            let Ok(_) = std::fs::File::open(&path).and_then(|mut file| file.read_to_string(&mut stat)) else { continue };
+            match parse_stat(&stat) {
+                Some((_, true, _)) => {
+                    kernel.insert(pid);
+                }
+                Some(parsed) => {
+                    procs.insert(pid, parsed);
+                }
+                None => {}
+            }
+        }
+        kernel.retain(|pid| listed.contains(pid));
+        Some(Scan { procs, kernel_threads_seen: !kernel.is_empty() })
+    }
+
+    /// The sum over `procs` (pid: parent, kernel thread, ticks) of all but
+    /// kernel threads and `me`'s tree.
+    pub(super) fn sum_other(me: u32, procs: &std::collections::HashMap<u32, (u32, bool, u64)>) -> u64 {
+        procs.iter().filter(|&(&pid, &(_, kernel, _))| !kernel && !ours(me, pid, procs)).map(|(_, &(_, _, ticks))| ticks).sum()
+    }
+
+    /// Whether `pid` is `me` or descends from it in `procs`.
+    fn ours(me: u32, mut pid: u32, procs: &std::collections::HashMap<u32, (u32, bool, u64)>) -> bool {
+        // Walk up the parents; init's parent is 0. Bounded, for a table
+        // read while processes come and go.
+        for _ in 0..procs.len() + 1 {
+            if pid == me {
+                return true;
+            }
+            match procs.get(&pid) {
+                Some(&(parent, _, _)) if parent != 0 && parent != pid => pid = parent,
+                _ => return false,
+            }
+        }
+        false
+    }
+
+    /// Other programs' load and the steal between two readings: the sum's
+    /// difference where both readings have one, else the machine's busy
+    /// time less this process's own (`own_ns`).
+    pub fn other_and_steal_ns(from: CpuTimes, to: CpuTimes, own_ns: u64) -> (u64, u64) {
         let ns = |ticks: u64| ticks * 1_000_000_000 / ticks_per_second();
-        (ns(to.busy - from.busy), ns(to.steal - from.steal))
+        let other = match (from.others, to.others) {
+            // The sum can fall: a program exits unwaited for (its parent
+            // ignores SIGCHLD), taking its time with it. That reads as none.
+            (Some(was), Some(now)) => ns(now.saturating_sub(was)),
+            // Tick rounding can put the machine's busy time a little under
+            // this process's own; that reads as none.
+            _ => ns(to.busy - from.busy).saturating_sub(own_ns),
+        };
+        (other, ns(to.steal - from.steal))
     }
 }
 
@@ -339,13 +463,16 @@ mod imp {
         (rc == 0 && count == 4).then_some(CpuTimes(ticks))
     }
 
-    pub fn busy_and_steal_ns(from: CpuTimes, to: CpuTimes) -> (u64, u64) {
+    /// Other programs' load between two readings: the machine's busy time
+    /// less this process's own (`own_ns`; tick rounding can put the first a
+    /// little under the second, which reads as none). No steal is counted.
+    pub fn other_and_steal_ns(from: CpuTimes, to: CpuTimes, own_ns: u64) -> (u64, u64) {
         const SC_CLK_TCK: i32 = 3;
         // Sound: a plain query.
         let per_second = u64::try_from(unsafe { sysconf(SC_CLK_TCK) }).expect("sysconf(_SC_CLK_TCK) is positive");
         // Each counter wraps on its own: difference each, then sum.
         let busy: u64 = [0, 1, 3].iter().map(|&i| u64::from(to.0[i].wrapping_sub(from.0[i]))).sum();
-        (busy * 1_000_000_000 / per_second, 0)
+        ((busy * 1_000_000_000 / per_second).saturating_sub(own_ns), 0)
     }
 }
 
@@ -358,7 +485,7 @@ mod imp {
         None
     }
 
-    pub fn busy_and_steal_ns(_: CpuTimes, _: CpuTimes) -> (u64, u64) {
+    pub fn other_and_steal_ns(_: CpuTimes, _: CpuTimes, _: u64) -> (u64, u64) {
         (0, 0)
     }
 }
@@ -404,10 +531,10 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     fn tail_fixture(busy: u64, steal: u64, tail_busy: u64, tail_steal: u64) -> State {
-        let start = Reading { at_ns: 0, machine: imp::CpuTimes { busy: 0, steal: 0 }, own_ns: 0 };
-        let last = Reading { at_ns: WINDOW_NS, machine: imp::CpuTimes { busy, steal }, own_ns: 0 };
+        let start = Reading { at_ns: 0, machine: imp::CpuTimes { busy: 0, steal: 0, others: None }, own_ns: 0 };
+        let last = Reading { at_ns: WINDOW_NS, machine: imp::CpuTimes { busy, steal, others: None }, own_ns: 0 };
         let mut state = State { last: Some(last), last_start: None, windows: vec![between(start, last)] };
-        let tail = Reading { at_ns: WINDOW_NS + 400_000_000, machine: imp::CpuTimes { busy: tail_busy, steal: tail_steal }, own_ns: 0 };
+        let tail = Reading { at_ns: WINDOW_NS + 400_000_000, machine: imp::CpuTimes { busy: tail_busy, steal: tail_steal, others: None }, own_ns: 0 };
         join_tail(&mut state, start, tail);
         state
     }
@@ -442,12 +569,138 @@ mod tests {
         assert_eq!(state.windows[0].end_ns, 1_400_000_000);
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_stat_line_parses_past_any_command_name() {
+        // pid (comm) state ppid pgrp session tty tpgid flags minflt cminflt majflt cmajflt utime stime cutime cstime ...
+        let line = "4242 (a) b) (c) S 17 4242 4242 0 -1 4194560 100 0 0 0 7 3 20 10 20 0 1 0 5 0 0";
+        assert_eq!(imp::parse_stat(line), Some((17, false, 40)));
+        let kernel = "2 (kthreadd) S 0 0 0 0 -1 2129984 0 0 0 0 1 2 0 0 20 0 1 0 5 0 0";
+        assert_eq!(imp::parse_stat(kernel), Some((0, true, 3)));
+        assert_eq!(imp::parse_stat("7 (cut short"), None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn other_programs_leave_out_our_tree_and_kernel_threads() {
+        let procs: std::collections::HashMap<u32, (u32, bool, u64)> = [
+            (1, (0, false, 1000)),   // init, with what it has reaped
+            (2, (0, true, 50)),      // kthreadd
+            (30, (2, true, 70)),     // a kernel worker
+            (100, (1, false, 5)),    // a shell
+            (200, (100, false, 9)),  // us
+            (201, (200, false, 11)), // our child
+            (202, (201, false, 13)), // its child
+            (300, (1, false, 17)),   // another program
+            (301, (300, false, 19)), // its child
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(imp::sum_other(200, &procs), 1000 + 5 + 17 + 19);
+        // A parent loop (a table read mid-change) ends the walk.
+        let looped: std::collections::HashMap<u32, (u32, bool, u64)> = [(5, (6, false, 1)), (6, (5, false, 2))].into_iter().collect();
+        assert_eq!(imp::sum_other(200, &looped), 3);
+    }
+
+    /// Who counts as another program, asked of /proc directly: no load is
+    /// measured, so tests running beside this one cannot sway it, and its
+    /// processes sleep, so it sways none of theirs.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn this_process_and_what_it_starts_are_ours_and_others_are_not() {
+        let Some(me) = imp::counts_as_other(std::process::id()) else {
+            // A PID namespace or hidepid: /proc shows no kernel threads, the
+            // sum is not used (inferred_load_where_proc_hides_the_machine).
+            eprintln!("/proc lists no kernel threads here: the sum is not used");
+            return;
+        };
+        let counts = |pid: u32| imp::counts_as_other(pid).expect("kernel threads stay in view");
+        assert!(!me, "this process");
+        assert!(!counts(2), "kthreadd, a kernel thread");
+        // A child, however started, and a grandchild under it.
+        let mut child = std::process::Command::new("sh").args(["-c", "sleep 30 & wait"]).spawn().expect("sh");
+        let grandchild = loop {
+            let children = std::fs::read_to_string(format!("/proc/{0}/task/{0}/children", child.id())).unwrap_or_default();
+            if let Some(pid) = children.split_whitespace().next() {
+                break pid.parse::<u32>().expect("a pid");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        };
+        assert!(!counts(child.id()), "a child");
+        assert!(!counts(grandchild), "a grandchild");
+        // An orphan: its shell exits at once, so an ancestor outside this
+        // process's tree (init, or a subreaper) adopts it.
+        let out = std::process::Command::new("sh").args(["-c", "sleep 30 > /dev/null 2>&1 < /dev/null & echo $!"]).output().expect("sh");
+        let orphan: u32 = String::from_utf8(out.stdout).unwrap().trim().parse().expect("a pid");
+        let counted = counts(orphan);
+        for pid in [orphan, grandchild] {
+            std::process::Command::new("kill").arg(pid.to_string()).status().ok();
+        }
+        child.wait().ok();
+        assert!(counted, "a program this process did not start is another's");
+    }
+
+    /// A window takes other programs' sum where both its readings have one,
+    /// and otherwise (a reading in a PID namespace, or under hidepid, saw no
+    /// kernel threads) infers the load as the machine's busy time less this
+    /// process's own.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn inferred_load_where_proc_hides_the_machine() {
+        let tick = 1_000_000_000 / {
+            unsafe extern "C" {
+                fn sysconf(name: i32) -> i64;
+            }
+            // Sound: a plain query (_SC_CLK_TCK).
+            u64::try_from(unsafe { sysconf(2) }).unwrap()
+        };
+        let at = |busy, others| imp::CpuTimes { busy, steal: 0, others };
+        // 300 ticks busy, 100 of them this process's (as nanoseconds), 50 others'.
+        let own = 100 * tick;
+        assert_eq!(imp::other_and_steal_ns(at(0, Some(10)), at(300, Some(60)), own).0, 50 * tick, "the sum, both in view");
+        assert_eq!(imp::other_and_steal_ns(at(0, None), at(300, None), own).0, 200 * tick, "inferred, neither");
+        assert_eq!(imp::other_and_steal_ns(at(0, Some(10)), at(300, None), own).0, 200 * tick, "inferred, one");
+        assert_eq!(imp::other_and_steal_ns(at(0, Some(60)), at(300, Some(10)), own).0, 0, "a falling sum reads as none");
+    }
+
+    /// Our own children's work, and the kernel's on their behalf, is no
+    /// other program's: a child hashing on every CPU for a window leaves
+    /// that window quiet.
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "spawns a CPU-heavy child; run alone: cargo test --release -- --ignored own_children"]
+    fn own_children_are_no_other_programs() {
+        let _turn = exclusive();
+        let before = Reading::take().unwrap();
+        let started = std::time::Instant::now();
+        while started.elapsed() < std::time::Duration::from_millis(1200) {
+            let status = std::process::Command::new("sh").args(["-c", "i=0; while [ $i -lt 20000 ]; do i=$((i+1)); done"]).status().unwrap();
+            assert!(status.success());
+        }
+        let after = Reading::take().unwrap();
+        let window = between(before, after);
+        assert!(window.other_milli_cpus < 200, "our children read as other programs: {window:?}");
+    }
+
+    /// One window's reading now, printed (`cargo test --release --
+    /// --ignored --nocapture a_window_now`): for checking by hand, say in a
+    /// PID namespace, with a program spinning outside it.
+    #[cfg(any(target_os = "linux", target_vendor = "apple"))]
+    #[test]
+    #[ignore = "prints a reading; for checks by hand"]
+    fn a_window_now() {
+        let before = Reading::take().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(1000));
+        let after = Reading::take().unwrap();
+        println!("other programs {} CPUs, steal {} CPUs", cpus(between(before, after).other_milli_cpus), cpus(between(before, after).steal_milli_cpus));
+    }
+
     #[cfg(target_vendor = "apple")]
     #[test]
     fn apple_counters_wrap_one_by_one() {
         let from = imp::CpuTimes([u32::MAX - 9, 0, 0, 5]);
         let to = imp::CpuTimes([10, 20, 1000, 5]);
-        let (busy, _) = imp::busy_and_steal_ns(from, to);
+        let (busy, _) = imp::other_and_steal_ns(from, to, 0);
         assert_eq!(busy, 40 * 1_000_000_000 / 100);
     }
 
