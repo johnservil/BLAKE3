@@ -30,6 +30,12 @@ pub trait Kernels {
     /// The root output (32 bytes) of an input of at most CHUNK_LEN bytes:
     /// its only chunk, numbered 0, as the root.
     fn chunk_root(&self, input: &[u8]) -> Cv;
+    /// [`Kernels::chunk_root`] into `out`, for kernels that write a
+    /// caller's place directly.
+    #[inline(always)]
+    fn chunk_root_into(&self, input: &[u8], out: &mut Cv) {
+        *out = self.chunk_root(input);
+    }
     /// The root output (32 bytes) of the parent of `children`, as the root.
     fn parent_root(&self, children: &[Cv; 2]) -> Cv;
 }
@@ -213,6 +219,21 @@ impl Kernels for PlatformKernels<'_> {
             }
             chunk_root_by_state(self, input)
         }
+    }
+
+    #[inline(always)]
+    fn chunk_root_into(&self, input: &[u8], out: &mut Cv) {
+        // The one-call kernel writes `out` itself (src/ffi_chunk_root.rs).
+        #[cfg(all(not(blake3_neon), blake3_sse41_ffi, not(target_os = "windows")))]
+        match self.platform {
+            #[cfg(blake3_avx512_ffi)]
+            crate::platform::Platform::AVX512 => return unsafe { crate::chunk_root::chunk_root_into(true, input, self.key, self.flags, out.as_mut_ptr()) },
+            crate::platform::Platform::SSE41 | crate::platform::Platform::AVX2 => {
+                return unsafe { crate::chunk_root::chunk_root_into(false, input, self.key, self.flags, out.as_mut_ptr()) };
+            }
+            _ => {}
+        }
+        *out = self.chunk_root(input);
     }
 
     #[inline(always)]

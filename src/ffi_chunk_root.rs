@@ -13,24 +13,36 @@ use core::mem::MaybeUninit;
 /// Requires SSE4.1, and AVX-512F and AVX-512VL with `avx512`.
 #[inline(always)]
 pub(crate) unsafe fn chunk_root(avx512: bool, input: &[u8], key: &CVWords, flags: u8) -> [u8; OUT_LEN] {
+    let mut out = MaybeUninit::<[u8; OUT_LEN]>::uninit();
+    // Sound: `out` has 32 writable bytes, all written; the caller has the ISA.
+    unsafe {
+        chunk_root_into(avx512, input, key, flags, out.as_mut_ptr().cast());
+        out.assume_init()
+    }
+}
+
+/// [`chunk_root`] into the caller's 32 bytes at `out`, written once by the
+/// kernel itself: no temporary of ours to copy out of.
+#[inline(always)]
+pub(crate) unsafe fn chunk_root_into(avx512: bool, input: &[u8], key: &CVWords, flags: u8, out: *mut u8) {
     assert!(input.len() <= CHUNK_LEN, "one chunk or less");
     let blocks = input.len() / BLOCK_LEN;
     if blocks == 0 || input.len() % BLOCK_LEN != 0 {
-        return unsafe { chunk_root_partial(avx512, input, key, flags) };
+        return unsafe { chunk_root_partial(avx512, input, key, flags, out) };
     }
     // Whole blocks only, the last in place: no copy, and no aligned stack
     // buffer, whose dynamic realignment (and the spills around it) would
     // put stack traffic back on this path (John, #141).
     // Sound: the input holds `blocks` whole blocks; the last is in place.
     let last = unsafe { input.as_ptr().add((blocks - 1) * BLOCK_LEN) };
-    unsafe { call(avx512, input, key, last, flags as u64 | (BLOCK_LEN as u64) << 8 | ((blocks - 1) as u64) << 16) }
+    unsafe { call(avx512, input, key, last, flags as u64 | (BLOCK_LEN as u64) << 8 | ((blocks - 1) as u64) << 16, out) }
 }
 
 /// An input that ends in a partial block, or is empty: the final block
 /// zero-padded in a 64-byte-aligned copy on this function's own stack.
 #[cold]
 #[inline(never)]
-unsafe fn chunk_root_partial(avx512: bool, input: &[u8], key: &CVWords, flags: u8) -> [u8; OUT_LEN] {
+unsafe fn chunk_root_partial(avx512: bool, input: &[u8], key: &CVWords, flags: u8, out: *mut u8) {
     let blocks = input.len() / BLOCK_LEN;
     let tail = input.len() % BLOCK_LEN;
     /// The zero-padded final block, 64-byte aligned.
@@ -38,25 +50,23 @@ unsafe fn chunk_root_partial(avx512: bool, input: &[u8], key: &CVWords, flags: u
     struct Padded([u8; BLOCK_LEN]);
     let mut padded = Padded([0; BLOCK_LEN]);
     padded.0[..tail].copy_from_slice(&input[blocks * BLOCK_LEN..]);
-    unsafe { call(avx512, input, key, padded.0.as_ptr(), flags as u64 | (tail as u64) << 8 | (blocks as u64) << 16) }
+    unsafe { call(avx512, input, key, padded.0.as_ptr(), flags as u64 | (tail as u64) << 8 | (blocks as u64) << 16, out) }
 }
 
 /// One kernel call: `packed` is flags | last_len << 8 | whole << 16.
 #[inline(always)]
-unsafe fn call(avx512: bool, input: &[u8], key: &CVWords, last: *const u8, packed: u64) -> [u8; OUT_LEN] {
-    let mut out = MaybeUninit::<[u8; OUT_LEN]>::uninit();
+unsafe fn call(avx512: bool, input: &[u8], key: &CVWords, last: *const u8, packed: u64, out: *mut u8) {
     // Sound: the caller passes `whole` blocks of input before `last`, and
     // `last` holding 64 readable bytes; `out` has 32 writable ones; the
     // caller has the ISA.
     unsafe {
         if avx512 {
             crate::ran_kernel(ffi::blake3_avx512_chunk_root as *const ());
-            ffi::blake3_avx512_chunk_root(input.as_ptr(), key.as_ptr(), last, packed, out.as_mut_ptr().cast());
+            ffi::blake3_avx512_chunk_root(input.as_ptr(), key.as_ptr(), last, packed, out);
         } else {
             crate::ran_kernel(ffi::blake3_sse41_chunk_root as *const ());
-            ffi::blake3_sse41_chunk_root(input.as_ptr(), key.as_ptr(), last, packed, out.as_mut_ptr().cast());
+            ffi::blake3_sse41_chunk_root(input.as_ptr(), key.as_ptr(), last, packed, out);
         }
-        out.assume_init()
     }
 }
 

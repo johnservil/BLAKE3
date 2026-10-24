@@ -324,6 +324,23 @@ pub(crate) fn reference_hash(input: &[u8]) -> crate::Hash {
     bytes.into()
 }
 
+/// hash_into writes hash's 32 bytes, all of them, for every length to two
+/// chunks and some beyond, from every offset of an input, into a place that
+/// held other bytes.
+#[test]
+fn test_hash_into_matches_hash() {
+    let mut input = [0u8; 3 * CHUNK_LEN + 64];
+    paint_test_input(&mut input);
+    for offset in [0, 1, 16, 63] {
+        for len in (0..=2 * CHUNK_LEN + 1).chain([3 * CHUNK_LEN]) {
+            let message = &input[offset..][..len];
+            let mut out = [0xa5u8; 32];
+            crate::hash_into(message, &mut out);
+            assert_eq!(out, *crate::hash(message).as_bytes(), "offset {offset}, length {len}");
+        }
+    }
+}
+
 #[test]
 fn test_xof_seek() {
     let mut out = [0; 533];

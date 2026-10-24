@@ -932,6 +932,32 @@ pub fn hash(input: &[u8]) -> Hash {
     hash_serial(input, IV, 0)
 }
 
+/// The [`hash`] of `input`, written into `out`: the same 32 bytes, where
+/// the caller keeps them (a table of digests, a ring, a Merkle layer).
+///
+/// ```
+/// # blake3_servil::initialize();
+/// let mut digests = [[0u8; 32]; 2];
+/// blake3_servil::hash_into(b"foo", &mut digests[1]);
+/// assert_eq!(digests[1], *blake3_servil::hash(b"foo").as_bytes());
+/// ```
+///
+/// **Speed**: [`hash`] returns its digest by value, through a temporary on
+/// the caller's stack that the caller then reads back. That is a store and
+/// a load per call on the path of a short message, and the pattern that
+/// 4 KiB aliasing holds back (bench-hashes #65). Here the kernel writes a
+/// chunk or less (1 KiB) straight into `out`.
+#[inline]
+pub fn hash_into(input: &[u8], out: &mut [u8; OUT_LEN]) {
+    if input.len() <= CHUNK_LEN {
+        use tree::Kernels as _;
+        let turn = platform::Sme2Turn::take(Platform::detect(), false);
+        tree::PlatformKernels { key: IV, flags: 0, platform: turn.platform() }.chunk_root_into(input, out);
+        return;
+    }
+    *out = hash_serial(input, IV, 0).0;
+}
+
 /// The hash of `input`, using other CPU cores where that is faster: the same
 /// [`Hash`](struct@Hash) as [`hash`], never slower.
 ///
