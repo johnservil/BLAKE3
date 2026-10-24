@@ -322,7 +322,7 @@ mod tests {
 
     /// run's contract, one child at a time, and the windows the tests read:
     /// the tests that use the process's load windows take turns.
-    fn one() -> std::sync::MutexGuard<'static, ()> {
+    fn one() -> crate::load::Turn {
         crate::load::exclusive()
     }
 
@@ -375,9 +375,11 @@ mod tests {
         assert_eq!(running_cpu_ns(), 0, "none running after the reaping");
     }
 
-    /// The check above can fail: a sibling spinning beside the child, a
-    /// process that run did not start, reads as other programs' load in
-    /// the windows while the child runs.
+    /// The check above can fail elsewhere: a sibling spinning beside the
+    /// child, a process that run did not start, reads as other programs'
+    /// load in the windows while the child runs. On Linux, which counts
+    /// other programs from their own CPU time, a process this one started
+    /// is its own however it was started.
     #[test]
     fn a_sibling_beside_the_child_reads_as_load() {
         let _one = one();
@@ -389,9 +391,49 @@ mod tests {
         sibling.wait().expect("the sibling");
         let windows = crate::load::windows();
         let during: Vec<_> = windows[before..].iter().filter(|w| w.end_ns > child.started_ns && w.start_ns < child.started_ns + child.wall_ns).collect();
+        if cfg!(target_os = "linux") {
+            assert!(
+                during.iter().all(|w| w.other_milli_cpus < background + 500),
+                "a sibling this process started is its own (other load before it: {background}): {during:?}"
+            );
+        } else {
+            assert!(
+                during.iter().any(|w| w.other_milli_cpus >= background + 700),
+                "a spinning sibling is other load (other load before it: {background}): {during:?}"
+            );
+        }
+    }
+
+    /// A program this process did not start reads as load: on Linux a
+    /// spinner left an orphan (its shell exits at once, so init adopts
+    /// it), beside a child that sleeps.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn a_program_we_did_not_start_reads_as_load() {
+        let _one = one();
+        let background = background_milli_cpus();
+        let before = crate::load::windows().len();
+        let pid_file = std::env::temp_dir().join(format!("clocks-orphan-{}", std::process::id()));
+        let status = std::process::Command::new("sh")
+            .args(["-c", &format!("perl -e 'my $t = time; 1 while time - $t < 4' > /dev/null 2>&1 < /dev/null & echo $! > {}", pid_file.display())])
+            .status()
+            .expect("sh");
+        assert!(status.success());
+        let orphan: u32 = std::fs::read_to_string(&pid_file).expect("the orphan's pid").trim().parse().expect("a pid");
+        std::fs::remove_file(&pid_file).ok();
+        let child = run(std::process::Command::new("sleep").arg("3"));
+        // Gone before this test ends: tests in other processes read their
+        // own windows, in which it would be another program.
+        std::process::Command::new("kill").arg(orphan.to_string()).status().ok();
+        let waited = std::time::Instant::now();
+        while std::path::Path::new(&format!("/proc/{orphan}")).exists() && waited.elapsed() < std::time::Duration::from_secs(5) {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let windows = crate::load::windows();
+        let during: Vec<_> = windows[before..].iter().filter(|w| w.end_ns > child.started_ns && w.start_ns < child.started_ns + child.wall_ns).collect();
         assert!(
             during.iter().any(|w| w.other_milli_cpus >= background + 700),
-            "a spinning sibling is other load (other load before it: {background}): {during:?}"
+            "a spinner this process did not start is other load (other load before it: {background}): {during:?}"
         );
     }
 
