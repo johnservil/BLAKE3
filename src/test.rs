@@ -793,6 +793,32 @@ mod guard_pages {
         g
     }
 
+    /// The one-chunk root kernels with the input flush against an
+    /// inaccessible page, after it and before it: whole blocks are read in
+    /// place, so a kernel that read a byte outside them would fault here.
+    #[test]
+    #[cfg(all(target_arch = "x86_64", blake3_sse41_ffi))]
+    fn test_chunk_root_against_a_guard_page() {
+        let mut variants = Vec::new();
+        if platform::Platform::sse41().is_some() {
+            variants.push(false);
+        }
+        #[cfg(blake3_avx512_ffi)]
+        if platform::Platform::avx512().is_some() {
+            variants.push(true);
+        }
+        for at_end in [true, false] {
+            for len in [0, 1, 63, 64, 65, 127, 128, 960, 1023, 1024] {
+                let mut g = filled(len, at_end);
+                let input = g.bytes();
+                let want = ChunkState::new(IV, 0, 0, platform::Platform::Portable).update(input).output().root_bytes();
+                for &avx512 in &variants {
+                    assert_eq!(unsafe { crate::chunk_root::chunk_root(avx512, input, IV, 0) }, want, "avx512={avx512} len={len} at_end={at_end}");
+                }
+            }
+        }
+    }
+
     /// Every platform's `hash_many` with each input in its own pages,
     /// flush against an inaccessible page: a kernel that reads past an
     /// input's end (into what, in a contiguous buffer, would be the next

@@ -121,7 +121,25 @@ pub fn hash<K: Kernels>(k: &K, input: &[u8]) -> Cv {
     if input.len() <= CHUNK_LEN {
         return k.chunk_root(input);
     }
+    hash_tree(k, input)
+}
+
+/// A tree of two chunks or more, out of line: its frame (the children's
+/// chaining values, 64-byte aligned, and the registers it saves) would
+/// otherwise be set up on every call, a chunk or less included, whose one
+/// kernel call needs none of it.
+#[inline(never)]
+fn hash_tree<K: Kernels>(k: &K, input: &[u8]) -> Cv {
     k.parent_root(&root_children(k, input, 0, 0))
+}
+
+/// A chunk or less through ChunkState, for platforms without a one-call
+/// kernel; out of line, so that its 64-byte-aligned block buffer does not
+/// realign the stack of every caller of `hash`, on platforms with one.
+#[cfg(not(blake3_neon))]
+#[inline(never)]
+fn chunk_root_by_state(k: &PlatformKernels<'_>, input: &[u8]) -> Cv {
+    crate::ChunkState::new(k.key, 0, k.flags, k.platform).update(input).output().root_bytes()
 }
 
 /// The library's kernels for one key and flags on one platform.
@@ -181,7 +199,20 @@ impl Kernels for PlatformKernels<'_> {
         #[cfg(blake3_neon)]
         return crate::hash_one_chunk_root(input, self.key, self.flags).0;
         #[cfg(not(blake3_neon))]
-        return crate::ChunkState::new(self.key, 0, self.flags, self.platform).update(input).output().root_bytes();
+        {
+            // One kernel call that keeps off the stack (src/ffi_chunk_root.rs):
+            // a caller's just-written message has none of our loads to hold back.
+            #[cfg(all(blake3_sse41_ffi, not(target_os = "windows")))]
+            match self.platform {
+                #[cfg(blake3_avx512_ffi)]
+                crate::platform::Platform::AVX512 => return unsafe { crate::chunk_root::chunk_root(true, input, self.key, self.flags) },
+                crate::platform::Platform::SSE41 | crate::platform::Platform::AVX2 => {
+                    return unsafe { crate::chunk_root::chunk_root(false, input, self.key, self.flags) };
+                }
+                _ => {}
+            }
+            chunk_root_by_state(self, input)
+        }
     }
 
     #[inline(always)]

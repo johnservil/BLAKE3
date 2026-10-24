@@ -195,6 +195,9 @@ mod rust_sse41;
 mod sme2;
 #[cfg(blake3_sse41_rust)]
 use rust_sse41 as sse41;
+#[cfg(all(blake3_sse41_ffi, not(target_os = "windows")))]
+#[path = "ffi_chunk_root.rs"]
+mod chunk_root;
 #[cfg(blake3_sse41_ffi)]
 #[path = "ffi_sse41.rs"]
 mod sse41;
