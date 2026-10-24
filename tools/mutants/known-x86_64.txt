@@ -121,7 +121,6 @@ src/lanes.rs	replace prefix_for -> usize with 1	1	speed: how the work is cut amo
 src/lanes.rs	replace sme2_main with ()	1	another machine's code: the SME2 thread runs only where pool.sme2 is set (an SME2 build on a CPU with it); on x86 it is never started
 src/lanes.rs	replace sme2_prefix -> usize with 0	1	speed: how the work is cut among threads (every cut tiles the input, as the code's assertions and the tests check)
 src/lanes.rs	replace sme2_prefix -> usize with 1	1	speed: how the work is cut among threads (every cut tiles the input, as the code's assertions and the tests check)
-src/lanes.rs	replace sources::Source::take_task -> Option<Task> with None	1	OPEN: the pool's scheduling: a stream's task never taken by a worker; the run has gone both ways, surviving and timing out (gate16, gate20), so the row stands on both lists (#140)
 src/lanes.rs	replace sources::closed with ()	1	speed: whether an idle worker spins (a stream is open) or parks; the spin is bounded by SPIN and work reaches a parked worker through the wakes
 src/lanes.rs	replace sources::open -> bool with false	1	speed: whether an idle worker spins (a stream is open) or parks; the spin is bounded by SPIN and work reaches a parked worker through the wakes
 src/lanes.rs	replace sources::open -> bool with true	1	speed: whether an idle worker spins (a stream is open) or parks; the spin is bounded by SPIN and work reaches a parked worker through the wakes

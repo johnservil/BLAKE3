@@ -250,6 +250,19 @@ impl Storage {
         }
     }
 
+    /// Hash one of the stream's tasks no thread has taken: whether there
+    /// was one. A waiting caller's own help, the one way a lone task runs
+    /// while every worker is parked (only collect wakes one for it).
+    fn run_waiting(&self) -> bool {
+        match self.source.take_task() {
+            Some(task) => {
+                crate::lanes::run_task(task);
+                true
+            }
+            None => false,
+        }
+    }
+
     /// The ring's byte at `at`.
     fn ring_at(&self, at: usize) -> *mut u8 {
         debug_assert!(at <= RING_BYTES);
@@ -565,20 +578,8 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
     /// Hand back what is done; with nothing done, hash a waiting task or
     /// pause.
     fn help(&mut self) {
-        if self.deliver() == 0 && !self.run_waiting() {
+        if self.deliver() == 0 && !self.s.run_waiting() {
             core::hint::spin_loop();
-        }
-    }
-
-    /// Hash one of the stream's tasks no thread has taken: whether there
-    /// was one.
-    fn run_waiting(&mut self) -> bool {
-        match self.s.source.take_task() {
-            Some(task) => {
-                crate::lanes::run_task(task);
-                true
-            }
-            None => false,
         }
     }
 
@@ -701,14 +702,7 @@ impl<D> Drop for Stream<'_, D> {
         }
         for i in self.delivered..self.next {
             while self.s.lefts[self.s.entries[i % ENTRIES].first].load(Ordering::Acquire) != 0 {
-                let ran = match self.s.source.take_task() {
-                    Some(task) => {
-                        crate::lanes::run_task(task);
-                        true
-                    }
-                    None => false,
-                };
-                if !ran {
+                if !self.s.run_waiting() {
                     core::hint::spin_loop();
                 }
             }
