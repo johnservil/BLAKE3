@@ -234,19 +234,34 @@ impl Storage {
         Storage {
             source: Box::leak(Box::new(crate::lanes::sources::Source::new(ENTRIES))),
             entries: std::vec![Entry { len: 0, kind: Kind::Abandoned, first: 0, ring_end: 0 }; ENTRIES].into_boxed_slice(),
-            // Zeroed, untouched pages: only the bytes used are faulted in.
-            ring: Box::into_raw(std::vec![0u8; RING_BYTES].into_boxed_slice()) as *mut u8,
+            ring: aligned_ring(),
             pieces_out: (0..ENTRIES).map(|_| OwnLine(Out(UnsafeCell::new([0; 64])))).collect(),
             lefts: (0..ENTRIES).map(|_| OwnLine(AtomicUsize::new(0))).collect(),
         }
     }
 
-    /// The ring's byte at `at`.
+    /// The ring's byte at `at` (the ring starts at a 64-byte boundary, so
+    /// its rooms, each at a 64-byte offset, are 64-byte aligned).
     fn ring_at(&self, at: usize) -> *mut u8 {
         debug_assert!(at <= RING_BYTES);
         // Sound: `at` is in the ring.
         unsafe { self.ring.add(at) }
     }
+}
+
+/// RING_BYTES of zeroed, untouched pages (only the bytes used are faulted
+/// in), starting at a 64-byte boundary: a message written into a room then
+/// crosses no cache line it need not (a block straddling two lines costs a
+/// load that crosses them, and #65's 4 KiB aliasing needs one). The
+/// allocator's zeroed allocation has its own alignment only (16 on glibc,
+/// whose rooms then sat 16 bytes into a line); 63 bytes more, and the ring
+/// at the first boundary within. Never freed, as its storage is not.
+fn aligned_ring() -> *mut u8 {
+    let raw = Box::into_raw(std::vec![0u8; RING_BYTES + 63].into_boxed_slice()) as *mut u8;
+    let skip = raw.align_offset(64);
+    assert!(skip < 64, "a byte pointer reaches a 64-byte boundary within 63 bytes");
+    // Sound: `skip` < 64, and the allocation holds RING_BYTES + 63 bytes.
+    unsafe { raw.add(skip) }
 }
 
 /// Part `i` of a message in `pieces` parts, its digest at `out`: the
@@ -785,6 +800,38 @@ mod test {
             for i in 0..lens.len() {
                 assert_eq!(got[i], crate::hash_with(mode, message(i)), "message {i}, {} bytes", lens[i]);
             }
+        }
+    }
+
+    /// Every room handed to a writer starts at a 64-byte boundary, the
+    /// ring's own included (aligned_ring), whatever the lengths before it.
+    #[test]
+    fn test_stream_rooms_are_64_byte_aligned() {
+        let lens = [1usize, 63, 64, 65, 100, 1024, 1500, 4096, PIECE, PIECE + 1, 3 * PIECE + 17, 0, 7];
+        let mut got = places(lens.len() * 4);
+        let mut misaligned = std::vec::Vec::new();
+        stream(
+            Mode::Hash,
+            |_: &mut [Hash]| {},
+            |s| {
+                for (i, out) in got.iter_mut().enumerate() {
+                    s.submit_with(
+                        lens[i % lens.len()],
+                        |at, room| {
+                            if room.as_ptr() as usize % 64 != 0 {
+                                misaligned.push((i, at, room.as_ptr() as usize % 64));
+                            }
+                            room.fill(i as u8);
+                        },
+                        out,
+                    );
+                }
+                s.finish();
+            },
+        );
+        assert!(misaligned.is_empty(), "(message, offset, misalignment): {misaligned:?}");
+        for (i, h) in got.iter().enumerate() {
+            assert_eq!(*h, crate::hash(&std::vec![i as u8; lens[i % lens.len()]]), "message {i}");
         }
     }
 
