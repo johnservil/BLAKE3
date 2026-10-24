@@ -217,35 +217,11 @@ pub(crate) fn other_milli_cpus_over(ns: u64) -> u64 {
 
 /// The tests that use this process's windows (they tick, read, or run a
 /// child, whose watcher ticks) take turns: the tests run on many threads,
-/// and one's windows are another's. They take turns across processes too
-/// (nextest runs each test in its own): a test's spinning child is another
-/// program to every other test process, so one test's spinner would read
-/// as load in another's windows.
+/// and one's windows are another's.
 #[cfg(all(test, unix))]
-pub(crate) fn exclusive() -> Turn {
+pub(crate) fn exclusive() -> std::sync::MutexGuard<'static, ()> {
     static TURN: Mutex<()> = Mutex::new(());
-    let guard = TURN.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    unsafe extern "C" {
-        fn flock(fd: i32, operation: i32) -> i32;
-    }
-    const LOCK_EX: i32 = 2;
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(std::env::temp_dir().join("clocks-load-tests.lock"))
-        .expect("the tests' lock file");
-    use std::os::fd::AsRawFd as _;
-    // Sound: a plain call on an open file; the lock ends when it closes.
-    assert_eq!(unsafe { flock(file.as_raw_fd(), LOCK_EX) }, 0, "flock");
-    Turn { _file: file, _guard: guard }
-}
-
-/// A test's turn at the windows: this process's lock and every process's.
-#[cfg(all(test, unix))]
-pub(crate) struct Turn {
-    _file: std::fs::File,
-    _guard: std::sync::MutexGuard<'static, ()>,
+    TURN.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// Milli-CPUs as "1.23".
@@ -376,7 +352,18 @@ mod imp {
     /// own tree, children waited for included. A process gone between
     /// reading /proc and its stat is skipped.
     fn other_programs_ticks() -> Option<u64> {
-        let me = std::process::id();
+        Some(sum_other(std::process::id(), &scan()?))
+    }
+
+    /// Whether `pid`, as /proc lists it now, counts as another program's.
+    #[cfg(test)]
+    pub(super) fn counts_as_other(pid: u32) -> bool {
+        let procs = scan().expect("/proc");
+        procs.contains_key(&pid) && !ours(std::process::id(), pid, &procs)
+    }
+
+    /// Every listed process but kernel threads: pid to (parent, false, ticks).
+    fn scan() -> Option<std::collections::HashMap<u32, (u32, bool, u64)>> {
         let mut kernel = KERNEL_THREADS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let kernel = kernel.get_or_insert_with(Default::default);
         let mut listed = std::collections::HashSet::new();
@@ -406,27 +393,29 @@ mod imp {
             }
         }
         kernel.retain(|pid| listed.contains(pid));
-        Some(sum_other(me, &procs))
+        Some(procs)
     }
 
     /// The sum over `procs` (pid: parent, kernel thread, ticks) of all but
     /// kernel threads and `me`'s tree.
     pub(super) fn sum_other(me: u32, procs: &std::collections::HashMap<u32, (u32, bool, u64)>) -> u64 {
-        let ours = |mut pid: u32| {
-            // Walk up the parents; init's parent is 0. Bounded, for a
-            // table read while processes come and go.
-            for _ in 0..procs.len() + 1 {
-                if pid == me {
-                    return true;
-                }
-                match procs.get(&pid) {
-                    Some(&(parent, _, _)) if parent != 0 && parent != pid => pid = parent,
-                    _ => return false,
-                }
+        procs.iter().filter(|&(&pid, &(_, kernel, _))| !kernel && !ours(me, pid, procs)).map(|(_, &(_, _, ticks))| ticks).sum()
+    }
+
+    /// Whether `pid` is `me` or descends from it in `procs`.
+    fn ours(me: u32, mut pid: u32, procs: &std::collections::HashMap<u32, (u32, bool, u64)>) -> bool {
+        // Walk up the parents; init's parent is 0. Bounded, for a table
+        // read while processes come and go.
+        for _ in 0..procs.len() + 1 {
+            if pid == me {
+                return true;
             }
-            false
-        };
-        procs.iter().filter(|&(&pid, &(_, kernel, _))| !kernel && !ours(pid)).map(|(_, &(_, _, ticks))| ticks).sum()
+            match procs.get(&pid) {
+                Some(&(parent, _, _)) if parent != 0 && parent != pid => pid = parent,
+                _ => return false,
+            }
+        }
+        false
     }
 
     pub fn busy_and_steal_ns(from: CpuTimes, to: CpuTimes) -> (u64, u64) {
@@ -598,6 +587,37 @@ mod tests {
         // A parent loop (a table read mid-change) ends the walk.
         let looped: std::collections::HashMap<u32, (u32, bool, u64)> = [(5, (6, false, 1)), (6, (5, false, 2))].into_iter().collect();
         assert_eq!(imp::sum_other(200, &looped), 3);
+    }
+
+    /// Who counts as another program, asked of /proc directly: no load is
+    /// measured, so tests running beside this one cannot sway it, and its
+    /// processes sleep, so it sways none of theirs.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn this_process_and_what_it_starts_are_ours_and_others_are_not() {
+        assert!(!imp::counts_as_other(std::process::id()), "this process");
+        assert!(!imp::counts_as_other(2), "kthreadd, a kernel thread");
+        // A child, however started, and a grandchild under it.
+        let mut child = std::process::Command::new("sh").args(["-c", "sleep 30 & wait"]).spawn().expect("sh");
+        let grandchild = loop {
+            let children = std::fs::read_to_string(format!("/proc/{0}/task/{0}/children", child.id())).unwrap_or_default();
+            if let Some(pid) = children.split_whitespace().next() {
+                break pid.parse::<u32>().expect("a pid");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        };
+        assert!(!imp::counts_as_other(child.id()), "a child");
+        assert!(!imp::counts_as_other(grandchild), "a grandchild");
+        // An orphan: its shell exits at once, so an ancestor outside this
+        // process's tree (init, or a subreaper) adopts it.
+        let out = std::process::Command::new("sh").args(["-c", "sleep 30 > /dev/null 2>&1 < /dev/null & echo $!"]).output().expect("sh");
+        let orphan: u32 = String::from_utf8(out.stdout).unwrap().trim().parse().expect("a pid");
+        let counted = imp::counts_as_other(orphan);
+        for pid in [orphan, grandchild] {
+            std::process::Command::new("kill").arg(pid.to_string()).status().ok();
+        }
+        child.wait().ok();
+        assert!(counted, "a program this process did not start is another's");
     }
 
     /// Our own children's work, and the kernel's on their behalf, is no
