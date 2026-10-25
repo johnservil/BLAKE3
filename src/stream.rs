@@ -442,9 +442,11 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
 
     /// Hash a batch of `out.len()` messages of `message_len` bytes that
     /// `fill` writes in place, laid out as [`hash_many`](crate::hash_many)
-    /// takes them: `fill(at, room)` writes the batch's bytes from `at`
-    /// (padding included: each message in whole blocks, zero after its
-    /// bytes) into all of `room`, a part of up to 64 KiB at a time. As
+    /// takes them: `fill(at, room)` writes the batch's bytes from `at` into
+    /// `room`, a part of up to 64 KiB at a time, each message at the start
+    /// of its slot of whole blocks. The bytes past each message are the
+    /// stream's: whatever `fill` leaves there, the stream zeroes them before
+    /// hashing, so a room reused for shorter messages hashes right. As
     /// [`submit_with`](Stream::submit_with) and [`submit_batch`](Stream::submit_batch).
     pub fn submit_batch_with(&mut self, message_len: usize, mut fill: impl FnMut(usize, &mut [u8]), out: &'env mut [Hash]) {
         let slot = crate::many::slot_len(message_len);
@@ -458,7 +460,13 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
             // Sound: as in submit_with.
             let room = unsafe { core::slice::from_raw_parts_mut(self.s.ring_at(at), count * slot) };
             fill(first * slot, room);
-            crate::many::assert_slots(room, message_len, count);
+            // The bytes past each message, zero (none when the length is a
+            // multiple of 64): a reused room holds an earlier batch's bytes.
+            if message_len % 64 != 0 || message_len == 0 {
+                for message in room.chunks_exact_mut(slot) {
+                    message[message_len..].fill(0);
+                }
+            }
             let end = self.head;
             let kind = Kind::Batch { message_len, whole: (p + 1 == parts).then_some(whole) };
             // Sound: `first` is within the batch's space.
@@ -799,6 +807,26 @@ mod test {
 
     /// A body that ends without finishing panics (after the threads are
     /// done with its messages), and so does one that panics itself.
+    /// A batch written in place hashes its messages whatever `fill` leaves
+    /// past each one: the stream zeroes those bytes, for every length that
+    /// leaves some (an empty message's whole block, a partial last block).
+    #[test]
+    fn test_batch_with_zeroes_past_each_message() {
+        for len in [0, 1, 63, 100, 1000] {
+            let count = 5;
+            let mut got = places(count);
+            stream(
+                Mode::Hash,
+                |_| {},
+                |s| {
+                    s.submit_batch_with(len, |_, room| room.fill(0xAB), &mut got);
+                    s.finish();
+                },
+            );
+            assert_eq!(got, std::vec![crate::hash(&std::vec![0xABu8; len]); count], "{len}-byte messages");
+        }
+    }
+
     #[test]
     #[cfg_attr(not(panic = "unwind"), ignore = "catches panics, which this target aborts on")]
     fn test_stream_panics() {
