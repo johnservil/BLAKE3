@@ -18,7 +18,7 @@ Why is it so fast? Three reasons:
 
 2. It has excellent quality assurance:
 
-* All of the assembly language parts are *proven correct*. They come with a proof, which you can check yourself locally, that they calculate their part of BLAKE3 correctly and don’t incorrectly access any memory.
+* The assembly kernels covered by our proof suite are *proven correct within their stated contracts*. They come with proofs you can check locally: the assembled instructions are compared with a written specification of BLAKE3, including memory accesses and calling conventions. The proof documents identify the covered kernels and contracts. Rust kernels and the code around the assembly are tested.
 
 * The parts that aren’t covered by correctness proofs are thoroughly tested. And not *just* thorough as in “100% code coverage”, but even *more* thorough than that. We use a technique called “mutation testing” (using `cargo-mutants`) where during the tests, we *insert* a bug into the code and then run the tests to see if they catch the bug, and then automatically do that thousands of more times, each time trying a different possible bug that could be added to each line of the code.
 
