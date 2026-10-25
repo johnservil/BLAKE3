@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """C bad-call guards under Miri: a diagnostic/abort, never a reference UB.
+Nextest uses 100 for a caught test panic; an aborting extern C call may
+make the interpreter return 1. The exact diagnostic, not the exit alone,
+identifies the intended guard.
 
 Run after Miri setup, with the chosen nightly selected. Cases come from
 its compiled Rust test, not a second list or a parser of Rust source.
@@ -33,7 +36,7 @@ def main():
     assert cases and len({case for case, _ in cases}) == len(cases), cases
     for case, message in cases:
         code, output = run(case)
-        assert code == 100 and message in output and "panicked at" in output and "Undefined Behavior" not in output, output
+        assert code in (1, 100) and message in output and "panicked at" in output and "Undefined Behavior" not in output, output
         print(f"{case}: guard diagnosed the call without Miri UB", flush=True)
     print(f"C boundary guards: {len(cases)} interpreted cases checked", flush=True)
 
