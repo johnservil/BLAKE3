@@ -93,7 +93,10 @@ mod test {
     #[test]
     fn test_chunk_root_matches_portable() {
         let variants = variants();
-        assert!(!variants.is_empty(), "an x86-64 test machine has SSE4.1");
+        // SSE4.1 itself, not merely some kernel: on AVX-512 machines the AVX-512
+        // variant alone would keep the list nonempty (a mutant hiding SSE4.1
+        // survived there, the EPYC 9255, October 26).
+        assert!(variants.contains(&false), "an x86-64 test machine has SSE4.1");
         let mut buf = vec![0u8; CHUNK_LEN + 3];
         crate::test::paint_test_input(&mut buf);
         let keyed = crate::platform::words_from_le_bytes_32(&[0x42; 32]);

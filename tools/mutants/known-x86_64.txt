@@ -216,7 +216,7 @@ src/lib.rs	replace match guard partial > BLOCK_LEN with true in spare_lane	2	equ
 src/lib.rs	replace prefetch_after_pause with ()	1	speed: whether and what to prefetch after a pause (no effect on results)
 src/lib.rs	replace prefetch_kernels with ()	1	speed: whether and what to prefetch after a pause (no effect on results)
 src/lib.rs	replace prefetch_update_kernels with ()	1	speed: whether and what to prefetch after a pause (no effect on results)
-src/lib.rs	replace ran_kernel with ()	1	code for another machine: ran_kernel records SME2 and NEON hybrid entry points, which x86 does not compile; its readers are AArch64 tests
+src/lib.rs	replace ran_kernel with ()	1	[cpu lacks avx512f avx512vl] code for another machine: ran_kernel records SME2 and NEON hybrid entry points, and on x86 the wide AVX-512 ones; its readers are AArch64 tests and the wide dispatch tests, which an AVX-512 machine runs (they catch it there: the EPYC 9255, October 26)
 src/lib.rs	replace spare_lane -> Option<usize> with None	1	equally correct paths: any lane can be the spare, or none (the partial chunk then runs serially); speed, measured: with it off, 7935 B +29% and +53% after a pause (data 2026-10-24/shortcuts)
 src/lib.rs	replace | with & in batch_after_pause	1	speed: whether a batch after a pause takes the pooled path; both paths agree
 src/lib.rs	replace | with & in hash_one_chunk_root	1	AArch64 only: the scalar one-chunk kernel serves NEON platforms; x86 chunk roots take ChunkState
@@ -461,7 +461,7 @@ src/tree.rs	replace + with * in wide	1	SME2 only: the argument is `ahead`, consu
 src/tree.rs	replace + with - in wide	1	SME2 only: the argument is `ahead`, consumed by the SME2 subtree path; on x86 subtree() returns None and serial calls pass 0
 src/tree.rs	replace / with * in root_children	2	speed: the arrays' size (each choice holds the values; only the stack frame changes)
 src/tree.rs	replace < with <= in wide	1	equivalent: degrees are powers of two, and at degree 2 both arms give 2
-src/tree.rs	replace <= with > in root_children	1	equivalent: the SMALL and MAX arrays are capacities; children() fills either, the small one in more rounds
+src/tree.rs	replace <= with > in root_children	1	[cpu lacks avx512f avx512vl] equivalent: the SMALL and MAX arrays are capacities; children() fills either, the small one in more rounds. On AVX-512 one call of the 32-input kernel writes 32 values, more than SMALL (16) holds, so a machine with it catches the mutant (the EPYC 9255, October 26)
 src/tree.rs	replace <impl Kernels for PlatformKernels<'_>>::children -> Option<[Cv; 2]> with None	1	equivalent on x86: PlatformKernels::children returns None already (its SME2 block is compiled out)
 src/tree.rs	replace <impl Kernels for PlatformKernels<'_>>::degree -> usize with 1	1	speed: moves a threshold between equally correct paths (a degree of 1 hashes one chunk at a time; simd_degree itself has its test)
 src/tree.rs	replace <impl Kernels for PlatformKernels<'_>>::subtree -> Option<usize> with None	1	speed: subtrees then hash on the walk's one-chunk path, the same digests
