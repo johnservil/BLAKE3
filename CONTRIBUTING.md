@@ -102,6 +102,14 @@ by hanging: where a loop's variant or a wait's end can be asserted, make
 it a failure instead (`CvStack::merge`, `update_turn`, `ensure_slow`
 were made so), and the row goes.
 
+A row whose reason claims speed alone ("speed", "equally correct
+paths") is a claim a benchmark can test. `python3 tools/mutants/bench.py
+[--since REV]` applies each surviving place alone and runs `bench-hashes
+check` on it, about ten minutes a place. Slower: the path earns its
+place. No cell runs it: a benchmark cell to write, or code to delete.
+No cell slower, or faster: read it again at `--pairs 23`, then a
+candidate to delete, or an improvement.
+
 A survivor no test can kill is first a line to consider removing: an
 unreachable branch goes (Task::run's batch branch did), and a pure
 predicate gets a test of one thread even inside the pool (`visible`'s).
