@@ -112,9 +112,9 @@ mod asm {
     }
     plain!(blake3_servil_hybrid_kn2, blake3_servil_hybrid_kn4, blake3_servil_hybrid_kn5, blake3_servil_hybrid_kn6, blake3_servil_hybrid_kn8);
     plain!(blake3_servil_hybrid_pn2, blake3_servil_hybrid_pn4, blake3_servil_hybrid_pn5, blake3_servil_hybrid_pn6, blake3_servil_hybrid_pn10);
-    // Extended output, four and eight blocks: (table, 1, cv, counter,
+    // Extended output, one, four and eight blocks: (table, 1, cv, counter,
     // packed, out), 64 bytes a block.
-    plain!(blake3_servil_hybrid_x4, blake3_servil_hybrid_x8);
+    plain!(blake3_servil_hybrid_x1, blake3_servil_hybrid_x4, blake3_servil_hybrid_x8);
 }
 
 /// Fill `out`'s whole groups of four 64-byte blocks with extended output
@@ -139,23 +139,35 @@ pub fn xof_many(cv: &CVWords, block: &[u8; BLOCK_LEN], block_len: u8, mut counte
     done
 }
 
-/// One block of extended output, block `counter`: the x4 kernel's first,
-/// its other three discarded. No single-block kernel exists, and the four
-/// lanes run side by side, so the call costs about one compression; the
-/// portable Rust, which no supported machine runs, stays out of it.
+/// One block of extended output, block `counter`, on the integer units
+/// (x1). The four-lane x4 costs about two compressions on the M4's cores
+/// and the VM's: one block of output through it took 2.1 times the
+/// portable compression's time, and through x1 0.97 (VM, BLAKE3 #190).
 pub fn xof_block(cv: &CVWords, block: &[u8; BLOCK_LEN], block_len: u8, counter: u64, flags: u8) -> [u8; BLOCK_LEN] {
-    let mut four = [0u8; 4 * BLOCK_LEN];
-    xof_many(cv, block, block_len, counter, flags, &mut four);
-    four[..BLOCK_LEN].try_into().unwrap()
+    let mut out = [0u8; BLOCK_LEN];
+    let table = [block.as_ptr()];
+    let packed = flags as u64 | (block_len as u64) << 24;
+    crate::ran_kernel(asm::blake3_servil_hybrid_x1 as *const ());
+    // Sound: the table's one entry points at the 64-byte block; the kernel
+    // writes the block's 64 bytes of output to `out`.
+    unsafe { asm::blake3_servil_hybrid_x1(table.as_ptr(), 1, cv.as_ptr(), counter, packed, out.as_mut_ptr()) };
+    out
 }
 
 /// The last one to three blocks of extended output into `out`, from block
-/// `counter`, on the x4 kernel (the blocks past `out` discarded).
+/// `counter`: one or two blocks on x1, three on x4 (its fourth discarded),
+/// which takes about the time of two x1 calls.
 pub fn xof_tail(cv: &CVWords, block: &[u8; BLOCK_LEN], block_len: u8, counter: u64, flags: u8, out: &mut [u8]) {
     assert!(out.len() < 4 * BLOCK_LEN && out.len() % BLOCK_LEN == 0, "a tail of one to three blocks");
-    let mut four = [0u8; 4 * BLOCK_LEN];
-    xof_many(cv, block, block_len, counter, flags, &mut four);
-    out.copy_from_slice(&four[..out.len()]);
+    if out.len() == 3 * BLOCK_LEN {
+        let mut four = [0u8; 4 * BLOCK_LEN];
+        xof_many(cv, block, block_len, counter, flags, &mut four);
+        out.copy_from_slice(&four[..out.len()]);
+        return;
+    }
+    for (i, out) in out.chunks_exact_mut(BLOCK_LEN).enumerate() {
+        out.copy_from_slice(&xof_block(cv, block, block_len, counter.wrapping_add(i as u64), flags));
+    }
 }
 
 /// Every kernel shares one signature: `(inputs, blocks, key, counter,
@@ -536,6 +548,9 @@ pub(crate) fn entries() -> std::vec::Vec<(std::string::String, *const ())> {
         }
     }
     out.push(("c1".into(), asm::blake3_servil_hybrid_c1 as *const ()));
+    out.push(("x1".into(), asm::blake3_servil_hybrid_x1 as *const ()));
+    out.push(("x4".into(), asm::blake3_servil_hybrid_x4 as *const ()));
+    out.push(("x8".into(), asm::blake3_servil_hybrid_x8 as *const ()));
     out
 }
 

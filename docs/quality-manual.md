@@ -367,7 +367,7 @@ Z3 (an AArch64 Linux machine with Python 3 and `python3-z3`, Clang and
 llvm-objdump 17 or later; details in [`tools/verify/README.md`](../tools/verify/README.md)):
 
 ```sh
-python3 tools/verify/prove_hybrid.py   # ends "414 of 414 cases proved"
+python3 tools/verify/prove_hybrid.py   # ends "415 of 415 cases proved"
 python3 tools/verify/prove_sme2.py chunks chunks_at messages parents xof chunks_x2 every parents_every xof_every messages_every x2_every
                                       # ends "41 of 41 cases proved"
 python3 tools/verify/mutants.py        # wrong kernels, each rejected
@@ -385,7 +385,7 @@ python3 tools/verify/prove_x86.py --representative   # 203 of them
 ```
 
 `sh tools/verify/long-proofs.sh` runs all of it after a change to a
-kernel or the proof tools: 896 cases (414 hybrid, 41 SME2, 390 x86 and
+kernel or the proof tools: 897 cases (415 hybrid, 41 SME2, 390 x86 and
 51 all-count x86), the planted-error controls, and the Arm CPU
 cross-check. Each case is proved when Z3 finds no input on which the
 code and the definition differ; one that fails prints `NOT PROVED` with

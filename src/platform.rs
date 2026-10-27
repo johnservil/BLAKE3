@@ -378,8 +378,7 @@ impl Platform {
             #[cfg(blake3_avx512_ffi)]
             #[cfg(target_arch = "x86_64")]
             Platform::AVX512 => unsafe { crate::avx512::compress_xof(cv, block, block_len, counter, flags) },
-            // The extended-output kernel's first block (no single-block
-            // kernel exists; neon_hybrid::xof_block).
+            // The one-block extended-output kernel (neon_hybrid::xof_block).
             #[cfg(blake3_neon)]
             Platform::NEON => crate::neon_hybrid::xof_block(cv, block, block_len, counter, flags),
             #[cfg(blake3_sme2)]
@@ -466,9 +465,9 @@ impl Platform {
                     counter += (done / BLOCK_LEN) as u64;
                     &mut out[done..]
                 };
-                // Then four at a time on NEON (AArch64), where the platform
-                // has it: CPUs without SME2, and SME2's leftovers.
-                // and the last one to three blocks on the same kernel.
+                // Then four or eight at a time on NEON (AArch64): CPUs
+                // without SME2, and SME2's leftovers; the last one to three
+                // blocks after them (neon_hybrid::xof_tail).
                 #[cfg(all(blake3_neon, target_arch = "aarch64"))]
                 if !matches!(self, Platform::Portable) {
                     let done = crate::neon_hybrid::xof_many(cv, block, block_len, counter, flags, out);

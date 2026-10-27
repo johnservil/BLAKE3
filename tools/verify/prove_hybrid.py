@@ -308,7 +308,7 @@ def cases(only):
     for n in range(1, 10):
         for pblocks in range(1, 17):
             out.append((f"q{n}", pblocks, False))
-    out += [("x4", 1, False), ("x8", 1, False)]
+    out += [("x1", 1, False), ("x4", 1, False), ("x8", 1, False)]
     return [c for c in out if not only or c[0] in only]
 
 

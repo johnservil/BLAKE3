@@ -28,8 +28,8 @@ CPUs without SHA-3 (no `xar`) run a second family: kn2, kn4, kn5, kn6, kn8
 and pn2, pn4, pn5, pn6, pn10, of scalars and quads (whose rotates are
 `rev32`, `tbl`, and `shl` + `sri`), chosen by `sha3_detected()`; counts 3
 and 7 run a kernel and k1 after it. x4 and x8 are quads with an extended-
-output stage. Every Arm kernel is this generator's assembly, proved as
-assembled (tools/verify); a kernel in intrinsics is whatever the compiler
+output stage, and x1 is k1's rounds with that stage, for one block. Every
+Arm kernel is this generator's assembly, proved as assembled (tools/verify); a kernel in intrinsics is whatever the compiler
 emits, and no proof covers it.
 
 C ABI, every kernel:
@@ -895,6 +895,42 @@ def lean_kernel(name, sc, last):
     return L
 
 
+def xof1_kernel(name, sc):
+    """x1: one block's whole 64-byte output on the integer registers, with
+    the x kernels' signature (a one-entry table, one block): k1's rounds,
+    unrolled, with none of its block loop. Its flags are the base, start
+    and end flags at once, its length the packed final length. The rounds
+    leave x0..x5 alone, so the key's address stays in x2 and the output's
+    in x5; the low half of the output is the chaining value, the high half
+    the c and d rows with the key, as the x kernels write it."""
+    assert sc.preg and not sc.spill_d
+    x_pairs, _ = callee_saved([sc], [])
+    frame = 8 * 2 * len(x_pairs)
+    L = []
+    e = L.append
+    e(f"{name}:")
+    e(f"sub sp, sp, #{frame}")
+    for lo, hi in x_pairs:
+        e(f"stp x{lo}, x{hi}, [sp, #{8 * (lo - 19)}]")
+    e(f"ldr {sc.preg}, [x0]")
+    L += sc.prologue(ctr="x3")
+    L += ["and w0, w4, #0xff", "ubfx w1, w4, #8, #8", "orr w0, w0, w1", "ubfx w1, w4, #16, #8", "orr w0, w0, w1", "lsr w1, w4, #24"]
+    L += sc.block_start("w0", "w1", ctr="x3")
+    for r in range(7):
+        for quads, base in ((COLS, 0), (DIAGS, 8)):
+            L += sc.half_step(quads, SCHEDULE[r], base)
+    L += sc.block_end()
+    st = sc.state
+    for i in range(0, 8, 2):
+        L += [f"ldp w0, w1, [x2, #{4 * i}]", f"eor {st[8 + i]}, {st[8 + i]}, w0", f"eor {st[9 + i]}, {st[9 + i]}, w1"]
+    L += [f"stp {st[i]}, {st[i + 1]}, [x5, #{4 * i}]" for i in range(0, 16, 2)]
+    for lo, hi in x_pairs:
+        e(f"ldp x{lo}, x{hi}, [sp, #{8 * (lo - 19)}]")
+    e(f"add sp, sp, #{frame}")
+    e("ret")
+    return L
+
+
 # The one-chunk kernel's rounds as a loop (lean_kernel): it made `hash` of a
 # chunk or less 25-33% faster now and then on the M4 Max (its code stays in
 # cache), 2-4% slower nonstop. Unrolled, llvm-mca predicts 13% fewer cycles
@@ -913,7 +949,10 @@ def kernel(name, scalars, units, partial=False, xof=False):
     With `xof` (quads alone, one block), each lane's whole 64-byte output
     goes out: the low half the chaining value, the high half the c and d
     rows with the key, lane j's at out + 64 * slot."""
-    assert not xof or (not scalars and not partial)
+    assert not partial or not xof
+    if xof and scalars:
+        assert len(scalars) == 1 and not units
+        return xof1_kernel(name, scalars[0])
     if not units and len(scalars) == 1:
         assert not partial
         return lean_kernel(name, scalars[0], last="x25")
@@ -1204,7 +1243,9 @@ def build():
         "pn6": kernel("blake3_servil_hybrid_pn6", psc2(0, 1), [pquad(0, (2, 3, 4, 5))]),
         "pn10": kernel("blake3_servil_hybrid_pn10", psc2(0, 1), [pquad(0, (2, 3, 4, 5)), pquad(1, (6, 7, 8, 9))]),
         # x<n>: extended output, n blocks of one block's output at counters
-        # counter + i (every table entry the same block), both halves.
+        # counter + i (every table entry the same block), both halves; x1
+        # on the integer units, x4 and x8 on NEON quads.
+        "x1": kernel("blake3_servil_hybrid_x1", sc1(0), [], xof=True),
         "x4": kernel("blake3_servil_hybrid_x4", [], [quad(0, (0, 1, 2, 3))], xof=True),
         "x8": kernel("blake3_servil_hybrid_x8", [], [quad(0, (0, 1, 2, 3)), quad(1, (4, 5, 6, 7))], xof=True),
     }
@@ -1230,8 +1271,8 @@ HEADER = """\
 // scalar + two quads; k10 two scalars + two quads. p<n> hashes n
 // contiguous 64-byte parent blocks with one shared counter: p2 pair, p4
 // two scalars + pair (as k4), p8 two quads; kn<n> and pn<n> the chunk and
-// parent counts on scalars and quads alone, for CPUs without SHA-3; x4 and
-// x8 extended output, every lane the same block at its own counter, 64
+// parent counts on scalars and quads alone, for CPUs without SHA-3; x1, x4
+// and x8 extended output, every lane the same block at its own counter, 64
 // bytes a lane. Messages are transposed onto
 // the stack each block and the second NEON unit's d row lives there too,
 // which is what lets two units of state share 32 vector registers.

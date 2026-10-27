@@ -47,6 +47,19 @@ def mutants(code):
     return out
 
 
+def xof1_mutants(code):
+    """x1's high half, the part its output adds to k1's: a key word left
+    out, and the last pair of words stored one word short."""
+    out = []
+    last = lambda pred: max(a for a, (m, ops) in code.items() if pred(m, ops))
+    a = last(lambda m, o: m == "eor" and o[2] == "w1")
+    out.append((f"a key word left out of the high half at {a:#x}", {**code, a: ("mov", code[a][1][:2])}))
+    a = last(lambda m, o: m == "stp")
+    m, o = code[a]
+    out.append((f"the last words stored one word short at {a:#x}", {**code, a: (m, o[:2] + ["[x5, #52]"])}))
+    return out
+
+
 def vector_mutants(code):
     out = []
     def first(pred):
@@ -153,6 +166,9 @@ def jobs():
         base = real(obj, syms[f"blake3_servil_hybrid_{name}"], syms[f"blake3_servil_hybrid_{name}_end"])
         for what, code in vector_mutants(base):
             out.append((f"{name} mutant, {what}", code, prove))
+    base = real(obj, syms["blake3_servil_hybrid_x1"], syms["blake3_servil_hybrid_x1_end"])
+    for what, code in xof1_mutants(base):
+        out.append((f"x1 mutant, {what}", code, lambda: prove_hybrid.prove_xof(obj, 1)))
     import prove_sme2
     sobj = prove_sme2.assemble()
     ssyms = aarch64.symbols(sobj)

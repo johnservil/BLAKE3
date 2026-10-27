@@ -6,7 +6,7 @@ input, key, counter, and flags value under its harness's contract.
 
 Commands:
 
-    python3 tools/verify/prove_hybrid.py [KERNEL...]   # c/blake3_neon_hybrid_aarch64.S: c1, k2-k10, p2-p9, q1-q9, kn, pn, x4, x8 (414 cases, about 6 minutes on 16 CPUs)
+    python3 tools/verify/prove_hybrid.py [KERNEL...]   # c/blake3_neon_hybrid_aarch64.S: c1, k2-k10, p2-p9, q1-q9, kn, pn, x1, x4, x8 (415 cases, about 6 minutes on 16 CPUs)
     python3 tools/verify/prove_sme2.py [KERNEL...]     # c/blake3_sme2_aarch64.S: chunks, chunks_at, messages, parents, xof, and the chunk and parent kernels at every group count (36 cases, minutes); c/blake3_sme2_hybrid_aarch64.S: chunks_x2 (2 cases, 2 min)
     python3 tools/verify/prove_sme2.py xof_every messages_every x2_every  # the other kernels at every group count (x2_every about 12 minutes)
     python3 tools/verify/lean/emit.py                   # the definition, from the Lean specification (needs Lean)
@@ -29,7 +29,7 @@ proofs run on any machine with Python 3, `python3-z3`, Clang and LLVM's
 
 **Coverage.** The hybrid kernels at every block count they take (1 to
 16; the q kernels' partial chunk at every block count), those without
-SHA-3 (kn, pn) among them, and the extended-output kernels (x4, x8: each
+SHA-3 (kn, pn) among them, and the extended-output kernels (x1, x4, x8: each
 lane's whole 64-byte output). The SME2 kernels
 at the 512-bit streaming vector length (`cntw` = 16, which they check
 themselves), for one and two groups, the last group storing 1, 15, or

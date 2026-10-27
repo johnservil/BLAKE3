@@ -77,7 +77,7 @@ const KIB: usize = 1024;
 /// The cases, each with the path it is there for, assembly first (on
 /// Apple M4 and later; other machines take their own paths through the
 /// same entry points). Every assembly entry of the AArch64 kernels runs:
-/// the hybrids' k1-k10, q1-q9, p2-p9, and c1, and SME2's chunk, message,
+/// the hybrids' k1-k10, q1-q9, p2-p9, c1, x1, x4 and x8, and SME2's chunk, message,
 /// parent, counter-per-group, and integer-lane kernels
 /// (test_self_test_runs_every_kernel checks it). The hybrids' k kernels hash whole chunks at
 /// rising counters, so only whole inputs reach them; batches of one-chunk
@@ -125,7 +125,7 @@ pub(crate) const CASES: &[(Case, &str)] = &[
     (Incremental { len: 5 * KIB + 7, piece: 700 }, "a Hasher fed in uneven pieces"),
     (Incremental { len: 2 * KIB, piece: 63 }, "a Hasher fed less than a block at a time"),
     (Xof { len: 100, skip: 37, out: 300 }, "extended output of several blocks, from an unaligned position"),
-    (Xof { len: 1500, skip: 64, out: 1100 }, "extended output of sixteen blocks and more (the SME2 extended-output kernel)"),
+    (Xof { len: 1500, skip: 64, out: 1600 }, "extended output of twenty-five blocks: SME2's sixteen, then x8 and x1"),
 ];
 
 /// The cases elsewhere (x86-64 and portable builds), each kernel
@@ -166,7 +166,7 @@ pub(crate) const INPUT_LEN: usize = 32 * KIB + 8;
 pub(crate) const INPUT_LEN: usize = 5 * KIB + 512;
 
 /// The most output any case writes (an extended output's).
-pub(crate) const OUTPUT_LEN: usize = 1100;
+pub(crate) const OUTPUT_LEN: usize = 1600;
 
 /// The largest batch a Many case lays out, offset included (AArch64: ten
 /// one-chunk messages; elsewhere seventeen of 64 bytes).
@@ -275,7 +275,7 @@ const EXPECTED: [u64; 42] = [
     0x7b0a14d718f0ed3c,
     0x86659376d6731ca2,
     0xeb7d3b584a6ab00f,
-    0x111e3aad797a5c0c,
+    0x4ec390a6848cb5f5,
 ];
 
 #[cfg(not(target_arch = "aarch64"))]
