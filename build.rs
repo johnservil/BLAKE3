@@ -181,6 +181,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "blake3-servil runs on x86-64 Linux and on 64-bit Arm Linux and macOS; for {}, use official BLAKE3 (https://github.com/BLAKE3-team/BLAKE3)",
         var("TARGET")
     );
+    if env::var_os("CARGO_FEATURE_METAL").is_some() {
+        assert!(env::var("CARGO_CFG_TARGET_OS")? == "macos" && is_aarch64(), "metal requires Apple Silicon macOS");
+        println!("cargo:rerun-if-changed=c/metal.mm");
+        println!("cargo:rerun-if-changed=c/blake3.metal");
+        let source = std::fs::read_to_string("c/blake3.metal")?;
+        let out = std::path::PathBuf::from(env::var_os("OUT_DIR").unwrap());
+        std::fs::write(out.join("shader.inc"), format!("static const char shader_source[] = R\"B3METAL({source})B3METAL\";"))?;
+        cc::Build::new().cpp(true).file("c/metal.mm").include(out).flag("-std=c++17").flag("-fobjc-arc").compile("blake3_metal");
+        println!("cargo:rustc-link-lib=framework=Foundation");
+        println!("cargo:rustc-link-lib=framework=Metal");
+        println!("cargo:rustc-link-lib=framework=IOKit");
+    }
+
     // If CFLAGS is set, make sure LTO is disabled by appending -fno-lto. (We can't do this with
     // .flag() later on, because CFLAGS takes precedence.) Any mismatch between the C compiler and
     // the Rust linker can cause linker errors in our C intrinsics implementations if LTO is

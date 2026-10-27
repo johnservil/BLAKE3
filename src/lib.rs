@@ -1427,3 +1427,6 @@ impl Zeroize for OutputReader {
         position_within_block.zeroize();
     }
 }
+
+#[cfg(all(feature = "metal", target_os = "macos", target_arch = "aarch64"))]
+pub mod metal;

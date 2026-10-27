@@ -59,6 +59,42 @@ It runs on 64-bit Arm (Linux, macOS) and x86-64 (Linux, a CPU with SSE4.1: Intel
 2008, AMD since 2011) with the latest stable Rust; [official BLAKE3](https://github.com/BLAKE3-team/BLAKE3)
 serves other platforms.
 
+## Experimental Apple Silicon GPU hashing
+
+Build with `--features metal` for `blake3_servil::metal::Hasher` on macOS: after
+`initialize_multithreaded(None)`, construct one with `Hasher::new()` and reuse it.
+Its one call is a stream, `Hasher::stream(mode, done, body)`, which works like the
+crate's `performance::stream`: the program writes each message into the stream's own
+memory with `submit_with` and goes on to the next while the hashing runs, and each
+digest comes back through `done` as it is done. Messages of the GPU's threshold and
+more go whole to the GPU, several queued so that it stays at its full clock; shorter
+ones go to the CPU pool's stream, which is faster for them. The threshold is 8 MiB on
+an M4 Pro's 20 GPU cores and scales with the core count elsewhere, unmeasured there.
+Every `Mode` works. The
+order is narrower than the CPU stream's: each device hands its digests back in
+submission order, with no order between the two, so each place names its message.
+
+On an Apple M4 Pro, streams of messages of 16 MiB and more run at about twice the
+CPU stream's rate when each message is copied in, since the copy then bounds both.
+With the messages already in place the GPU stream runs at three times the CPU's rate
+(111 GB/s at 64 MiB), using about 5% of the CPU time. A GPU hashing one message at a
+time loses instead: it idles at 338 MHz between calls and reaches 1578 MHz only under
+a queue, and no public API sets the state, which is why there is no one-shot call.
+
+```sh
+cargo run --release --features metal --example metal -- --file FILE
+cargo run --release --features metal --example metal -- --stream 64   # streams, MiB
+cargo run --release --features metal --example metal -- --tiny 64     # short messages
+cargo nextest run --release --features metal --test metal
+```
+
+The example's sweeps record wall time and calling-thread CPU cycles through `clocks`
+and are diagnostic; speed claims use `bench-hashes check --metal` from the
+[companion benchmark branch](https://github.com/zksecurity/bench-hashes/tree/candidate/metal-check),
+which pairs the fork's CPU stream with its Metal stream over the benchmark's
+continuous-messages sizes, with load checks and the usual verdict rule. The Metal
+tests require GPU access.
+
 ## About BLAKE3
 
 BLAKE3 is a cryptographic hash function: fast, secure, and parallel, serving as a hash,
