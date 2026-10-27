@@ -372,9 +372,9 @@ src/platform.rs	replace && with || in read_x86_features	2	on this CPU every test
 src/platform.rs	replace && with || in sme2_reported	1	detection, on a machine with SME2: a wrong no runs NEON (equally correct), a wrong yes is this machine's answer (a machine without SME2 would stop on it)
 src/platform.rs	replace * with + in Platform::xof_many	1	speed: moves a threshold between equally correct paths
 src/platform.rs	replace * with / in Platform::xof_many	1	speed: moves a threshold between equally correct paths
-src/platform.rs	replace += with *= in Platform::xof_many	2	code for another machine: the SME2 and NEON blocks in xof_many are compiled out on x86
+src/platform.rs	replace += with *= in Platform::xof_many	1	code for another machine: the SME2 and NEON blocks in xof_many are compiled out on x86
 src/platform.rs	replace += with *= in prefetch_code	1	speed: whether and what to prefetch after a pause (no effect on results)
-src/platform.rs	replace += with -= in Platform::xof_many	2	code for another machine: the SME2 and NEON blocks in xof_many are compiled out on x86
+src/platform.rs	replace += with -= in Platform::xof_many	1	code for another machine: the SME2 and NEON blocks in xof_many are compiled out on x86
 src/platform.rs	replace += with -= in prefetch_code	1	AArch64 only: prefetch_code is cfg(blake3_neon), compiled out on x86; prefetching changes no result
 src/platform.rs	replace / with % in Platform::xof_many	2	code for another machine: the SME2 and NEON blocks in xof_many are compiled out on x86
 src/platform.rs	replace / with % in ticks_in_100_us	1	AArch64 only: ticks_in_100_us is cfg(blake3_neon), compiled out on x86
