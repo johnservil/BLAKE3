@@ -26,15 +26,10 @@ else
 fi
 code=$(git diff --cached --name-only -- src c build.rs Cargo.toml Cargo.lock)
 [ -z "$code" ] && exit 0
-# The tree being committed, before and after: the check must leave it alone
-# (a check that rewrote the index once committed HEAD's tree instead).
-tree=$(git write-tree)
-(cd "$(git rev-parse --show-toplevel)/bench-hashes" && cargo run --release --quiet -- check)
+# git hands a hook GIT_DIR and GIT_INDEX_FILE, naming this checkout; the
+# check runs git in checkouts of its own, so it runs without them.
+(cd "$top/bench-hashes" && env -u GIT_DIR -u GIT_INDEX_FILE cargo run --release --quiet -- check)
 verdict=$?
-if [ "$(git write-tree)" != "$tree" ]; then
-    echo "pre-commit: the performance check changed the index being committed; commit aborted."
-    exit 1
-fi
 case $verdict in
 0) exit 0 ;;
 2) echo "pre-commit: the performance check gave no verdict (above); committing. Check again on a quiet machine."; exit 0 ;;
