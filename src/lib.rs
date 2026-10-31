@@ -182,6 +182,14 @@ pub mod convenience;
 mod each;
 #[cfg(blake3_gpu)]
 mod gpu;
+
+/// For probes: long stream messages hashed on the GPU, on the CPU from a
+/// GPU slot, and races the CPU won, in this process.
+#[cfg(blake3_gpu)]
+#[doc(hidden)]
+pub fn __gpu_counts() -> [usize; 3] {
+    gpu::COUNTS.each_ref().map(|c| c.load(core::sync::atomic::Ordering::Relaxed))
+}
 pub mod performance;
 
 mod platform;
