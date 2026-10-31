@@ -1019,6 +1019,9 @@ mod test {
             )
         }));
         assert!(caught.is_err());
+        // Computed once: hashing it between streams would pause the run of
+        // long messages past its 5 ms gap and disengage the GPU.
+        let want = crate::convenience::hash(&input);
         let before = GPU_MESSAGES.load(Ordering::Relaxed);
         for _ in 0..20 {
             let mut got = [Hash::from_bytes([0; 32]); 4];
@@ -1039,7 +1042,7 @@ mod test {
                     s.finish();
                 },
             );
-            assert!(got.iter().all(|h| *h == crate::convenience::hash(&input)));
+            assert!(got.iter().all(|h| *h == want));
         }
         assert!(GPU_MESSAGES.load(Ordering::Relaxed) > before, "the slots came back after the panic");
     }
