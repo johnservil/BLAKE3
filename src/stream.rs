@@ -363,6 +363,25 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
     pub fn submit(&mut self, message: &'env [crate::performance::Block], len: usize, out: &'env mut Hash) {
         let message: &'env [u8] = &crate::performance::Block::bytes(message)[..len];
         let out: *mut Hash = out;
+        // With the GPU engaged and free: a copy into a slot (the program's
+        // one thread copies faster than the pool hashes) for the GPU; else
+        // the pool reads the message where it is, as always.
+        #[cfg(blake3_gpu)]
+        if (crate::gpu::MIN_LEN..=crate::gpu::MAX_LEN).contains(&len)
+            && self.s.run.engaged()
+            && crate::gpu::ready()
+            && self.submit_slot(
+                len,
+                &mut |at, room: &mut [u8]| {
+                    room.copy_from_slice(&message[at..][..room.len()]);
+                    room.len()
+                },
+                out,
+                true,
+            )
+        {
+            return;
+        }
         let pieces = message.len().div_ceil(PIECE).max(1);
         for i in 0..pieces {
             let part = &message[i * PIECE..][..(message.len() - i * PIECE).min(PIECE)];
@@ -389,7 +408,11 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
     pub fn submit_with(&mut self, len: usize, mut fill: impl FnMut(usize, &mut [u8]) -> usize, out: &'env mut Hash) {
         let out: *mut Hash = out;
         #[cfg(blake3_gpu)]
-        if (crate::gpu::MIN_LEN..=crate::gpu::MAX_LEN).contains(&len) && self.s.run.engaged() && crate::gpu::ready() && self.submit_slot(len, &mut fill, out) {
+        if (crate::gpu::MIN_LEN..=crate::gpu::MAX_LEN).contains(&len)
+            && self.s.run.engaged()
+            && crate::gpu::ready()
+            && self.submit_slot(len, &mut fill, out, false)
+        {
             return;
         }
         let pieces = len.div_ceil(PIECE).max(1);
@@ -688,14 +711,19 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
     /// hash its pieces from the slot as the program writes them (no ring
     /// bytes, as `submit` hashes a borrowed message), so the CPU's messages
     /// never wait for ring room behind the GPU's. False, with nothing
-    /// written, when no slot is free: the ring takes it.
+    /// written, when no slot is free (the ring takes it), and when
+    /// `gpu_only` and the GPU is not free (the caller hashes the message
+    /// where it is).
     #[cfg(blake3_gpu)]
     #[inline(never)]
-    fn submit_slot(&mut self, len: usize, fill: &mut impl FnMut(usize, &mut [u8]) -> usize, out: *mut Hash) -> bool {
+    fn submit_slot(&mut self, len: usize, fill: &mut impl FnMut(usize, &mut [u8]) -> usize, out: *mut Hash, gpu_only: bool) -> bool {
         let handed = self.delivered;
         let s = &mut *self.s;
         let slots = s.gpu.get_or_insert_with(crate::gpu::Slots::new);
         let Some((slot, on_gpu)) = slots.free(len, &s.lefts, handed) else { return false };
+        if gpu_only && !on_gpu {
+            return false;
+        }
         let room = slots.room(slot, len);
         if on_gpu {
             for (i, piece) in room.chunks_mut(PIECE).enumerate() {
@@ -1000,6 +1028,38 @@ mod test {
         let (gpu, races) = (GPU_MESSAGES.load(Ordering::Relaxed), GPU_RACES_WON.load(Ordering::Relaxed));
         std::eprintln!("{gpu} messages on the GPU; the CPU won {races} races");
         assert!(gpu > 0, "the GPU hashed some messages");
+    }
+
+    /// Borrowed long messages (`submit`) with the GPU engaged: copied into
+    /// slots for the GPU when it is free, else read where they are; each
+    /// digest the CPU's, in every mode, handed back in order.
+    #[cfg(blake3_gpu)]
+    #[test]
+    fn test_gpu_borrowed_messages() {
+        gpu_ready();
+        let mut input = std::vec![0u8; (16 << 20) + 300];
+        crate::test::paint_test_input(&mut input);
+        let blocks = crate::test::message(&input);
+        let key = [3u8; 32];
+        let lens = [4 << 20, (4 << 20) + 1, (5 << 20) + 1023, 16 << 20, (6 << 20) + 7, 64, (4 << 20) - 1];
+        let before = GPU_MESSAGES.load(Ordering::Relaxed);
+        for mode in [Mode::Plain, Mode::Keyed(&key), Mode::DeriveKey("gpu borrowed test")] {
+            let mut got = places(4 * lens.len());
+            let want_handed: std::vec::Vec<(usize, usize)> = got.iter().map(|h| (h as *const Hash as usize, 1)).collect();
+            let mut handed = std::vec::Vec::new();
+            stream(mode, record(&mut handed), |s| {
+                for (i, out) in got.iter_mut().enumerate() {
+                    s.submit(&blocks[i % 3..], lens[i % lens.len()], out);
+                }
+                s.finish();
+            });
+            assert!(handed == want_handed, "every place handed back once, in order");
+            for (i, got) in got.iter().enumerate() {
+                let message = &input[64 * (i % 3)..][..lens[i % lens.len()]];
+                assert_eq!(*got, crate::convenience::hash_with(mode, message), "message {i}");
+            }
+        }
+        assert!(GPU_MESSAGES.load(Ordering::Relaxed) > before, "the GPU hashed some borrowed messages");
     }
 
     /// Streams that finish right after each long message, so that the
