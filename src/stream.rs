@@ -553,6 +553,10 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
     /// is handed over first); a piece of a long message is a task of its
     /// own, a whole subtree at its offset; an empty batch's one part is no
     /// task (done as it is added).
+    // Always inlined, as it was before the GPU's code grew submit_with
+    // past the size where the compiler still inlined it (64-byte messages
+    // 9.5% slower with a call here, job 1741).
+    #[inline(always)]
     fn add_part(&mut self, input: *const u8, len: usize, kind: Kind, ring_end: usize, out: *mut u8) {
         let entry = self.add_entry(len, kind, ring_end);
         let batch = match kind {
