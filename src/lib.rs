@@ -180,6 +180,8 @@ mod block;
 pub mod convenience;
 #[cfg(feature = "std")]
 mod each;
+#[cfg(blake3_gpu)]
+mod gpu;
 pub mod performance;
 
 mod platform;
