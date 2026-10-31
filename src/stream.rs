@@ -1036,30 +1036,38 @@ mod test {
     #[cfg(blake3_gpu)]
     #[test]
     fn test_gpu_borrowed_messages() {
-        gpu_ready();
+        // Everything prepared, and every digest checked, outside the streams:
+        // a pause of more than 5 ms between long messages ends the run and
+        // disengages the GPU.
         let mut input = std::vec![0u8; (16 << 20) + 300];
         crate::test::paint_test_input(&mut input);
         let blocks = crate::test::message(&input);
         let key = [3u8; 32];
         let lens = [4 << 20, (4 << 20) + 1, (5 << 20) + 1023, 16 << 20, (6 << 20) + 7, 64, (4 << 20) - 1];
+        let modes = [Mode::Plain, Mode::Keyed(&key), Mode::DeriveKey("gpu borrowed test")];
+        let mut got: std::vec::Vec<std::vec::Vec<Hash>> = modes.iter().map(|_| places(4 * lens.len())).collect();
+        let mut handed: std::vec::Vec<std::vec::Vec<(usize, usize)>> = modes.iter().map(|_| std::vec::Vec::new()).collect();
+        let want_handed: std::vec::Vec<std::vec::Vec<(usize, usize)>> =
+            got.iter().map(|g| g.iter().map(|h| (h as *const Hash as usize, 1)).collect()).collect();
+        gpu_ready();
         let before = GPU_MESSAGES.load(Ordering::Relaxed);
-        for mode in [Mode::Plain, Mode::Keyed(&key), Mode::DeriveKey("gpu borrowed test")] {
-            let mut got = places(4 * lens.len());
-            let want_handed: std::vec::Vec<(usize, usize)> = got.iter().map(|h| (h as *const Hash as usize, 1)).collect();
-            let mut handed = std::vec::Vec::new();
-            stream(mode, record(&mut handed), |s| {
+        for ((mode, got), handed) in modes.iter().zip(got.iter_mut()).zip(handed.iter_mut()) {
+            stream(*mode, record(handed), |s| {
                 for (i, out) in got.iter_mut().enumerate() {
                     s.submit(&blocks[i % 3..], lens[i % lens.len()], out);
                 }
                 s.finish();
             });
-            assert!(handed == want_handed, "every place handed back once, in order");
-            for (i, got) in got.iter().enumerate() {
+        }
+        let gpu = GPU_MESSAGES.load(Ordering::Relaxed) - before;
+        for (m, mode) in modes.iter().enumerate() {
+            assert!(handed[m] == want_handed[m], "every place handed back once, in order");
+            for (i, got) in got[m].iter().enumerate() {
                 let message = &input[64 * (i % 3)..][..lens[i % lens.len()]];
-                assert_eq!(*got, crate::convenience::hash_with(mode, message), "message {i}");
+                assert_eq!(*got, crate::convenience::hash_with(*mode, message), "message {i}");
             }
         }
-        assert!(GPU_MESSAGES.load(Ordering::Relaxed) > before, "the GPU hashed some borrowed messages");
+        assert!(gpu > 0, "the GPU hashed some borrowed messages");
     }
 
     /// Streams that finish right after each long message, so that the
