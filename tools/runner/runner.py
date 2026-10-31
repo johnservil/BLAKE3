@@ -166,12 +166,21 @@ class Job:
         """The fork with bench-hashes nested inside it, where bench-hashes'
         path dependency (`..`) expects the fork; both kept between jobs.
         The fork's status leaves out bench-hashes and check's target/,
-        as the maintainers' checkout does."""
+        as the maintainers' checkout does, and anything else untracked is
+        removed before each job."""
         CHECKOUTS.mkdir(exist_ok=True)
         fork = CHECKOUTS / "fork"
         self.sync(FORK_URL, fork, fork_commit)
         (fork / ".git/info").mkdir(exist_ok=True)
-        (fork / ".git/info/exclude").write_text("/bench-hashes/\n/tmp/\n")
+        # The nested bench, the scratch folder, and build-against's copy of
+        # the bench beside it (check.rs: a nested bench builds from
+        # .bench-hashes-build) are the runner's, not the fork's.
+        (fork / ".git/info/exclude").write_text("/bench-hashes/\n/tmp/\n/.bench-hashes-build/\n")
+        # Anything else untracked goes, so the fork reads as the commit the
+        # job names: three nested bench clones that probe examples left in
+        # September and October made every build's provenance read dirty
+        # (job 1778). Ignored and excluded paths stay (target/, the above).
+        self.run(["git", "clean", "-ffd", "--quiet"], cwd=fork)
         if bench_commit is not None:
             self.sync(BENCH_URL, fork / "bench-hashes", bench_commit)
         return fork
