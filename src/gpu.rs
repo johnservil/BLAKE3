@@ -13,10 +13,11 @@
 //! 64 MiB message took 17.8 ms, where the CPU pool takes 1.4: the stream
 //! never waits on it (see `stream`'s race).
 //!
-//! **Starting.** The first long message a stream sees starts the GPU on a
-//! thread of its own and goes to the CPU; later ones use the GPU once it
-//! is ready. A program that never streams long messages never starts
-//! Metal. The start checks the GPU's digests against the CPU's and stops
+//! **Engaging.** A stream takes the GPU only under sustained load: once
+//! its run of long messages has lasted 10 ms (`Run`). The first such
+//! message starts the GPU on a thread of its own and goes to the CPU;
+//! later ones use the GPU once it is ready. A program that never streams
+//! long messages for that long never starts Metal. The start checks the GPU's digests against the CPU's and stops
 //! the program if they differ (a wrong digest is never returned). Where
 //! Metal has no device, the CPU hashes everything, as on any machine.
 
@@ -47,6 +48,40 @@ pub(crate) const MAX_LEN: usize = 64 << 20;
 /// A stream's slots: one the GPU hashes while the program writes the next
 /// (writing, about 65 GB/s, is slower than the GPU's hashing, 200+).
 pub(crate) const SLOTS: usize = 2;
+
+/// A stream engages the GPU once its run of long messages (each within
+/// RUN_GAP of the one before) has lasted RUN_ENGAGE: the GPU takes 30-40 ms
+/// of load to reach its clock and cools within about 5 ms of idle, so a
+/// burst shorter than this finds it cold, and the CPU, which hashes a
+/// message's pieces as the program writes them, finishes first. A program
+/// that streams only bursts never starts Metal.
+const RUN_GAP: std::time::Duration = std::time::Duration::from_millis(5);
+const RUN_ENGAGE: std::time::Duration = std::time::Duration::from_millis(10);
+
+/// A stream storage's run of long messages.
+pub(crate) struct Run {
+    started: std::time::Instant,
+    last: std::time::Instant,
+}
+
+impl Run {
+    pub(crate) fn new() -> Self {
+        let now = std::time::Instant::now();
+        Run { started: now, last: now - RUN_GAP - RUN_GAP }
+    }
+
+    /// Count a long message in the run: whether the run has lasted long
+    /// enough to engage the GPU.
+    #[inline]
+    pub(crate) fn engaged(&mut self) -> bool {
+        let now = std::time::Instant::now();
+        if now.duration_since(self.last) > RUN_GAP {
+            self.started = now;
+        }
+        self.last = now;
+        now.duration_since(self.started) >= RUN_ENGAGE
+    }
+}
 
 const COLD: u8 = 0;
 const STARTING: u8 = 1;
