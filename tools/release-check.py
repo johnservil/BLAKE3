@@ -18,7 +18,8 @@ and the rest timed out or have no verdict.
 - Long proofs: the commit's GitHub status "long proofs" (long-proofs.sh).
 - Mac check: runner/results/*/verdict.json whose job names this commit as
   new_commit and the previous release as old_commit (a "check" job with
-  "cells": "all").
+  "cells": "all"), run on AC power from start to end (its verdict's "power
+  at start" and "power at end"); on battery it is NO VERDICT.
 - The logs, each named for the commit it ran on (C: the commit's first 12
   hex digits), so an earlier commit's log cannot stand in for it:
   - VM check: tmp/night/check-release-vm-C.log, from
@@ -182,7 +183,7 @@ def main():
     except GitHubTimedOut as e:
         step("long proofs", TIMED_OUT, str(e))
 
-    mac = None
+    mac, mac_power = None, None
     for verdict in sorted(glob.glob(os.path.join(MAIN, "runner/results/*/verdict.json"))):
         v = json.loads(Path(verdict).read_text())
         job = os.path.join(MAIN, "runner/jobs", v["job"])
@@ -193,13 +194,19 @@ def main():
                 and j.get("new_commit") == commit
                 and (previous is None or j.get("old_commit") == git("rev-parse", previous))):
             mac = v["status"]
+            # A check on battery measures the efficiency cores' clock, not
+            # the machine's (job 351; jobs 1696 and 1697 passed so, #202):
+            # it is no evidence. Both readings must say AC power.
+            readings = [v.get("power at start", ""), v.get("power at end", "")]
+            mac_power = next((r or "unrecorded" for r in readings if not r.startswith("AC Power")), None)
     # The runner's verdict, each status as itself: "timed out" (its limit
     # ended the job) and "no verdict" (the machine was busy) are neither a
     # pass nor a regression.
     step("Mac check against the previous release",
-         None if mac is None else TIMED_OUT if mac == "timed out" else NO_VERDICT if mac == "no verdict" else mac == "no regression",
+         None if mac is None else TIMED_OUT if mac == "timed out" else NO_VERDICT if mac == "no verdict" or mac_power else mac == "no regression",
          f"a check job (cells all) with old_commit {previous or '<the main line before this release>'} and new_commit {commit[:10]}, and old_bench_commit when the old side predates the bench's calls"
-         + (f" (the last one: {mac})" if mac in ("timed out", "no verdict") else ""))
+         + (f" (the last one: {mac})" if mac in ("timed out", "no verdict") else "")
+         + (f" (the last one ran off AC power: {mac_power}; run it again plugged in)" if mac_power else ""))
 
     step("VM check against the previous release", log_ends_with(f"tmp/night/check-release-vm-{commit[:12]}.log", "no cell slower"),
          f"(cd ../bench-hashes && cargo run --release -- check --fork {ROOT} --against {previous or '<the main line before this release>'} --cells all [--old-bench <bench commit>]) > tmp/night/check-release-vm-{commit[:12]}.log")

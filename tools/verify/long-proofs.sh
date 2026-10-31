@@ -80,10 +80,14 @@ sha=$(cat "$logs"/*.txt | sha256sum | cut -d' ' -f1)
 # beside the verdict.
 description="$verdict; base64url SHA-256 $(b64 $sha) BLAKE3 $(b64 $b3)"
 [ ${#description} -le 140 ] || { echo "long-proofs: the status description is ${#description} characters, over GitHub's 140: $description" >&2; exit 1; }
-status "$state" "$description"
+# The record first, then the status: a post that fails (a network down)
+# loses no green run, and running this again posts it without proving
+# again (the record's path above, #197).
 if [ "$state" = success ]; then
 	mkdir -p "$root/tmp/long-proofs/inputs"
 	printf '%s\n%s\n%s\n' "$commit" "$sha" "$b3" > "$record"
 fi
+status "$state" "$description" ||
+	{ echo "long-proofs: the status post failed; the run's record is kept, so running this again posts it without proving again" >&2; exit 1; }
 echo "long proofs $verdict for $commit; logs in $logs, SHA-256 $sha, BLAKE3 $b3 (hex)"
 [ "$state" = success ]

@@ -70,7 +70,7 @@ class CI(unittest.TestCase):
 
 
 class ReleaseEvidence(unittest.TestCase):
-    def run_gate(self, cells="all", kind="check", ci_jobs=None, new=HEAD, old=OLD, verdict="no regression", git_override=None, ci_event="workflow_dispatch", mutation_log=MUTATION_OK):
+    def run_gate(self, cells="all", kind="check", ci_jobs=None, new=HEAD, old=OLD, verdict="no regression", git_override=None, ci_event="workflow_dispatch", mutation_log=MUTATION_OK, power=("AC Power, 100%", "AC Power, 100%")):
         jobs = [job(), job()] if ci_jobs is None else ci_jobs
         def git(*args):
             if args[0] == "rev-parse":
@@ -100,7 +100,8 @@ class ReleaseEvidence(unittest.TestCase):
             if cells is not None:
                 task["cells"] = cells
             (root / "runner/jobs/job.json").write_text(json.dumps(task))
-            (root / "runner/results/1/verdict.json").write_text(json.dumps({"job": "job.json", "status": verdict}))
+            readings = {k: v for k, v in zip(("power at start", "power at end"), power) if v is not None}
+            (root / "runner/results/1/verdict.json").write_text(json.dumps({"job": "job.json", "status": verdict, **readings}))
             logs = root / "tmp/night"
             logs.mkdir(parents=True)
             candidate = (git_override or git)("rev-parse", "candidate")[:12]
@@ -128,6 +129,15 @@ class ReleaseEvidence(unittest.TestCase):
         code, output = self.run_gate(ci_jobs=[job(), job("skipped")])
         self.assertEqual(code, 1)
         self.assertIn("OPEN  CI, every job", output)
+
+    def test_mac_off_ac_power_is_no_verdict(self):
+        # A check on battery measures the efficiency cores (#202): no
+        # evidence, whether it started, ended or went unrecorded so.
+        for power in [("Battery Power, 20%", "Battery Power, 12%"), ("AC Power, 100%", "Battery Power, 98%"), ("AC Power, 100%", None)]:
+            code, output = self.run_gate(power=power)
+            self.assertEqual(code, 2, power)
+            self.assertIn("NO VERDICT  Mac check", output)
+            self.assertIn("run it again plugged in", output)
 
     def test_partial_mac_not_pass(self):
         code, output = self.run_gate(cells=None)
