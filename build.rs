@@ -229,6 +229,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    // Probe branch: the probe's own Metal bridge (src/metal.rs, kobizk's),
+    // for a GPU load beside the stream being measured.
+    if env::var("CARGO_CFG_TARGET_OS").unwrap_or_default() == "macos" && is_aarch64() && env::var_os("BLAKE3_SKIP_GPU_BUILD").is_none() {
+        let source = std::fs::read_to_string("c/blake3.metal")?;
+        let out = std::path::PathBuf::from(env::var_os("OUT_DIR").unwrap());
+        std::fs::write(out.join("shader.inc"), format!("static const char shader_source[] = R\"B3METAL({source})B3METAL\";"))?;
+        cc::Build::new().cpp(true).file("c/metal.mm").include(out).flag("-std=c++17").flag("-fobjc-arc").compile("blake3_metal");
+        println!("cargo::rustc-link-lib=framework=Foundation");
+        println!("cargo::rustc-link-lib=framework=Metal");
+    }
+
     // The `cc` crate doesn't automatically emit rerun-if directives for the
     // environment variables it supports, in particular for $CC. We expect to
     // do a lot of benchmarking across different compilers, so we explicitly
