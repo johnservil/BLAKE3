@@ -45,6 +45,10 @@ library tests, the doc tests, the
 integration tests in tests/ (the planned API's contract), and the
 official vectors.)
 
+(A benchmark job may add "train": [W_MS, S] and "nonstop_visits": N, the
+continuous-load proposal's tests: bench-hashes' --train and
+--nonstop-visits.)
+
 (A benchmark job with "repeat": N runs the benchmark N times back to
 back, run i's files in run-i/, for calibrations.)
 
@@ -189,6 +193,16 @@ def benchmark(job, run, work, out):
     if "rounds" in job:
         assert isinstance(job["rounds"], int) and job["rounds"] > 0, "rounds must be a positive integer"
         args += ["--rounds", str(job["rounds"])]
+    # The continuous-load proposal's tests (bench-hashes FROZEN.md, October
+    # 31, 2026): a nonstop visit's warm-up and samples, and a cell's visits.
+    if "train" in job:
+        train = job["train"]
+        assert isinstance(train, list) and len(train) == 2 and all(isinstance(x, int) and x >= 0 for x in train) and train[1] > 0, \
+            "train is [warm-up ms, samples a visit]"
+        args += ["--train", f"{train[0]},{train[1]}"]
+    if "nonstop_visits" in job:
+        assert isinstance(job["nonstop_visits"], int) and job["nonstop_visits"] > 0, "nonstop_visits must be a positive integer"
+        args += ["--nonstop-visits", str(job["nonstop_visits"])]
     repeat = job.get("repeat", 1)
     assert isinstance(repeat, int) and 1 <= repeat <= 100, "repeat must be 1-100"
     fork_commit = hex_commit(job, "fork_commit")
