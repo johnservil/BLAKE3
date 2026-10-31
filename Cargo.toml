@@ -24,6 +24,9 @@ default = ["std"]
 # toggles a runtime feature check on 64-bit ARM targets.
 std = ["constant_time_eq/std"]
 
+# Experimental Apple Silicon GPU and concurrent CPU/GPU hashing.
+metal = ["std"]
+
 # Implement the zeroize::Zeroize trait for types in this crate.
 zeroize = ["dep:zeroize", "arrayvec/zeroize"]
 
@@ -120,3 +123,7 @@ overflow-checks = true
 [profile.mutants]
 inherits = "release"
 incremental = true
+
+[[example]]
+name = "metal"
+required-features = ["metal"]
