@@ -88,6 +88,69 @@ fn main() {
                 println!("bursts,{len},2,{calls},{},{}", ns / u128::from(calls), (bytes * 1000 + ns / 2) / ns);
             }
         }
+        "mixed" => {
+            // One long message, then 256 messages of 4 KiB, again and again,
+            // in one stream: about 2 GiB of long messages.
+            println!("case,long_bytes,rounds,calls,ns_per_call,MB_s,cores");
+            for len in [4 * MIB, 16 * MIB] {
+                let (src, expected) = source(len);
+                let small: Vec<u8> = (0..4096).map(|i| (i % 13) as u8).collect();
+                let small_expected = blake3_servil::convenience::hash(&small);
+                let rounds = 2048 * MIB / len;
+                let mut places = vec![Hash::from_bytes([0; 32]); rounds * 257];
+                let run = |places: &mut [Hash]| {
+                    performance::stream(
+                        Mode::Plain,
+                        |_: &mut [Hash]| {},
+                        |s| {
+                            for (k, out) in places.iter_mut().enumerate() {
+                                let m: &[u8] = if k % 257 == 0 { &src } else { &small };
+                                s.submit_with(
+                                    m.len(),
+                                    |at, room| {
+                                        room.copy_from_slice(&m[at..][..room.len()]);
+                                        room.len()
+                                    },
+                                    out,
+                                );
+                            }
+                            s.finish();
+                        },
+                    );
+                };
+                run(&mut places);
+                assert!(places.iter().enumerate().all(|(k, p)| *p == if k % 257 == 0 { expected } else { small_expected }));
+                let samples = clocks::measure(6, 300_000_000, || run(&mut places));
+                let (ns, calls) = clocks::summary::mean_totals(samples.iter().map(|s| (s.wall_ns, s.calls)));
+                let cpu: u128 = samples.iter().map(|s| u128::from(s.cpu_ns.unwrap_or(0))).sum();
+                let bytes = ((len + 256 * 4096) * rounds) as u128 * calls;
+                println!("mixed,{len},{rounds},{calls},{},{},{}", ns / calls, (bytes * 1000 + ns / 2) / ns, cpu * 100 / ns);
+            }
+        }
+        "two" => {
+            // Two threads, each streaming its own long messages at once.
+            println!("case,message_bytes,messages_each,ns_wall,MB_s_total");
+            for len in [4 * MIB, 16 * MIB] {
+                let (src, expected) = source(len);
+                let count = 1024 * MIB / len;
+                let one = |src: &[u8]| {
+                    let mut places = vec![Hash::from_bytes([0; 32]); count];
+                    for _ in 0..4 {
+                        stream_all(src, &mut places, expected);
+                    }
+                };
+                one(&src);
+                let samples = clocks::measure(4, 500_000_000, || {
+                    std::thread::scope(|scope| {
+                        scope.spawn(|| one(&src));
+                        scope.spawn(|| one(&src));
+                    });
+                });
+                let (ns, calls) = clocks::summary::mean_totals(samples.iter().map(|s| (s.wall_ns, s.calls)));
+                let bytes = (2 * 4 * count * len) as u128 * calls;
+                println!("two,{len},{},{},{}", 4 * count, ns / calls, (bytes * 1000 + ns / 2) / ns);
+            }
+        }
         "power" => {
             println!("phase,name,start_unix_ms,end_unix_ms,bytes,MB_s");
             for round in 0..2 {
