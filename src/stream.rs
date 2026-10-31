@@ -51,9 +51,9 @@ const RING_BYTES: usize = 2 << 20;
 const ENTRIES: usize = 1024;
 
 /// The pool's share of a GPU message between two looks at the GPU, when
-/// this thread races it (`Stream::race`): 4 MiB, about 0.1 ms of the pool.
+/// this thread races it (`Stream::race`): 1 MiB, about 25 us of the pool.
 #[cfg(blake3_gpu)]
-const RACE_PIECE: usize = 4 << 20;
+const RACE_PIECE: usize = 1 << 20;
 
 /// One message, one piece of a long one, or one part of a batch, from its
 /// submission to its delivery: what the program's thread keeps of it. Its
@@ -90,11 +90,12 @@ enum Kind {
     /// ([`Stream::submit_reader`]): no digest; its pieces' chaining values
     /// are dropped.
     Abandoned,
-    /// A long message the program wrote into a GPU slot ([`crate::gpu`]):
-    /// done when the slot's command is, or when this thread, waiting for
-    /// it, hashed the slot's bytes first (the race in `help`).
+    /// A long message the program wrote into a GPU slot ([`crate::gpu`]),
+    /// its digest at `out`: its own `left` counts 1 until the digest is
+    /// there, from the slot's command (`Slots::reap`) or from this thread,
+    /// which raced the GPU while waiting for it (`race`).
     #[cfg(blake3_gpu)]
-    Gpu { slot: usize, out: *mut Hash },
+    Gpu { out: *mut Hash },
 }
 
 /// What a task's threads write for a piece of a long message, in
@@ -661,27 +662,27 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
     /// slot is free: the CPU takes it.
     #[cfg(blake3_gpu)]
     fn submit_gpu(&mut self, len: usize, fill: &mut impl FnMut(usize, &mut [u8]) -> usize, out: *mut Hash) -> bool {
-        let slots = self.s.gpu.get_or_insert_with(crate::gpu::Slots::new);
-        let Some(slot) = slots.free() else { return false };
-        let room = slots.room(slot, len);
-        for (i, piece) in room.chunks_mut(PIECE).enumerate() {
+        let s = &mut *self.s;
+        let slots = s.gpu.get_or_insert_with(crate::gpu::Slots::new);
+        let Some(slot) = slots.free(len, &s.lefts) else { return false };
+        for (i, piece) in slots.room(slot, len).chunks_mut(PIECE).enumerate() {
             fill_all(fill, i * PIECE, piece);
         }
-        slots.submit(slot, len, &self.key, self.flags);
+        let head = self.head;
+        let index = self.add_entry(len, Kind::Gpu { out }, head);
+        self.s.lefts[index].store(1, Ordering::Relaxed);
+        self.s.gpu.as_mut().unwrap().submit(slot, len, &self.key, self.flags, index, out);
         #[cfg(test)]
         test::GPU_MESSAGES.fetch_add(1, Ordering::Relaxed);
-        let head = self.head;
-        let index = self.add_entry(len, Kind::Gpu { slot, out }, head);
-        debug_assert_eq!(self.s.lefts[index].load(Ordering::Relaxed), 0);
         true
     }
 
     /// With the oldest entry a GPU message not yet done and nothing else
-    /// to do: hash it here, on the pool, from its slot, a few MiB at a
-    /// time, checking the GPU between them, and hand it back with
-    /// whichever digest comes first. So a cold or slow GPU never sets the
-    /// stream's pace; a GPU that finishes first costs at most one piece of
-    /// the pool's work. Whether this handed an entry back.
+    /// to do: hash it here, on the pool, from its slot, 1 MiB at a time,
+    /// checking the GPU between pieces, and keep whichever digest comes
+    /// first. So a cold or slow GPU never sets the stream's pace, and a
+    /// GPU that finishes first costs at most 1 MiB of the pool's work.
+    /// Whether this finished the entry.
     #[cfg(blake3_gpu)]
     #[cold]
     #[inline(never)]
@@ -689,8 +690,12 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
         if self.delivered == self.next {
             return false;
         }
-        let Entry { len, kind: Kind::Gpu { slot, out }, ring_end, .. } = self.s.entries[self.delivered % ENTRIES] else { return false };
-        let slots = self.s.gpu.as_ref().expect("a GPU entry's slots");
+        let index = self.delivered % ENTRIES;
+        let Entry { len, kind: Kind::Gpu { out }, .. } = self.s.entries[index] else { return false };
+        let s = &mut *self.s;
+        let slots = s.gpu.as_mut().expect("a GPU entry's slots");
+        slots.reap(&s.lefts);
+        let Some(slot) = slots.owing(index) else { return false };
         let mut hasher = crate::incremental::Hasher::from_core(crate::incremental::HasherCore::new_internal(&self.key, self.flags));
         for piece in slots.bytes(slot, len).chunks(RACE_PIECE) {
             if slots.done(slot) {
@@ -698,16 +703,13 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
             }
             hasher.update_multithreaded(piece);
         }
-        let digest = hasher.finalize();
+        // Sound: the place is the program's, lent for the stream's scope,
+        // not yet handed back; its slot will not write it (orphaned).
+        unsafe { *out = hasher.finalize() };
+        slots.orphan(slot);
+        s.lefts[index].store(0, Ordering::Relaxed);
         #[cfg(test)]
         test::GPU_RACES_WON.fetch_add(1, Ordering::Relaxed);
-        self.s.gpu.as_mut().unwrap().orphan(slot);
-        self.delivered += 1;
-        self.tail = ring_end;
-        // Sound: the program lent the place for 'env; handed back once.
-        let place = unsafe { &mut *out };
-        *place = digest;
-        (self.done)(core::slice::from_mut(place));
         true
     }
 
@@ -760,21 +762,11 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
         while self.delivered < self.next {
             let index = self.delivered % ENTRIES;
             let Entry { len, kind, first, ring_end } = self.s.entries[index];
+            // A GPU message not yet done: see whether its slot's command is.
             #[cfg(blake3_gpu)]
-            if let Kind::Gpu { slot, out } = kind {
-                let slots = self.s.gpu.as_mut().expect("a GPU entry's slots");
-                if !slots.done(slot) {
-                    break;
-                }
-                let digest = slots.take(slot);
-                self.delivered += 1;
-                self.tail = ring_end;
-                count += 1;
-                // Sound: the program lent the place for 'env; handed back once.
-                let place = unsafe { &mut *out };
-                *place = digest;
-                (self.done)(core::slice::from_mut(place));
-                continue;
+            if matches!(kind, Kind::Gpu { .. }) && self.s.lefts[first].load(Ordering::Relaxed) != 0 {
+                let s = &mut *self.s;
+                s.gpu.as_mut().expect("a GPU entry's slots").reap(&s.lefts);
             }
             // An entry of no task (an empty batch's part, an abandoned
             // message) has its own `left`, zero.
@@ -790,8 +782,9 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
                 Kind::Message { out } => (self.done)(core::slice::from_mut(unsafe { &mut *out })),
                 Kind::Batch { whole: Some((out, n)), .. } => (self.done)(unsafe { core::slice::from_raw_parts_mut(out, n) }),
                 Kind::Batch { whole: None, .. } => {}
+                // Its digest is in the place (`left` was 0).
                 #[cfg(blake3_gpu)]
-                Kind::Gpu { .. } => unreachable!("handed back above"),
+                Kind::Gpu { out } => (self.done)(core::slice::from_mut(unsafe { &mut *out })),
                 Kind::Abandoned => {
                     self.stack.clear();
                     self.pieces = 0;
@@ -847,11 +840,15 @@ impl<D> Drop for Stream<'_, D> {
             }
         }
         for i in self.delivered..self.next {
-            // A GPU message not handed back: its slot is free once its
-            // command ends (the command reads only the slot).
+            // A GPU message not handed back: its digest is dropped, and its
+            // slot is free once its command ends (it reads only the slot).
             #[cfg(blake3_gpu)]
-            if let Kind::Gpu { slot, .. } = self.s.entries[i % ENTRIES].kind {
-                self.s.gpu.as_mut().unwrap().orphan(slot);
+            if let Kind::Gpu { .. } = self.s.entries[i % ENTRIES].kind {
+                let slots = self.s.gpu.as_mut().unwrap();
+                if let Some(slot) = slots.owing(i % ENTRIES) {
+                    slots.orphan(slot);
+                }
+                self.s.lefts[i % ENTRIES].store(0, Ordering::Relaxed);
                 continue;
             }
             while self.s.lefts[self.s.entries[i % ENTRIES].first].load(Ordering::Acquire) != 0 {
