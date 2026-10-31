@@ -22,6 +22,9 @@
 //!   stream's one handler in submission order, on the program's thread,
 //!   from a submission (when the stream is full), `collect` and `finish`.
 //!   A program waiting hashes tasks no thread has taken.
+//! - On an Apple Silicon Mac under sustained load of long messages, the GPU
+//!   hashes some of them, from slots of memory it shares with the CPU
+//!   (`src/gpu.rs`); the rest of the stream runs as above.
 //!
 //! The messages are borrowed for the scope of [`stream`], which waits for
 //! every task before it returns, also when its body panics: no thread

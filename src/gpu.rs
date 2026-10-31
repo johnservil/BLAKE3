@@ -1,25 +1,42 @@
 //! The GPU of an Apple Silicon Mac, through Metal: where a stream hashes
-//! long messages that the program writes in ([`crate::stream`]).
+//! long messages (4 to 64 MiB) under sustained load ([`crate::stream`]).
 //!
-//! **What it costs and gives** (Apple M4 Max; the probe branch
-//! `probe/metal-gpu`, jobs 1705-1710). Starting Metal takes about 160 ms
-//! the first time in a process (the driver compiles the shader) and 16
-//! threads of Metal's own. Then a stream of 4 to 64 MiB messages that the
-//! program writes into GPU memory hashes at 58-65 GB/s, twice the CPU
-//! stream's 32-33, on one core where the CPU stream keeps twelve busy,
-//! at an eighth of its energy a byte (0.18-0.22 nJ against 1.4-1.8); the
-//! program's own writing is then the limit (in place the GPU reaches 208
-//! GB/s). Idle, the GPU slows within about 5 ms; after 2 s idle its first
-//! 64 MiB message took 17.8 ms, where the CPU pool takes 1.4: the stream
-//! never waits on it (see `stream`'s race).
+//! **How a stream uses it.** Once the GPU is engaged (below), every long
+//! message goes into a slot of memory the CPU and the GPU share: the
+//! program writes it there (`submit_with`), or the stream copies a borrowed
+//! one there (`submit`, only when the GPU will take it). The GPU takes the
+//! message as one command when fewer than four of its commands are in
+//! flight; otherwise the pool's workers hash it from the slot, piece by
+//! piece as it is written. Digests come back in submission order with the
+//! rest. When the program must wait for a GPU message with nothing else to
+//! do, it races the GPU: it hashes the message on the pool, 1 MiB at a
+//! time, and keeps whichever digest comes first. So a cold or busy GPU
+//! never sets the stream's pace, and a GPU slower than the CPU on some
+//! machine keeps its slots busy while the CPU takes the rest.
 //!
-//! **Engaging.** A stream takes the GPU only under sustained load: once
-//! its run of long messages has lasted 10 ms (`Run`). The first such
-//! message starts the GPU on a thread of its own and goes to the CPU;
-//! later ones use the GPU once it is ready. A program that never streams
-//! long messages for that long never starts Metal. The start checks the GPU's digests against the CPU's and stops
-//! the program if they differ (a wrong digest is never returned). Where
-//! Metal has no device, the CPU hashes everything, as on any machine.
+//! **Engaging.** Only under sustained load: once a stream storage's run of
+//! long messages (each within 5 ms of the one before) has lasted 10 ms
+//! (`Run`). The GPU needs 30-40 ms of load to reach its clock and cools
+//! within about 5 ms of idle; a shorter burst finds it cold, and the CPU,
+//! which hashes a message's pieces as they are written, finishes first.
+//! The first engaged message starts Metal on a thread of its own (about
+//! 160 ms, and 16 threads of Metal's) and goes to the CPU. A program that
+//! streams only bursts never starts Metal. The start checks the GPU's
+//! digests against the CPU's in every mode and stops the program if they
+//! differ: a wrong digest is never returned. Without a Metal device, the
+//! CPU hashes everything, as on any machine.
+//!
+//! **What it gives** (Apple M4 Max, `tmp/metal-night` of October 31, 2026).
+//! Sustained streams of 4-64 MiB messages written in: 57-69 GB/s against
+//! the CPU stream's 27-33, on 1-3 cores instead of 12-13, at 0.22-0.26 nJ a
+//! byte against 1.3-1.5 (powermetrics); borrowed ones 54-68 GB/s against
+//! 28-33; two threads streaming 16 MiB messages, 105-108 GB/s together
+//! against 30-36. Beside another program's GPU load, never slower than the
+//! CPU stream. Bursts, as the benchmark's samples are, run as before.
+//!
+//! **What it costs.** Up to 256 MiB of slots for a stream storage, kept
+//! with it for good once engaged (32 slots for 4-8 MiB messages, 4 for
+//! 64 MiB ones), and Metal's start and threads.
 
 use crate::{CVWords, Hash};
 use core::sync::atomic::{AtomicU8, Ordering};
