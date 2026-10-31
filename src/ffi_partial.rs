@@ -70,21 +70,24 @@ fn hash_chunks_with_partial<const W: usize>(
         rot16: rotation(2),
         rot8: rotation(1),
         ctr: [core::array::from_fn(|j| (counter + j as u64) as u32), core::array::from_fn(|j| ((counter + j as u64) >> 32) as u32)],
-        lens: core::array::from_fn(|b| core::array::from_fn(|j| if b == last && j == n { last_len } else { 64 })),
-        flags: core::array::from_fn(|b| {
-            let mut f = flags;
-            if b == 0 {
-                f |= CHUNK_START as u32;
-            }
-            if b == 15 {
-                f |= CHUNK_END as u32;
-            }
-            core::array::from_fn(|j| if b == last && j == n { f | CHUNK_END as u32 } else { f })
-        }),
+        lens: [[64; W]; 16],
+        flags: [[flags; W]; 16],
         last: core::array::from_fn(|i| if i == 0 { 64 * last as u32 } else { 0 }),
         h: [[0; W]; 8],
         snap: [[0; W]; 8],
     };
+    // Every block is whole and carries `flags`, but for three places: each
+    // lane's first block starts a chunk, its sixteenth ends one, and the
+    // partial lane's last block holds `last_len` bytes and ends its chunk.
+    // Filled whole and patched, not entry by entry: built entry by entry,
+    // the 16-by-4 tables unrolled into 20 KB of code that a cold call
+    // fetches (#119).
+    for lane in 0..W {
+        p.flags[0][lane] |= CHUNK_START as u32;
+        p.flags[15][lane] |= CHUNK_END as u32;
+    }
+    p.lens[last][n] = last_len;
+    p.flags[last][n] |= CHUNK_END as u32;
     for (lane, chunk) in whole.iter().enumerate() {
         p.msg[lane] = chunk.as_ptr();
     }
