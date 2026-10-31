@@ -82,13 +82,27 @@ pub fn run(command: &mut std::process::Command) -> Run {
 #[cfg(unix)]
 static RUNNING: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
 
+/// The user and system time of the child [`run`] is running, so far (0
+/// for none).
+#[cfg(unix)]
+fn running_times_ns() -> [u64; 2] {
+    match RUNNING.load(std::sync::atomic::Ordering::SeqCst) {
+        0 => [0, 0],
+        pid => imp::cpu_so_far_ns(pid),
+    }
+}
+
 /// The CPU time of the child [`run`] is running, so far (0 for none).
 #[cfg(unix)]
 pub(crate) fn running_cpu_ns() -> u64 {
-    match RUNNING.load(std::sync::atomic::Ordering::SeqCst) {
-        0 => 0,
-        pid => imp::cpu_so_far_ns(pid),
-    }
+    running_times_ns().iter().sum()
+}
+
+/// The user time of the child [`run`] is running, so far (0 for none):
+/// [`crate::load`]'s share of this process's own.
+#[cfg(unix)]
+pub(crate) fn running_user_ns() -> u64 {
+    running_times_ns()[0]
 }
 
 /// While the child `pid` runs: mark it running, and tick the load windows
@@ -145,6 +159,12 @@ pub(crate) fn rusage_cpu_ns(words: &[i64; 18]) -> u64 {
     rusage::cpu_ns(words)
 }
 
+/// A `struct rusage`'s user time, as 64-bit words.
+#[cfg(unix)]
+pub(crate) fn rusage_user_ns(words: &[i64; 18]) -> u64 {
+    rusage::user_ns(words)
+}
+
 #[cfg(unix)]
 mod rusage {
     /// `struct rusage` as 64-bit words (Linux and macOS, 64-bit): two
@@ -175,6 +195,10 @@ mod rusage {
         timeval_ns(w[0], w[1]) + timeval_ns(w[2], w[3])
     }
 
+    pub(crate) fn user_ns(w: &Words) -> u64 {
+        timeval_ns(w[0], w[1])
+    }
+
     pub fn max_rss_bytes(w: &Words) -> u64 {
         // Linux counts KiB, macOS bytes.
         if cfg!(target_vendor = "apple") {
@@ -200,17 +224,18 @@ mod imp {
 
     /// A running (or exited, unreaped) process's user and system time, from
     /// /proc/PID/stat (fields 14 and 15, in clock ticks).
-    pub fn cpu_so_far_ns(pid: i32) -> u64 {
+    pub fn cpu_so_far_ns(pid: i32) -> [u64; 2] {
         unsafe extern "C" {
             fn sysconf(name: i32) -> i64;
         }
         const SC_CLK_TCK: i32 = 2;
-        let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else { return 0 };
+        let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else { return [0, 0] };
         // After the command's closing parenthesis: state, then fields 4 on.
         let fields: Vec<&str> = stat[stat.rfind(')').expect("/proc/PID/stat names the command") + 1..].split_whitespace().collect();
-        let ticks: u64 = fields[11].parse::<u64>().expect("utime") + fields[12].parse::<u64>().expect("stime");
         // Sound: a plain query.
-        ticks * 1_000_000_000 / u64::try_from(unsafe { sysconf(SC_CLK_TCK) }).expect("sysconf(_SC_CLK_TCK) is positive")
+        let per_second = u64::try_from(unsafe { sysconf(SC_CLK_TCK) }).expect("sysconf(_SC_CLK_TCK) is positive");
+        let ns = |field: &str| field.parse::<u64>().expect("utime and stime are integers") * 1_000_000_000 / per_second;
+        [ns(fields[11]), ns(fields[12])]
     }
 
     pub fn finish(child: std::process::Child, started: std::time::Instant, started_ns: u64) -> Run {
@@ -259,13 +284,13 @@ mod imp {
 
     /// A running (or exited, unreaped) process's user and system time
     /// (proc_pid_rusage, in Mach time units).
-    pub fn cpu_so_far_ns(pid: i32) -> u64 {
+    pub fn cpu_so_far_ns(pid: i32) -> [u64; 2] {
         let mut words = [0u64; 64];
         // Sound: `words` is writable and longer than rusage_info_v6.
         if unsafe { proc_pid_rusage(pid, RUSAGE_INFO_V6, words.as_mut_ptr()) } != 0 {
-            return 0;
+            return [0, 0];
         }
-        crate::imp::mach_to_ns(words[USER_TIME] + words[SYSTEM_TIME])
+        [crate::imp::mach_to_ns(words[USER_TIME]), crate::imp::mach_to_ns(words[SYSTEM_TIME])]
     }
 
     pub fn finish(child: std::process::Child, started: std::time::Instant, started_ns: u64) -> Run {

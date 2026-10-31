@@ -1,20 +1,29 @@
 //! Other programs' load on the machine while this process measures,
 //! recorded by every measurement in this crate, with nothing to call.
 //!
-//! **Where.** Linux alone ([`MEASURED`]). On macOS the machine's busy
-//! ticks less this process's own CPU time read as other programs' load
-//! exactly where this process's own threads burst or wake (every busy
-//! window of Mac jobs 1672-1676, BLAKE3 #142), so a busy verdict there
-//! said nothing about other programs, and the macOS reading is gone:
-//! its windows are none, and its runs say "not measured" beside their
-//! results. Keep a Mac quiet by hand while it measures.
+//! **Where.** Linux and macOS ([`MEASURED`]).
 //!
-//! **What it counts.** The OS counts the CPU time every CPU spent busy;
-//! this process counts its own (every thread). Their difference over a
-//! stretch of wall time is how many CPUs other programs kept busy, in
-//! milli-CPUs (1000: one CPU busy throughout). On Linux the OS also
-//! counts steal time, which a hypervisor took from a VM's CPUs for other
-//! work on the host, load a guest sees no other way.
+//! **What it counts.** The OS counts the user time every CPU spent (user
+//! and nice); this process counts its own user time (every thread, and
+//! the children it has reaped or [`crate::child::run`] is running). Their
+//! difference over a stretch of wall time is how many CPUs other programs
+//! kept busy, in milli-CPUs (1000: one CPU busy throughout). On Linux the
+//! OS also counts steal time, which a hypervisor took from a VM's CPUs for
+//! other work on the host, load a guest sees no other way.
+//!
+//! **Why user time.** The kernel's work on this process's behalf (wakes,
+//! interrupts, starting and ending the processes it spawns, cleaning up
+//! after them) is system time charged to no process, so counted as all
+//! busy time less ours it reads as other programs' load: on an EPYC 9255,
+//! a cell starting a thousand processes read 0.61 CPUs of others' load
+//! with nothing else running (BLAKE3 #142); on an M4 Max (probes, the
+//! fork's branch probe/mac-load, Mac jobs 1793-1795, October 31, 2026),
+//! spawning a process a call left 0.30 CPUs, a quiet machine 0.30, and
+//! user time read 0.06 and 0.20 of them. Programs that disturb a
+//! measurement run in user time: a shell spinner read 1.04-1.13 CPUs of
+//! user time, and the Linux VM's two spinning vCPUs exactly 2.0 more,
+//! beside our own multithreaded wakes as alone. What it cannot see is
+//! another program's system time (heavy I/O), which takes little CPU.
 //!
 //! **When it reads.** A reading costs system calls, which take far longer
 //! than a short timed call, so it never happens inside a timed interval
@@ -31,7 +40,7 @@
 //! started, as [`now_ns`] (nanoseconds since this process's first
 //! measurement), on the same scale as each [`Window`]'s bounds.
 //!
-//! **Resolution.** Linux counts machine CPU time in ticks of 10 ms per
+//! **Resolution.** Both OSes count machine CPU time in ticks of 10 ms per
 //! CPU. A window's reading therefore carries an error of up to a tick per
 //! CPU: at most 0.16 CPUs over a 1 s window on 16 CPUs, well under
 //! [`BUSY_MILLI_CPUS`].
@@ -45,9 +54,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
-/// Whether this platform's load is measured: Linux alone (the module's
-/// doc, "Where"). Elsewhere [`windows`] is always empty.
-pub const MEASURED: bool = cfg!(target_os = "linux");
+/// Whether this platform's load is measured: Linux and macOS (the
+/// module's doc, "Where"). Elsewhere [`windows`] is always empty.
+pub const MEASURED: bool = cfg!(any(target_os = "linux", target_vendor = "apple"));
 
 /// A window's least length: a reading ends it once this much wall time
 /// has passed since the one before.
@@ -90,7 +99,8 @@ pub fn now_ns() -> u64 {
     crate::since_ns(*ORIGIN.get_or_init(Instant::now))
 }
 
-/// A machine reading: when, the machine's CPU times, this process's.
+/// A machine reading: when, the machine's CPU times, this process's user
+/// time.
 #[derive(Clone, Copy)]
 struct Reading {
     at_ns: u64,
@@ -102,8 +112,31 @@ impl Reading {
     fn take() -> Option<Reading> {
         let at_ns = now_ns();
         let machine = imp::read()?;
-        Some(Reading { at_ns, machine, own_ns: crate::process_cpu_ns() })
+        Some(Reading { at_ns, machine, own_ns: own_user_ns() })
     }
+}
+
+/// This process's user time: its threads', its reaped children's, and
+/// that of the child [`crate::child::run`] is running.
+#[cfg(unix)]
+fn own_user_ns() -> u64 {
+    unsafe extern "C" {
+        fn getrusage(who: i32, usage: *mut i64) -> i32;
+    }
+    const RUSAGE_SELF: i32 = 0;
+    const RUSAGE_CHILDREN: i32 = -1;
+    let user = |who| {
+        let mut words = [0i64; 18];
+        // Sound: `words` is writable and as long as a struct rusage.
+        assert_eq!(unsafe { getrusage(who, words.as_mut_ptr()) }, 0, "getrusage");
+        crate::child::rusage_user_ns(&words)
+    };
+    user(RUSAGE_SELF) + user(RUSAGE_CHILDREN) + crate::child::running_user_ns()
+}
+
+#[cfg(not(unix))]
+fn own_user_ns() -> u64 {
+    0
 }
 
 /// The window between two readings.
@@ -266,14 +299,7 @@ pub fn describe_window(window: &Window) -> String {
 /// half a second at the least).
 pub fn describe(windows: &[Window]) -> String {
     let Some(first) = windows.first() else {
-        return if MEASURED {
-            "not measured: the run lasted under half a second"
-        } else if cfg!(target_vendor = "apple") {
-            "not measured on macOS (its accounting books this process's own threads as other programs')"
-        } else {
-            "not measured on this platform"
-        }
-        .to_owned();
+        return if MEASURED { "not measured: the run lasted under half a second" } else { "not measured on this platform" }.to_owned();
     };
     let span = windows.last().unwrap().end_ns - first.start_ns;
     let weighted = |pick: fn(&Window) -> u64| {
@@ -300,8 +326,8 @@ pub fn describe(windows: &[Window]) -> String {
 
 #[cfg(target_os = "linux")]
 mod imp {
-    /// Machine CPU times since boot in ticks, all CPUs summed: busy (not
-    /// idle, not waiting on I/O) and stolen by a hypervisor.
+    /// Machine CPU times since boot in ticks, all CPUs summed: user (and
+    /// nice; a guest's time is inside it) and stolen by a hypervisor.
     #[derive(Clone, Copy)]
     pub struct CpuTimes {
         pub(super) busy: u64,
@@ -323,7 +349,7 @@ mod imp {
             stat.lines().next()?.strip_prefix("cpu ")?.split_whitespace().map(|field| field.parse().expect("/proc/stat counts are integers")).collect();
         // user nice system idle iowait irq softirq steal (guest time is inside user).
         assert!(fields.len() >= 8, "/proc/stat's cpu line has at least eight fields");
-        Some(CpuTimes { busy: fields[0] + fields[1] + fields[2] + fields[5] + fields[6], steal: fields[7] })
+        Some(CpuTimes { busy: fields[0] + fields[1], steal: fields[7] })
     }
 
     pub fn busy_and_steal_ns(from: CpuTimes, to: CpuTimes) -> (u64, u64) {
@@ -332,7 +358,40 @@ mod imp {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_vendor = "apple")]
+mod imp {
+    /// host_statistics(HOST_CPU_LOAD_INFO): user, system, idle, nice ticks,
+    /// all CPUs summed, each a 32-bit counter that wraps.
+    #[derive(Clone, Copy)]
+    pub struct CpuTimes(pub(super) [u32; 4]);
+
+    unsafe extern "C" {
+        fn mach_host_self() -> u32;
+        fn host_statistics(host: u32, flavor: i32, info: *mut u32, count: *mut u32) -> i32;
+        fn sysconf(name: i32) -> i64;
+    }
+
+    pub fn read() -> Option<CpuTimes> {
+        const HOST_CPU_LOAD_INFO: i32 = 3;
+        let mut ticks = [0u32; 4];
+        let mut count = 4u32;
+        // Sound: `ticks` is writable for `count` words.
+        let rc = unsafe { host_statistics(mach_host_self(), HOST_CPU_LOAD_INFO, ticks.as_mut_ptr(), &mut count) };
+        (rc == 0 && count == 4).then_some(CpuTimes(ticks))
+    }
+
+    /// User and nice time between two readings, in ns; no steal.
+    pub fn busy_and_steal_ns(from: CpuTimes, to: CpuTimes) -> (u64, u64) {
+        const SC_CLK_TCK: i32 = 3;
+        // Sound: a plain query.
+        let per_second = u64::try_from(unsafe { sysconf(SC_CLK_TCK) }).expect("sysconf(_SC_CLK_TCK) is positive");
+        // Each counter wraps on its own: difference each, then sum.
+        let busy: u64 = [0, 3].iter().map(|&i| u64::from(to.0[i].wrapping_sub(from.0[i]))).sum();
+        (busy * 1_000_000_000 / per_second, 0)
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_vendor = "apple")))]
 mod imp {
     #[derive(Clone, Copy)]
     pub struct CpuTimes;
@@ -369,13 +428,7 @@ mod tests {
 
     #[test]
     fn descriptions_weigh_windows_by_length_and_name_busy_ones() {
-        let none = if MEASURED {
-            "not measured: the run lasted under half a second"
-        } else if cfg!(target_vendor = "apple") {
-            "not measured on macOS (its accounting books this process's own threads as other programs')"
-        } else {
-            "not measured on this platform"
-        };
+        let none = if MEASURED { "not measured: the run lasted under half a second" } else { "not measured on this platform" };
         assert_eq!(describe(&[]), none);
         let quiet = [window(0, 1_000_000_000, 100, 0), window(1_000_000_000, 4_000_000_000, 500, 0)];
         assert_eq!(describe(&quiet), "quiet: other programs kept 0.40 CPUs busy on average, 0.50 in the busiest window");
@@ -438,11 +491,20 @@ mod tests {
         let mut state = State { last: Some(last), last_start: Some(start), windows: vec![between(start, last)] };
         DUE_NS.store(last.at_ns + WINDOW_NS, Ordering::Relaxed);
         join_tail(&mut state, start, tail);
-        assert_eq!(DUE_NS.load(Ordering::Relaxed), tail.at_ns + WINDOW_NS,
-            "the watcher waits a full window after the new counter baseline");
+        assert_eq!(DUE_NS.load(Ordering::Relaxed), tail.at_ns + WINDOW_NS, "the watcher waits a full window after the new counter baseline");
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(target_vendor = "apple")]
+    #[test]
+    fn apple_counters_wrap_one_by_one() {
+        // User wraps; system and idle are no part of it; nice counts.
+        let from = imp::CpuTimes([u32::MAX - 9, 0, 0, 5]);
+        let to = imp::CpuTimes([10, 20, 1000, 7]);
+        let (busy, _) = imp::busy_and_steal_ns(from, to);
+        assert_eq!(busy, 22 * 1_000_000_000 / 100);
+    }
+
+    #[cfg(any(target_os = "linux", target_vendor = "apple"))]
     #[test]
     fn ticks_close_a_window_after_a_window_of_time() {
         let _turn = exclusive();
