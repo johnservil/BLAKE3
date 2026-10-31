@@ -181,6 +181,9 @@ pub mod convenience;
 #[cfg(feature = "std")]
 mod each;
 pub mod performance;
+/// Probe branch: Apple Silicon Metal hashing, for host_lab's measurements.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub mod metal;
 
 mod platform;
 
