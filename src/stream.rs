@@ -389,7 +389,7 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
     pub fn submit_with(&mut self, len: usize, mut fill: impl FnMut(usize, &mut [u8]) -> usize, out: &'env mut Hash) {
         let out: *mut Hash = out;
         #[cfg(blake3_gpu)]
-        if (crate::gpu::MIN_LEN..=crate::gpu::MAX_LEN).contains(&len) && self.s.run.engaged() && crate::gpu::ready() && self.submit_gpu(len, &mut fill, out) {
+        if (crate::gpu::MIN_LEN..=crate::gpu::MAX_LEN).contains(&len) && self.s.run.engaged() && crate::gpu::ready() && self.submit_slot(len, &mut fill, out) {
             return;
         }
         let pieces = len.div_ceil(PIECE).max(1);
@@ -656,24 +656,46 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
         }
     }
 
-    /// Hash a long message the program wrote in on the GPU: into a free
-    /// slot, `fill` writing it in rooms of up to PIECE bytes as on the
-    /// CPU's path, then one command. False, with nothing written, when no
-    /// slot is free: the CPU takes it.
+    /// A long message the program writes in, with the GPU engaged: into a
+    /// free slot of GPU-shared memory, `fill` writing it in rooms of up to
+    /// PIECE bytes as on the ring's path. The GPU hashes it, as one command,
+    /// when few of its commands are in flight; otherwise the pool's workers
+    /// hash its pieces from the slot as the program writes them (no ring
+    /// bytes, as `submit` hashes a borrowed message), so the CPU's messages
+    /// never wait for ring room behind the GPU's. False, with nothing
+    /// written, when no slot is free: the ring takes it.
     #[cfg(blake3_gpu)]
-    fn submit_gpu(&mut self, len: usize, fill: &mut impl FnMut(usize, &mut [u8]) -> usize, out: *mut Hash) -> bool {
+    fn submit_slot(&mut self, len: usize, fill: &mut impl FnMut(usize, &mut [u8]) -> usize, out: *mut Hash) -> bool {
+        let handed = self.delivered;
         let s = &mut *self.s;
         let slots = s.gpu.get_or_insert_with(crate::gpu::Slots::new);
-        let Some(slot) = slots.free(len, &s.lefts) else { return false };
-        for (i, piece) in slots.room(slot, len).chunks_mut(PIECE).enumerate() {
-            fill_all(fill, i * PIECE, piece);
+        let Some((slot, on_gpu)) = slots.free(len, &s.lefts, handed) else { return false };
+        let room = slots.room(slot, len);
+        if on_gpu {
+            for (i, piece) in room.chunks_mut(PIECE).enumerate() {
+                fill_all(fill, i * PIECE, piece);
+            }
+            let head = self.head;
+            let index = self.add_entry(len, Kind::Gpu { out }, head);
+            self.s.lefts[index].store(1, Ordering::Relaxed);
+            self.s.gpu.as_mut().unwrap().submit(slot, len, &self.key, self.flags, index, out);
+            crate::gpu::COUNTS[0].fetch_add(1, Ordering::Relaxed);
+            #[cfg(test)]
+            test::GPU_MESSAGES.fetch_add(1, Ordering::Relaxed);
+        } else {
+            // Held while its pieces go in (a wait among them may reap).
+            slots.hold_for_cpu(slot, usize::MAX);
+            let pieces = len.div_ceil(PIECE);
+            for (i, piece) in room.chunks_mut(PIECE).enumerate() {
+                fill_all(fill, i * PIECE, piece);
+                let at = self.head;
+                self.add_part(piece.as_ptr(), piece.len(), part_kind(i, pieces, out), at, out as *mut u8);
+            }
+            // Free once its last piece is handed back.
+            let next = self.next;
+            self.s.gpu.as_mut().unwrap().hold_for_cpu(slot, next);
+            crate::gpu::COUNTS[1].fetch_add(1, Ordering::Relaxed);
         }
-        let head = self.head;
-        let index = self.add_entry(len, Kind::Gpu { out }, head);
-        self.s.lefts[index].store(1, Ordering::Relaxed);
-        self.s.gpu.as_mut().unwrap().submit(slot, len, &self.key, self.flags, index, out);
-        #[cfg(test)]
-        test::GPU_MESSAGES.fetch_add(1, Ordering::Relaxed);
         true
     }
 
@@ -692,9 +714,10 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
         }
         let index = self.delivered % ENTRIES;
         let Entry { len, kind: Kind::Gpu { out }, .. } = self.s.entries[index] else { return false };
+        let handed = self.delivered;
         let s = &mut *self.s;
         let slots = s.gpu.as_mut().expect("a GPU entry's slots");
-        slots.reap(&s.lefts);
+        slots.reap(&s.lefts, handed);
         let Some(slot) = slots.owing(index) else { return false };
         let mut hasher = crate::incremental::Hasher::from_core(crate::incremental::HasherCore::new_internal(&self.key, self.flags));
         for piece in slots.bytes(slot, len).chunks(RACE_PIECE) {
@@ -708,6 +731,7 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
         unsafe { *out = hasher.finalize() };
         slots.orphan(slot);
         s.lefts[index].store(0, Ordering::Relaxed);
+        crate::gpu::COUNTS[2].fetch_add(1, Ordering::Relaxed);
         #[cfg(test)]
         test::GPU_RACES_WON.fetch_add(1, Ordering::Relaxed);
         true
@@ -765,8 +789,9 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
             // A GPU message not yet done: see whether its slot's command is.
             #[cfg(blake3_gpu)]
             if matches!(kind, Kind::Gpu { .. }) && self.s.lefts[first].load(Ordering::Relaxed) != 0 {
+                let handed = self.delivered;
                 let s = &mut *self.s;
-                s.gpu.as_mut().expect("a GPU entry's slots").reap(&s.lefts);
+                s.gpu.as_mut().expect("a GPU entry's slots").reap(&s.lefts, handed);
             }
             // An entry of no task (an empty batch's part, an abandoned
             // message) has its own `left`, zero.
@@ -856,6 +881,11 @@ impl<D> Drop for Stream<'_, D> {
                     core::hint::spin_loop();
                 }
             }
+        }
+        // Every task is done: the slots the pool's tasks read are free.
+        #[cfg(blake3_gpu)]
+        if let Some(slots) = self.s.gpu.as_mut() {
+            slots.release_cpu();
         }
         if let Some(slot) = self.slot {
             crate::lanes::sources::Source::unregister(slot);
