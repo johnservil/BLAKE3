@@ -224,6 +224,9 @@ struct Storage {
     /// GPU ready, kept with it.
     #[cfg(blake3_gpu)]
     gpu: Option<crate::gpu::Slots>,
+    /// The storage's run of long messages, which engages the GPU.
+    #[cfg(blake3_gpu)]
+    run: crate::gpu::Run,
 }
 
 /// Streams' storage not in use: recycled, never freed (a worker may read a
@@ -264,6 +267,8 @@ impl Storage {
             lefts: (0..ENTRIES).map(|_| OwnLine(AtomicUsize::new(0))).collect(),
             #[cfg(blake3_gpu)]
             gpu: None,
+            #[cfg(blake3_gpu)]
+            run: crate::gpu::Run::new(),
         }
     }
 
@@ -383,7 +388,7 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
     pub fn submit_with(&mut self, len: usize, mut fill: impl FnMut(usize, &mut [u8]) -> usize, out: &'env mut Hash) {
         let out: *mut Hash = out;
         #[cfg(blake3_gpu)]
-        if (crate::gpu::MIN_LEN..=crate::gpu::MAX_LEN).contains(&len) && crate::gpu::ready() && self.submit_gpu(len, &mut fill, out) {
+        if (crate::gpu::MIN_LEN..=crate::gpu::MAX_LEN).contains(&len) && self.s.run.engaged() && crate::gpu::ready() && self.submit_gpu(len, &mut fill, out) {
             return;
         }
         let pieces = len.div_ceil(PIECE).max(1);
@@ -875,11 +880,35 @@ mod test {
     #[cfg(blake3_gpu)]
     pub(super) static GPU_RACES_WON: AtomicUsize = AtomicUsize::new(0);
 
-    /// Wait until the GPU is ready (its start runs on a thread of its own).
+    /// Wait until the GPU is ready (its start runs on a thread of its own),
+    /// and engage it for this thread's stream storage: streams of long
+    /// messages, back to back, for more than the run's 10 ms.
     #[cfg(blake3_gpu)]
     fn gpu_ready() {
         while !crate::gpu::ready() {
             std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let input = std::vec![1u8; crate::gpu::MIN_LEN];
+        let started = std::time::Instant::now();
+        let before = GPU_MESSAGES.load(Ordering::Relaxed);
+        while GPU_MESSAGES.load(Ordering::Relaxed) == before {
+            assert!(started.elapsed() < std::time::Duration::from_secs(10), "the GPU engages within 10 s");
+            let mut got = Hash::from_bytes([0; 32]);
+            stream(
+                Mode::Plain,
+                |_: &mut [Hash]| {},
+                |s| {
+                    s.submit_with(
+                        input.len(),
+                        |at, room| {
+                            room.copy_from_slice(&input[at..][..room.len()]);
+                            room.len()
+                        },
+                        &mut got,
+                    );
+                    s.finish();
+                },
+            );
         }
     }
 
