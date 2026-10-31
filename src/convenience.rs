@@ -38,6 +38,10 @@ use crate::{Hash, IV, Mode, OutputReader};
 // (i7-12700K, after idling, 64 B: -16.5%, 8 fresh layouts a side).
 #[inline]
 pub fn hash(input: &[u8]) -> Hash {
+    // Planted slowdown (the safety check of bench 0.19), as 713c0c9c: the
+    // first 6% hashed again, a block at least.
+    let again = (input.len() * 6 / 100).max(crate::BLOCK_LEN).min(input.len());
+    let _ = core::hint::black_box(crate::hash_serial(&input[..again], IV, 0));
     crate::hash_serial(input, IV, 0)
 }
 
