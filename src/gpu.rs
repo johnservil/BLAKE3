@@ -45,9 +45,10 @@ pub(crate) const MIN_LEN: usize = 4 << 20;
 /// stream, so a stream keeps at most SLOTS times this of GPU memory.
 pub(crate) const MAX_LEN: usize = 64 << 20;
 
-/// A stream's slots: one the GPU hashes while the program writes the next
-/// (writing, about 65 GB/s, is slower than the GPU's hashing, 200+).
-pub(crate) const SLOTS: usize = 2;
+/// The most slots a stream has (see SLOT_BYTES): enough that a warm GPU
+/// always has the next message while the program writes another (the
+/// probe's GPU stream, with four, ran 58-65 GB/s at 4-64 MiB).
+pub(crate) const SLOTS: usize = 4;
 
 /// A stream engages the GPU once its run of long messages (each within
 /// RUN_GAP of the one before) has lasted RUN_ENGAGE: the GPU takes 30-40 ms
@@ -129,10 +130,7 @@ fn start() {
     for mode in [crate::Mode::Plain, crate::Mode::Keyed(&key), crate::Mode::DeriveKey("blake3-servil GPU check")] {
         for len in [1, 1024, 1025, 3 * 1024 + 7, input.len()] {
             let (words, flags) = mode.key_and_flags();
-            let room = slots.room(0, len);
-            room.copy_from_slice(&input[..len]);
-            slots.submit(0, len, &words, flags);
-            let gpu = slots.take(0);
+            let gpu = check_one(&mut slots, &input[..len], &words, flags);
             let cpu = crate::convenience::hash_with(mode, &input[..len]);
             if gpu != cpu {
                 // A GPU that hashes wrongly stops the program (never a wrong digest).
@@ -147,10 +145,14 @@ fn start() {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Use {
     Free,
-    /// Its command's digest goes to a stream entry still to be handed back.
-    Owned,
-    /// Its entry was handed back with the CPU's digest (the race); the
-    /// command may still run, reading the slot.
+    /// Its command's digest goes to `place`, for the stream's entry `entry`,
+    /// whose count (in the storage's `lefts`) is 1 until it is written.
+    Owned {
+        entry: usize,
+        place: *mut Hash,
+    },
+    /// Its entry is done another way (the race, or the stream ended); the
+    /// command may still run, reading the slot, and its digest is dropped.
     Orphaned,
 }
 
@@ -163,24 +165,42 @@ pub(crate) struct Slots {
     memory: [*mut u8; SLOTS],
 }
 
+/// The most GPU memory a stream's slots use: 128 MiB, so up to four slots
+/// for messages of up to 32 MiB, two for longer ones (writing a message,
+/// ~65 GB/s, is slower than the GPU's hashing, 200+, so two keep a warm
+/// GPU fed even then).
+const SLOT_BYTES: usize = 128 << 20;
+
 impl Slots {
-    /// New slots (no memory until first used). Requires a ready GPU.
+    /// New slots (no memory until first used). Requires a started GPU.
     pub(crate) fn new() -> Self {
         // Sound: Metal started (READY, or inside start).
         Slots { handle: unsafe { blake3_servil_gpu_slots_new(SLOTS) }, uses: [Use::Free; SLOTS], memory: [core::ptr::null_mut(); SLOTS] }
     }
 
-    /// A free slot, reclaiming an orphaned one whose command has ended.
-    pub(crate) fn free(&mut self) -> Option<usize> {
+    /// Every slot whose command has ended: an owned one writes its digest
+    /// into its place and counts its entry done (0 in `lefts`), as a
+    /// task's threads do; an orphaned one is free again.
+    pub(crate) fn reap(&mut self, lefts: &[crate::lanes::OwnLine<core::sync::atomic::AtomicUsize>]) {
         for slot in 0..SLOTS {
-            if self.uses[slot] == Use::Orphaned && self.done(slot) {
-                self.take(slot);
+            if self.uses[slot] == Use::Free || !self.done(slot) {
+                continue;
             }
-            if self.uses[slot] == Use::Free {
-                return Some(slot);
+            let digest = self.wait(slot);
+            if let Use::Owned { entry, place } = self.uses[slot] {
+                // Sound: the place is the program's, lent for the stream's
+                // scope and not yet handed back (its entry counts 1).
+                unsafe { *place = digest };
+                lefts[entry].store(0, Ordering::Relaxed);
             }
+            self.uses[slot] = Use::Free;
         }
-        None
+    }
+
+    /// A free slot for a message of `len` bytes, after reaping.
+    pub(crate) fn free(&mut self, len: usize, lefts: &[crate::lanes::OwnLine<core::sync::atomic::AtomicUsize>]) -> Option<usize> {
+        self.reap(lefts);
+        (0..(SLOT_BYTES / len).clamp(2, SLOTS)).find(|&slot| self.uses[slot] == Use::Free)
     }
 
     /// The free slot's memory for a message of `len` bytes (1..=MAX_LEN).
@@ -195,20 +215,21 @@ impl Slots {
         unsafe { core::slice::from_raw_parts_mut(room, len) }
     }
 
-    /// The bytes of the slot's message, for the race.
+    /// The bytes of an owned slot's message, for the race.
     pub(crate) fn bytes(&self, slot: usize, len: usize) -> &[u8] {
-        debug_assert!(self.uses[slot] == Use::Owned);
+        debug_assert!(matches!(self.uses[slot], Use::Owned { .. }));
         // Sound: an owned slot's memory holds its message, len bytes, which
         // nothing writes until the slot is free again (`room` alone writes).
         unsafe { core::slice::from_raw_parts(self.memory[slot], len) }
     }
 
-    /// Start hashing the slot's first `len` bytes under `key` and `flags`.
-    pub(crate) fn submit(&mut self, slot: usize, len: usize, key: &CVWords, flags: u8) {
+    /// Start hashing the slot's first `len` bytes under `key` and `flags`,
+    /// its digest for entry `entry`, into `place`.
+    pub(crate) fn submit(&mut self, slot: usize, len: usize, key: &CVWords, flags: u8, entry: usize, place: *mut Hash) {
         let mut error = [0; 512];
         let ok = unsafe { blake3_servil_gpu_submit(self.handle, slot, len, key.as_ptr(), u32::from(flags), error.as_mut_ptr()) };
         assert!(ok, "{}", message(&error));
-        self.uses[slot] = Use::Owned;
+        self.uses[slot] = Use::Owned { entry, place };
     }
 
     /// Whether the slot's command has ended.
@@ -217,20 +238,32 @@ impl Slots {
         unsafe { blake3_servil_gpu_done(self.handle, slot) }
     }
 
-    /// Wait for the slot's command, and its digest; the slot is free after.
-    pub(crate) fn take(&mut self, slot: usize) -> Hash {
+    /// The slot still owing entry `entry` its digest.
+    pub(crate) fn owing(&self, entry: usize) -> Option<usize> {
+        (0..SLOTS).find(|&slot| matches!(self.uses[slot], Use::Owned { entry: e, .. } if e == entry))
+    }
+
+    /// The slot's entry is done another way: drop its command's digest.
+    pub(crate) fn orphan(&mut self, slot: usize) {
+        debug_assert!(matches!(self.uses[slot], Use::Owned { .. }));
+        self.uses[slot] = Use::Orphaned;
+    }
+
+    /// Wait for the slot's command, and its digest.
+    fn wait(&mut self, slot: usize) -> Hash {
         let mut digest = [0; 32];
         let mut error = [0; 512];
         let ok = unsafe { blake3_servil_gpu_wait(self.handle, slot, digest.as_mut_ptr(), error.as_mut_ptr()) };
         assert!(ok, "the GPU failed: {}", message(&error));
-        self.uses[slot] = Use::Free;
         Hash::from(digest)
     }
+}
 
-    /// The slot's entry went back with the CPU's digest: free once its
-    /// command ends.
-    pub(crate) fn orphan(&mut self, slot: usize) {
-        debug_assert!(self.uses[slot] == Use::Owned);
-        self.uses[slot] = Use::Orphaned;
-    }
+/// The start's own check: one message on slot 0, waited for.
+fn check_one(slots: &mut Slots, input: &[u8], key: &CVWords, flags: u8) -> Hash {
+    slots.room(0, input.len()).copy_from_slice(input);
+    slots.submit(0, input.len(), key, flags, 0, core::ptr::null_mut());
+    let digest = slots.wait(0);
+    slots.uses[0] = Use::Free;
+    digest
 }
