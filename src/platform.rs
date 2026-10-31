@@ -153,6 +153,7 @@ impl Platform {
     /// which every call makes anyway.
     #[inline]
     pub fn detect() -> Self {
+        dit_on();
         let mut code = DETECTED.load(core::sync::atomic::Ordering::Relaxed);
         if code == 0 {
             code = not_initialized();
@@ -825,5 +826,16 @@ mod x86_features_test {
         ] {
             assert_eq!(x86_platform(avx512, avx2, sse41), want, "avx512 {avx512}, avx2 {avx2}, sse41 {sse41}");
         }
+    }
+}
+
+/// The DIT plant: data-independent timing on for this thread (PSTATE.DIT,
+/// `msr DIT, #1`), which stays on for the thread's life.
+#[inline(always)]
+pub(crate) fn dit_on() {
+    #[cfg(all(target_arch = "aarch64", not(miri)))]
+    // Sound: sets one PSTATE bit, which changes only instruction timing.
+    unsafe {
+        core::arch::asm!(".inst 0xd503415f", options(nomem, nostack, preserves_flags))
     }
 }

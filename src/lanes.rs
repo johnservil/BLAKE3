@@ -1308,6 +1308,7 @@ impl Task {
 /// streams' tasks while any wait, and parks as soon as none does; every
 /// publish wakes it first.
 fn sme2_main() {
+    crate::platform::dit_on();
     // As for a worker: a panic here ends the process rather than hanging
     // the callers waiting on it.
     let _ = std::panic::catch_unwind(sme2_serve);
@@ -1376,6 +1377,7 @@ fn worker_main(me: usize) {
     // piece forever (their stacks are the work); the process ends instead,
     // the panic's message printed first by the panic hook.
     let _ = std::panic::catch_unwind(move || {
+        crate::platform::dit_on();
         let pool = pool();
         pool.park.register(me);
         pool.serve(me)
