@@ -151,6 +151,85 @@ fn main() {
                 println!("two,{len},{},{},{}", 4 * count, ns / calls, (bytes * 1000 + ns / 2) / ns);
             }
         }
+        "borrowed" => {
+            // Borrowed messages (`submit`): already in memory, as a mapped
+            // file's or a received buffer's are; about 2 GiB a stream.
+            println!("case,message_bytes,messages,calls,ns_per_call,MB_s,cores");
+            for len in [4 * MIB, 16 * MIB, 64 * MIB] {
+                let (src, expected) = source(len);
+                let mut blocks = vec![performance::Block::ZERO; len / 64];
+                performance::Block::bytes_mut(&mut blocks).copy_from_slice(&src);
+                let count = 2048 * MIB / len;
+                let mut places = vec![Hash::from_bytes([0; 32]); count];
+                let run = |places: &mut [Hash]| {
+                    performance::stream(
+                        Mode::Plain,
+                        |_: &mut [Hash]| {},
+                        |s| {
+                            for out in places.iter_mut() {
+                                s.submit(black_box(&blocks), len, out);
+                            }
+                            s.finish();
+                        },
+                    );
+                };
+                run(&mut places);
+                assert!(places.iter().all(|p| *p == expected));
+                let samples = clocks::measure(6, 300_000_000, || run(&mut places));
+                let (ns, calls) = clocks::summary::mean_totals(samples.iter().map(|s| (s.wall_ns, s.calls)));
+                let cpu: u128 = samples.iter().map(|s| u128::from(s.cpu_ns.unwrap_or(0))).sum();
+                let bytes = (len * count) as u128 * calls;
+                println!("borrowed,{len},{count},{calls},{},{},{}", ns / calls, (bytes * 1000 + ns / 2) / ns, cpu * 100 / ns);
+            }
+        }
+        "contended" => {
+            // Another load on the GPU: a thread keeps four 64 MiB messages in
+            // flight on it, hashed in its own memory (the probe's raw Metal
+            // bridge), as another program's GPU work would, while this
+            // thread streams long messages written in.
+            println!("case,message_bytes,messages,calls,ns_per_call,MB_s,cores");
+            let stop = std::sync::atomic::AtomicBool::new(false);
+            std::thread::scope(|scope| {
+                let hammer = scope.spawn(|| {
+                    let mut gpu = blake3_servil::metal::Hasher::new().expect("Metal");
+                    let len = 64 * MIB;
+                    let (src, _) = source(len);
+                    for slot in 0..4 {
+                        gpu.slot(slot, len).copy_from_slice(&src);
+                    }
+                    let (start, mut bytes, mut k) = (clocks::now(), 0u64, 0usize);
+                    let mut in_flight = std::collections::VecDeque::new();
+                    while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                        if in_flight.len() == 4 {
+                            gpu.wait(in_flight.pop_front().unwrap());
+                            bytes += len as u64;
+                        }
+                        gpu.submit(k % 4, len);
+                        in_flight.push_back(k % 4);
+                        k += 1;
+                    }
+                    while let Some(slot) = in_flight.pop_front() {
+                        gpu.wait(slot);
+                    }
+                    (bytes, clocks::since_ns(start))
+                });
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                for len in [4 * MIB, 16 * MIB, 64 * MIB] {
+                    let (src, expected) = source(len);
+                    let count = 2048 * MIB / len;
+                    let mut places = vec![Hash::from_bytes([0; 32]); count];
+                    stream_all(&src, &mut places, expected);
+                    let samples = clocks::measure(6, 300_000_000, || stream_all(black_box(&src), &mut places, expected));
+                    let (ns, calls) = clocks::summary::mean_totals(samples.iter().map(|s| (s.wall_ns, s.calls)));
+                    let cpu: u128 = samples.iter().map(|s| u128::from(s.cpu_ns.unwrap_or(0))).sum();
+                    let bytes = (len * count) as u128 * calls;
+                    println!("contended,{len},{count},{calls},{},{},{}", ns / calls, (bytes * 1000 + ns / 2) / ns, cpu * 100 / ns);
+                }
+                stop.store(true, std::sync::atomic::Ordering::Relaxed);
+                let (bytes, ns) = hammer.join().unwrap();
+                println!("# the other GPU load: {} MB/s over the run", (u128::from(bytes) * 1000 + u128::from(ns) / 2) / u128::from(ns));
+            });
+        }
         "power" => {
             println!("phase,name,start_unix_ms,end_unix_ms,bytes,MB_s");
             for round in 0..2 {

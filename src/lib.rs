@@ -191,6 +191,9 @@ pub fn __gpu_counts() -> [usize; 3] {
     gpu::COUNTS.each_ref().map(|c| c.load(core::sync::atomic::Ordering::Relaxed))
 }
 pub mod performance;
+/// Probe branch: raw Metal hashing, for a GPU load beside a stream.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub mod metal;
 
 mod platform;
 
