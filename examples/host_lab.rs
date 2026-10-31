@@ -7,22 +7,17 @@
 //! machine's user ticks less our user time would read our own bursts as
 //! none and a real other program as itself.
 //!
-//! Conditions, WINDOWS windows of 1 s each:
-//!   idle      this thread sleeps
-//!   wakes     multithreaded one-shots of 1 MiB with 200 us sleeps between
-//!             (the pool parks and wakes at every call)
-//!   nonstop   multithreaded one-shots of 1 MiB back to back
-//!   spawn     a process a call: /usr/bin/true, waited (reaped children
-//!             count as ours)
-//!   spinner   a shell loop (another program, never reaped until the end)
-//!             while this thread sleeps
-//!   wakes+spinner, spawn+spinner
-//! Each window prints, in milli-CPUs: the machine's user+nice, system;
-//! ours user, system (getrusage self + children); and the residuals:
-//! total (today's rule), user, system.
+//! Run 2 (the first run's idle, wakes, nonstop, spawn and spinner read as
+//! expected: our own wakes and spawns stayed near the machine's idle 0.3
+//! CPUs, a spinner read 1.0): the two places the checks' busy windows
+//! fell (jobs 1672-1676). Calls after pauses, as the after-idling phase
+//! makes them; and a freshly linked program's first launch, which the OS
+//! may scan. WINDOWS windows of 1 s each, milli-CPUs: the machine's
+//! user+nice and system, ours (self and reaped children), and the
+//! residuals: total (today's rule), user, system.
 use std::time::{Duration, Instant};
 
-const WINDOWS: usize = 5;
+const WINDOWS: usize = 4;
 
 #[repr(C)]
 struct Rusage([i64; 18]);
@@ -82,31 +77,43 @@ fn main() {
     blake3_servil::initialize_multithreaded(None);
     let message = vec![blake3_servil::performance::Block::ZERO; 1 << 14];
     let len = message.len() * 64;
+    let small = vec![7u8; 4096];
     let mut sink = 0u8;
-    let mut hash = || {
+    let mut mt = || {
         let h = blake3_servil::performance::hash_multithreaded(blake3_servil::Mode::Plain, &message, len);
         sink ^= h.as_bytes()[0];
     };
-    println!("# probe/mac-load: milli-CPUs per 1 s window; message {len} bytes; ticks/s {}", unsafe { sysconf(3) });
+    println!("# probe/mac-load 2: milli-CPUs per 1 s window; ticks/s {}", unsafe { sysconf(3) });
     window("idle", || std::thread::sleep(Duration::from_millis(50)));
-    window("wakes", || {
-        hash();
-        std::thread::sleep(Duration::from_micros(200));
+    // Calls after pauses, as the after-idling phase makes them.
+    window("mt after 2 ms", || {
+        mt();
+        std::thread::sleep(Duration::from_millis(2));
     });
-    window("nonstop", &mut hash);
-    let spawn = || {
-        std::process::Command::new("/usr/bin/true").status().expect("true runs");
-    };
-    window("spawn", spawn);
-    let mut spinner = std::process::Command::new("/bin/sh").args(["-c", "while :; do :; done"]).spawn().expect("sh");
-    std::thread::sleep(Duration::from_millis(200));
-    window("spinner", || std::thread::sleep(Duration::from_millis(50)));
-    window("wakes+spinner", || {
-        hash();
-        std::thread::sleep(Duration::from_micros(200));
+    window("mt after 20 ms", || {
+        mt();
+        std::thread::sleep(Duration::from_millis(20));
     });
-    window("spawn+spinner", spawn);
-    spinner.kill().expect("kill");
-    spinner.wait().expect("reap");
+    window("st after 1 ms", || {
+        let h = blake3_servil::convenience::hash(&small);
+        sink ^= h.as_bytes()[0];
+        std::thread::sleep(Duration::from_millis(1));
+    });
+    // A freshly linked program's first launch: does the OS's scan of a new
+    // executable read as other programs' load, and for how long?
+    for round in 0..3 {
+        let dir = std::env::temp_dir().join(format!("mac-load-fresh-{}-{round}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("fresh.c");
+        let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        std::fs::write(&src, format!("int main(void) {{ volatile unsigned long x = {nonce}UL; return (int)(x & 0); }}\n")).unwrap();
+        let exe = dir.join("fresh");
+        assert!(std::process::Command::new("cc").arg("-O1").arg("-o").arg(&exe).arg(&src).status().expect("cc").success());
+        window(&format!("after compile {round}"), || std::thread::sleep(Duration::from_millis(50)));
+        let t = Instant::now();
+        assert!(std::process::Command::new(&exe).status().expect("fresh runs").success());
+        println!("# fresh launch {round}: {} us", t.elapsed().as_micros());
+        window(&format!("after fresh launch {round}"), || std::thread::sleep(Duration::from_millis(50)));
+    }
     println!("# done {sink}");
 }
