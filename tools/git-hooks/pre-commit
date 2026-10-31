@@ -26,9 +26,13 @@ else
 fi
 code=$(git diff --cached --name-only -- src c build.rs Cargo.toml Cargo.lock)
 [ -z "$code" ] && exit 0
-# git hands a hook GIT_DIR and GIT_INDEX_FILE, naming this checkout; the
-# check runs git in checkouts of its own, so it runs without them.
-(cd "$top/bench-hashes" && env -u GIT_DIR -u GIT_INDEX_FILE cargo run --release --quiet -- check)
+# The bench's checkout: beside this one (../bench-hashes), or where
+# BENCH_HASHES_DIR names. git hands a hook GIT_DIR and GIT_INDEX_FILE,
+# naming this checkout; the check runs git in checkouts of its own, so it
+# runs without them.
+bench=${BENCH_HASHES_DIR:-$top/../bench-hashes}
+[ -f "$bench/Cargo.toml" ] || { echo "pre-commit: no bench-hashes checkout at $bench (clone it beside this checkout, or set BENCH_HASHES_DIR); commit aborted"; exit 1; }
+(cd "$bench" && env -u GIT_DIR -u GIT_INDEX_FILE cargo run --release --quiet -- check --fork "$top")
 verdict=$?
 case $verdict in
 0) exit 0 ;;

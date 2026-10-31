@@ -5,12 +5,14 @@
 Jobs go in the checkout's `runner/jobs/`; results come back in
 `runner/results/<job>.<time>/`. Both folders stay out of git
 (`.git/info/exclude`). The runner keeps its clones of the fork and of
-bench-hashes (inside the fork's) in `~benchrunner/checkouts/` and moves
+bench-hashes, side by side, in `~benchrunner/checkouts/`, and moves
 them to each job's commits, so Cargo rebuilds only what changed: a
 benchmark job builds bench-hashes against the fork as it is, through
 `bench-hashes build-against` (in a directory with its own `Cargo.lock`;
 the committed lock is never written), and check jobs build their two
-sides the same way under the fork's `target/check/`. The job format is the docstring at the top of
+sides the same way under the fork's `target/check/`. Before each job it
+removes anything untracked from both clones, so each reads as the commit
+the job names. The job format is the docstring at the top of
 `runner.py`.
 
 ## The account (once)

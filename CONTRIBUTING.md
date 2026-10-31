@@ -141,13 +141,15 @@ c/blake3_chunk_root_x86-64_unix.S`;
 
 Speed is the fork's purpose, so every change to `src/`, `c/`, `build.rs`,
 `Cargo.toml`, or `Cargo.lock` passes a regression check first. The check
-uses [bench-hashes](https://github.com/johnservil/bench-hashes), cloned
-inside this checkout:
+uses [bench-hashes](https://github.com/johnservil/bench-hashes), in a
+checkout of its own beside this one (neither inside the other), named
+with `--fork`. From this checkout's root:
 
 ```sh
-git clone https://github.com/johnservil/bench-hashes
-cd bench-hashes && cargo run --release -- check                 # the working tree against HEAD
-cd bench-hashes && cargo run --release -- check --against OLD   # a checkout at NEW
+git clone https://github.com/johnservil/bench-hashes ../bench-hashes
+fork=$PWD
+(cd ../bench-hashes && cargo run --release -- check --fork "$fork")                 # the working tree against HEAD
+(cd ../bench-hashes && cargo run --release -- check --fork "$fork" --against OLD)   # a checkout at NEW
 ```
 
 It builds the benchmark against both versions of the fork and runs them

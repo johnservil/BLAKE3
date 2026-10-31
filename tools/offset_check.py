@@ -4,8 +4,9 @@ sit, modulo the 4 KiB page (4 KiB aliasing), and whether that changed.
 
     python3 tools/offset_check.py [--exe BENCH] [--step BYTES] [--keep DIR]
 
-Run from the fork's root with a bench-hashes checkout in `bench-hashes/` (or
-pass --exe, a `bench-hashes build-against` executable). Linux with glibc:
+Run from the fork's root with a bench-hashes checkout beside it
+(`../bench-hashes`, or --bench DIR), or pass --exe, a `bench-hashes
+build-against` executable. Linux with glibc:
 it moves the duo-copy threads' stacks (glibc.rtld.optional_static_tls)
 through one whole page in 16-byte steps, the stack's own alignment
 (--step for others), and measures a short-message cell set at each (the
@@ -197,6 +198,7 @@ def confirm(exe, slow, fast, extras, work):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--exe', help='a bench-hashes build-against executable (default: build one)')
+    parser.add_argument('--bench', default='../bench-hashes', help="the bench's checkout, to build one from (default ../bench-hashes)")
     parser.add_argument('--step', type=int, default=16, help='bytes between offsets (default 16, the stack alignment)')
     parser.add_argument('--keep', help='keep the scan and confirmation runs here')
     args = parser.parse_args()
@@ -204,8 +206,8 @@ def main():
         sys.exit('offset_check: Linux with glibc only (it moves thread stacks with a glibc tunable)')
     exe = args.exe
     if exe is None:
-        exe = subprocess.run(['cargo', 'run', '--quiet', '--release', '--', 'build-against', '..'],
-                             cwd='bench-hashes', check=True, capture_output=True, text=True).stdout.strip()
+        exe = subprocess.run(['cargo', 'run', '--quiet', '--release', '--', 'build-against', str(pathlib.Path.cwd())],
+                             cwd=args.bench, check=True, capture_output=True, text=True).stdout.strip()
     exe = str(pathlib.Path(exe).resolve())
     work = pathlib.Path(args.keep) if args.keep else pathlib.Path(tempfile.mkdtemp(prefix='offset-check-'))
     work.mkdir(parents=True, exist_ok=True)

@@ -56,8 +56,8 @@ Each result folder holds runner.log (every command and its output),
 verdict.json, and the job's own files: the benchmark's report, graph,
 and samples; host_lab's report.
 
-The checkouts persist between jobs (CHECKOUTS: the fork, bench-hashes
-inside it), moved to each job's commits with a forced checkout that
+The checkouts persist between jobs (CHECKOUTS: the fork, and bench-hashes
+beside it), moved to each job's commits with a forced checkout that
 rewrites only the files that differ, so Cargo rebuilds only what changed:
 the fork's target directory serves test and example jobs, check's
 sides (target/check/ in the fork) its jobs, and bench-hashes' own build
@@ -82,10 +82,6 @@ DONE_FILE = HOME / ".benchrunner_done"
 CARGO_BIN = HOME / ".cargo" / "bin"
 
 BENCHMARK_FLAGS = {"--all", "--quick", "--thorough"}
-# bench-hashes depends on the fork's git repository at a pinned commit; this
-# patch builds it against the fork checkout enclosing it (`..`), the one the
-# job names. Older bench-hashes, with a path dependency on `..`, ignore it.
-PATCH = 'patch."https://github.com/johnservil/BLAKE3".blake3-servil.path=".."'
 # blake3, blake3-mt, blake3-servil: bench-hashes' keys before September 25, 2026.
 CONTENDERS = {"blake3-official", "blake3-official-mt", "blake3", "blake3-servil-st", "blake3-servil", "blake3-servil-mt", "blake3-mt",
               "sha256", "sha256-ring", "sha256-cc", "sha1dc", "sha3-256", "blake3-commonware"}
@@ -163,27 +159,23 @@ class Job:
         assert full.startswith(commit), f"{url}: asked for {commit}, got {full}"
 
     def checkouts(self, fork_commit, bench_commit):
-        """The fork with bench-hashes nested inside it, where bench-hashes'
-        path dependency (`..`) expects the fork; both kept between jobs.
-        The fork's status leaves out bench-hashes and check's target/,
-        as the maintainers' checkout does, and anything else untracked is
-        removed before each job."""
+        """The fork's checkout and bench-hashes', each a clone of its own
+        beside the other (neither inside the other: bench-hashes names the
+        fork's checkout, `build-against DIR`, `check --fork DIR`), kept
+        between jobs: (fork, bench). Anything untracked goes before each
+        job, so each reads as the commit the job names (nested bench clones
+        that probe examples left in the fork made every build's provenance
+        read dirty, job 1778); ignored paths (target/) stay."""
         CHECKOUTS.mkdir(exist_ok=True)
-        fork = CHECKOUTS / "fork"
+        fork, bench = CHECKOUTS / "fork", CHECKOUTS / "bench"
         self.sync(FORK_URL, fork, fork_commit)
         (fork / ".git/info").mkdir(exist_ok=True)
-        # The nested bench, the scratch folder, and build-against's copy of
-        # the bench beside it (check.rs: a nested bench builds from
-        # .bench-hashes-build) are the runner's, not the fork's.
-        (fork / ".git/info/exclude").write_text("/bench-hashes/\n/tmp/\n/.bench-hashes-build/\n")
-        # Anything else untracked goes, so the fork reads as the commit the
-        # job names: three nested bench clones that probe examples left in
-        # September and October made every build's provenance read dirty
-        # (job 1778). Ignored and excluded paths stay (target/, the above).
+        (fork / ".git/info/exclude").write_text("/tmp/\n")
         self.run(["git", "clean", "-ffd", "--quiet"], cwd=fork)
         if bench_commit is not None:
-            self.sync(BENCH_URL, fork / "bench-hashes", bench_commit)
-        return fork
+            self.sync(BENCH_URL, bench, bench_commit)
+            self.run(["git", "clean", "-ffd", "--quiet"], cwd=bench)
+        return fork, bench
 
 
 def benchmark(job, run, work, out):
@@ -215,13 +207,13 @@ def benchmark(job, run, work, out):
     repeat = job.get("repeat", 1)
     assert isinstance(repeat, int) and 1 <= repeat <= 100, "repeat must be 1-100"
     fork_commit = hex_commit(job, "fork_commit")
-    fork = run.checkouts(fork_commit, hex_commit(job, "bench_commit"))
+    fork, bench = run.checkouts(fork_commit, hex_commit(job, "bench_commit"))
     # bench-hashes built against the fork checkout as it is, in a side
     # directory that owns its lock and target directory (the committed lock
     # is never written); Cargo rebuilds only what changed. The one build
     # mechanism, check's (bench-hashes #54).
     exe = run.run(["cargo", "run", "--release", "--quiet", "--", "build-against", str(fork)],
-                  cwd=fork / "bench-hashes", capture=True).strip().splitlines()[-1]
+                  cwd=bench, capture=True).strip().splitlines()[-1]
     # Each run from its result folder: the benchmark writes
     # benchmark-results/ relative to its working directory.
     for folder in [out] if repeat == 1 else [out / f"run-{i}" for i in range(1, repeat + 1)]:
@@ -232,12 +224,12 @@ def benchmark(job, run, work, out):
 
 def b3sum(job, run, work, out):
     fork_commit = hex_commit(job, "fork_commit")
-    fork = run.checkouts(fork_commit, hex_commit(job, "bench_commit"))
+    fork, bench = run.checkouts(fork_commit, hex_commit(job, "bench_commit"))
     # One contender a line, each one argument (a command may hold flags).
     contenders = [line for line in run.run([sys.executable, "tools/b3sum-contenders.py", str(fork), str(HOME / "b3sum-contenders"), fork_commit],
-                                           cwd=fork / "bench-hashes", capture=True).splitlines() if "=" in line]
+                                           cwd=bench, capture=True).splitlines() if "=" in line]
     exe = run.run(["cargo", "run", "--release", "--quiet", "--", "build-against", str(fork)],
-                  cwd=fork / "bench-hashes", capture=True).strip().splitlines()[-1]
+                  cwd=bench, capture=True).strip().splitlines()[-1]
     quick = ["--quick"] if job.get("quick") else []
     run.run([exe, "b3sum", "--files", str(HOME / "b3sum-bench-files"), *quick, *contenders], cwd=out)
     return "ok"
@@ -245,14 +237,15 @@ def b3sum(job, run, work, out):
 
 def check(job, run, work, out):
     """bench-hashes check: the fork at new_commit, with bench-hashes at
-    bench_commit nested inside it, against old_commit. check builds both
+    bench_commit beside it (a bench with `check --fork`, October 31, 2026),
+    against old_commit. check builds both
     sides itself (under the fork's target/check/), relinks each per pair,
     and measures the cells whose code the change touches ("cells": "all"
     measures every one). Its exit is the verdict: 0 no cell slower, 1 a
     regression, 2 no verdict (other programs kept the machine busy)."""
     old, new = hex_commit(job, "old_commit"), hex_commit(job, "new_commit")
-    fork = run.checkouts(new, hex_commit(job, "bench_commit"))
-    cmd = ["cargo", "run", "--release", "--quiet", "--", "check", "--against", old, "--keep", str(out / "samples")]
+    fork, bench = run.checkouts(new, hex_commit(job, "bench_commit"))
+    cmd = ["cargo", "run", "--release", "--quiet", "--", "check", "--fork", str(fork), "--against", old, "--keep", str(out / "samples")]
     if job.get("cells") == "all":
         cmd += ["--cells", "all"]
     elif "cells" in job:
@@ -263,7 +256,7 @@ def check(job, run, work, out):
     if "old_bench_commit" in job:
         cmd += ["--old-bench", hex_commit(job, "old_bench_commit")]
     try:
-        run.run(cmd, cwd=fork / "bench-hashes")
+        run.run(cmd, cwd=bench)
         return "no regression"
     except subprocess.CalledProcessError as e:
         if e.returncode in (1, 2):
@@ -275,7 +268,7 @@ def example(job, run, work, out):
     assert job["example"] in EXAMPLES, f"example must be one of {sorted(EXAMPLES)}"
     features = job.get("features", [])
     assert set(features) <= FEATURES, f"features must come from {sorted(FEATURES)}"
-    fork = run.checkouts(hex_commit(job, "fork_commit"), None)
+    fork, _ = run.checkouts(hex_commit(job, "fork_commit"), None)
     cmd = ["cargo", "build", "--release", "--example", job["example"]]
     if features:
         cmd += ["--features", ",".join(features)]
@@ -291,7 +284,7 @@ def example(job, run, work, out):
 
 
 def test(job, run, work, out):
-    fork = run.checkouts(hex_commit(job, "fork_commit"), None)
+    fork, _ = run.checkouts(hex_commit(job, "fork_commit"), None)
     # Under cargo-nextest, each test in its own process; the doc examples
     # under cargo test --doc.
     run.run(["cargo", "nextest", "run", "--release", "--lib"], cwd=fork)
