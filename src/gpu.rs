@@ -70,8 +70,9 @@ impl Run {
     }
 
     /// Count a long message in the run: whether the run has lasted long
-    /// enough to engage the GPU.
-    #[inline]
+    /// enough to engage the GPU (out of line: the short messages' path
+    /// keeps only the length's test).
+    #[inline(never)]
     pub(crate) fn engaged(&mut self) -> bool {
         let now = std::time::Instant::now();
         if now.duration_since(self.last) > RUN_GAP {
@@ -170,14 +171,15 @@ pub(crate) struct Slots {
 }
 
 /// About the most GPU memory a stream's slots use, at one message length:
-/// 128 MiB, so 32 slots for 4 MiB messages, 2 for 64 MiB ones.
-const SLOT_BYTES: usize = 128 << 20;
+/// 256 MiB, so 32 slots for 4-8 MiB messages, 4 for 64 MiB ones.
+const SLOT_BYTES: usize = 256 << 20;
 
 /// The most GPU commands in flight for a stream (an orphaned one counts):
-/// 2, enough that a warm GPU (a 4 MiB message in about 100 us from commit
-/// to completion) outruns the program writing messages (about 65 GB/s);
-/// fewer than the slots, so the CPU always has one.
-const GPU_IN_FLIGHT: usize = 2;
+/// 4, so that a warm GPU, whose commands take about 100 us or more from
+/// commit to completion, outruns the program writing messages (about 65
+/// GB/s), and the CPU takes only what the GPU cannot; fewer than the
+/// slots, so the CPU always has one.
+const GPU_IN_FLIGHT: usize = 4;
 
 /// Counts for the probe (`crate::__gpu_counts`): long messages on the GPU,
 /// on the CPU from a slot, and races the CPU won.

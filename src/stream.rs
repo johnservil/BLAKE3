@@ -656,6 +656,27 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
         }
     }
 
+    /// Whether an entry not yet done is a GPU message whose slot's command
+    /// has just ended (its digest now in its place): out of line, so that
+    /// the hand-back of every other entry pays nothing for the GPU.
+    #[cfg(blake3_gpu)]
+    #[inline(never)]
+    fn gpu_done(&mut self, kind: Kind, first: usize) -> bool {
+        if !matches!(kind, Kind::Gpu { .. }) {
+            return false;
+        }
+        let handed = self.delivered;
+        let s = &mut *self.s;
+        s.gpu.as_mut().expect("a GPU entry's slots").reap(&s.lefts, handed);
+        s.lefts[first].load(Ordering::Relaxed) == 0
+    }
+
+    #[cfg(not(blake3_gpu))]
+    #[inline(always)]
+    fn gpu_done(&mut self, _kind: Kind, _first: usize) -> bool {
+        false
+    }
+
     /// A long message the program writes in, with the GPU engaged: into a
     /// free slot of GPU-shared memory, `fill` writing it in rooms of up to
     /// PIECE bytes as on the ring's path. The GPU hashes it, as one command,
@@ -665,6 +686,7 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
     /// never wait for ring room behind the GPU's. False, with nothing
     /// written, when no slot is free: the ring takes it.
     #[cfg(blake3_gpu)]
+    #[inline(never)]
     fn submit_slot(&mut self, len: usize, fill: &mut impl FnMut(usize, &mut [u8]) -> usize, out: *mut Hash) -> bool {
         let handed = self.delivered;
         let s = &mut *self.s;
@@ -786,16 +808,9 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
         while self.delivered < self.next {
             let index = self.delivered % ENTRIES;
             let Entry { len, kind, first, ring_end } = self.s.entries[index];
-            // A GPU message not yet done: see whether its slot's command is.
-            #[cfg(blake3_gpu)]
-            if matches!(kind, Kind::Gpu { .. }) && self.s.lefts[first].load(Ordering::Relaxed) != 0 {
-                let handed = self.delivered;
-                let s = &mut *self.s;
-                s.gpu.as_mut().expect("a GPU entry's slots").reap(&s.lefts, handed);
-            }
             // An entry of no task (an empty batch's part, an abandoned
             // message) has its own `left`, zero.
-            if self.s.lefts[first].load(Ordering::Acquire) != 0 {
+            if self.s.lefts[first].load(Ordering::Acquire) != 0 && !self.gpu_done(kind, first) {
                 break;
             }
             self.delivered += 1;
