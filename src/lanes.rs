@@ -583,6 +583,11 @@ struct Pool {
 /// thread starts the SME2 thread and worker 1, and worker 1 the other
 /// workers. Calls run on the workers started so far.
 pub(crate) fn initialize(threads: usize) {
+    // PROBE (probe/l3-domain, BLAKE3 #196): BLAKE3_PROBE_DOMAIN=workers
+    // pins every worker to the L3 domain of the thread starting the pool,
+    // a worker for each of its CPUs (the caller counted); =both pins that
+    // thread too. Unset or "none": as servil.
+    let threads = probe_domain::start(threads);
     // With one thread, none beside the caller: no SME2 thread either.
     let sme2 = threads > 1 && cfg!(blake3_sme2) && !matches!(pool_platform(), p if core::mem::discriminant(&p) == core::mem::discriminant(&Platform::detect()));
     let pool = Pool { callers: AtomicUsize::new(0), threads, sme2, park: crate::park::Park::new(threads - 1, crate::park::FANOUT) };
@@ -1376,6 +1381,7 @@ fn worker_main(me: usize) {
     // piece forever (their stacks are the work); the process ends instead,
     // the panic's message printed first by the panic hook.
     let _ = std::panic::catch_unwind(move || {
+        probe_domain::pin_worker();
         let pool = pool();
         pool.park.register(me);
         pool.serve(me)
@@ -1774,5 +1780,80 @@ mod test {
                 s.finish();
             },
         );
+    }
+}
+
+/// PROBE (probe/l3-domain, BLAKE3 #196): the pool kept in one L3 domain
+/// (Linux; elsewhere nothing).
+#[cfg(not(target_os = "linux"))]
+mod probe_domain {
+    pub(super) fn start(threads: usize) -> usize {
+        threads
+    }
+    pub(super) fn pin_worker() {}
+}
+
+/// PROBE (probe/l3-domain, BLAKE3 #196): the pool kept in one L3 domain.
+#[cfg(target_os = "linux")]
+mod probe_domain {
+    use std::sync::OnceLock;
+
+    /// The domain's CPUs as an affinity mask, where the probe pins.
+    static MASK: OnceLock<Option<[u64; 16]>> = OnceLock::new();
+
+    unsafe extern "C" {
+        fn sched_getcpu() -> i32;
+        fn sched_setaffinity(pid: i32, size: usize, mask: *const u64) -> i32;
+    }
+
+    /// CPUs from a sysfs list ("0-5,24-29").
+    fn cpus(list: &str) -> Vec<usize> {
+        list.trim()
+            .split(',')
+            .filter(|r| !r.is_empty())
+            .flat_map(|r| match r.split_once('-') {
+                Some((a, b)) => (a.parse().unwrap()..=b.parse().unwrap()).collect::<Vec<usize>>(),
+                None => vec![r.parse().unwrap()],
+            })
+            .collect()
+    }
+
+    fn pin(mask: &[u64; 16]) {
+        // Sound: a mask of 1024 CPUs for this thread (pid 0).
+        assert_eq!(unsafe { sched_setaffinity(0, 128, mask.as_ptr()) }, 0, "sched_setaffinity");
+    }
+
+    /// The pool's thread count under the probe's mode, pinning the calling
+    /// thread for "both".
+    pub(super) fn start(threads: usize) -> usize {
+        let mode = std::env::var("BLAKE3_PROBE_DOMAIN").unwrap_or_default();
+        if mode.is_empty() || mode == "none" {
+            MASK.set(None).unwrap();
+            return threads;
+        }
+        assert!(mode == "workers" || mode == "both", "BLAKE3_PROBE_DOMAIN: none, workers or both");
+        // Sound: a plain query.
+        let cpu = unsafe { sched_getcpu() };
+        assert!(cpu >= 0, "sched_getcpu");
+        let list = std::fs::read_to_string(format!("/sys/devices/system/cpu/cpu{cpu}/cache/index3/shared_cpu_list"))
+            .expect("the CPU's L3 domain (sysfs cache index3)");
+        let domain = cpus(&list);
+        let mut mask = [0u64; 16];
+        for c in &domain {
+            mask[c / 64] |= 1 << (c % 64);
+        }
+        eprintln!("probe/l3-domain: {mode}: CPU {cpu}'s L3 domain is {} CPUs ({}); the pool takes {} threads", domain.len(), list.trim(), domain.len());
+        if mode == "both" {
+            pin(&mask);
+        }
+        MASK.set(Some(mask)).unwrap();
+        domain.len()
+    }
+
+    /// A worker's first act under the probe: its domain's CPUs alone.
+    pub(super) fn pin_worker() {
+        if let Some(Some(mask)) = MASK.get() {
+            pin(mask);
+        }
     }
 }
