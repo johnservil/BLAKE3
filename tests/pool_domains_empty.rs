@@ -8,7 +8,7 @@
 //! whose domain gets no worker, and every kind of work checked against the
 //! single-threaded digest. A binary of its own, since the pool is the
 //! process's; where it would hang, nextest's clock kills and names it.
-#![cfg(all(feature = "std", target_os = "linux", target_arch = "x86_64"))]
+#![cfg(all(feature = "std", target_os = "linux"))]
 
 use blake3_servil::performance::{Batch, Block, hash, hash_each_multithreaded, hash_many, hash_many_multithreaded, hash_multithreaded, stream};
 use blake3_servil::{Hash, Mode};
