@@ -633,7 +633,14 @@ impl Domains {
             let mut lists: Vec<String> = Vec::new();
             let mut of_cpu = vec![0u32; 1024];
             let mut cpus_of: Vec<Vec<usize>> = Vec::new();
+            // Only the CPUs this process may run on: confined to a few (a
+            // container's cpuset, taskset), it has the domains they're in,
+            // and no worker is spread to one it can't reach.
+            let allowed = allowed_cpus();
             for cpu in 0..1024 {
+                if allowed.as_ref().is_some_and(|a| !a.get(cpu).copied().unwrap_or(false)) {
+                    continue;
+                }
                 let Ok(list) = std::fs::read_to_string(format!("/sys/devices/system/cpu/cpu{cpu}/cache/index3/shared_cpu_list")) else { continue };
                 let list = list.trim().to_string();
                 let d = lists.iter().position(|l| *l == list).unwrap_or_else(|| {
@@ -652,7 +659,8 @@ impl Domains {
     }
 
     /// The calling thread's domain now (0 with one domain, which asks the
-    /// OS nothing).
+    /// OS nothing). A thread on a CPU outside every domain read (one this
+    /// process couldn't run on when the pool started) counts as domain 0.
     fn here(&self) -> u32 {
         if self.count == 1 {
             return 0;
@@ -669,6 +677,24 @@ impl Domains {
         #[allow(unreachable_code)]
         0
     }
+}
+
+/// The CPUs this process may run on, by CPU number, from
+/// /proc/self/status's Cpus_allowed_list ("0-5,24-29"); None where it can't
+/// be read, and then every CPU counts.
+#[cfg(target_os = "linux")]
+fn allowed_cpus() -> Option<Vec<bool>> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    let list = status.lines().find_map(|l| l.strip_prefix("Cpus_allowed_list:"))?.trim();
+    let mut allowed = vec![false; 1024];
+    for range in list.split(',').filter(|r| !r.is_empty()) {
+        let (a, b) = range.split_once('-').unwrap_or((range, range));
+        let (a, b): (usize, usize) = (a.trim().parse().ok()?, b.trim().parse().ok()?);
+        for cpu in a..=b.min(1023) {
+            allowed[cpu] = true;
+        }
+    }
+    Some(allowed)
 }
 
 /// Create the pool and start its threads in the background, once per
@@ -894,8 +920,19 @@ impl Pool {
         } else if len >= EVERY_LEN {
             EVERY
         } else {
-            self.domains.here()
+            self.home()
         }
+    }
+
+    /// The calling thread's domain for the work it publishes: its own, or
+    /// every domain where its own has no worker. A pool of fewer workers
+    /// than domains leaves some with none (two threads over the EPYC 9255's
+    /// four), and a caller there once cut a one-shot for one thread, which
+    /// panicked, and waited forever in a stream's collect for takers its
+    /// domain didn't have (#196, Sam's runs).
+    fn home(&self) -> u32 {
+        let here = self.domains.here();
+        if self.workers_in.get(here as usize).is_some_and(|&w| w > 0) { here } else { EVERY }
     }
 
     /// Worker `me`'s loop: the sources' tasks and pieces; spinning a while
@@ -1061,7 +1098,7 @@ pub(crate) mod sources {
             let domain = if pool.domains.count == 1 {
                 0
             } else {
-                let here = pool.domains.here();
+                let here = pool.home();
                 if self.domain.load(Ordering::Relaxed) != here {
                     self.domain.store(here, Ordering::Relaxed);
                 }
