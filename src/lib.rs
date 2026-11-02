@@ -972,6 +972,15 @@ pub fn initialize_multithreaded(threads: Option<core::num::NonZeroUsize>) {
     }
 }
 
+/// For tests only (probe/l3-pool, #196): split this machine's CPUs into `n`
+/// L3 domains, before [`initialize_multithreaded`], so a machine with one
+/// L3 runs the pool's many-domain paths. Not part of the API.
+#[cfg(feature = "std")]
+#[doc(hidden)]
+pub fn __split_domains_for_tests(n: usize) {
+    lanes::split_domains_for_tests(n)
+}
+
 /// Whether every worker of the multithreaded calls' pool is parked (false
 /// before [`initialize_multithreaded`]). Undocumented and unstable, for
 /// tests only: a test that needs the pool idle waits for this, not for a
