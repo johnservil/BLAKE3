@@ -1644,19 +1644,8 @@ fn worker_main(me: usize) {
     let _ = std::panic::catch_unwind(move || {
         let pool = pool();
         let (d, local) = pool.worker_at[me];
-        #[cfg(target_os = "linux")]
-        if !pool.domains.cpus[d as usize].is_empty() {
-            // This worker on its domain's CPUs (a mask of 1024).
-            unsafe extern "C" {
-                fn sched_setaffinity(pid: i32, size: usize, mask: *const u64) -> i32;
-            }
-            let mut mask = [0u64; 16];
-            for &c in &pool.domains.cpus[d as usize] {
-                mask[c / 64] |= 1 << (c % 64);
-            }
-            // Sound: a mask of 1024 CPUs for this thread (pid 0).
-            assert_eq!(unsafe { sched_setaffinity(0, 128, mask.as_ptr()) }, 0, "pinning a worker to its domain");
-        }
+        // PROBE (probe/l3-pool-unpinned): no worker pinned to its domain's CPUs.
+        let _ = d;
         pool.park_of(d as usize).register(local);
         pool.serve(me)
     });
