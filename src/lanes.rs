@@ -1094,15 +1094,20 @@ pub(crate) mod sources {
             // The domain, stored only on a machine of several: the field
             // shares a line with what the workers read as they take, and a
             // store a publication cost servil mt's 64 MiB stream 8% on the
-            // VM's one L3 (its check of 9c25ed9e).
+            // VM's one L3 (its check of 9c25ed9e). A full-length task (a 64
+            // KiB message, a long one's piece, a full batch) goes to every
+            // domain: it is worth a core anywhere, and kept in the caller's
+            // domain, 8 of them in flight shared its 6 cores where servil
+            // spread them over the EPYC 9255's 24 (12% slower at 64 KiB,
+            // Sam's runs on #196); shorter ones stay, for their locality.
             let domain = if pool.domains.count == 1 {
                 0
             } else {
-                let here = pool.home();
-                if self.domain.load(Ordering::Relaxed) != here {
-                    self.domain.store(here, Ordering::Relaxed);
+                let to = if task.len >= TASK_LEN { EVERY } else { pool.home() };
+                if self.domain.load(Ordering::Relaxed) != to {
+                    self.domain.store(to, Ordering::Relaxed);
                 }
-                here
+                to
             };
             let p = self.finish.published.load(Ordering::Relaxed);
             debug_assert!(p - self.claimed.load(Ordering::Relaxed) < self.ring.len(), "a source's ring holds every task not yet taken");
