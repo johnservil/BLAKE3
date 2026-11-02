@@ -1133,7 +1133,7 @@ pub(crate) mod sources {
         /// Make `job` the caller's current job, its pieces `0..own` the
         /// caller's own: the number `finished` must reach when it is done.
         pub(crate) fn publish_job(&self, job: *mut Job<'static>, pieces: usize, own: usize, domain: u32) -> usize {
-            if self.domain.load(Ordering::Relaxed) != domain {
+            if !pool().one && self.domain.load(Ordering::Relaxed) != domain {
                 self.domain.store(domain, Ordering::Relaxed);
             }
             let base = self.finish.published.load(Ordering::Relaxed);
@@ -1195,7 +1195,11 @@ pub(crate) mod sources {
         pub(crate) fn wake_for_waiting(&self) {
             let pool = pool();
             if self.waiting() > 0 {
-                pool.wake_one(self.domain.load(Ordering::Relaxed));
+                if pool.one {
+                    pool.park.wake_one();
+                } else {
+                    pool.wake_one(self.domain.load(Ordering::Relaxed));
+                }
             }
         }
 
@@ -1292,7 +1296,12 @@ pub(crate) mod sources {
         find::<MULTI>(mine, |source| {
             let Some(item) = source.take() else { return false };
             if source.waiting() >= 2 {
-                pool().wake_one(source.domain.load(Ordering::Relaxed));
+                let pool = pool();
+                if pool.one {
+                    pool.park.wake_one();
+                } else {
+                    pool.wake_one(source.domain.load(Ordering::Relaxed));
+                }
             }
             match item {
                 Item::Task(task) => task.run(pool_platform()),
