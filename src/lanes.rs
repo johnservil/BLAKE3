@@ -669,11 +669,6 @@ impl Domains {
     }
 }
 
-std::thread_local! {
-    /// A worker's domain; EVERY on any other thread (it takes from all).
-    static WORKER_DOMAIN: core::cell::Cell<u32> = const { core::cell::Cell::new(EVERY) };
-}
-
 /// Create the pool and start its threads in the background, once per
 /// process ([`crate::initialize_multithreaded`] is its public face): this
 /// thread starts the SME2 thread and worker 1, and worker 1 the other
@@ -879,18 +874,21 @@ impl Pool {
     /// when a stream is open (more is coming), else parked, whenever it
     /// finds nothing.
     fn serve(&self, me: usize) -> ! {
+        // This worker's domain (EVERY with one domain: it takes from every
+        // source), its park and its place there.
+        let (d, local) = self.worker_at[me];
+        let mine = if self.domains.count == 1 { EVERY } else { d };
+        let park = &self.parks[d as usize];
         loop {
-            if sources::run_one() {
+            if sources::run_one(mine) {
                 continue;
             }
-            if sources::open() && spin_for_work() {
+            if sources::open() && spin_for_work(mine) {
                 continue;
             }
             // Park unless work shows (crate::park's handshake); woken, pay
             // the wakes owed before working.
-            let (d, local) = self.worker_at[me];
-            let park = &self.parks[d as usize];
-            if park.park_unless(local, || sources::visible(false)) {
+            if park.park_unless(local, || sources::visible(false, mine)) {
                 park.pay_owed();
             }
         }
@@ -905,11 +903,11 @@ impl Pool {
 const SPIN: std::time::Duration = std::time::Duration::from_micros(5);
 
 /// Look for work for up to SPIN: whether some appeared.
-fn spin_for_work() -> bool {
+fn spin_for_work(mine: u32) -> bool {
     let started = std::time::Instant::now();
     loop {
         for _ in 0..16 {
-            if sources::visible(false) {
+            if sources::visible(false, mine) {
                 return true;
             }
             core::hint::spin_loop();
@@ -1163,10 +1161,9 @@ pub(crate) mod sources {
     }
 
     /// The first registered source for which `f` says yes, among those
-    /// this thread may take from: a worker, its domain's and every
-    /// domain's; any other thread, all.
-    fn find(mut f: impl FnMut(&'static Source) -> bool) -> bool {
-        let mine = WORKER_DOMAIN.with(|w| w.get());
+    /// `mine` may take from: a worker's domain, its own sources and every
+    /// domain's; EVERY (one domain, the SME2 thread, a test), all.
+    fn find(mine: u32, mut f: impl FnMut(&'static Source) -> bool) -> bool {
         let mut active = ACTIVE.load(Ordering::SeqCst);
         while active != 0 {
             let slot = active.trailing_zeros() as usize;
@@ -1193,8 +1190,8 @@ pub(crate) mod sources {
     /// Run one item from any source: whether there was one. When two or
     /// more wait and a worker is parked, this one wakes the next first
     /// (the chain).
-    pub(crate) fn run_one() -> bool {
-        find(|source| {
+    pub(crate) fn run_one(mine: u32) -> bool {
+        find(mine, |source| {
             let Some(item) = source.take() else { return false };
             if source.waiting() >= 2 {
                 pool().wake_one(source.domain.load(Ordering::Relaxed));
@@ -1217,7 +1214,7 @@ pub(crate) mod sources {
     /// A task from any stream (the SME2 thread takes these alone).
     pub(crate) fn take_stream_task() -> Option<Task> {
         let mut found = None;
-        find(|source| {
+        find(EVERY, |source| {
             found = if source.ring.is_empty() { None } else { source.take_task() };
             found.is_some()
         });
@@ -1225,8 +1222,8 @@ pub(crate) mod sources {
     }
 
     /// Whether any source has work waiting (`streams`: any stream).
-    pub(crate) fn visible(streams: bool) -> bool {
-        find(|source| (!streams || !source.ring.is_empty()) && source.waiting() > 0)
+    pub(crate) fn visible(streams: bool, mine: u32) -> bool {
+        find(mine, |source| (!streams || !source.ring.is_empty()) && source.waiting() > 0)
     }
 
     #[cfg(test)]
@@ -1240,29 +1237,29 @@ pub(crate) mod sources {
         fn test_unregister_gives_the_slot_back() {
             let source: &'static Source = &*Box::leak(Box::new(Source::new(0)));
             let slot = source.register().expect("a free slot");
-            assert!(find(|t| core::ptr::eq(t, source)), "a registered source is reached");
+            assert!(find(EVERY, |t| core::ptr::eq(t, source)), "a registered source is reached");
             Source::unregister(slot);
-            assert!(!find(|t| core::ptr::eq(t, source)), "an unregistered source is still reached");
+            assert!(!find(EVERY, |t| core::ptr::eq(t, source)), "an unregistered source is still reached");
         }
 
         /// What a worker looks for before it parks: a registered source
         /// with an item published and not yet claimed, any source's for a
-        /// worker (visible(false)), a stream's alone for the SME2 thread
-        /// (visible(true)). The predicate alone, no thread: its four
+        /// worker (visible(false, EVERY)), a stream's alone for the SME2 thread
+        /// (visible(true, EVERY)). The predicate alone, no thread: its four
         /// survivors under the mutation check had stood as scheduling.
         #[test]
         fn test_visible_sees_a_waiting_item_and_its_kind() {
             let job: &'static Source = &*Box::leak(Box::new(Source::new(0)));
             let stream: &'static Source = &*Box::leak(Box::new(Source::new(4)));
             let slots = [job.register().expect("a free slot"), stream.register().expect("a free slot")];
-            assert!(!visible(false) && !visible(true), "nothing published: nothing visible");
+            assert!(!visible(false, EVERY) && !visible(true, EVERY), "nothing published: nothing visible");
             job.finish.published.store(1, Ordering::SeqCst);
-            assert!(visible(false), "a job's piece waits: a worker sees it");
-            assert!(!visible(true), "the SME2 thread looks at streams alone");
+            assert!(visible(false, EVERY), "a job's piece waits: a worker sees it");
+            assert!(!visible(true, EVERY), "the SME2 thread looks at streams alone");
             job.claimed.store(1, Ordering::SeqCst);
-            assert!(!visible(false), "the piece was claimed: nothing waits");
+            assert!(!visible(false, EVERY), "the piece was claimed: nothing waits");
             stream.finish.published.store(1, Ordering::SeqCst);
-            assert!(visible(false) && visible(true), "a stream's task waits: both see it");
+            assert!(visible(false, EVERY) && visible(true, EVERY), "a stream's task waits: both see it");
             for slot in slots {
                 Source::unregister(slot);
             }
@@ -1287,9 +1284,9 @@ pub(crate) mod sources {
             let sources: Vec<&'static Source> = (0..3).map(|_| &*Box::leak(Box::new(Source::new(0)))).collect();
             let slots: Vec<usize> = sources.iter().map(|s| s.register().expect("a free slot")).collect();
             Source::unregister(slots[1]);
-            assert!(!find(|t| core::ptr::eq(t, sources[1])), "the unregistered source is still reached");
+            assert!(!find(EVERY, |t| core::ptr::eq(t, sources[1])), "the unregistered source is still reached");
             for &i in &[0, 2] {
-                assert!(find(|t| core::ptr::eq(t, sources[i])), "source {i} lost its registration with another's");
+                assert!(find(EVERY, |t| core::ptr::eq(t, sources[i])), "source {i} lost its registration with another's");
             }
             for &i in &[0, 2] {
                 Source::unregister(slots[i]);
@@ -1307,7 +1304,7 @@ pub(crate) mod sources {
                 s.register().expect("a free slot");
             }
             for (i, s) in sources.iter().enumerate() {
-                assert!(find(|t| core::ptr::eq(t, *s)), "find reaches registered source {i} of 3");
+                assert!(find(EVERY, |t| core::ptr::eq(t, *s)), "find reaches registered source {i} of 3");
             }
         }
     }
@@ -1510,7 +1507,7 @@ fn sme2_serve() -> ! {
         }
         // Park as a worker does: the flag, one more look, the token.
         SME2_PARKED.store(true, Ordering::SeqCst);
-        if sources::visible(true) {
+        if sources::visible(true, EVERY) {
             SME2_PARKED.store(false, Ordering::SeqCst);
             continue;
         }
@@ -1554,7 +1551,6 @@ fn worker_main(me: usize) {
     let _ = std::panic::catch_unwind(move || {
         let pool = pool();
         let (d, local) = pool.worker_at[me];
-        WORKER_DOMAIN.with(|w| w.set(if pool.domains.count == 1 { EVERY } else { d }));
         #[cfg(target_os = "linux")]
         if !pool.domains.cpus[d as usize].is_empty() {
             // This worker on its domain's CPUs (a mask of 1024).
