@@ -578,9 +578,11 @@ struct Pool {
     /// Whether the SME2 thread runs (this CPU has SME2).
     sme2: bool,
     /// Which workers are parked, how one parks without missing work, and
-    /// how a publisher wakes one (crate::park, which Shuttle checks): one
-    /// park a domain, each its domain's workers.
-    parks: Box<[crate::park::Park]>,
+    /// how a publisher wakes one (crate::park, which Shuttle checks):
+    /// domain 0's workers here, where one park held all before domains, so
+    /// a machine of one L3 keeps its layout; the other domains' in `more`.
+    park: crate::park::Park,
+    more: Box<[crate::park::Park]>,
     /// The L3 domains (probe/l3-pool, #196): each CPU's, and each domain's
     /// workers; worker `w` is `worker_at[w]` (its domain, its index there).
     domains: Domains,
@@ -690,8 +692,10 @@ pub(crate) fn initialize(threads: usize) {
         workers_in[d] += 1;
     }
     let worker_at: Box<[(u32, usize)]> = (0..n).flat_map(|d| (0..workers_in[d]).map(move |i| (d as u32, i))).collect();
-    let parks = workers_in.iter().map(|&w| crate::park::Park::new(w.max(1), crate::park::FANOUT)).collect();
-    let pool = Pool { callers: AtomicUsize::new(0), threads, sme2, parks, domains, workers_in: workers_in.into(), worker_at };
+    let mut parks = workers_in.iter().map(|&w| crate::park::Park::new(w.max(1), crate::park::FANOUT));
+    let park = parks.next().expect("one domain at least");
+    let more = parks.collect();
+    let pool = Pool { callers: AtomicUsize::new(0), threads, sme2, park, more, domains, workers_in: workers_in.into(), worker_at };
     assert!(POOL.set(pool).is_ok(), "initialize_multithreaded creates the pool once");
     if threads == 1 {
         return;
@@ -757,7 +761,7 @@ fn forked() -> ! {
 /// Whether every worker is parked: false before the pool exists
 /// ([`crate::__all_workers_parked`], for tests).
 pub(crate) fn all_workers_parked() -> bool {
-    POOL.get().is_some_and(|pool| pool.parks.iter().map(|p| p.parked_count()).sum::<usize>() == pool.threads - 1)
+    POOL.get().is_some_and(|pool| pool.parks().map(|p| p.parked_count()).sum::<usize>() == pool.threads - 1)
 }
 
 /// The pool. The caller must have called
@@ -833,23 +837,33 @@ impl Pool {
         }
     }
 
+    /// Domain `d`'s park.
+    fn park_of(&self, d: usize) -> &crate::park::Park {
+        if d == 0 { &self.park } else { &self.more[d - 1] }
+    }
+
+    /// Every park, domain 0's first.
+    fn parks(&self) -> impl Iterator<Item = &crate::park::Park> {
+        core::iter::once(&self.park).chain(self.more.iter())
+    }
+
     /// Wake workers in `domain` (EVERY: in each domain, in proportion to
     /// its workers) for `wanted` pieces of new work (crate::park).
     pub(crate) fn wake_for(&self, wanted: usize, domain: u32) {
         if domain == EVERY {
             let workers = self.threads - 1;
-            for (d, park) in self.parks.iter().enumerate() {
+            for (d, park) in self.parks().enumerate() {
                 let share = (wanted * self.workers_in[d]).div_ceil(workers.max(1));
                 park.wake_for(share, self.workers_in[d]);
             }
         } else {
-            self.parks[domain as usize].wake_for(wanted, self.workers_in[domain as usize]);
+            self.park_of(domain as usize).wake_for(wanted, self.workers_in[domain as usize]);
         }
     }
 
     /// Wake one parked worker of `domain` (EVERY: of any domain).
     pub(crate) fn wake_one(&self, domain: u32) -> bool {
-        if domain == EVERY { self.parks.iter().any(|p| p.wake_one()) } else { self.parks[domain as usize].wake_one() }
+        if domain == EVERY { self.parks().any(|p| p.wake_one()) } else { self.park_of(domain as usize).wake_one() }
     }
 
     /// The threads a job of `domain` runs on: its caller and that domain's
@@ -878,7 +892,7 @@ impl Pool {
         // source), its park and its place there.
         let (d, local) = self.worker_at[me];
         let mine = if self.domains.count == 1 { EVERY } else { d };
-        let park = &self.parks[d as usize];
+        let park = self.park_of(d as usize);
         loop {
             if sources::run_one(mine) {
                 continue;
@@ -956,9 +970,6 @@ pub(crate) mod sources {
     #[repr(align(128))]
     pub(crate) struct Source {
         claimed: OwnLine<AtomicUsize>,
-        /// The domain its published items are for (EVERY: any), written
-        /// before each publication.
-        domain: core::sync::atomic::AtomicU32,
         /// A stream's tasks; empty for a caller's jobs.
         ring: Box<[UnsafeCell<MaybeUninit<Task>>]>,
         /// A caller's current job and its first number; the job stays the
@@ -969,6 +980,11 @@ pub(crate) mod sources {
         /// between the waiting caller and the worker finishing its last
         /// piece (crate::finish, which Loom checks).
         finish: crate::finish::Finish,
+        /// The domain its published items are for (EVERY: any), written
+        /// before a publication that changes it. Last, so the fields above
+        /// keep the places they had before domains (a field between them
+        /// slowed servil mt's streams 3-11% on the VM's one L3).
+        domain: core::sync::atomic::AtomicU32,
     }
 
     // Sound: a ring slot is written by its stream only above `published`
@@ -991,11 +1007,11 @@ pub(crate) mod sources {
         pub(crate) fn new(len: usize) -> Source {
             Source {
                 claimed: OwnLine(AtomicUsize::new(0)),
-                domain: core::sync::atomic::AtomicU32::new(EVERY),
                 ring: (0..len).map(|_| UnsafeCell::new(MaybeUninit::uninit())).collect(),
                 job: AtomicPtr::new(core::ptr::null_mut()),
                 base: AtomicUsize::new(0),
                 finish: crate::finish::Finish::new(),
+                domain: core::sync::atomic::AtomicU32::new(EVERY),
             }
         }
 
@@ -1577,7 +1593,7 @@ fn worker_main(me: usize) {
             // Sound: a mask of 1024 CPUs for this thread (pid 0).
             assert_eq!(unsafe { sched_setaffinity(0, 128, mask.as_ptr()) }, 0, "pinning a worker to its domain");
         }
-        pool.parks[d as usize].register(local);
+        pool.park_of(d as usize).register(local);
         pool.serve(me)
     });
     std::process::abort()
@@ -1975,7 +1991,7 @@ mod test {
     fn test_idle_workers_park_while_a_stream_is_open() {
         let pool = pool();
         let workers = pool.threads - 1;
-        let all_parked = || pool.parks.iter().map(|p| p.parked_count()).sum::<usize>() == workers;
+        let all_parked = || pool.parks().map(|p| p.parked_count()).sum::<usize>() == workers;
         crate::performance::stream(
             crate::Mode::Plain,
             |_: &mut [Hash]| {},
