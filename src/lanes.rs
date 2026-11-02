@@ -576,6 +576,9 @@ struct Pool {
     /// Which workers are parked, how one parks without missing work, and
     /// how a publisher wakes one (crate::park, which Shuttle checks).
     park: crate::park::Park,
+    /// PROBE (probe/layout-pad, #196): probe/l3-pool's added Pool fields'
+    /// size, with no code: does the layout alone move the streams?
+    _pad: [u64; 11],
 }
 
 /// Create the pool and start its threads in the background, once per
@@ -585,7 +588,7 @@ struct Pool {
 pub(crate) fn initialize(threads: usize) {
     // With one thread, none beside the caller: no SME2 thread either.
     let sme2 = threads > 1 && cfg!(blake3_sme2) && !matches!(pool_platform(), p if core::mem::discriminant(&p) == core::mem::discriminant(&Platform::detect()));
-    let pool = Pool { callers: AtomicUsize::new(0), threads, sme2, park: crate::park::Park::new(threads - 1, crate::park::FANOUT) };
+    let pool = Pool { callers: AtomicUsize::new(0), threads, sme2, park: crate::park::Park::new(threads - 1, crate::park::FANOUT), _pad: [0; 11] };
     assert!(POOL.set(pool).is_ok(), "initialize_multithreaded creates the pool once");
     if threads == 1 {
         return;
@@ -823,6 +826,8 @@ pub(crate) mod sources {
         /// between the waiting caller and the worker finishing its last
         /// piece (crate::finish, which Loom checks).
         finish: crate::finish::Finish,
+        /// PROBE (probe/layout-pad): probe/l3-pool's domain field's size.
+        _pad: core::sync::atomic::AtomicU32,
     }
 
     // Sound: a ring slot is written by its stream only above `published`
@@ -849,6 +854,7 @@ pub(crate) mod sources {
                 job: AtomicPtr::new(core::ptr::null_mut()),
                 base: AtomicUsize::new(0),
                 finish: crate::finish::Finish::new(),
+                _pad: core::sync::atomic::AtomicU32::new(0),
             }
         }
 
