@@ -585,6 +585,9 @@ struct Pool {
     threads: usize,
     /// Whether the SME2 thread runs (this CPU has SME2).
     sme2: bool,
+    /// Whether the machine has one L3 domain: beside sme2, so a call on
+    /// one reads only the lines it read before domains.
+    one: bool,
     more: Box<[crate::park::Park]>,
     /// The L3 domains (probe/l3-pool, #196): each CPU's, and each domain's
     /// workers; worker `w` is `worker_at[w]` (its domain, its index there).
@@ -724,7 +727,7 @@ pub(crate) fn initialize(threads: usize) {
     let mut parks = workers_in.iter().map(|&w| crate::park::Park::new(w.max(1), crate::park::FANOUT));
     let park = parks.next().expect("one domain at least");
     let more = parks.collect();
-    let pool = Pool { callers: AtomicUsize::new(0), threads, sme2, park, more, domains, workers_in: workers_in.into(), worker_at };
+    let pool = Pool { callers: AtomicUsize::new(0), threads, sme2, one: n == 1, park, more, domains, workers_in: workers_in.into(), worker_at };
     assert!(POOL.set(pool).is_ok(), "initialize_multithreaded creates the pool once");
     if threads == 1 {
         return;
@@ -879,7 +882,7 @@ impl Pool {
     /// Wake workers in `domain` (EVERY: in each domain, in proportion to
     /// its workers) for `wanted` pieces of new work (crate::park).
     pub(crate) fn wake_for(&self, wanted: usize, domain: u32) {
-        if self.more.is_empty() {
+        if self.one {
             self.park.wake_for(wanted, self.threads - 1);
         } else {
             self.wake_for_domains(wanted, domain);
@@ -901,7 +904,7 @@ impl Pool {
 
     /// Wake one parked worker of `domain` (EVERY: of any domain).
     pub(crate) fn wake_one(&self, domain: u32) -> bool {
-        if self.more.is_empty() { self.park.wake_one() } else { self.wake_one_domains(domain) }
+        if self.one { self.park.wake_one() } else { self.wake_one_domains(domain) }
     }
 
     #[inline(never)]
@@ -912,13 +915,13 @@ impl Pool {
     /// The threads a job of `domain` runs on: its caller and that domain's
     /// workers (EVERY: the pool's).
     fn threads_for(&self, domain: u32) -> usize {
-        if domain == EVERY || self.more.is_empty() { self.threads } else { 1 + self.workers_in[domain as usize] }
+        if domain == EVERY || self.one { self.threads } else { 1 + self.workers_in[domain as usize] }
     }
 
     /// The domain a new job of `len` input bytes goes to: every domain
     /// from EVERY_LEN, else the caller's.
     fn domain_for(&self, len: usize) -> u32 {
-        if self.domains.count == 1 {
+        if self.one {
             0
         } else if len >= EVERY_LEN {
             EVERY
@@ -944,7 +947,7 @@ impl Pool {
     fn serve(&self, me: usize) -> ! {
         // One domain: the loop as it was before domains, compiled without
         // the domain filter (a machine of one L3 pays nothing for them).
-        if self.more.is_empty() {
+        if self.one {
             self.serve_as::<false>(me, EVERY, &self.park, me)
         }
         let (d, local) = self.worker_at[me];
@@ -1103,7 +1106,7 @@ pub(crate) mod sources {
             // domain, 8 of them in flight shared its 6 cores where servil
             // spread them over the EPYC 9255's 24 (12% slower at 64 KiB,
             // Sam's runs on #196); shorter ones stay, for their locality.
-            let domain = if pool.domains.count == 1 {
+            let domain = if pool.one {
                 0
             } else {
                 let to = if task.len >= TASK_LEN { EVERY } else { pool.home() };
