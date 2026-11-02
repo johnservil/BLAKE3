@@ -569,19 +569,22 @@ fn subtree_cv(pieces: &[Piece], cvs: &[ChainingValue], mode: crate::Mode) -> Cha
 
 /// The pool: threads - 1 workers (the calling thread hashes too) taking from the registered sources
 /// ([`sources`]), the SME2 thread beside them where the CPU has SME2, and
-/// the record of which workers are parked.
+/// the record of which workers are parked. PROBE (#196): laid out in order
+/// (repr(C)), servil's fields at servil's places (park, callers and threads
+/// on the first line, sme2 opening the second), the domains' after them.
+#[repr(C)]
 struct Pool {
+    /// Which workers are parked, how one parks without missing work, and
+    /// how a publisher wakes one (crate::park, which Shuttle checks):
+    /// domain 0's workers here, where one park held all before domains, so
+    /// a machine of one L3 keeps its layout; the other domains' in `more`.
+    park: crate::park::Park,
     /// Calls on the pool now ([`spare_pool`]).
     callers: AtomicUsize,
     /// The threads a call hashes on: its caller and the workers.
     threads: usize,
     /// Whether the SME2 thread runs (this CPU has SME2).
     sme2: bool,
-    /// Which workers are parked, how one parks without missing work, and
-    /// how a publisher wakes one (crate::park, which Shuttle checks):
-    /// domain 0's workers here, where one park held all before domains, so
-    /// a machine of one L3 keeps its layout; the other domains' in `more`.
-    park: crate::park::Park,
     more: Box<[crate::park::Park]>,
     /// The L3 domains (probe/l3-pool, #196): each CPU's, and each domain's
     /// workers; worker `w` is `worker_at[w]` (its domain, its index there).
