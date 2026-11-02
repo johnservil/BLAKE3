@@ -71,6 +71,7 @@ impl Finish {
 
     /// Count `n` pieces finished (their outputs written before); the last
     /// one wakes a caller parked for it.
+    #[inline]
     pub(crate) fn finished(&self, n: usize) {
         let before = self.state.fetch_add(n, Ordering::SeqCst);
         if before & SLEEPING != 0 && (before & !SLEEPING) + n == self.published.load(Ordering::SeqCst) {
@@ -83,6 +84,7 @@ impl Finish {
     /// Wait until the count reaches `target`: `poll` a while (it returns
     /// false when the while is up), then parked until the worker finishing
     /// the last piece unparks this thread.
+    #[inline]
     pub(crate) fn wait(&self, target: usize, mut poll: impl FnMut() -> bool) {
         loop {
             if self.finished_count() >= target {
