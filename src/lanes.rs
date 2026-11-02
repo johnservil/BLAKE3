@@ -1017,8 +1017,19 @@ pub(crate) mod sources {
         /// worker parked, a worker.
         pub(crate) fn publish(&self, task: Task) {
             let pool = pool();
-            let domain = if pool.domains.count == 1 { 0 } else { pool.domains.here() };
-            self.domain.store(domain, Ordering::Relaxed);
+            // The domain, stored only on a machine of several: the field
+            // shares a line with what the workers read as they take, and a
+            // store a publication cost servil mt's 64 MiB stream 8% on the
+            // VM's one L3 (its check of 9c25ed9e).
+            let domain = if pool.domains.count == 1 {
+                0
+            } else {
+                let here = pool.domains.here();
+                if self.domain.load(Ordering::Relaxed) != here {
+                    self.domain.store(here, Ordering::Relaxed);
+                }
+                here
+            };
             let p = self.finish.published.load(Ordering::Relaxed);
             debug_assert!(p - self.claimed.load(Ordering::Relaxed) < self.ring.len(), "a source's ring holds every task not yet taken");
             // Sound: slot p % len is free (its last task was taken), and
@@ -1037,7 +1048,9 @@ pub(crate) mod sources {
         /// Make `job` the caller's current job, its pieces `0..own` the
         /// caller's own: the number `finished` must reach when it is done.
         pub(crate) fn publish_job(&self, job: *mut Job<'static>, pieces: usize, own: usize, domain: u32) -> usize {
-            self.domain.store(domain, Ordering::Relaxed);
+            if self.domain.load(Ordering::Relaxed) != domain {
+                self.domain.store(domain, Ordering::Relaxed);
+            }
             let base = self.finish.published.load(Ordering::Relaxed);
             debug_assert_eq!(self.finish.finished_count(), base, "the last job is finished");
             self.job.store(job, Ordering::Relaxed);
