@@ -594,6 +594,13 @@ struct Pool {
     domains: Domains,
     workers_in: Box<[usize]>,
     worker_at: Box<[(u32, usize)]>,
+    /// Each domain's physical cores, and the stream tasks running on them
+    /// now (PROBE #196, lend by cores): a domain with as many running as it
+    /// has cores is busy, and other domains' workers take its streams'
+    /// tasks (Sam's EPYC logs: pinned to one domain's 12 threads, 42-75% of
+    /// tasks shared a core with another, 1.5x as slow).
+    cores_in: Box<[usize]>,
+    running: Box<[OwnLine<AtomicUsize>]>,
 }
 
 /// Work any domain's workers take (probe/l3-pool, #196): collections, and
@@ -727,7 +734,21 @@ pub(crate) fn initialize(threads: usize) {
     let mut parks = workers_in.iter().map(|&w| crate::park::Park::new(w.max(1), crate::park::FANOUT));
     let park = parks.next().expect("one domain at least");
     let more = parks.collect();
-    let pool = Pool { callers: AtomicUsize::new(0), threads, sme2, one: n == 1, park, more, domains, workers_in: workers_in.into(), worker_at };
+    // Each domain's cores: its CPUs' distinct cores (sysfs core_cpus_list,
+    // the first CPU of each); where the CPUs are unknown (a test's split),
+    // its workers.
+    let cores_in: Box<[usize]> = (0..n)
+        .map(|d| {
+            let cores: std::collections::BTreeSet<String> = domains.cpus[d]
+                .iter()
+                .filter_map(|c| std::fs::read_to_string(format!("/sys/devices/system/cpu/cpu{c}/topology/core_cpus_list")).ok())
+                .map(|l| l.split([',', '-']).next().unwrap_or("").trim().to_owned())
+                .collect();
+            if cores.is_empty() { workers_in[d].max(1) } else { cores.len() }
+        })
+        .collect();
+    let running = (0..n).map(|_| OwnLine(AtomicUsize::new(0))).collect();
+    let pool = Pool { callers: AtomicUsize::new(0), threads, sme2, one: n == 1, park, more, domains, workers_in: workers_in.into(), worker_at, cores_in, running };
     assert!(POOL.set(pool).is_ok(), "initialize_multithreaded creates the pool once");
     if threads == 1 {
         return;
@@ -909,7 +930,20 @@ impl Pool {
 
     #[inline(never)]
     fn wake_one_domains(&self, domain: u32) -> bool {
-        if domain == EVERY { self.parks().any(|p| p.wake_one()) } else { self.park_of(domain as usize).wake_one() }
+        if domain == EVERY {
+            return self.parks().any(|p| p.wake_one());
+        }
+        // A busy domain's next task is for another domain's cores.
+        if self.busy(domain) {
+            return self.parks().enumerate().any(|(d, p)| d != domain as usize && p.wake_one()) || self.park_of(domain as usize).wake_one();
+        }
+        self.park_of(domain as usize).wake_one()
+    }
+
+    /// Whether `domain` runs as many stream tasks as it has cores (PROBE
+    /// #196, lend by cores).
+    fn busy(&self, domain: u32) -> bool {
+        self.running[domain as usize].load(Ordering::Relaxed) >= self.cores_in[domain as usize]
     }
 
     /// The threads a job of `domain` runs on: its caller and that domain's
@@ -1255,8 +1289,15 @@ pub(crate) mod sources {
 
     /// The first registered source for which `f` says yes, among those
     /// `mine` may take from: a worker's domain, its own sources and every
-    /// domain's; EVERY (one domain, the SME2 thread, a test), all.
+    /// domain's (its streams only while it isn't busy, Pool::busy), then a
+    /// busy domain's streams; EVERY (one domain, the SME2 thread, a test),
+    /// all.
     fn find<const MULTI: bool>(mine: u32, mut f: impl FnMut(&'static Source) -> bool) -> bool {
+        find_in::<MULTI>(mine, false, &mut f) || (MULTI && mine != EVERY && find_in::<MULTI>(mine, true, &mut f))
+    }
+
+    /// `find`'s walk: with `lent`, only busy domains' streams.
+    fn find_in<const MULTI: bool>(mine: u32, lent: bool, f: &mut impl FnMut(&'static Source) -> bool) -> bool {
         let mut active = ACTIVE.load(Ordering::SeqCst);
         while active != 0 {
             let slot = active.trailing_zeros() as usize;
@@ -1269,7 +1310,14 @@ pub(crate) mod sources {
             let source = unsafe { &*ptr };
             if MULTI && mine != EVERY {
                 let d = source.domain.load(Ordering::Relaxed);
-                if d != EVERY && d != mine {
+                let own = d == EVERY || d == mine;
+                let stream = !source.ring.is_empty();
+                let skip = if lent {
+                    own || !stream || !pool().busy(d)
+                } else {
+                    !own || (stream && d != EVERY && pool().busy(mine))
+                };
+                if skip {
                     continue;
                 }
             }
@@ -1290,6 +1338,12 @@ pub(crate) mod sources {
                 pool().wake_one(source.domain.load(Ordering::Relaxed));
             }
             match item {
+                Item::Task(task) if MULTI && mine != EVERY => {
+                    let running = &pool().running[mine as usize];
+                    running.fetch_add(1, Ordering::Relaxed);
+                    task.run(pool_platform());
+                    running.fetch_sub(1, Ordering::Relaxed);
+                }
                 Item::Task(task) => task.run(pool_platform()),
                 Item::Pieces(job, index, n) => {
                     // Sound: the job lives until its pieces are finished,
