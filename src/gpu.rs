@@ -364,6 +364,7 @@ pub(crate) mod test {
         assert!(!run.engaged_at(t + ms(5)), "5 ms apart: the same run, 5 ms long");
         assert!(run.engaged_at(t + ms(10)), "10 ms long: engaged");
         assert!(!run.engaged_at(t + ms(15) + ns(1)), "more than 5 ms apart: a new run");
+        assert!(!run.engaged_at(t + ms(20) + ns(1)), "5 ms into the new run");
         assert!(run.engaged_at(t + ms(25) + ns(1)), "10 ms into the new run");
     }
 
