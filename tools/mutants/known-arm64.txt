@@ -1,0 +1,10 @@
+# The mutants known to survive the library's tests on an Apple silicon Mac
+# (macOS names the architecture arm64; the M4 Max, with SME2 and its GPU),
+# each with its reason; tools/mutants/check.py fails on any other survivor
+# and on any listed one now caught. macOS builds code Linux does not (the
+# GPU's, src/gpu.rs and the stream's GPU paths) and leaves out Linux's (the
+# workers' affinity), so its mutants have a list of their own. Rows come
+# from its runs (the runner's mutants job), --since the GPU's change first.
+# A line: file <TAB> mutant (function and change) <TAB> places <TAB> reason.
+files: src/block.rs src/convenience.rs src/each.rs src/ffi_neon_hybrid.rs src/ffi_sme2.rs src/finish.rs src/hasher.rs src/incremental.rs src/io.rs src/lanes.rs src/lib.rs src/many.rs src/park.rs src/performance.rs src/platform.rs src/self_test.rs src/tree.rs src/pair.rs src/stream.rs src/gpu.rs
+model files: src/finish.rs src/park.rs
