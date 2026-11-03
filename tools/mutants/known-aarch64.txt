@@ -6,14 +6,11 @@ files: src/block.rs src/convenience.rs src/each.rs src/ffi_neon_hybrid.rs src/ff
 model files: src/finish.rs src/park.rs
 src/each.rs	replace hash_held with ()	1	same code: every test binary hashes as the unmutated build's here (tools/mutants/code_hash.py)
 src/each.rs	replace | with ^ in hash_held	1	equivalent: | and ^ agree on flag bits that never overlap
-src/ffi_neon_hybrid.rs	replace % with + in prefetch_message_code	1	speed: whether and what to prefetch after a pause (no effect on results)
-src/ffi_neon_hybrid.rs	replace % with / in prefetch_message_code	1	speed: whether and what to prefetch after a pause (no effect on results)
-src/ffi_neon_hybrid.rs	replace && with || in prefetch_message_code	1	speed: whether and what to prefetch after a pause (no effect on results)
 src/ffi_neon_hybrid.rs	replace * with + in partial_pays	1	speed: moves a threshold between equally correct paths (the partial kernel computes every count from 1 to 15, 10 too; 10 runs faster without it)
+src/ffi_neon_hybrid.rs	replace += with *= in Prefetch::to_root	1	test-only code (cfg(test)): the bound on to_root's levels, which only another mutant reaches
+src/ffi_neon_hybrid.rs	replace > with >= in Prefetch::to_root	1	equivalent: at two values the extra level adds PARENT_PLANS[1], the root kernel itself (k1), which the set already holds once
 src/ffi_neon_hybrid.rs	replace > with >= in partial_pays	1	speed: moves a threshold between equally correct paths (the partial kernel computes every count from 1 to 15, 10 too; 10 runs faster without it)
-src/ffi_neon_hybrid.rs	replace > with >= in prefetch_message_code	2	speed: whether and what to prefetch after a pause (no effect on results)
-src/ffi_neon_hybrid.rs	replace > with >= in prefetch_parent_code	1	speed: whether and what to prefetch after a pause (no effect on results)
-src/ffi_neon_hybrid.rs	replace > with >= in prefetch_tree_code	1	speed: whether and what to prefetch after a pause (no effect on results)
+src/ffi_neon_hybrid.rs	replace prefetch_parent_code with ()	1	SME2 only: its callers are the SME2 branches of prefetch_kernels and prefetch_update_kernels (sixteen chunks' values merging on the hybrids)
 src/ffi_neon_hybrid.rs	replace sha3_detected -> bool with true	1	detection, on a machine with SHA-3: a wrong no runs the NEON kernels (equally correct), a wrong yes is this machine's answer
 src/ffi_neon_hybrid.rs	replace | with ^ in compress_in_place	1	same code: every test binary hashes as the unmutated build's here (tools/mutants/code_hash.py)
 src/ffi_neon_hybrid.rs	replace | with ^ in xof_block	1	same code: every test binary hashes as the unmutated build's here (tools/mutants/code_hash.py)
@@ -171,7 +168,7 @@ src/lib.rs	replace + with * in compress_chunks_parallel	1	same code: every test 
 src/lib.rs	replace + with * in hash_serial_from	1	speed: moves a threshold between equally correct paths
 src/lib.rs	replace + with - in compress_chunks_parallel	1	same code: every test binary hashes as the unmutated build's here (tools/mutants/code_hash.py)
 src/lib.rs	replace + with - in hash_serial_from	1	speed: moves a threshold between equally correct paths
-src/lib.rs	replace += with *= in prefetch_update_kernels	2	speed: whether and what to prefetch after a pause (no effect on results)
+src/lib.rs	replace += with *= in prefetch_update_kernels	3	speed: whether and what to prefetch after a pause (no effect on results)
 src/lib.rs	replace += with -= in prefetch_update_kernels	2	speed: whether and what to prefetch after a pause (no effect on results)
 src/lib.rs	replace -= with /= in prefetch_update_kernels	1	speed: whether and what to prefetch after a pause (no effect on results)
 src/lib.rs	replace / with % in compress_parents_parallel	1	same code: every test binary hashes as the unmutated build's here (tools/mutants/code_hash.py)

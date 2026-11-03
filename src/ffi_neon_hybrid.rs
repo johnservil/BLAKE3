@@ -430,7 +430,7 @@ impl Prefetch {
     /// scalar kernel that compresses the root. Requires 2 to 32.
     pub fn to_root(&mut self, mut values: usize) {
         #[cfg(test)]
-        let mut levels = 0;
+        let mut levels = 0u32;
         while values > 2 {
             values = self.parents(values);
             #[cfg(test)]

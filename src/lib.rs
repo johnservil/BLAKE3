@@ -1262,7 +1262,7 @@ fn prefetch_update_kernels(len: usize, platform: Platform) {
     let mut p = neon_hybrid::Prefetch::new();
     let (mut counter, mut left) = (0u64, len);
     #[cfg(test)]
-    let mut subtrees = 0;
+    let mut subtrees = 0u32;
     while left > CHUNK_LEN {
         #[cfg(test)]
         {
