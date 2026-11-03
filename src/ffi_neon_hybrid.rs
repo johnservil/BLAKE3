@@ -429,22 +429,28 @@ impl Prefetch {
     /// Every level that merges `values` chaining values to two, then the
     /// scalar kernel that compresses the root. Requires 2 to 32.
     pub fn to_root(&mut self, mut values: usize) {
+        #[cfg(test)]
+        let mut levels = 0;
         while values > 2 {
             values = self.parents(values);
+            #[cfg(test)]
+            {
+                // A merge that never reaches two (a mutant's) fails here, at once.
+                levels += 1;
+                assert!(levels < 8, "to_root without end");
+            }
         }
         self.add(parent_code(1));
     }
 
     /// A batch of `count` one-block messages: the parent plans, a group of
-    /// sixteen at a time (hash_many on one-block inputs). Requires 1 or more.
+    /// sixteen at a time (hash_many on one-block inputs): sixteen's (or the
+    /// count's, below sixteen), then the last group's, which for sixteen or
+    /// fewer is the same plan or none (PARENT_PLANS[0]), each kernel once.
+    /// Requires 1 or more.
     pub fn messages(&mut self, count: usize) {
-        for &n in PARENT_PLANS[count.min(16)] {
+        for &n in PARENT_PLANS[count.min(16)].iter().chain(PARENT_PLANS[count % 16]) {
             self.add(parent_code(n));
-        }
-        if count > 16 && count % 16 > 0 {
-            for &n in PARENT_PLANS[count % 16] {
-                self.add(parent_code(n));
-            }
         }
     }
 
@@ -459,17 +465,6 @@ impl Prefetch {
             crate::platform::prefetch_code(range);
         }
     }
-}
-
-#[cfg(feature = "std")]
-/// Prefetch the code a tree of `whole` chunks and then `partial` bytes
-/// (under a chunk) runs on the hybrids: its chunk kernels, then the levels
-/// to the root. Requires 1 to 16 whole chunks.
-pub fn prefetch_tree_code(whole: usize, partial: usize) {
-    let mut p = Prefetch::new();
-    p.chunks(whole, partial);
-    p.to_root(whole + usize::from(partial > 0));
-    p.issue();
 }
 
 #[cfg(feature = "std")]
@@ -913,7 +908,11 @@ mod test {
         // The plans' mirror takes every shape compress_chunks_parallel does.
         for whole in 1..=16 {
             for partial in [0, 1, 63, 64, 65, 500, 1023] {
-                prefetch_tree_code(whole, if whole == 16 { 0 } else { partial });
+                let partial = if whole == 16 { 0 } else { partial };
+                let mut p = Prefetch::new();
+                p.chunks(whole, partial);
+                p.to_root(whole + usize::from(partial > 0));
+                p.issue();
             }
         }
     }

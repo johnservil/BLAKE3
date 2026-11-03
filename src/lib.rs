@@ -1261,7 +1261,15 @@ fn prefetch_update_kernels(len: usize, platform: Platform) {
     }
     let mut p = neon_hybrid::Prefetch::new();
     let (mut counter, mut left) = (0u64, len);
+    #[cfg(test)]
+    let mut subtrees = 0;
     while left > CHUNK_LEN {
+        #[cfg(test)]
+        {
+            // A cut that never ends (a mutant's) fails here, at once.
+            subtrees += 1;
+            assert!(subtrees < 64, "prefetch_update_kernels without end");
+        }
         let subtree = hasher::subtree_len(counter, left);
         let chunks = subtree / CHUNK_LEN;
         #[cfg(blake3_sme2)]
