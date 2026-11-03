@@ -2,10 +2,8 @@
 # nextest's clock stops one, and the model files' (finish.rs, park.rs) only where Shuttle does not catch them either
 # (tools/mutants/check.py, TIMEOUTS). Their own outcome: neither caught nor survived.
 # A line: file <TAB> mutant (function and change) <TAB> places <TAB> reason.
-src/ffi_neon_hybrid.rs	replace % with / in prefetch_parent_code	1	a loop variant broken: `values` no longer halves toward 2, so the prefetch loop never ends; the clock stops the first test that prefetches parents
 src/ffi_neon_hybrid.rs	replace * with / in xof_many	1	a loop variant broken: the output advances by a fraction of a block a pass, so the extended-output loop never reaches the end; the clock stops the XOF tests
 src/ffi_neon_hybrid.rs	replace += with *= in xof_many	1	a loop variant broken: `done` stays 0 (0 *= n), so the extended-output loop never advances; the clock stops the XOF tests
-src/ffi_neon_hybrid.rs	replace > with < in prefetch_parent_code	1	a loop variant broken: the loop runs while values < 2 and never ends from 0 or 1; the clock stops the first test that prefetches parents
 src/hasher.rs	replace << with >> in subtree_len	1	a loop variant broken: a subtree of 0 bytes consumes nothing, so the Hasher's staging loop never advances; the clock stops the first test that hashes past a chunk
 src/hasher.rs	replace subtree_len -> usize with 0	1	a loop variant broken: a subtree of 0 bytes consumes nothing, so the Hasher's staging loop never advances; the clock stops the first test that hashes past a chunk
 src/lanes.rs	replace && with || in Pool::serve	1	a worker spins while any stream is open without looking for work: the workers never park, and the tests that wait for every worker parked (test_idle_workers_park_while_a_stream_is_open, a_caller_looping_on_collect_makes_progress_with_sleeping_workers) wait until the clock, as they are written to; the digests stay right (gate16's logs, October 24)
@@ -31,7 +29,6 @@ src/lanes.rs	replace sources::run_one -> bool with true	1	a worker reports an it
 src/lanes.rs	replace spin_for_work -> bool with true	1	spin_for_work always reports work found: the workers never park, and the tests that wait for every worker parked (test_idle_workers_park_while_a_stream_is_open, a_caller_looping_on_collect_makes_progress_with_sleeping_workers) wait until the clock, as they are written to; the digests stay right (gate16's logs, October 24)
 src/lanes.rs	replace splits -> bool with true	1	a hang the test tests/stream_collect_no_workers.rs showed: a stream on one CPU takes a slot and waits for workers that do not exist
 src/lanes.rs	replace worker_main with ()	1	no worker serves: the tests that wait for a worker to run a stream's task or to park wait until the clock; callers' own work stays right (gate16's logs)
-src/lib.rs	replace -= with += in prefetch_update_kernels	2	a loop variant broken: the remaining length grows instead of shrinking, so the prefetch loop never ends; the clock stops the first update after a pause
 src/lib.rs	replace __all_workers_parked -> bool with false	1	a test-only hook (__all_workers_parked): a no that never turns yes, so the stream tests wait for every worker parked, forever
 src/platform.rs	delete ! in Sme2Turn::take	1	the SME2 turn's handshake inverted: a taker reads the unit as busy when it is free and waits for a release that never comes; the clock stops the first SME2-sized call
 src/platform.rs	replace += with -= in prefetch_code	1	a loop variant broken: the prefetch address steps backward and never reaches the code's end; the clock stops the first SME2 call after a pause

@@ -1217,7 +1217,12 @@ fn batch_after_pause(input: &[u8], message_len: usize, key: &CVWords, flags: u8,
     if !neon_hybrid::sha3_detected() {
         return false;
     }
-    if message_len == 0 || !(1..=PAIRS_AFTER_PAUSE_UPTO).contains(&count) {
+    // Empty messages run no plan (each is the empty input's chunk): nothing to
+    // prefetch (BLAKE3 #219: the plan for their count was prefetched unused).
+    if message_len == 0 {
+        return false;
+    }
+    if !(1..=PAIRS_AFTER_PAUSE_UPTO).contains(&count) {
         neon_hybrid::prefetch_message_code(count);
         return false;
     }
@@ -1251,9 +1256,30 @@ fn prefetch_kernels(len: usize, platform: Platform) {
     #[cfg(not(blake3_sme2))]
     let hybrids = matches!(platform, Platform::NEON);
     if hybrids && neon_hybrid::sha3_detected() {
-        let whole = (len / CHUNK_LEN).min(16);
-        neon_hybrid::prefetch_tree_code(whole, if whole == 16 { 0 } else { len % CHUNK_LEN });
+        let mut p = neon_hybrid::Prefetch::new();
+        let values = prefetch_wide(&mut p, len);
+        p.to_root(values);
+        p.issue();
     }
+}
+
+/// The kernels tree::wide runs over `len` bytes on the hybrids, 16 chunks
+/// a call, into `p`: at most 16 chunks are one chunk call, more are their
+/// two halves (cut at tree::left_len, as wide cuts them) and a level of
+/// their parents. Returns the values it leaves, as wide does. Past 16
+/// chunks the walk splits: planning the input as 16 chunks prefetched up
+/// to 24 KB of parent kernels it never ran, and not the ones it did
+/// (BLAKE3 #219).
+#[cfg(all(blake3_neon, feature = "std"))]
+fn prefetch_wide(p: &mut neon_hybrid::Prefetch, len: usize) -> usize {
+    let chunks = len.div_ceil(CHUNK_LEN);
+    if chunks <= 16 {
+        p.chunks(len / CHUNK_LEN, len % CHUNK_LEN);
+        return chunks;
+    }
+    let left = tree::left_len(len);
+    let values = prefetch_wide(p, left) + prefetch_wide(p, len - left);
+    p.parents(values)
 }
 
 /// Prefetch the code a fresh Hasher's update of `len` bytes runs: the
@@ -1264,8 +1290,17 @@ fn prefetch_update_kernels(len: usize, platform: Platform) {
     if !neon_hybrid::sha3_detected() {
         return;
     }
+    let mut p = neon_hybrid::Prefetch::new();
     let (mut counter, mut left) = (0u64, len);
+    #[cfg(test)]
+    let mut subtrees = 0u32;
     while left > CHUNK_LEN {
+        #[cfg(test)]
+        {
+            // A cut that never ends (a mutant's) fails here, at once.
+            subtrees += 1;
+            assert!(subtrees < 64, "prefetch_update_kernels without end");
+        }
         let subtree = hasher::subtree_len(counter, left);
         let chunks = subtree / CHUNK_LEN;
         #[cfg(blake3_sme2)]
@@ -1278,10 +1313,13 @@ fn prefetch_update_kernels(len: usize, platform: Platform) {
             left -= subtree;
             continue;
         }
-        neon_hybrid::prefetch_tree_code(chunks.min(16), 0);
+        // Each subtree's kernels into one set: subtrees of one size share them.
+        p.chunks(chunks.min(16), 0);
+        p.to_root(chunks.min(16));
         counter += chunks as u64;
         left -= subtree;
     }
+    p.issue();
     let _ = platform;
 }
 
