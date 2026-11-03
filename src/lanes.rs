@@ -601,6 +601,19 @@ struct Pool {
     /// tasks shared a core with another, 1.5x as slow).
     cores_in: Box<[usize]>,
     running: Box<[OwnLine<AtomicUsize>]>,
+    /// Each domain's cores, each its CPUs (sysfs core_cpus_list), where
+    /// known: a worker is pinned to one core's CPUs, and the first worker
+    /// on each core is its primary, the one that takes stream tasks
+    /// (PROBE #196, split: Sam's corepin probe, one worker a core, gained
+    /// everywhere but on Collection's bulk jobs, where the second threads
+    /// pay; here job pieces still use them).
+    core_cpus: Box<[Vec<Vec<usize>>]>,
+}
+
+std::thread_local! {
+    /// Whether this thread takes stream tasks: every thread but a worker
+    /// that is its core's second (PROBE #196, split).
+    static PRIMARY: core::cell::Cell<bool> = const { core::cell::Cell::new(true) };
 }
 
 /// Work any domain's workers take (probe/l3-pool, #196): collections, and
@@ -737,18 +750,20 @@ pub(crate) fn initialize(threads: usize) {
     // Each domain's cores: its CPUs' distinct cores (sysfs core_cpus_list,
     // the first CPU of each); where the CPUs are unknown (a test's split),
     // its workers.
-    let cores_in: Box<[usize]> = (0..n)
+    let core_cpus: Box<[Vec<Vec<usize>>]> = (0..n)
         .map(|d| {
-            let cores: std::collections::BTreeSet<String> = domains.cpus[d]
-                .iter()
-                .filter_map(|c| std::fs::read_to_string(format!("/sys/devices/system/cpu/cpu{c}/topology/core_cpus_list")).ok())
-                .map(|l| l.split([',', '-']).next().unwrap_or("").trim().to_owned())
-                .collect();
-            if cores.is_empty() { workers_in[d].max(1) } else { cores.len() }
+            let mut cores: std::collections::BTreeMap<String, Vec<usize>> = std::collections::BTreeMap::new();
+            for &c in &domains.cpus[d] {
+                if let Ok(l) = std::fs::read_to_string(format!("/sys/devices/system/cpu/cpu{c}/topology/core_cpus_list")) {
+                    cores.entry(l.split([',', '-']).next().unwrap_or("").trim().to_owned()).or_default().push(c);
+                }
+            }
+            cores.into_values().collect()
         })
         .collect();
+    let cores_in: Box<[usize]> = (0..n).map(|d| if core_cpus[d].is_empty() { workers_in[d].max(1) } else { core_cpus[d].len() }).collect();
     let running = (0..n).map(|_| OwnLine(AtomicUsize::new(0))).collect();
-    let pool = Pool { callers: AtomicUsize::new(0), threads, sme2, one: n == 1, park, more, domains, workers_in: workers_in.into(), worker_at, cores_in, running };
+    let pool = Pool { callers: AtomicUsize::new(0), threads, sme2, one: n == 1, park, more, domains, workers_in: workers_in.into(), worker_at, cores_in, running, core_cpus };
     assert!(POOL.set(pool).is_ok(), "initialize_multithreaded creates the pool once");
     if threads == 1 {
         return;
@@ -1312,7 +1327,9 @@ pub(crate) mod sources {
                 let d = source.domain.load(Ordering::Relaxed);
                 let own = d == EVERY || d == mine;
                 let stream = !source.ring.is_empty();
-                let skip = if lent {
+                let skip = if stream && !PRIMARY.with(|p| p.get()) {
+                    true
+                } else if lent {
                     own || !stream || !pool().busy(d)
                 } else {
                     !own || (stream && d != EVERY && pool().busy(mine))
@@ -1698,14 +1715,21 @@ fn worker_main(me: usize) {
     let _ = std::panic::catch_unwind(move || {
         let pool = pool();
         let (d, local) = pool.worker_at[me];
+        // The core's second worker takes no stream task (PRIMARY).
+        let cores = &pool.core_cpus[d as usize];
+        if !cores.is_empty() && local >= cores.len() {
+            PRIMARY.with(|p| p.set(false));
+        }
         #[cfg(target_os = "linux")]
         if !pool.domains.cpus[d as usize].is_empty() {
-            // This worker on its domain's CPUs (a mask of 1024).
+            // This worker on its core's CPUs, where the cores are known, else
+            // on its domain's (a mask of 1024).
             unsafe extern "C" {
                 fn sched_setaffinity(pid: i32, size: usize, mask: *const u64) -> i32;
             }
             let mut mask = [0u64; 16];
-            for &c in &pool.domains.cpus[d as usize] {
+            let cpus = if cores.is_empty() { &pool.domains.cpus[d as usize] } else { &cores[local % cores.len()] };
+            for &c in cpus {
                 mask[c / 64] |= 1 << (c % 64);
             }
             // Sound: a mask of 1024 CPUs for this thread (pid 0).
