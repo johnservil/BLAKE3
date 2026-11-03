@@ -90,7 +90,10 @@ class Confirm(unittest.TestCase):
         subprocess.run([*git, "add", "-A"], check=True)
         subprocess.run([*git, "commit", "-qm", "fixture"], check=True)
         cls.target = os.path.join(cls.dir, "target")
+        # MUTANTS_B3SUM in the shard's environment alone, as check.py sets it
+        # (its own has none: a run on the EPYC stopped at a KeyError, BLAKE3 #218).
         cls.env = dict(os.environ)
+        cls.b3sum = os.environ.pop("MUTANTS_B3SUM")
         foreign = LIB.replace("    let y = x + 1;\n    let z = y * 2;\n    z - 3\n", "    0 /* ~ changed by cargo-mutants ~ */\n")
         changed = LIB.replace("    v[i]\n", "    v[0] /* ~ changed by cargo-mutants ~ */\n")
         cls.places = [
@@ -98,7 +101,10 @@ class Confirm(unittest.TestCase):
             ("changed", "src/lib.rs", mutant_diff(changed, "replace v[i] with v[0]"), 9),
             ("broken", "src/lib.rs", "--- src/lib.rs\n+++ nothing\n@@ -1,1 +1,1 @@\n-no such line\n+other\n", 1),
         ]
-        cls.same = release_same.confirm(cls.tree, cls.target, cls.places, release_same_build_args(), cls.env)
+        try:
+            cls.same = release_same.confirm(cls.tree, cls.target, cls.places, release_same_build_args(), cls.env)
+        finally:
+            os.environ["MUTANTS_B3SUM"] = cls.b3sum
 
     @classmethod
     def tearDownClass(cls):
