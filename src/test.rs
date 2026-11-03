@@ -1675,7 +1675,13 @@ mod prefetch_counts {
     #[test]
     fn test_a_one_shot_hash_after_a_pause_prefetches_what_it_runs() {
         let input = painted(crate::PREFETCH_BELOW + CHUNK_LEN);
-        for len in (CHUNK_LEN + 1..crate::PREFETCH_BELOW).step_by(31).chain([16 * CHUNK_LEN, 16 * CHUNK_LEN + 1, 32 * CHUNK_LEN, 48 * CHUNK_LEN + 9, crate::PREFETCH_BELOW - 1]) {
+        for len in (CHUNK_LEN + 1..crate::PREFETCH_BELOW).step_by(31).chain([
+            16 * CHUNK_LEN,
+            16 * CHUNK_LEN + 1,
+            32 * CHUNK_LEN,
+            48 * CHUNK_LEN + 9,
+            crate::PREFETCH_BELOW - 1,
+        ]) {
             check(&std::format!("hash of {len} bytes"), true, || {
                 std::hint::black_box(crate::hash_serial_from(Platform::NEON, &input[..len], IV, 0));
             });
