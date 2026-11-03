@@ -412,7 +412,12 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
         #[cfg(blake3_gpu)]
         // A pool asked for one thread keeps to its CPU core (AGENTS: the
         // GPU wherever it is efficient).
-        if (crate::gpu::MIN_LEN..=crate::gpu::MAX_LEN).contains(&len) && crate::lanes::splits() && self.s.run.engaged() && crate::gpu::ready() && self.submit_slot(len, &mut fill, out) {
+        if (crate::gpu::MIN_LEN..=crate::gpu::MAX_LEN).contains(&len)
+            && crate::lanes::splits()
+            && self.s.run.engaged()
+            && crate::gpu::ready()
+            && self.submit_slot(len, &mut fill, out)
+        {
             return;
         }
         let pieces = len.div_ceil(PIECE).max(1);
@@ -741,6 +746,8 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
                 self.add_part(piece.as_ptr(), piece.len(), part_kind(i, pieces, out), at, out as *mut u8);
             }
             // Free once its last piece is handed back.
+            #[cfg(test)]
+            test::GPU_SLOT_CPU_MESSAGES.fetch_add(1, Ordering::Relaxed);
             let next = self.next;
             self.s.gpu.as_mut().unwrap().hold_for_cpu(slot, next);
         }
@@ -918,22 +925,26 @@ impl<D> Drop for Stream<'_, D> {
 mod test {
     use super::*;
 
-    /// GPU messages committed, and races the CPU won, in this process.
+    /// GPU messages committed, races the CPU won, and messages in a GPU
+    /// slot the pool's tasks hashed, in this process.
     #[cfg(blake3_gpu)]
     pub(super) static GPU_MESSAGES: AtomicUsize = AtomicUsize::new(0);
     #[cfg(blake3_gpu)]
     pub(super) static GPU_RACES_WON: AtomicUsize = AtomicUsize::new(0);
+    #[cfg(blake3_gpu)]
+    pub(super) static GPU_SLOT_CPU_MESSAGES: AtomicUsize = AtomicUsize::new(0);
 
     /// Wait until the GPU is ready (its start runs on a thread of its own),
     /// and engage it for this thread's stream storage: streams of long
     /// messages, back to back, for more than the run's 10 ms.
     #[cfg(blake3_gpu)]
     fn gpu_ready() {
+        let started = std::time::Instant::now();
         while !crate::gpu::ready() {
+            assert!(started.elapsed() < std::time::Duration::from_secs(10), "the GPU starts within 10 s");
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
         let input = std::vec![1u8; crate::gpu::MIN_LEN];
-        let started = std::time::Instant::now();
         let before = GPU_MESSAGES.load(Ordering::Relaxed);
         while GPU_MESSAGES.load(Ordering::Relaxed) == before {
             assert!(started.elapsed() < std::time::Duration::from_secs(10), "the GPU engages within 10 s");
@@ -1032,6 +1043,98 @@ mod test {
         let (gpu, races) = (GPU_MESSAGES.load(Ordering::Relaxed), GPU_RACES_WON.load(Ordering::Relaxed));
         std::eprintln!("{gpu} messages on the GPU; the CPU won {races} races");
         assert!(gpu > 0, "the GPU hashed some messages");
+    }
+
+    /// A GPU message whose command has ended goes back at the next
+    /// `collect`, as a task's message does.
+    #[cfg(blake3_gpu)]
+    #[test]
+    fn test_gpu_collect_hands_back_a_finished_message() {
+        let mut input = std::vec![0u8; crate::gpu::MIN_LEN];
+        crate::test::paint_test_input(&mut input);
+        let started = std::time::Instant::now();
+        // Until the GPU takes the stream's message (the run engaged).
+        loop {
+            gpu_ready();
+            let gpu = GPU_MESSAGES.load(Ordering::Relaxed);
+            let handed = AtomicUsize::new(0);
+            let mut got = Hash::from_bytes([0; 32]);
+            let at_collect = stream(
+                Mode::Plain,
+                |places: &mut [Hash]| {
+                    handed.fetch_add(places.len(), Ordering::Relaxed);
+                },
+                |s| {
+                    s.submit_with(
+                        input.len(),
+                        |at, room| {
+                            room.copy_from_slice(&input[at..][..room.len()]);
+                            room.len()
+                        },
+                        &mut got,
+                    );
+                    // Ample for a 4 MiB command, about 100 us.
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                    s.collect();
+                    let at_collect = handed.load(Ordering::Relaxed);
+                    s.finish();
+                    at_collect
+                },
+            );
+            assert_eq!(got, crate::convenience::hash(&input));
+            if GPU_MESSAGES.load(Ordering::Relaxed) > gpu {
+                assert_eq!(at_collect, 1, "collect hands back the GPU's finished message");
+                return;
+            }
+            assert!(started.elapsed() < std::time::Duration::from_secs(10), "the GPU takes a message within 10 s");
+        }
+    }
+
+    /// With the GPU's commands held unfinished, five 4 MiB messages: the
+    /// GPU takes four, as many as it may have in flight, the pool's tasks
+    /// hash the fifth from its slot, and the CPU wins all four races at the
+    /// stream's finish. Every digest is right.
+    #[cfg(blake3_gpu)]
+    #[test]
+    fn test_gpu_held_the_cpu_finishes_every_message() {
+        let len = crate::gpu::MIN_LEN;
+        let mut input = std::vec![0u8; 5 * len];
+        crate::test::paint_test_input(&mut input);
+        let want: std::vec::Vec<Hash> = input.chunks(len).map(crate::convenience::hash).collect();
+        let started = std::time::Instant::now();
+        // Until the run engaged from the first message.
+        loop {
+            gpu_ready();
+            let counts = || [&GPU_MESSAGES, &GPU_SLOT_CPU_MESSAGES, &GPU_RACES_WON].map(|c| c.load(Ordering::Relaxed));
+            let before = counts();
+            crate::gpu::test::HELD.store(1 << 20, Ordering::Relaxed);
+            let mut got = places(5);
+            stream(
+                Mode::Plain,
+                |_: &mut [Hash]| {},
+                |s| {
+                    for (message, out) in input.chunks(len).zip(got.iter_mut()) {
+                        s.submit_with(
+                            len,
+                            |at, room| {
+                                room.copy_from_slice(&message[at..][..room.len()]);
+                                room.len()
+                            },
+                            out,
+                        );
+                    }
+                    s.finish();
+                },
+            );
+            crate::gpu::test::HELD.store(0, Ordering::Relaxed);
+            assert!(got == want, "every digest right");
+            let [gpu, slot_cpu, races] = core::array::from_fn(|i| counts()[i] - before[i]);
+            if (gpu, slot_cpu) == (4, 1) {
+                assert_eq!(races, 4, "the CPU wins every race with the GPU held");
+                return;
+            }
+            assert!(started.elapsed() < std::time::Duration::from_secs(10), "the run engages from a stream's first message within 10 s");
+        }
     }
 
     /// Places for `n` digests, each starting as zeros.

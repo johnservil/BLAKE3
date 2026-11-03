@@ -74,7 +74,11 @@ impl Run {
     /// keeps only the length's test).
     #[inline(never)]
     pub(crate) fn engaged(&mut self) -> bool {
-        let now = std::time::Instant::now();
+        self.engaged_at(std::time::Instant::now())
+    }
+
+    /// `engaged`, for a long message at `now`.
+    fn engaged_at(&mut self, now: std::time::Instant) -> bool {
         if now.duration_since(self.last) > RUN_GAP {
             self.started = now;
         }
@@ -229,6 +233,11 @@ impl Slots {
     /// one slot left for the CPU).
     pub(crate) fn free(&mut self, len: usize, lefts: &Lefts, handed: usize) -> Option<(usize, bool)> {
         self.reap(lefts, handed);
+        self.pick(len)
+    }
+
+    /// `free`'s choice, among the slots as they are.
+    fn pick(&self, len: usize) -> Option<(usize, bool)> {
         let usable = (SLOT_BYTES / len).clamp(2, SLOTS);
         let in_flight = self.uses[..usable].iter().filter(|u| matches!(u, Use::Gpu { .. } | Use::Orphaned)).count();
         let slot = (0..usable).find(|&slot| self.uses[slot] == Use::Free)?;
@@ -275,6 +284,11 @@ impl Slots {
     /// Whether the slot's command has ended.
     #[inline]
     pub(crate) fn done(&self, slot: usize) -> bool {
+        // A test holds every command unfinished, for its count of asks.
+        #[cfg(test)]
+        if test::HELD.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1)).is_ok() {
+            return false;
+        }
         unsafe { blake3_servil_gpu_done(self.handle, slot) }
     }
 
@@ -315,4 +329,101 @@ fn check_one(slots: &mut Slots, input: &[u8], key: &CVWords, flags: u8) -> Hash 
     let digest = slots.wait(0);
     slots.uses[0] = Use::Free;
     digest
+}
+
+#[cfg(test)]
+pub(crate) mod test {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    /// How many more asks `Slots::done` answers "not yet", whatever the
+    /// GPU did: a test's hold on its commands.
+    pub(crate) static HELD: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
+    /// Slots with no GPU behind them, using `uses` first: for the
+    /// bookkeeping that never asks the GPU.
+    fn slots(uses: &[Use]) -> Slots {
+        let mut all = [Use::Free; SLOTS];
+        all[..uses.len()].copy_from_slice(uses);
+        Slots { handle: core::ptr::null_mut(), uses: all, memory: [core::ptr::null_mut(); SLOTS] }
+    }
+
+    fn gpu(entry: usize) -> Use {
+        Use::Gpu { entry, place: core::ptr::null_mut() }
+    }
+
+    /// A run engages once its messages, each within 5 ms of the one
+    /// before, have lasted 10 ms; a longer gap starts a new run.
+    #[test]
+    fn test_a_run_engages_after_10_ms() {
+        assert!(!Run::new().engaged(), "a run's first message never engages");
+        let (ms, ns) = (Duration::from_millis, Duration::from_nanos);
+        let mut run = Run::new();
+        let t = Instant::now();
+        assert!(!run.engaged_at(t));
+        assert!(!run.engaged_at(t + ms(5)), "5 ms apart: the same run, 5 ms long");
+        assert!(run.engaged_at(t + ms(10)), "10 ms long: engaged");
+        assert!(!run.engaged_at(t + ms(15) + ns(1)), "more than 5 ms apart: a new run");
+        assert!(run.engaged_at(t + ms(25) + ns(1)), "10 ms into the new run");
+    }
+
+    #[test]
+    fn test_message_reads_the_bridges_text() {
+        let mut error = [0; 512];
+        for (e, b) in error.iter_mut().zip(b"no GPU") {
+            *e = *b as c_char;
+        }
+        assert_eq!(message(&error), "no GPU");
+    }
+
+    /// The slots a message length may use: 256 MiB of them, at least 2.
+    #[test]
+    fn test_long_messages_use_fewer_slots() {
+        let cpu = Use::Cpu { handed: 1 };
+        assert_eq!(slots(&[cpu; 2]).pick(64 << 20), Some((2, true)), "64 MiB: 4 slots");
+        assert_eq!(slots(&[cpu; 4]).pick(64 << 20), None, "64 MiB: 4 slots");
+        assert_eq!(slots(&[cpu; SLOTS - 1]).pick(4 << 20), Some((SLOTS - 1, true)), "4 MiB: every slot");
+        assert_eq!(slots(&[cpu; SLOTS]).pick(4 << 20), None);
+    }
+
+    /// The GPU takes a message while fewer than 4 of its commands are in
+    /// flight (an orphaned one counts), and one slot stays for the CPU.
+    #[test]
+    fn test_the_gpu_takes_a_message_while_few_are_in_flight() {
+        let g = gpu(0);
+        assert_eq!(slots(&[g, g, g]).pick(4 << 20), Some((3, true)));
+        assert_eq!(slots(&[g, g, Use::Orphaned, g]).pick(4 << 20), Some((4, false)));
+        assert_eq!(slots(&[g, g]).pick(64 << 20), Some((2, true)), "64 MiB: 4 slots, 3 for the GPU");
+        assert_eq!(slots(&[g, Use::Orphaned, g]).pick(64 << 20), Some((3, false)));
+    }
+
+    /// A slot the pool's tasks hash from is free once the stream has handed
+    /// back its message, or once the stream ends.
+    #[test]
+    fn test_a_cpu_slot_is_free_once_its_message_is_handed_back() {
+        let mut s = slots(&[]);
+        s.hold_for_cpu(0, 5);
+        s.hold_for_cpu(1, 3);
+        assert!(s.uses[..2] == [Use::Cpu { handed: 5 }, Use::Cpu { handed: 3 }]);
+        s.reap(&[], 4);
+        assert!(s.uses[..2] == [Use::Cpu { handed: 5 }, Use::Free], "4 handed back: the slot held until 3 is free");
+        s.hold_for_cpu(1, 9);
+        s.reap(&[], 5);
+        assert!(s.uses[..2] == [Use::Free, Use::Cpu { handed: 9 }]);
+        s.release_cpu();
+        assert!(s.uses[1] == Use::Free, "the stream ended");
+    }
+
+    /// A GPU slot owes its entry the digest until the entry is done
+    /// another way; the stream's end leaves it to its command.
+    #[test]
+    fn test_a_gpu_slot_owes_its_entry_until_orphaned() {
+        let mut s = slots(&[Use::Free, Use::Cpu { handed: 1 }, gpu(2), gpu(5)]);
+        assert_eq!((s.owing(5), s.owing(2), s.owing(4)), (Some(3), Some(2), None));
+        s.orphan(3);
+        assert!(s.uses[3] == Use::Orphaned);
+        assert_eq!(s.owing(5), None);
+        s.release_cpu();
+        assert!(s.uses[..4] == [Use::Free, Use::Free, gpu(2), Use::Orphaned]);
+    }
 }
