@@ -1629,6 +1629,11 @@ mod prefetch_counts {
         for &entry in ran {
             assert!(prefetched.iter().any(|&((start, end), _)| (start..end).contains(&entry)), "{what}: the kernel at {entry:#x} ran unprefetched");
         }
+        // Each kernel once (neon_hybrid::Prefetch).
+        let mut seen = BTreeSet::new();
+        for &(range, _) in prefetched {
+            assert!(seen.insert(range), "{what}: {:#x}..{:#x} prefetched twice", range.0, range.1);
+        }
     }
 
     /// `call` after a pause and then straight after: after the pause it
@@ -1663,15 +1668,14 @@ mod prefetch_counts {
         input
     }
 
-    /// A one-shot hash of more than a chunk, up to 16 chunks, every length
-    /// in steps of 31 bytes: the kernels it runs, exactly. From 17 chunks
-    /// to PREFETCH_BELOW the prefetch plans the input as 16 chunks
-    /// (prefetch_kernels), and the walk then splits it and runs others
-    /// (BLAKE3 #219): those lengths are checked only to prefetch something.
+    /// A one-shot hash of more than a chunk and less than PREFETCH_BELOW,
+    /// every length in steps of 31 bytes: the kernels it runs, exactly
+    /// (past 16 chunks the walk's split, prefetch_wide); nothing at a chunk
+    /// or less, nor at PREFETCH_BELOW and past it.
     #[test]
     fn test_a_one_shot_hash_after_a_pause_prefetches_what_it_runs() {
         let input = painted(crate::PREFETCH_BELOW + CHUNK_LEN);
-        for len in (CHUNK_LEN + 1..=16 * CHUNK_LEN).step_by(31).chain([16 * CHUNK_LEN]) {
+        for len in (CHUNK_LEN + 1..crate::PREFETCH_BELOW).step_by(31).chain([16 * CHUNK_LEN, 16 * CHUNK_LEN + 1, 32 * CHUNK_LEN, 48 * CHUNK_LEN + 9, crate::PREFETCH_BELOW - 1]) {
             check(&std::format!("hash of {len} bytes"), true, || {
                 std::hint::black_box(crate::hash_serial_from(Platform::NEON, &input[..len], IV, 0));
             });
@@ -1680,16 +1684,6 @@ mod prefetch_counts {
             check(&std::format!("hash of {len} bytes"), false, || {
                 std::hint::black_box(crate::hash_serial_from(Platform::NEON, &input[..len], IV, 0));
             });
-        }
-        for len in [16 * CHUNK_LEN + 1, 33 * CHUNK_LEN + 9, crate::PREFETCH_BELOW - 1] {
-            let pause = 10 * platform::ticks_in_100_us();
-            at(1_000 * pause);
-            std::hint::black_box(crate::hash_serial_from(Platform::NEON, &input[..len], IV, 0));
-            taken();
-            at(1_001 * pause);
-            std::hint::black_box(crate::hash_serial_from(Platform::NEON, &input[..len], IV, 0));
-            assert_eq!(!taken().0.is_empty(), crate::neon_hybrid::sha3_detected(), "hash of {len} bytes after a pause prefetches (where the hybrids run)");
-            TEST_COUNTER.with(|c| c.set(None));
         }
     }
 
@@ -1748,18 +1742,8 @@ mod prefetch_counts {
                     crate::hash_many_serial_from(Platform::NEON, &slots, message_len, IV, 0, &mut out);
                     assert_eq!(out, expected, "{what}: the digests");
                 };
-                if message_len == 0 {
-                    // Empty messages take no plan, yet batch_after_pause prefetches one for them
-                    // (BLAKE3 #219): their digests only, after a pause too.
-                    at(1 << 40);
-                    call();
-                    at(1 << 41);
-                    call();
-                    taken();
-                    TEST_COUNTER.with(|c| c.set(None));
-                    continue;
-                }
-                check(&what, prefetches, call);
+                // Empty messages run no plan: nothing to prefetch.
+                check(&what, prefetches && message_len > 0, call);
                 if message_len > 0 && count <= crate::PAIRS_AFTER_PAUSE_UPTO && crate::neon_hybrid::sha3_detected() {
                     // After a pause: the pair kernel alone, prefetched alone.
                     let pause = 10 * platform::ticks_in_100_us();

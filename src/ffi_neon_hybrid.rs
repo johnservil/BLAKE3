@@ -375,54 +375,119 @@ fn parent_code(n: usize) -> (usize, usize) {
 }
 
 #[cfg(feature = "std")]
-/// Prefetch the code a tree of `whole` chunks and then `partial` bytes
-/// (under a chunk) runs on the hybrids: the chunk kernels
-/// (`compress_chunks_parallel` and [`hash_chunks_with_partial`] choose
-/// them from the same plans), then [`prefetch_parent_code`]. Requires 1 to
-/// 16 whole chunks.
-pub fn prefetch_tree_code(whole: usize, partial: usize) {
-    if partial > 0 && partial_pays(whole, partial) {
-        let lead = whole.saturating_sub(9);
-        for &n in CHUNK_PLANS[lead] {
-            crate::platform::prefetch_code(chunk_code(n, false));
-        }
-        crate::platform::prefetch_code(chunk_code(whole - lead, true));
-    } else {
-        for &n in CHUNK_PLANS[whole] {
-            crate::platform::prefetch_code(chunk_code(n, false));
+/// The code ranges a call after a pause prefetches, collected and then
+/// issued, each once (BLAKE3 #219): a plan can name one kernel for several
+/// groups (sixteen messages: p8 for each eight), a walk can meet one chunk
+/// plan for several subtrees, and the root's kernel is a lone chunk's too;
+/// a range prefetched twice costs its steps twice for lines already coming.
+/// The hybrids have 27 kernels, so the set's room is never short.
+pub struct Prefetch {
+    ranges: [(usize, usize); 32],
+    len: usize,
+}
+
+#[cfg(feature = "std")]
+impl Prefetch {
+    pub fn new() -> Prefetch {
+        Prefetch { ranges: [(0, 0); 32], len: 0 }
+    }
+
+    fn add(&mut self, range: (usize, usize)) {
+        if !self.ranges[..self.len].contains(&range) {
+            self.ranges[self.len] = range;
+            self.len += 1;
         }
     }
-    prefetch_parent_code(whole + usize::from(partial > 0));
+
+    /// The chunk kernels for `whole` chunks and then `partial` bytes (under
+    /// a chunk): `compress_chunks_parallel` and [`hash_chunks_with_partial`]
+    /// choose them from these plans. Requires at most 16 whole chunks.
+    pub fn chunks(&mut self, whole: usize, partial: usize) {
+        if partial > 0 && partial_pays(whole, partial) {
+            let lead = whole.saturating_sub(9);
+            for &n in CHUNK_PLANS[lead] {
+                self.add(chunk_code(n, false));
+            }
+            self.add(chunk_code(whole - lead, true));
+        } else {
+            for &n in CHUNK_PLANS[whole] {
+                self.add(chunk_code(n, false));
+            }
+        }
+    }
+
+    /// One level of parents over `values` chaining values
+    /// (`compress_parents_parallel`); returns the values it leaves.
+    /// Requires 2 to 32.
+    pub fn parents(&mut self, values: usize) -> usize {
+        for &n in PARENT_PLANS[values / 2] {
+            self.add(parent_code(n));
+        }
+        values / 2 + values % 2
+    }
+
+    /// Every level that merges `values` chaining values to two, then the
+    /// scalar kernel that compresses the root. Requires 2 to 32.
+    pub fn to_root(&mut self, mut values: usize) {
+        while values > 2 {
+            values = self.parents(values);
+        }
+        self.add(parent_code(1));
+    }
+
+    /// A batch of `count` one-block messages: the parent plans, a group of
+    /// sixteen at a time (hash_many on one-block inputs). Requires 1 or more.
+    pub fn messages(&mut self, count: usize) {
+        for &n in PARENT_PLANS[count.min(16)] {
+            self.add(parent_code(n));
+        }
+        if count > 16 && count % 16 > 0 {
+            for &n in PARENT_PLANS[count % 16] {
+                self.add(parent_code(n));
+            }
+        }
+    }
+
+    /// The pair kernel ([`hash_pairs`]).
+    pub fn pair(&mut self) {
+        self.add(parent_code(2));
+    }
+
+    /// Prefetch every range collected, each once.
+    pub fn issue(&self) {
+        for &range in &self.ranges[..self.len] {
+            crate::platform::prefetch_code(range);
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+/// Prefetch the code a tree of `whole` chunks and then `partial` bytes
+/// (under a chunk) runs on the hybrids: its chunk kernels, then the levels
+/// to the root. Requires 1 to 16 whole chunks.
+pub fn prefetch_tree_code(whole: usize, partial: usize) {
+    let mut p = Prefetch::new();
+    p.chunks(whole, partial);
+    p.to_root(whole + usize::from(partial > 0));
+    p.issue();
 }
 
 #[cfg(feature = "std")]
 /// Prefetch the code a batch of `count` one-block messages runs on the
-/// hybrids: the parent plans, a group of sixteen at a time (hash_many on
-/// one-block inputs). Requires 1 or more.
+/// hybrids (Prefetch::messages). Requires 1 or more.
 pub fn prefetch_message_code(count: usize) {
-    let plan = |n: usize| PARENT_PLANS[n];
-    for &n in plan(count.min(16)) {
-        crate::platform::prefetch_code(parent_code(n));
-    }
-    if count > 16 && count % 16 > 0 {
-        for &n in plan(count % 16) {
-            crate::platform::prefetch_code(parent_code(n));
-        }
-    }
+    let mut p = Prefetch::new();
+    p.messages(count);
+    p.issue();
 }
 
 #[cfg(feature = "std")]
-/// Prefetch the code that merges `values` chaining values to the root:
-/// each level's parent plan (`compress_parents_parallel`), then the scalar
-/// kernel that compresses the root. Requires 2 to 32 values.
-pub fn prefetch_parent_code(mut values: usize) {
-    while values > 2 {
-        for &n in PARENT_PLANS[values / 2] {
-            crate::platform::prefetch_code(parent_code(n));
-        }
-        values = values / 2 + values % 2;
-    }
-    crate::platform::prefetch_code(parent_code(1));
+/// Prefetch the code that merges `values` chaining values to the root
+/// (Prefetch::to_root). Requires 2 to 32 values.
+pub fn prefetch_parent_code(values: usize) {
+    let mut p = Prefetch::new();
+    p.to_root(values);
+    p.issue();
 }
 
 /// True when the CPU has the SHA-3 extension that provides `xar`. Every
@@ -683,7 +748,9 @@ pub unsafe fn hash_pairs(inputs: &[&[u8; BLOCK_LEN]], key: &CVWords, flags: u8, 
 #[cfg(feature = "std")]
 /// Prefetch the pair kernel's code ([`hash_pairs`]).
 pub fn prefetch_pair_code() {
-    crate::platform::prefetch_code(parent_code(2));
+    let mut p = Prefetch::new();
+    p.pair();
+    p.issue();
 }
 
 /// Run the kernels of `plan` over `inputs`.
