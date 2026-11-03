@@ -1,0 +1,8 @@
+# The mutants that time out on an Apple silicon Mac (macOS names the architecture arm64; the M4 Max, with SME2 and its
+# GPU; November 3, 2026): no test fails, nextest's clock stops one (tools/mutants/check.py, TIMEOUTS). Their own
+# outcome: neither caught nor survived.
+# A line: file <TAB> mutant (function and change) <TAB> places <TAB> reason.
+src/stream.rs	replace && with || in Stream<'env, D>::deliver	1	a loop variant broken: an entry is handed back only if no task counts it and it is an ended GPU message, so `finish` never returns for any other; the clock stops every stream test
+src/stream.rs	replace Stream<'env, D>::deliver -> usize with 0	1	a loop variant broken: the stream hands back no entry, so `finish`, which helps until every entry is handed back, never returns; the clock stops every stream test
+src/stream.rs	replace Stream<'env, D>::deliver -> usize with 1	1	a loop variant broken: the stream hands back no entry, so `finish`, which helps until every entry is handed back, never returns; the clock stops every stream test
+src/stream.rs	replace Stream<'env, D>::help with ()	1	a loop variant broken: `help` neither hands back nor hashes, so `finish`, which loops on it, never returns; the clock stops every stream test
