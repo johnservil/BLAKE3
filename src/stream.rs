@@ -51,6 +51,11 @@ const RING_BYTES: usize = 2 << 20;
 /// 26-130% at 64 and 256 B).
 const ENTRIES: usize = 1024;
 
+/// The pool's share of a GPU message between two looks at the GPU, when
+/// this thread races it (`Stream::race`): 1 MiB, about 25 us of the pool.
+#[cfg(blake3_gpu)]
+const RACE_PIECE: usize = 1 << 20;
+
 /// One message, one piece of a long one, or one part of a batch, from its
 /// submission to its delivery: what the program's thread keeps of it. Its
 /// task's threads write its digests, then count down the `left` of the
@@ -86,6 +91,12 @@ enum Kind {
     /// ([`Stream::submit_reader`]): no digest; its pieces' chaining values
     /// are dropped.
     Abandoned,
+    /// A long message the program wrote into a GPU slot ([`crate::gpu`]),
+    /// its digest at `out`: its own `left` counts 1 until the digest is
+    /// there, from the slot's command (`Slots::reap`) or from this thread,
+    /// which raced the GPU while waiting for it (`race`).
+    #[cfg(blake3_gpu)]
+    Gpu { out: *mut Hash },
 }
 
 /// What a task's threads write for a piece of a long message, in
@@ -228,6 +239,13 @@ struct Storage {
     /// The workers' view of this storage's tasks: shared with them, so
     /// apart from the stream's own (`&mut`) storage, and never freed.
     source: &'static crate::lanes::sources::Source,
+    /// The storage's GPU slots, made when its first long message finds the
+    /// GPU ready, kept with it.
+    #[cfg(blake3_gpu)]
+    gpu: Option<crate::gpu::Slots>,
+    /// The storage's run of long messages, which engages the GPU.
+    #[cfg(blake3_gpu)]
+    run: crate::gpu::Run,
 }
 
 /// Streams' storage not in use: recycled, never freed (a worker may read a
@@ -266,6 +284,10 @@ impl Storage {
             },
             pieces_out: (0..ENTRIES).map(|_| OwnLine(Out(UnsafeCell::new([0; 64])))).collect(),
             lefts: (0..ENTRIES).map(|_| OwnLine(AtomicUsize::new(0))).collect(),
+            #[cfg(blake3_gpu)]
+            gpu: None,
+            #[cfg(blake3_gpu)]
+            run: crate::gpu::Run::new(),
         }
     }
 
@@ -381,9 +403,18 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
     /// that must keep one caller's secrets from another reads none of
     /// `room` before writing it). The stream reuses the bytes once `out`
     /// is handed back; a stream keeps 2 MiB of them, and `submit_with`
-    /// waits for room as `submit` does.
+    /// waits for room as `submit` does. On an Apple silicon Mac, a run of
+    /// messages of 4 to 64 MiB goes to the GPU (the crate's "Which call to
+    /// use"); their rooms are then in memory the GPU shares, on the same
+    /// terms.
     pub fn submit_with(&mut self, len: usize, mut fill: impl FnMut(usize, &mut [u8]) -> usize, out: &'env mut Hash) {
         let out: *mut Hash = out;
+        #[cfg(blake3_gpu)]
+        // A pool asked for one thread keeps to its CPU core (AGENTS: the
+        // GPU wherever it is efficient).
+        if (crate::gpu::MIN_LEN..=crate::gpu::MAX_LEN).contains(&len) && crate::lanes::splits() && self.s.run.engaged() && crate::gpu::ready() && self.submit_slot(len, &mut fill, out) {
+            return;
+        }
         let pieces = len.div_ceil(PIECE).max(1);
         for i in 0..pieces {
             let part_len = (len - i * PIECE).min(PIECE);
@@ -546,11 +577,17 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
     /// is handed over first); a piece of a long message is a task of its
     /// own, a whole subtree at its offset; an empty batch's one part is no
     /// task (done as it is added).
+    // Always inlined, as it was before the GPU's code grew submit_with
+    // past the size where the compiler still inlined it (64-byte messages
+    // 9.5% slower with a call here, job 1741).
+    #[inline(always)]
     fn add_part(&mut self, input: *const u8, len: usize, kind: Kind, ring_end: usize, out: *mut u8) {
         let entry = self.add_entry(len, kind, ring_end);
         let batch = match kind {
             Kind::Message { .. } => None,
             Kind::Abandoned => unreachable!("an abandoned message adds no part"),
+            #[cfg(blake3_gpu)]
+            Kind::Gpu { .. } => unreachable!("a GPU message adds no part"),
             Kind::Batch { .. } if len == 0 => return,
             Kind::Batch { message_len, .. } => Some(message_len),
             Kind::Piece { counter, .. } => {
@@ -639,8 +676,112 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
     /// pause.
     fn help(&mut self) {
         if self.deliver() == 0 && !self.s.run_waiting() {
+            #[cfg(blake3_gpu)]
+            if self.race() {
+                return;
+            }
             core::hint::spin_loop();
         }
+    }
+
+    /// Whether an entry not yet done is a GPU message whose slot's command
+    /// has just ended (its digest now in its place): out of line, so that
+    /// the hand-back of every other entry pays nothing for the GPU.
+    #[cfg(blake3_gpu)]
+    #[inline(never)]
+    fn gpu_done(&mut self, kind: Kind, first: usize) -> bool {
+        if !matches!(kind, Kind::Gpu { .. }) {
+            return false;
+        }
+        let handed = self.delivered;
+        let s = &mut *self.s;
+        s.gpu.as_mut().expect("a GPU entry's slots").reap(&s.lefts, handed);
+        s.lefts[first].load(Ordering::Relaxed) == 0
+    }
+
+    #[cfg(not(blake3_gpu))]
+    #[inline(always)]
+    fn gpu_done(&mut self, _kind: Kind, _first: usize) -> bool {
+        false
+    }
+
+    /// A long message the program writes in, with the GPU engaged: into a
+    /// free slot of GPU-shared memory, `fill` writing it in rooms of up to
+    /// PIECE bytes as on the ring's path. The GPU hashes it, as one command,
+    /// when few of its commands are in flight; otherwise the pool's workers
+    /// hash its pieces from the slot as the program writes them (no ring
+    /// bytes, as `submit` hashes a borrowed message), so the CPU's messages
+    /// never wait for ring room behind the GPU's. False, with nothing
+    /// written, when no slot is free: the ring takes it.
+    #[cfg(blake3_gpu)]
+    #[inline(never)]
+    fn submit_slot(&mut self, len: usize, fill: &mut impl FnMut(usize, &mut [u8]) -> usize, out: *mut Hash) -> bool {
+        let handed = self.delivered;
+        let s = &mut *self.s;
+        let slots = s.gpu.get_or_insert_with(crate::gpu::Slots::new);
+        let Some((slot, on_gpu)) = slots.free(len, &s.lefts, handed) else { return false };
+        let room = slots.room(slot, len);
+        if on_gpu {
+            for (i, piece) in room.chunks_mut(PIECE).enumerate() {
+                fill_all(fill, i * PIECE, piece);
+            }
+            let head = self.head;
+            let index = self.add_entry(len, Kind::Gpu { out }, head);
+            self.s.lefts[index].store(1, Ordering::Relaxed);
+            self.s.gpu.as_mut().unwrap().submit(slot, len, &self.key, self.flags, index, out);
+            #[cfg(test)]
+            test::GPU_MESSAGES.fetch_add(1, Ordering::Relaxed);
+        } else {
+            // Held while its pieces go in (a wait among them may reap).
+            slots.hold_for_cpu(slot, usize::MAX);
+            let pieces = len.div_ceil(PIECE);
+            for (i, piece) in room.chunks_mut(PIECE).enumerate() {
+                fill_all(fill, i * PIECE, piece);
+                let at = self.head;
+                self.add_part(piece.as_ptr(), piece.len(), part_kind(i, pieces, out), at, out as *mut u8);
+            }
+            // Free once its last piece is handed back.
+            let next = self.next;
+            self.s.gpu.as_mut().unwrap().hold_for_cpu(slot, next);
+        }
+        true
+    }
+
+    /// With the oldest entry a GPU message not yet done and nothing else
+    /// to do: hash it here, on the pool, from its slot, 1 MiB at a time,
+    /// checking the GPU between pieces, and keep whichever digest comes
+    /// first. So a cold or slow GPU never sets the stream's pace, and a
+    /// GPU that finishes first costs at most 1 MiB of the pool's work.
+    /// Whether this finished the entry.
+    #[cfg(blake3_gpu)]
+    #[cold]
+    #[inline(never)]
+    fn race(&mut self) -> bool {
+        if self.delivered == self.next {
+            return false;
+        }
+        let index = self.delivered % ENTRIES;
+        let Entry { len, kind: Kind::Gpu { out }, .. } = self.s.entries[index] else { return false };
+        let handed = self.delivered;
+        let s = &mut *self.s;
+        let slots = s.gpu.as_mut().expect("a GPU entry's slots");
+        slots.reap(&s.lefts, handed);
+        let Some(slot) = slots.owing(index) else { return false };
+        let mut hasher = crate::incremental::Hasher::from_core(crate::incremental::HasherCore::new_internal(&self.key, self.flags));
+        for piece in slots.bytes(slot, len).chunks(RACE_PIECE) {
+            if slots.done(slot) {
+                return false;
+            }
+            hasher.update_multithreaded(piece);
+        }
+        // Sound: the place is the program's, lent for the stream's scope,
+        // not yet handed back; its slot will not write it (orphaned).
+        unsafe { *out = hasher.finalize() };
+        slots.orphan(slot);
+        s.lefts[index].store(0, Ordering::Relaxed);
+        #[cfg(test)]
+        test::GPU_RACES_WON.fetch_add(1, Ordering::Relaxed);
+        true
     }
 
     /// A new entry of `len` bytes, waiting for room when every entry is in
@@ -694,7 +835,7 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
             let Entry { len, kind, first, ring_end } = self.s.entries[index];
             // An entry of no task (an empty batch's part, an abandoned
             // message) has its own `left`, zero.
-            if self.s.lefts[first].load(Ordering::Acquire) != 0 {
+            if self.s.lefts[first].load(Ordering::Acquire) != 0 && !self.gpu_done(kind, first) {
                 break;
             }
             self.delivered += 1;
@@ -706,6 +847,9 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
                 Kind::Message { out } => (self.done)(core::slice::from_mut(unsafe { &mut *out })),
                 Kind::Batch { whole: Some((out, n)), .. } => (self.done)(unsafe { core::slice::from_raw_parts_mut(out, n) }),
                 Kind::Batch { whole: None, .. } => {}
+                // Its digest is in the place (`left` was 0).
+                #[cfg(blake3_gpu)]
+                Kind::Gpu { out } => (self.done)(core::slice::from_mut(unsafe { &mut *out })),
                 Kind::Abandoned => {
                     self.stack.clear();
                     self.pieces = 0;
@@ -755,6 +899,11 @@ impl<D> Drop for Stream<'_, D> {
     /// ([`stream`]'s guard), and the C API finishes it before it drops.
     fn drop(&mut self) {
         assert!(self.open.is_none() && self.delivered == self.next, "a stream drops finished");
+        // Every task is done: the slots the pool's tasks read are free.
+        #[cfg(blake3_gpu)]
+        if let Some(slots) = self.s.gpu.as_mut() {
+            slots.release_cpu();
+        }
         if let Some(slot) = self.slot {
             crate::lanes::sources::Source::unregister(slot);
         }
@@ -768,6 +917,122 @@ impl<D> Drop for Stream<'_, D> {
 #[cfg(test)]
 mod test {
     use super::*;
+
+    /// GPU messages committed, and races the CPU won, in this process.
+    #[cfg(blake3_gpu)]
+    pub(super) static GPU_MESSAGES: AtomicUsize = AtomicUsize::new(0);
+    #[cfg(blake3_gpu)]
+    pub(super) static GPU_RACES_WON: AtomicUsize = AtomicUsize::new(0);
+
+    /// Wait until the GPU is ready (its start runs on a thread of its own),
+    /// and engage it for this thread's stream storage: streams of long
+    /// messages, back to back, for more than the run's 10 ms.
+    #[cfg(blake3_gpu)]
+    fn gpu_ready() {
+        while !crate::gpu::ready() {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let input = std::vec![1u8; crate::gpu::MIN_LEN];
+        let started = std::time::Instant::now();
+        let before = GPU_MESSAGES.load(Ordering::Relaxed);
+        while GPU_MESSAGES.load(Ordering::Relaxed) == before {
+            assert!(started.elapsed() < std::time::Duration::from_secs(10), "the GPU engages within 10 s");
+            let mut got = Hash::from_bytes([0; 32]);
+            stream(
+                Mode::Plain,
+                |_: &mut [Hash]| {},
+                |s| {
+                    s.submit_with(
+                        input.len(),
+                        |at, room| {
+                            room.copy_from_slice(&input[at..][..room.len()]);
+                            room.len()
+                        },
+                        &mut got,
+                    );
+                    s.finish();
+                },
+            );
+        }
+    }
+
+    /// Long messages on the GPU, in every mode, among short ones and
+    /// messages just outside its lengths, written in reads of up to 1000
+    /// bytes: each digest the CPU's, handed back once, in order; with
+    /// collect after each, and finishing at once.
+    #[cfg(blake3_gpu)]
+    #[test]
+    fn test_gpu_stream_against_hash_with() {
+        gpu_ready();
+        let mut input = std::vec![0u8; (64 << 20) + 300];
+        crate::test::paint_test_input(&mut input);
+        let key = [9u8; 32];
+        let lens = [4 << 20, (4 << 20) + 1, 100, (5 << 20) + 1023, 64 << 20, (4 << 20) - 1, 3 << 20, (6 << 20) + 7, (64 << 20) + 1, 8 << 20, 0];
+        let message = |i: usize| &input[64 * (i % 3)..][..lens[i % lens.len()]];
+        for (mode, collect) in [(Mode::Plain, false), (Mode::Keyed(&key), true), (Mode::DeriveKey("gpu stream test"), false)] {
+            let mut got = places(3 * lens.len());
+            let want_handed: std::vec::Vec<(usize, usize)> = got.iter().map(|h| (h as *const Hash as usize, 1)).collect();
+            let mut handed = std::vec::Vec::new();
+            stream(mode, record(&mut handed), |s| {
+                for (i, out) in got.iter_mut().enumerate() {
+                    s.submit_with(
+                        lens[i % lens.len()],
+                        |at, room| {
+                            let n = room.len().min(1000);
+                            room[..n].copy_from_slice(&message(i)[at..][..n]);
+                            n
+                        },
+                        out,
+                    );
+                    if collect {
+                        s.collect();
+                    }
+                }
+                s.finish();
+            });
+            assert!(handed == want_handed, "every place handed back once, in order");
+            for (i, got) in got.iter().enumerate() {
+                assert_eq!(*got, crate::convenience::hash_with(mode, message(i)), "message {i}, {} bytes", lens[i % lens.len()]);
+            }
+        }
+        let (gpu, races) = (GPU_MESSAGES.load(Ordering::Relaxed), GPU_RACES_WON.load(Ordering::Relaxed));
+        std::eprintln!("{gpu} messages on the GPU; the CPU won {races} races");
+        assert!(gpu > 0, "the GPU hashed some messages");
+    }
+
+    /// Streams that finish right after each long message, so that the
+    /// program races the GPU every time: the digests stay right whichever
+    /// wins, and the slots come back for the next stream.
+    #[cfg(blake3_gpu)]
+    #[test]
+    fn test_gpu_race() {
+        gpu_ready();
+        let mut input = std::vec![0u8; 16 << 20];
+        crate::test::paint_test_input(&mut input);
+        let want = crate::convenience::hash(&input);
+        for _ in 0..200 {
+            let mut got = Hash::from_bytes([0; 32]);
+            stream(
+                Mode::Plain,
+                |_: &mut [Hash]| {},
+                |s| {
+                    s.submit_with(
+                        input.len(),
+                        |at, room| {
+                            room.copy_from_slice(&input[at..][..room.len()]);
+                            room.len()
+                        },
+                        &mut got,
+                    );
+                    s.finish();
+                },
+            );
+            assert_eq!(got, want);
+        }
+        let (gpu, races) = (GPU_MESSAGES.load(Ordering::Relaxed), GPU_RACES_WON.load(Ordering::Relaxed));
+        std::eprintln!("{gpu} messages on the GPU; the CPU won {races} races");
+        assert!(gpu > 0, "the GPU hashed some messages");
+    }
 
     /// Places for `n` digests, each starting as zeros.
     fn places(n: usize) -> std::vec::Vec<Hash> {

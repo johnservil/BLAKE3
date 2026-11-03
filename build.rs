@@ -196,7 +196,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // As of Rust 1.80, unrecognized config names are warnings. Give Cargo all of our config names.
     // `shuttle` gates tests/shuttle_*.rs (RUSTFLAGS="--cfg shuttle"); the
     // library compiles the same either way.
-    let all_cfgs = ["blake3_sse41_ffi", "blake3_avx2_ffi", "blake3_avx512_ffi", "blake3_neon", "blake3_sme2", "shuttle"];
+    let all_cfgs = ["blake3_sse41_ffi", "blake3_avx2_ffi", "blake3_avx512_ffi", "blake3_neon", "blake3_sme2", "blake3_gpu", "shuttle"];
     for cfg_name in all_cfgs {
         // https://doc.rust-lang.org/cargo/reference/build-scripts.html#outputs-of-the-build-script
         println!("cargo::rustc-check-cfg=cfg({cfg_name}, values(none()))");
@@ -227,6 +227,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 build_sme2_assembly();
             }
         }
+    }
+
+    // The GPU (src/gpu.rs) on Apple Silicon macOS: the Metal bridge, and
+    // the shader's source embedded for the driver to compile at run time.
+    if env::var("CARGO_CFG_TARGET_OS").unwrap_or_default() == "macos" && is_aarch64() && env::var_os("CARGO_FEATURE_STD").is_some() {
+        println!("cargo::rustc-cfg=blake3_gpu");
+        let source = std::fs::read_to_string("c/blake3_gpu.metal")?;
+        let out = std::path::PathBuf::from(env::var_os("OUT_DIR").unwrap());
+        std::fs::write(out.join("blake3_gpu_shader.inc"), format!("static const char blake3_gpu_shader[] = R\"B3METAL({source})B3METAL\";\n"))?;
+        cc::Build::new().cpp(true).file("c/blake3_gpu.mm").include(out).flag("-std=c++17").flag("-fobjc-arc").compile("blake3_gpu");
+        println!("cargo::rustc-link-lib=framework=Foundation");
+        println!("cargo::rustc-link-lib=framework=Metal");
     }
 
     // The `cc` crate doesn't automatically emit rerun-if directives for the
