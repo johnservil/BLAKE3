@@ -902,29 +902,29 @@ impl Pool {
         }
     }
 
-    /// Wake one parked worker of `domain` (EVERY: of any domain), for a
-    /// source with `waiting` items no thread has taken. Where `domain` has
-    /// none parked and is busy (more waiting than it has workers), a
+    /// Wake one parked worker of `domain` (EVERY: of any domain). With
+    /// `lend` (a stream's task), where `domain` has none parked (busy), a
     /// worker of another domain (lending, PROBE #196).
-    pub(crate) fn wake_one(&self, domain: u32, waiting: usize) -> bool {
-        if self.one { self.park.wake_one() } else { self.wake_one_domains(domain, waiting) }
+    pub(crate) fn wake_one(&self, domain: u32, lend: bool) -> bool {
+        if self.one { self.park.wake_one() } else { self.wake_one_domains(domain, lend) }
     }
 
     #[inline(never)]
-    fn wake_one_domains(&self, domain: u32, waiting: usize) -> bool {
+    fn wake_one_domains(&self, domain: u32, lend: bool) -> bool {
         if domain == EVERY {
             return self.parks().any(|p| p.wake_one());
         }
-        self.park_of(domain as usize).wake_one() || (self.busy(domain, waiting) && self.parks().any(|p| p.wake_one()))
+        self.park_of(domain as usize).wake_one() || (lend && self.parks().any(|p| p.wake_one()))
     }
 
-    /// Whether a source of `domain` with `waiting` items untaken is more
-    /// than its domain's workers can take at once: then other domains'
-    /// workers take from it too (PROBE #196, lending: Sam's EPYC runs of
-    /// 8381f8d9 lost 9-13% on one caller's 64 KiB stream and 30% on two
-    /// callers' in one domain, pinned to its six cores).
-    fn busy(&self, domain: u32, waiting: usize) -> bool {
-        waiting > self.workers_in[domain as usize]
+    /// Whether `domain` is busy: none of its workers parked, so other
+    /// domains' workers take its streams' tasks too (PROBE #196, lending:
+    /// Sam's EPYC runs of 8381f8d9 lost 9-13% on one caller's 64 KiB
+    /// stream and 30% on two callers' in one domain, pinned to its six
+    /// cores; 6028718a's rule, more waiting than the domain's workers,
+    /// never fired with 8 in flight, and lent the trees' pieces away).
+    fn busy(&self, domain: u32) -> bool {
+        self.park_of(domain as usize).parked_count() == 0
     }
 
     /// The threads a job of `domain` runs on: its caller and that domain's
@@ -1135,9 +1135,8 @@ pub(crate) mod sources {
             if pool.sme2 {
                 wake_sme2();
             }
-            let waiting = p + 1 - self.claimed.load(Ordering::Relaxed);
-            if waiting >= 2 {
-                pool.wake_one(domain, waiting);
+            if p + 1 - self.claimed.load(Ordering::Relaxed) >= 2 {
+                pool.wake_one(domain, true);
             }
         }
 
@@ -1205,9 +1204,8 @@ pub(crate) mod sources {
         /// 4-CPU runners; Devon Jonte, #99).
         pub(crate) fn wake_for_waiting(&self) {
             let pool = pool();
-            let waiting = self.waiting();
-            if waiting > 0 {
-                pool.wake_one(self.domain.load(Ordering::Relaxed), waiting);
+            if self.waiting() > 0 {
+                pool.wake_one(self.domain.load(Ordering::Relaxed), true);
             }
         }
 
@@ -1272,13 +1270,13 @@ pub(crate) mod sources {
 
     /// The first registered source for which `f` says yes, among those
     /// `mine` may take from: a worker's domain, its own sources and every
-    /// domain's, then a busy domain's (Pool::busy, lending); EVERY (one
+    /// domain's, then a busy domain's streams (Pool::busy, lending); EVERY (one
     /// domain, the SME2 thread, a test), all.
     fn find<const MULTI: bool>(mine: u32, mut f: impl FnMut(&'static Source) -> bool) -> bool {
         find_in::<MULTI>(mine, false, &mut f) || (MULTI && mine != EVERY && find_in::<MULTI>(mine, true, &mut f))
     }
 
-    /// `find`'s walk: with `lent`, only other domains' busy sources.
+    /// `find`'s walk: with `lent`, only busy domains' streams.
     fn find_in<const MULTI: bool>(mine: u32, lent: bool, f: &mut impl FnMut(&'static Source) -> bool) -> bool {
         let mut active = ACTIVE.load(Ordering::SeqCst);
         while active != 0 {
@@ -1293,7 +1291,7 @@ pub(crate) mod sources {
             if MULTI && mine != EVERY {
                 let d = source.domain.load(Ordering::Relaxed);
                 let own = d == EVERY || d == mine;
-                if own == lent || (lent && !pool().busy(d, source.waiting())) {
+                if own == lent || (lent && (source.ring.is_empty() || !pool().busy(d))) {
                     continue;
                 }
             }
@@ -1310,9 +1308,8 @@ pub(crate) mod sources {
     pub(crate) fn run_one<const MULTI: bool>(mine: u32) -> bool {
         find::<MULTI>(mine, |source| {
             let Some(item) = source.take() else { return false };
-            let waiting = source.waiting();
-            if waiting >= 2 {
-                pool().wake_one(source.domain.load(Ordering::Relaxed), waiting);
+            if source.waiting() >= 2 {
+                pool().wake_one(source.domain.load(Ordering::Relaxed), !source.ring.is_empty());
             }
             match item {
                 Item::Task(task) => task.run(pool_platform()),
