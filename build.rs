@@ -231,20 +231,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // The GPU (src/gpu.rs) on Apple Silicon macOS: the Metal bridge, and
     // the shader's source embedded for the driver to compile at run time.
-    // BLAKE3_SKIP_GPU_BUILD keeps the cfg but compiles no bridge, for
-    // `cargo check --target aarch64-apple-darwin` where Apple's headers
-    // are absent (it links nothing).
-    println!("cargo::rerun-if-env-changed=BLAKE3_SKIP_GPU_BUILD");
     if env::var("CARGO_CFG_TARGET_OS").unwrap_or_default() == "macos" && is_aarch64() && env::var_os("CARGO_FEATURE_STD").is_some() {
         println!("cargo::rustc-cfg=blake3_gpu");
-        if env::var_os("BLAKE3_SKIP_GPU_BUILD").is_none() {
-            let source = std::fs::read_to_string("c/blake3_gpu.metal")?;
-            let out = std::path::PathBuf::from(env::var_os("OUT_DIR").unwrap());
-            std::fs::write(out.join("blake3_gpu_shader.inc"), format!("static const char blake3_gpu_shader[] = R\"B3METAL({source})B3METAL\";\n"))?;
-            cc::Build::new().cpp(true).file("c/blake3_gpu.mm").include(out).flag("-std=c++17").flag("-fobjc-arc").compile("blake3_gpu");
-            println!("cargo::rustc-link-lib=framework=Foundation");
-            println!("cargo::rustc-link-lib=framework=Metal");
-        }
+        let source = std::fs::read_to_string("c/blake3_gpu.metal")?;
+        let out = std::path::PathBuf::from(env::var_os("OUT_DIR").unwrap());
+        std::fs::write(out.join("blake3_gpu_shader.inc"), format!("static const char blake3_gpu_shader[] = R\"B3METAL({source})B3METAL\";\n"))?;
+        cc::Build::new().cpp(true).file("c/blake3_gpu.mm").include(out).flag("-std=c++17").flag("-fobjc-arc").compile("blake3_gpu");
+        println!("cargo::rustc-link-lib=framework=Foundation");
+        println!("cargo::rustc-link-lib=framework=Metal");
     }
 
     // The `cc` crate doesn't automatically emit rerun-if directives for the

@@ -101,6 +101,15 @@
 //! the cores themselves, so a program gets the most from one thread making
 //! them.
 //!
+//! **The GPU of an Apple silicon Mac** hashes a [stream](performance::stream)'s
+//! long messages, 4 to 64 MiB written in with
+//! [`Stream::submit_with`](performance::Stream::submit_with), once the
+//! stream has kept sending them for 10 ms. On an Apple M4 Max such streams
+//! ran 1.8 to 2.1 times as fast as on the CPU alone, on 1 to 3 cores where
+//! the CPU stream keeps 12 busy, at about a sixth of the energy a byte.
+//! There is nothing to turn on, and the digests are the same; a pool of
+//! one thread keeps to its core.
+//!
 //! # Memory
 //!
 //! - **A [`Hasher`] is about 18 KiB**; box it where that matters.
@@ -116,7 +125,10 @@
 //!   input, and at most 200 bytes for each CPU (1 GiB on 16 CPUs: 390 KiB).
 //! - **A [stream](performance::stream)** takes its storage (its 2 MiB ring and its entries)
 //!   from a pool the process keeps: a thread's first stream allocates it
-//!   and later streams reuse it, never freed.
+//!   and later streams reuse it, never freed. On an Apple silicon Mac, a
+//!   stream that has used the GPU keeps up to 256 MiB of memory the CPU and
+//!   GPU share, with its storage; the process's first such stream starts
+//!   Metal, about 160 ms on a thread of its own, and Metal's 16 threads.
 //! - **Once per process**: the startup self-test's buffers, about 45 KiB
 //!   of the calling thread's stack while it runs (it allocates nothing),
 //!   and the threads: by default a worker per CPU beyond the first, each with the
@@ -183,13 +195,6 @@ mod each;
 #[cfg(blake3_gpu)]
 mod gpu;
 
-/// For probes: long stream messages hashed on the GPU, on the CPU from a
-/// GPU slot, and races the CPU won, in this process.
-#[cfg(blake3_gpu)]
-#[doc(hidden)]
-pub fn __gpu_counts() -> [usize; 3] {
-    gpu::COUNTS.each_ref().map(|c| c.load(core::sync::atomic::Ordering::Relaxed))
-}
 pub mod performance;
 
 mod platform;

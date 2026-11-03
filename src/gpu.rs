@@ -181,11 +181,6 @@ const SLOT_BYTES: usize = 256 << 20;
 /// slots, so the CPU always has one.
 const GPU_IN_FLIGHT: usize = 4;
 
-/// Counts for the probe (`crate::__gpu_counts`): long messages on the GPU,
-/// on the CPU from a slot, and races the CPU won.
-pub(crate) static COUNTS: [core::sync::atomic::AtomicUsize; 3] =
-    [core::sync::atomic::AtomicUsize::new(0), core::sync::atomic::AtomicUsize::new(0), core::sync::atomic::AtomicUsize::new(0)];
-
 type Lefts = [crate::lanes::OwnLine<core::sync::atomic::AtomicUsize>];
 
 impl Slots {

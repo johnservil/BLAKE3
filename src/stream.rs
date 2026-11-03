@@ -385,11 +385,16 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
     /// that must keep one caller's secrets from another reads none of
     /// `room` before writing it). The stream reuses the bytes once `out`
     /// is handed back; a stream keeps 2 MiB of them, and `submit_with`
-    /// waits for room as `submit` does.
+    /// waits for room as `submit` does. On an Apple silicon Mac, a run of
+    /// messages of 4 to 64 MiB goes to the GPU (the crate's "Which call to
+    /// use"); their rooms are then in memory the GPU shares, on the same
+    /// terms.
     pub fn submit_with(&mut self, len: usize, mut fill: impl FnMut(usize, &mut [u8]) -> usize, out: &'env mut Hash) {
         let out: *mut Hash = out;
         #[cfg(blake3_gpu)]
-        if (crate::gpu::MIN_LEN..=crate::gpu::MAX_LEN).contains(&len) && self.s.run.engaged() && crate::gpu::ready() && self.submit_slot(len, &mut fill, out) {
+        // A pool asked for one thread keeps to its CPU core (AGENTS: the
+        // GPU wherever it is efficient).
+        if (crate::gpu::MIN_LEN..=crate::gpu::MAX_LEN).contains(&len) && crate::lanes::splits() && self.s.run.engaged() && crate::gpu::ready() && self.submit_slot(len, &mut fill, out) {
             return;
         }
         let pieces = len.div_ceil(PIECE).max(1);
@@ -705,7 +710,6 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
             let index = self.add_entry(len, Kind::Gpu { out }, head);
             self.s.lefts[index].store(1, Ordering::Relaxed);
             self.s.gpu.as_mut().unwrap().submit(slot, len, &self.key, self.flags, index, out);
-            crate::gpu::COUNTS[0].fetch_add(1, Ordering::Relaxed);
             #[cfg(test)]
             test::GPU_MESSAGES.fetch_add(1, Ordering::Relaxed);
         } else {
@@ -720,7 +724,6 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
             // Free once its last piece is handed back.
             let next = self.next;
             self.s.gpu.as_mut().unwrap().hold_for_cpu(slot, next);
-            crate::gpu::COUNTS[1].fetch_add(1, Ordering::Relaxed);
         }
         true
     }
@@ -757,7 +760,6 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
         unsafe { *out = hasher.finalize() };
         slots.orphan(slot);
         s.lefts[index].store(0, Ordering::Relaxed);
-        crate::gpu::COUNTS[2].fetch_add(1, Ordering::Relaxed);
         #[cfg(test)]
         test::GPU_RACES_WON.fetch_add(1, Ordering::Relaxed);
         true
