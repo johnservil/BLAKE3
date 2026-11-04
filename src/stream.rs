@@ -754,8 +754,36 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
     pub fn finish(&mut self) {
         self.publish();
         while self.delivered < self.next {
+            // PROBE (gpu-4): at the end, the GPU's tasks back to the pool
+            // when nothing else is left to do; no new claims.
+            #[cfg(blake3_gpu)]
+            if crate::gpu::probe::RECLAIM.load(Ordering::Relaxed) {
+                if self.deliver() == 0 && !self.s.run_waiting() && !self.reclaim() {
+                    core::hint::spin_loop();
+                }
+                continue;
+            }
             self.help();
         }
+    }
+
+    /// PROBE (gpu-4): the GPU's tasks in flight, published again for the
+    /// pool's workers: whether there were any.
+    #[cfg(blake3_gpu)]
+    fn reclaim(&mut self) -> bool {
+        let Some(gpu) = self.s.gpu.as_ref() else { return false };
+        let mut back = std::vec::Vec::new();
+        if !gpu.reclaim(|t| back.push(t)) {
+            return false;
+        }
+        for t in back {
+            // Sound: the piece stays in the ring, and its output and count
+            // in place, until its count is zero.
+            let bytes = unsafe { core::slice::from_raw_parts(t.input, PIECE) };
+            let task = Task { key: self.key, flags: self.flags, out: t.out, left: t.left, ..Task::of(bytes, t.counter) };
+            self.hand_over(task);
+        }
+        true
     }
 
     /// Hand back what is done; with nothing done, hash a waiting task or

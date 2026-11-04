@@ -31,7 +31,7 @@
 
 use crate::lanes::Task;
 use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use std::ffi::{CStr, c_char, c_void};
 
 unsafe extern "C" {
@@ -198,16 +198,34 @@ struct Piece {
 /// One of a GPU's commands, as it last was: kept for good, so Metal's
 /// thread may reach it until the command ends.
 struct Command {
-    /// Whether the command is in flight: set by the stream's thread before
-    /// it commits, cleared by Metal's (Release) after its last task is done.
-    busy: AtomicBool,
+    /// FREE, FLIGHT (committed), DONE (its end writing its tasks' outputs),
+    /// or RECLAIMED (the stream took its tasks back at its finish; its end
+    /// drops its outputs). FLIGHT moves on by one compare-and-swap, to DONE
+    /// on Metal's thread or to RECLAIMED on the stream's: exactly one of
+    /// them writes the tasks' outputs.
+    state: AtomicU8,
     out: *mut c_void,
     /// BATCH * 64 bytes of output, 64 a task.
     out_bytes: *mut u8,
     /// Its tasks' outputs and counts, written by the stream's thread while
     /// the command is not busy, read by Metal's while it is.
-    tasks: UnsafeCell<([(*mut u8, *const AtomicUsize); BATCH], usize)>,
+    tasks: UnsafeCell<([Held; BATCH], usize)>,
 }
+
+/// A task as a command holds it: its piece, its chunk counter, its output
+/// and its count.
+#[derive(Clone, Copy)]
+pub(crate) struct Held {
+    pub(crate) input: *const u8,
+    pub(crate) counter: u64,
+    pub(crate) out: *mut u8,
+    pub(crate) left: *const AtomicUsize,
+}
+
+const FREE: u8 = 0;
+const FLIGHT: u8 = 1;
+const DONE: u8 = 2;
+const RECLAIMED: u8 = 3;
 
 /// A stream storage's GPU: its ring and its commands, kept with it for
 /// the thread.
@@ -235,7 +253,8 @@ impl Gpu {
         let commands = (0..DEPTH)
             .map(|_| {
                 let (out, out_bytes) = buffer(BATCH * 64);
-                Command { busy: AtomicBool::new(false), out, out_bytes, tasks: UnsafeCell::new(([(core::ptr::null_mut(), core::ptr::null()); BATCH], 0)) }
+                let none = Held { input: core::ptr::null(), counter: 0, out: core::ptr::null_mut(), left: core::ptr::null() };
+                Command { state: AtomicU8::new(FREE), out, out_bytes, tasks: UnsafeCell::new(([none; BATCH], 0)) }
             })
             .collect();
         Gpu { ring_buffer, ring, ring_len, commands }
@@ -246,7 +265,8 @@ impl Gpu {
     /// when every command is in flight. Each task's output and count, as
     /// its worker would, once the command ends.
     pub(crate) fn commit<'a>(&self, tasks: impl Iterator<Item = &'a Task>, key: &crate::CVWords, flags: u8) -> bool {
-        let Some(command) = self.commands.iter().find(|c| !c.busy.load(Ordering::Acquire)) else { return false };
+        let depth = probe::DEPTH.load(Ordering::Relaxed).min(DEPTH);
+        let Some(command) = self.commands.iter().take(depth).find(|c| c.state.load(Ordering::Acquire) == FREE) else { return false };
         let mut pieces = [Piece { offset: 0, counter: 0 }; BATCH];
         // Sound: the command is not busy, so Metal's thread is done with it.
         let held = unsafe { &mut *command.tasks.get() };
@@ -257,12 +277,12 @@ impl Gpu {
             assert!(task.len == PIECE && offset <= self.ring_len - PIECE, "a GPU task is a whole piece in the ring");
             debug_assert!(task.members == 0 && task.key == *key && task.flags == flags);
             pieces[i] = Piece { offset: offset as u64, counter: task.counter };
-            held.0[i] = (task.out, task.left);
+            held.0[i] = Held { input: task.input, counter: task.counter, out: task.out, left: task.left };
             count = i + 1;
         }
         debug_assert!(count >= 1);
         held.1 = count;
-        command.busy.store(true, Ordering::Relaxed);
+        command.state.store(FLIGHT, Ordering::Release);
         let mut error = [0; 512];
         // Sound: the ring and the output live for good; the pieces lie in
         // the ring, and the tasks' outputs and counts stay in place until
@@ -283,6 +303,23 @@ impl Gpu {
         assert!(ok, "{}", message(&error));
         true
     }
+
+    /// Take back every command's tasks still in flight (the stream's
+    /// finish, when nothing else is left to do): `f` gets each, for the
+    /// pool's workers; the commands' ends drop their outputs. Whether it
+    /// took any.
+    pub(crate) fn reclaim(&self, mut f: impl FnMut(Held)) -> bool {
+        let mut any = false;
+        for command in self.commands.iter() {
+            if command.state.compare_exchange(FLIGHT, RECLAIMED, Ordering::AcqRel, Ordering::Acquire).is_ok() {
+                // Sound: RECLAIMED, so Metal's thread will not read the tasks.
+                let (tasks, count) = unsafe { &*command.tasks.get() };
+                tasks[..*count].iter().for_each(|&t| f(t));
+                any = true;
+            }
+        }
+        any
+    }
 }
 
 /// A command ended (on Metal's thread): each task's 64 bytes of output to
@@ -294,18 +331,20 @@ extern "C" fn completed(context: *mut c_void, ok: bool) {
         eprintln!("blake3-servil: a GPU command failed; stopping");
         std::process::abort();
     }
-    // Sound: the context is a command kept for good, busy until below.
+    // Sound: the context is a command kept for good, not FREE until below.
     let command = unsafe { &*(context as *const Command) };
-    let (tasks, count) = unsafe { &*command.tasks.get() };
-    for (i, &(out, left)) in tasks[..*count].iter().enumerate() {
-        // Sound: the command has ended, so its output is written; each
-        // task's place (64 bytes) and count stay until the count is zero.
-        unsafe {
-            core::ptr::copy_nonoverlapping(command.out_bytes.add(i * 64), out, 64);
-            (*left).fetch_sub(1, Ordering::Release);
+    if command.state.compare_exchange(FLIGHT, DONE, Ordering::AcqRel, Ordering::Acquire).is_ok() {
+        let (tasks, count) = unsafe { &*command.tasks.get() };
+        for (i, t) in tasks[..*count].iter().enumerate() {
+            // Sound: the command has ended, so its output is written; each
+            // task's place (64 bytes) and count stay until the count is zero.
+            unsafe {
+                core::ptr::copy_nonoverlapping(command.out_bytes.add(i * 64), t.out, 64);
+                (*t.left).fetch_sub(1, Ordering::Release);
+            }
         }
     }
-    command.busy.store(false, Ordering::Release);
+    command.state.store(FREE, Ordering::Release);
 }
 
 /// Give the GPU BATCH of `source`'s tasks, if it may take them now: the
@@ -313,7 +352,8 @@ extern "C" fn completed(context: *mut c_void, ok: bool) {
 /// ring), with at least BATCH more waiting behind them, on a free command.
 /// Whether it gave any. Only the stream's own thread calls this.
 pub(crate) fn feed(gpu: &Gpu, source: &crate::lanes::sources::Source, from: usize, to: usize, key: &crate::CVWords, flags: u8) -> bool {
-    if !gpu.commands.iter().any(|c| !c.busy.load(Ordering::Acquire)) {
+    let depth = probe::DEPTH.load(Ordering::Relaxed).min(DEPTH);
+    if !gpu.commands.iter().take(depth).any(|c| c.state.load(Ordering::Acquire) == FREE) {
         return false;
     }
     let mut taken = false;
@@ -342,6 +382,9 @@ pub mod probe {
     pub static TASKS: AtomicUsize = AtomicUsize::new(0);
     /// The long bytes a stream writes before its GPU may claim.
     pub static AFTER: AtomicUsize = AtomicUsize::new(0);
+    /// Commands in flight at most, and whether finish reclaims.
+    pub static DEPTH: AtomicUsize = AtomicUsize::new(4);
+    pub static RECLAIM: AtomicBool = AtomicBool::new(false);
 }
 
 // Sound: the raw pointers are Metal's buffers and the commands' tasks,
