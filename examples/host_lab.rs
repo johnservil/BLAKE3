@@ -17,13 +17,14 @@ fn main() {
     blake3_servil::initialize_multithreaded(None);
     let inputs: Vec<Vec<u8>> = (0..2).map(|t| (0..16usize << 20).map(|i| (i % 251 + t) as u8).collect()).collect();
     // (name, GPU ring, batch, keep)
-    let configs: [(&str, bool, usize, usize); 6] = [
-        ("cpu8", false, 256, 0),
-        ("ring64", true, 256, 1 << 30),
-        ("256+0", true, 256, 0),
-        ("256+128", true, 256, 128),
-        ("256+512", true, 256, 512),
-        ("128+512", true, 128, 512),
+    // (name, GPU ring, batch, keep, MiB a stream writes before claims)
+    let configs: [(&str, bool, usize, usize, usize); 6] = [
+        ("cpu8", false, 256, 0, 0),
+        ("ring64", true, 256, 1 << 30, 0),
+        ("after0", true, 256, 0, 0),
+        ("after32", true, 256, 0, 32),
+        ("after64", true, 256, 0, 64),
+        ("after128", true, 256, 0, 128),
     ];
     for _ in 0..50 {
         one(&inputs[0], 16 << 20, 4);
@@ -38,10 +39,11 @@ fn main() {
         for len in [4usize << 20, 16 << 20] {
             for n in [1usize, 4, 16, 64] {
                 for threads in [1usize, 2] {
-                    for &(name, gpu, batch, keep) in &configs {
+                    for &(name, gpu, batch, keep, after) in &configs {
                         blake3_servil::__gpu_probe::GPU.store(gpu, Ordering::Relaxed);
                         blake3_servil::__gpu_probe::BATCH.store(batch, Ordering::Relaxed);
                         blake3_servil::__gpu_probe::KEEP.store(keep, Ordering::Relaxed);
+                        blake3_servil::__gpu_probe::AFTER.store(after << 20, Ordering::Relaxed);
                         let streams = ((512usize << 20) / (len * n)).max(3);
                         let barrier = Barrier::new(threads);
                         let warm = std::time::Instant::now();
