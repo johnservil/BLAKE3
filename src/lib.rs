@@ -101,12 +101,11 @@
 //! the cores themselves, so a program gets the most from one thread making
 //! them.
 //!
-//! **The GPU of an Apple silicon Mac** hashes a [stream](performance::stream)'s
-//! long messages, 4 to 64 MiB written in with
-//! [`Stream::submit_with`](performance::Stream::submit_with), once the
-//! stream has kept sending them for 10 ms. On an Apple M4 Max such streams
-//! ran 1.8 to 2.1 times as fast as on the CPU alone, on 1 to 3 cores where
-//! the CPU stream keeps 12 busy, at about a sixth of the energy a byte.
+//! **The GPU of an Apple silicon Mac** joins the CPU's threads on a
+//! [stream](performance::stream)'s long messages, 4 MiB or more written in
+//! with [`Stream::submit_with`](performance::Stream::submit_with), once the
+//! stream has kept sending them for 10 ms: it takes 8 MiB of the stream's
+//! work at a time, while more is waiting than the threads have reached.
 //! There is nothing to turn on, and the digests are the same; a pool of
 //! one thread keeps to its core.
 //!
@@ -126,8 +125,8 @@
 //! - **A [stream](performance::stream)** takes its storage (its 2 MiB ring and its entries)
 //!   from a pool the process keeps: a thread's first stream allocates it
 //!   and later streams reuse it, never freed. On an Apple silicon Mac, a
-//!   stream that has used the GPU keeps up to 256 MiB of memory the CPU and
-//!   GPU share, with its storage; the process's first such stream starts
+//!   stream that has used the GPU keeps 64 MiB of memory the CPU and GPU
+//!   share, with its storage; the process's first such stream starts
 //!   Metal, about 160 ms on a thread of its own, and Metal's 16 threads.
 //! - **Once per process**: the startup self-test's buffers, about 45 KiB
 //!   of the calling thread's stack while it runs (it allocates nothing),

@@ -1,12 +1,10 @@
 // BLAKE3 on Apple GPUs (Metal), compiled from this source by the GPU's
-// driver when a process first uses the GPU (src/gpu.rs). Two kernels: the
-// leaves (one thread a chunk) and a level of parents (one thread a pair),
-// run level by level down to the root. Pairing each level's nodes in
-// order, the last of an odd count carried up, gives BLAKE3's tree: the
-// left subtree of every node holds the largest power of two of chunks
-// under its count. The key words and the mode's flags come with each
-// dispatch, so every mode runs here. Written after kobizk's in
-// johnservil/BLAKE3#170.
+// driver when a process first uses the GPU (src/gpu.rs). One kernel: a
+// batch of a stream's tasks, each a whole 64 KiB piece of a long message
+// (a subtree of 64 chunks at its chunk counter), one threadgroup a task:
+// a thread a chunk, then the group's chaining values merged a level a
+// step. The key words and the mode's flags come with each dispatch, so
+// every mode runs here. Written after kobizk's in johnservil/BLAKE3#170.
 #include <metal_stdlib>
 using namespace metal;
 
@@ -20,7 +18,7 @@ constant uchar schedule[7][16] = {
     {12, 13, 9, 11, 15, 10, 14, 8, 7, 2, 5, 3, 0, 1, 6, 4},
     {9, 14, 11, 5, 8, 12, 15, 1, 13, 3, 0, 10, 2, 6, 4, 7},
     {11, 15, 5, 0, 1, 9, 8, 6, 14, 10, 2, 12, 3, 4, 7, 13}};
-constant uint CHUNK_START = 1, CHUNK_END = 2, PARENT = 4, ROOT = 8;
+constant uint CHUNK_START = 1, CHUNK_END = 2, PARENT = 4;
 
 inline uint rotr(uint x, uint n) { return (x >> n) | (x << (32 - n)); }
 inline void g(thread uint *s, uint a, uint b, uint c, uint d, uint x, uint y) {
@@ -47,52 +45,65 @@ inline void compress(thread uint *cv, thread const uint *m, ulong counter, uint 
 }
 } // namespace b3
 
-// One dispatch's arguments: the message's length (leaves) or the level's
-// node count (parents), the first index this dispatch covers, the key
-// words, and the mode's flags (0, KEYED_HASH, or DERIVE_KEY_MATERIAL).
+// One dispatch's arguments: the key words and the mode's flags (0,
+// KEYED_HASH, or DERIVE_KEY_MATERIAL).
 struct Args {
-    ulong length;
-    ulong first;
     uint key[8];
     uint flags;
 };
 
-kernel void leaves(device const uchar *input [[buffer(0)]], device uint *output [[buffer(1)]],
-                   constant Args &args [[buffer(2)]], uint tid [[thread_position_in_grid]]) {
-    ulong index = args.first + tid, offset = index * 1024;
-    uint len = uint(min(args.length - min(args.length, offset), ulong(1024)));
-    uint blocks = len == 0 ? 1 : (len + 63) / 64;
+// A task: its piece's byte offset in the ring, and its first chunk's index.
+struct Piece {
+    ulong offset;
+    ulong counter;
+};
+
+// Task t's 16 words of output: for a piece at chunk 0 (a message's first),
+// the chaining values of its two 32 KiB halves, which the stream merges
+// into the message's tree; for any other, the piece's chaining value and
+// eight words unused. As the CPU's task writes (lanes::Task::run).
+kernel void tasks(device const uchar *ring [[buffer(0)]], device uint *output [[buffer(1)]],
+                  constant Args &args [[buffer(2)]], constant Piece *pieces [[buffer(3)]],
+                  uint t [[threadgroup_position_in_grid]], uint c [[thread_position_in_threadgroup]]) {
+    threadgroup uint cvs[64 * 8];
+    Piece piece = pieces[t];
+    device const uint *words = reinterpret_cast<device const uint *>(ring + piece.offset + c * 1024);
     uint cv[8];
     for (uint i = 0; i < 8; i++) cv[i] = args.key[i];
-    device const uchar *data = input + offset;
-    for (uint b = 0; b < blocks; b++) {
-        uint m[16] = {};
-        uint take = min(len - b * 64, 64u);
-        if (take == 64) {
-            device const uint *words = reinterpret_cast<device const uint *>(data + b * 64);
-            #pragma unroll
-            for (uint j = 0; j < 16; j++) m[j] = words[j];
-        } else {
-            for (uint j = 0; j < take; j++) m[j / 4] |= uint(data[b * 64 + j]) << (8 * (j % 4));
-        }
-        uint flags = args.flags | (b == 0 ? b3::CHUNK_START : 0u) | (b + 1 == blocks ? b3::CHUNK_END : 0u);
-        if (args.length <= 1024 && b + 1 == blocks) flags |= b3::ROOT;
-        b3::compress(cv, m, index, take, flags);
-    }
-    for (uint j = 0; j < 8; j++) output[index * 8 + j] = cv[j];
-}
-
-kernel void parents(device const uint *input [[buffer(0)]], device uint *output [[buffer(1)]],
-                    constant Args &args [[buffer(2)]], uint tid [[thread_position_in_grid]]) {
-    ulong count = args.length, index = args.first + tid, left = index * 2;
-    uint cv[8];
-    if (left + 1 < count) {
+    for (uint b = 0; b < 16; b++) {
         uint m[16];
-        for (uint i = 0; i < 16; i++) m[i] = input[left * 8 + i];
-        for (uint i = 0; i < 8; i++) cv[i] = args.key[i];
-        b3::compress(cv, m, 0, 64, args.flags | b3::PARENT | (count == 2 ? b3::ROOT : 0u));
-    } else {
-        for (uint j = 0; j < 8; j++) cv[j] = input[left * 8 + j];
+        #pragma unroll
+        for (uint j = 0; j < 16; j++) m[j] = words[b * 16 + j];
+        uint flags = args.flags | (b == 0 ? b3::CHUNK_START : 0u) | (b == 15 ? b3::CHUNK_END : 0u);
+        b3::compress(cv, m, piece.counter + c, 64, flags);
     }
-    for (uint j = 0; j < 8; j++) output[index * 8 + j] = cv[j];
+    for (uint j = 0; j < 8; j++) cvs[c * 8 + j] = cv[j];
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    // Down to the two halves' values, in cvs[0..16].
+    for (uint width = 32; width >= 2; width >>= 1) {
+        uint p[8];
+        if (c < width) {
+            uint m[16];
+            for (uint i = 0; i < 16; i++) m[i] = cvs[c * 16 + i];
+            for (uint i = 0; i < 8; i++) p[i] = args.key[i];
+            b3::compress(p, m, 0, 64, args.flags | b3::PARENT);
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (c < width) {
+            for (uint j = 0; j < 8; j++) cvs[c * 8 + j] = p[j];
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    if (c == 0) {
+        device uint *out = output + t * 16;
+        if (piece.counter == 0) {
+            for (uint j = 0; j < 16; j++) out[j] = cvs[j];
+        } else {
+            uint m[16], p[8];
+            for (uint i = 0; i < 16; i++) m[i] = cvs[i];
+            for (uint i = 0; i < 8; i++) p[i] = args.key[i];
+            b3::compress(p, m, 0, 64, args.flags | b3::PARENT);
+            for (uint j = 0; j < 8; j++) out[j] = p[j];
+        }
+    }
 }

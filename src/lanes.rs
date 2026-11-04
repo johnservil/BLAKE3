@@ -950,6 +950,34 @@ pub(crate) mod sources {
             }
         }
 
+        /// Claim the `n` oldest waiting tasks at once, for a stream's GPU
+        /// (`crate::gpu::feed`): when they lie at positions `from..to`
+        /// (the run its GPU may take) and at least `keep` more wait behind
+        /// them; `f` reads them in place. Whether it claimed them. Only the
+        /// stream's own thread calls this, so no slot it reads is written
+        /// meanwhile (that thread alone publishes).
+        #[cfg(blake3_gpu)]
+        pub(crate) fn take_run(&self, from: usize, to: usize, n: usize, keep: usize, f: impl FnOnce(&mut dyn Iterator<Item = &Task>)) -> bool {
+            let c = self.claimed.load(Ordering::Acquire);
+            let p = self.finish.published.load(Ordering::Relaxed);
+            if c < from || c + n > to || p - c < n + keep {
+                return false;
+            }
+            if self.claimed.compare_exchange(c, c + n, Ordering::AcqRel, Ordering::Acquire).is_err() {
+                return false;
+            }
+            // Sound: this thread alone took slots c..c + n, written before
+            // `published` passed them.
+            f(&mut (c..c + n).map(|i| unsafe { (*self.ring[i % self.ring.len()].get()).assume_init_ref() }));
+            true
+        }
+
+        /// The count of tasks published (a stream's own, on its thread).
+        #[cfg(blake3_gpu)]
+        pub(crate) fn published(&self) -> usize {
+            self.finish.published.load(Ordering::Relaxed)
+        }
+
         /// A stream's next task, if any (this source is a stream's).
         pub(crate) fn take_task(&self) -> Option<Task> {
             match self.take() {
@@ -1137,6 +1165,34 @@ pub(crate) mod sources {
             let first = std::thread::spawn(|| job_source() as *const Source as usize).join().unwrap();
             let second = std::thread::spawn(|| job_source() as *const Source as usize).join().unwrap();
             assert_eq!(first, second, "the second thread takes the source the first gave back");
+        }
+
+        /// The GPU's claim: the oldest `n` waiting tasks, all of them in the
+        /// run it may take, and `keep` more waiting behind; one step, the
+        /// tasks read in place, and `claimed` past them.
+        #[cfg(blake3_gpu)]
+        #[test]
+        fn test_take_run_claims_a_batch_with_more_behind() {
+            let source = Source::new(8);
+            for i in 0..8 {
+                // Sound: no worker sees an unregistered source.
+                unsafe { (*source.ring[i].get()).write(Task::of(&[], i as u64)) };
+            }
+            let counters = |from: usize, to: usize, n: usize, keep: usize| {
+                let mut seen = std::vec::Vec::new();
+                source.take_run(from, to, n, keep, |tasks| seen.extend(tasks.map(|t| t.counter))).then_some(seen)
+            };
+            source.finish.published.store(5, Ordering::Relaxed);
+            assert_eq!(counters(0, 8, 2, 4), None, "5 waiting: 2 with 4 behind them is too many");
+            assert_eq!(counters(1, 8, 2, 3), None, "the oldest waiting is before the run");
+            assert_eq!(counters(0, 1, 2, 3), None, "the second is past the run");
+            assert_eq!(counters(0, 2, 2, 3), Some(std::vec![0, 1]), "2 at once, 3 behind");
+            assert_eq!(source.claimed.load(Ordering::Relaxed), 2);
+            source.finish.published.store(8, Ordering::Relaxed);
+            assert_eq!(counters(0, 8, 3, 3), Some(std::vec![2, 3, 4]));
+            assert_eq!(counters(0, 8, 2, 1), Some(std::vec![5, 6]), "1 left behind");
+            assert_eq!(counters(0, 8, 1, 1), None, "the last task is the workers'");
+            assert_eq!(source.take_task().map(|t| t.counter), Some(7));
         }
 
         /// Unregistering one source leaves the others registered: its bit
