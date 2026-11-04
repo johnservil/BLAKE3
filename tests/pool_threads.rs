@@ -48,6 +48,20 @@ fn one_thread_starts_no_workers() {
     let mut g = golden::Golden::new("hash_each_on_a_pool_of_one");
     g.add(out.as_flattened(), || items.iter().flat_map(|x| *blake3::hash(x).as_bytes()).collect());
     g.check(0x36d8838896a1a882);
+    // A Hasher's multithreaded update on a pool of one: each whole subtree
+    // of MIN_SPLIT_LEN or more goes to lanes::subtree_children, which has no
+    // spare thread and hashes it on the caller (BLAKE3 #238: no test took
+    // that path). 1 MiB from zero (one subtree of 1 MiB), and 3 MiB + 5
+    // bytes after a 1-byte update (subtrees cut at other counters).
+    let big: Vec<u8> = (0..3usize << 20 | 6).map(|i| (i * 13 + i / 4093) as u8).collect();
+    let mut g = golden::Golden::new("hasher_on_a_pool_of_one");
+    let mut h = blake3_servil::performance::Hasher::new(blake3_servil::Mode::Plain);
+    h.update_multithreaded(&big[..1 << 20]);
+    g.add(h.finalize().as_bytes(), || blake3::hash(&big[..1 << 20]).as_bytes().to_vec());
+    let mut h = blake3_servil::performance::Hasher::new(blake3_servil::Mode::Plain);
+    h.update_multithreaded(&big[..1]).update_multithreaded(&big[1..]);
+    g.add(h.finalize().as_bytes(), || blake3::hash(&big).as_bytes().to_vec());
+    g.check(0x43fd488273159b1a);
     // No other thread: no workers, no SME2 thread.
     #[cfg(target_os = "linux")]
     assert!(threads() <= before, "{before} threads before, {} after", threads());
