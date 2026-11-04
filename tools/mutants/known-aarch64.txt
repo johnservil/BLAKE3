@@ -426,14 +426,4 @@ src/stream.rs	replace && with || in Stream<'env, D>::help	1	[cpu has sme2] speed
 src/stream.rs	delete ! in Stream<'env, D>::help	1	[cpu has sme2] speed: a waiting caller pauses after running a task rather than when it found none; the SME2 thread takes the lone task
 src/stream.rs	replace += with *= in Stream<'env, D>::deliver	1	[cpu has sme2] speed: deliver reports no places handed back, so collect and help act as if nothing was done: a wake or a hashed task more; the SME2 thread takes the task
 src/stream.rs	replace += with -= in Stream<'env, D>::deliver	1	[cpu has sme2] speed: deliver's count wraps: collect and help act as if places came back when none did, waking or hashing a turn later; the SME2 thread takes the task
-src/incremental.rs	replace && with || in Hasher::update	1	speed: whether and what to prefetch after a pause (no effect on results)
-src/incremental.rs	replace == with != in Hasher::update	1	speed: whether and what to prefetch after a pause (no effect on results)
-src/lib.rs	delete ! in prefetch_update_kernels	1	speed: whether and what to prefetch after a pause (no effect on results)
-src/lib.rs	replace && with || in prefetch_update_kernels	1	speed: whether and what to prefetch after a pause (no effect on results)
-src/lib.rs	replace -= with /= in prefetch_update_kernels	1	speed: whether and what to prefetch after a pause (no effect on results)
-src/lib.rs	replace / with % in prefetch_update_kernels	1	speed: whether and what to prefetch after a pause (no effect on results)
-src/lib.rs	replace / with * in prefetch_update_kernels	1	speed: whether and what to prefetch after a pause (no effect on results)
-src/lib.rs	replace > with < in prefetch_update_kernels	1	speed: whether and what to prefetch after a pause (no effect on results)
-src/lib.rs	replace > with == in prefetch_update_kernels	1	speed: whether and what to prefetch after a pause (no effect on results)
-src/lib.rs	replace prefetch_update_kernels with ()	1	speed: whether and what to prefetch after a pause (no effect on results)
 src/many.rs	replace noted_lanes with ()	1	test-only: it notes hash_four_at_a_time's lanes for the arrangement test, which runs on x86-64 alone (#228); no AArch64 test reads them
