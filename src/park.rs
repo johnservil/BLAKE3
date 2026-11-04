@@ -105,6 +105,29 @@ impl Park {
         false
     }
 
+    /// Wake one parked worker of index below `limit`, if any (PROBE #196,
+    /// splitwake: a stream's wake, for a primary).
+    pub(crate) fn wake_one_below(&self, limit: usize) -> bool {
+        for (w, (word, handles)) in self.parked.iter().zip(self.handles.chunks(64)).enumerate() {
+            let below = limit.saturating_sub(w * 64);
+            if below == 0 {
+                break;
+            }
+            let mask = if below >= 64 { u64::MAX } else { (1u64 << below) - 1 };
+            let mut bits = word.load(Ordering::SeqCst) & mask;
+            while bits != 0 {
+                let bit = 1u64 << bits.trailing_zeros();
+                let before = word.fetch_and(!bit, Ordering::SeqCst);
+                if before & bit != 0 {
+                    handles[bit.trailing_zeros() as usize].get().expect("a parked worker has set its thread").unpark();
+                    return true;
+                }
+                bits = before & !bit & mask;
+            }
+        }
+        false
+    }
+
     /// Wake workers for `wanted` pieces of new work, given `workers`
     /// workers in all: up to `fanout` now, the rest owed, which the woken
     /// workers pay, `fanout` each, before they work. How many it woke. A

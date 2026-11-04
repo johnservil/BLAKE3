@@ -261,11 +261,12 @@ fn spare_pool() -> Option<(&'static Pool, Caller<'static>)> {
 /// takes one).
 fn tree_cvs(pool: &Pool, input: &[u8], key: &crate::CVWords, counter: u64, flags: u8) -> (Vec<Piece>, Vec<ChainingValue>) {
     let turn = crate::platform::Sme2Turn::take(Platform::detect(), true);
-    let threads = tree_threads(input.len(), pool.threads, turn.platform().simd_degree());
+    let domain = pool.domain_for(input.len());
+    let threads = tree_threads(input.len(), pool.threads_for(domain), turn.platform().simd_degree());
     let (pieces, own) = cut_with_prefix(input.len(), threads, prefix_for(&turn, input.len(), threads));
     let mut cvs = vec![ChainingValue::default(); pieces.len()];
     let work = Work::Tree { input, pieces: &pieces, cvs: cvs.as_mut_ptr(), key: *key, counter, flags };
-    pool.run_job(work, pieces.len(), own, turn.platform());
+    pool.run_job(work, pieces.len(), own, turn.platform(), domain);
     drop(turn);
     (pieces, cvs)
 }
@@ -308,9 +309,10 @@ fn hash_many_over_pool(input: &[u8], message_len: usize, key: &crate::CVWords, f
     let Some((pool, _caller)) = spare_pool() else {
         return crate::hash_many_serial(input, message_len, key, flags, outputs);
     };
-    let pieces = cut_messages(outputs.len(), slot, pool.threads);
+    let domain = pool.domain_for(input.len());
+    let pieces = cut_messages(outputs.len(), slot, pool.threads_for(domain));
     let work = Work::Messages { input, message_len, key: *key, flags, pieces: &pieces, outputs: outputs.as_mut_ptr() };
-    pool.run_job(work, pieces.len(), 0, pool_platform());
+    pool.run_job(work, pieces.len(), 0, pool_platform(), domain);
 }
 
 /// [`crate::hash_each_multithreaded_with`]'s pool job: `items`, every one
@@ -324,7 +326,9 @@ pub(crate) fn hash_each(key: &crate::CVWords, flags: u8, items: &[&[u8]], out: &
     };
     let pieces = cut_items(items, pool.threads);
     let work = Work::Each { items, key: *key, flags, pieces: &pieces, outputs: out.as_mut_ptr() };
-    pool.run_job(work, pieces.len(), 0, pool_platform());
+    // A collection gains from every domain (Sam's EPYC 9255: in one
+    // domain 2.2-3x slower).
+    pool.run_job(work, pieces.len(), 0, pool_platform(), EVERY);
 }
 
 /// Cut `items` into consecutive ranges for `threads` threads, in order:
@@ -630,17 +634,158 @@ fn subtree_cv(pieces: &[Piece], cvs: &[ChainingValue], mode: crate::Mode) -> Cha
 
 /// The pool: threads - 1 workers (the calling thread hashes too) taking from the registered sources
 /// ([`sources`]), the SME2 thread beside them where the CPU has SME2, and
-/// the record of which workers are parked.
+/// the record of which workers are parked. PROBE (#196): laid out in order
+/// (repr(C)), servil's fields at servil's places (park, callers and threads
+/// on the first line, sme2 opening the second), the domains' after them.
+#[repr(C)]
 struct Pool {
+    /// Which workers are parked, how one parks without missing work, and
+    /// how a publisher wakes one (crate::park, which Shuttle checks):
+    /// domain 0's workers here, where one park held all before domains, so
+    /// a machine of one L3 keeps its layout; the other domains' in `more`.
+    park: crate::park::Park,
     /// Calls on the pool now ([`spare_pool`]).
     callers: AtomicUsize,
     /// The threads a call hashes on: its caller and the workers.
     threads: usize,
     /// Whether the SME2 thread runs (this CPU has SME2).
     sme2: bool,
-    /// Which workers are parked, how one parks without missing work, and
-    /// how a publisher wakes one (crate::park, which Shuttle checks).
-    park: crate::park::Park,
+    /// Whether the machine has one L3 domain: beside sme2, so a call on
+    /// one reads only the lines it read before domains.
+    one: bool,
+    more: Box<[crate::park::Park]>,
+    /// The L3 domains (probe/l3-pool, #196): each CPU's, and each domain's
+    /// workers; worker `w` is `worker_at[w]` (its domain, its index there).
+    domains: Domains,
+    workers_in: Box<[usize]>,
+    worker_at: Box<[(u32, usize)]>,
+    /// Each domain's physical cores, and the stream tasks running on them
+    /// now (PROBE #196, lend by cores): a domain with as many running as it
+    /// has cores is busy, and other domains' workers take its streams'
+    /// tasks (Sam's EPYC logs: pinned to one domain's 12 threads, 42-75% of
+    /// tasks shared a core with another, 1.5x as slow).
+    cores_in: Box<[usize]>,
+    running: Box<[OwnLine<AtomicUsize>]>,
+    /// Each domain's cores, each its CPUs (sysfs core_cpus_list), where
+    /// known: a worker is pinned to one core's CPUs, and the first worker
+    /// on each core is its primary, the one that takes stream tasks
+    /// (PROBE #196, split: Sam's corepin probe, one worker a core, gained
+    /// everywhere but on Collection's bulk jobs, where the second threads
+    /// pay; here job pieces still use them).
+    core_cpus: Box<[Vec<Vec<usize>>]>,
+}
+
+std::thread_local! {
+    /// Whether this thread takes stream tasks: every thread but a worker
+    /// that is its core's second (PROBE #196, split).
+    static PRIMARY: core::cell::Cell<bool> = const { core::cell::Cell::new(true) };
+}
+
+/// Work any domain's workers take (probe/l3-pool, #196): collections, and
+/// one message from EVERY_LEN up, which gain from every domain's cores.
+pub(crate) const EVERY: u32 = u32::MAX;
+
+/// One message this long or longer goes to every domain (PROBE: the
+/// EPYC 9255's one-domain gain ends between 8 and 32 MiB; Sam to measure).
+pub(crate) const EVERY_LEN: usize = 32 << 20;
+
+/// The machine's L3 domains: each CPU's domain (by CPU number), and how
+/// many there are. One domain where the OS names none or the machine has
+/// one: every path below is then today's.
+struct Domains {
+    of_cpu: Box<[u32]>,
+    count: usize,
+    /// Each domain's CPUs, for its workers' affinity (empty where none is
+    /// set: one domain, or a test's split).
+    cpus: Box<[Vec<usize>]>,
+}
+
+/// A test's split of this machine's CPUs into `n` domains, in contiguous
+/// runs, set before `initialize` (__split_domains_for_tests): the VM has
+/// one L3, so the paths that only many domains take run in its tests.
+static TEST_DOMAINS: OnceLock<usize> = OnceLock::new();
+
+#[doc(hidden)]
+pub fn split_domains_for_tests(n: usize) {
+    assert!(POOL.get().is_none(), "a test splits the domains before initialize_multithreaded");
+    assert!(n >= 1, "one domain at least");
+    TEST_DOMAINS.set(n).expect("one split a process");
+}
+
+impl Domains {
+    fn read() -> Domains {
+        let cpus = std::thread::available_parallelism().map_or(1, |n| n.get()).max(1);
+        if let Some(&n) = TEST_DOMAINS.get() {
+            let total = 1024usize;
+            return Domains { of_cpu: (0..total).map(|c| ((c * n) / cpus.max(n)).min(n - 1) as u32).collect(), count: n, cpus: vec![Vec::new(); n].into() };
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let mut lists: Vec<String> = Vec::new();
+            let mut of_cpu = vec![0u32; 1024];
+            let mut cpus_of: Vec<Vec<usize>> = Vec::new();
+            // Only the CPUs this process may run on: confined to a few (a
+            // container's cpuset, taskset), it has the domains they're in,
+            // and no worker is spread to one it can't reach.
+            let allowed = allowed_cpus();
+            for cpu in 0..1024 {
+                if allowed.as_ref().is_some_and(|a| !a.get(cpu).copied().unwrap_or(false)) {
+                    continue;
+                }
+                let Ok(list) = std::fs::read_to_string(format!("/sys/devices/system/cpu/cpu{cpu}/cache/index3/shared_cpu_list")) else { continue };
+                let list = list.trim().to_string();
+                let d = lists.iter().position(|l| *l == list).unwrap_or_else(|| {
+                    lists.push(list.clone());
+                    cpus_of.push(Vec::new());
+                    lists.len() - 1
+                });
+                of_cpu[cpu] = d as u32;
+                cpus_of[d].push(cpu);
+            }
+            if lists.len() > 1 {
+                return Domains { of_cpu: of_cpu.into(), count: lists.len(), cpus: cpus_of.into() };
+            }
+        }
+        Domains { of_cpu: vec![0; 1].into(), count: 1, cpus: vec![Vec::new()].into() }
+    }
+
+    /// The calling thread's domain now (0 with one domain, which asks the
+    /// OS nothing). A thread on a CPU outside every domain read (one this
+    /// process couldn't run on when the pool started) counts as domain 0.
+    fn here(&self) -> u32 {
+        if self.count == 1 {
+            return 0;
+        }
+        #[cfg(target_os = "linux")]
+        {
+            unsafe extern "C" {
+                fn sched_getcpu() -> i32;
+            }
+            // Sound: a plain query.
+            let cpu = unsafe { sched_getcpu() };
+            return self.of_cpu.get(cpu.max(0) as usize).copied().unwrap_or(0);
+        }
+        #[allow(unreachable_code)]
+        0
+    }
+}
+
+/// The CPUs this process may run on, by CPU number, from
+/// /proc/self/status's Cpus_allowed_list ("0-5,24-29"); None where it can't
+/// be read, and then every CPU counts.
+#[cfg(target_os = "linux")]
+fn allowed_cpus() -> Option<Vec<bool>> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    let list = status.lines().find_map(|l| l.strip_prefix("Cpus_allowed_list:"))?.trim();
+    let mut allowed = vec![false; 1024];
+    for range in list.split(',').filter(|r| !r.is_empty()) {
+        let (a, b) = range.split_once('-').unwrap_or((range, range));
+        let (a, b): (usize, usize) = (a.trim().parse().ok()?, b.trim().parse().ok()?);
+        for cpu in a..=b.min(1023) {
+            allowed[cpu] = true;
+        }
+    }
+    Some(allowed)
 }
 
 /// Create the pool and start its threads in the background, once per
@@ -650,7 +795,53 @@ struct Pool {
 pub(crate) fn initialize(threads: usize) {
     // With one thread, none beside the caller: no SME2 thread either.
     let sme2 = threads > 1 && cfg!(blake3_sme2) && !matches!(pool_platform(), p if core::mem::discriminant(&p) == core::mem::discriminant(&Platform::detect()));
-    let pool = Pool { callers: AtomicUsize::new(0), threads, sme2, park: crate::park::Park::new(Pool::workers_of(threads), crate::park::FANOUT) };
+    let domains = Domains::read();
+    // Each domain's workers, in proportion to its CPUs (largest remainders;
+    // with one domain, all of them).
+    let workers = threads - 1;
+    let n = domains.count;
+    let weight: Vec<usize> = (0..n).map(|d| domains.cpus[d].len().max(1)).collect();
+    let total: usize = weight.iter().sum();
+    let mut workers_in: Vec<usize> = weight.iter().map(|w| workers * w / total).collect();
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_by_key(|&d| core::cmp::Reverse((workers * weight[d]) % total));
+    for &d in order.iter().cycle().take(workers - workers_in.iter().sum::<usize>()) {
+        workers_in[d] += 1;
+    }
+    let worker_at: Box<[(u32, usize)]> = (0..n).flat_map(|d| (0..workers_in[d]).map(move |i| (d as u32, i))).collect();
+    let mut parks = workers_in.iter().map(|&w| crate::park::Park::new(w.max(1), crate::park::FANOUT));
+    let park = parks.next().expect("one domain at least");
+    let more = parks.collect();
+    // Each domain's cores: its CPUs' distinct cores (sysfs core_cpus_list,
+    // the first CPU of each); where the CPUs are unknown (a test's split),
+    // its workers.
+    let core_cpus: Box<[Vec<Vec<usize>>]> = (0..n)
+        .map(|d| {
+            let mut cores: std::collections::BTreeMap<String, Vec<usize>> = std::collections::BTreeMap::new();
+            for &c in &domains.cpus[d] {
+                if let Ok(l) = std::fs::read_to_string(format!("/sys/devices/system/cpu/cpu{c}/topology/core_cpus_list")) {
+                    cores.entry(l.split([',', '-']).next().unwrap_or("").trim().to_owned()).or_default().push(c);
+                }
+            }
+            cores.into_values().collect()
+        })
+        .collect();
+    let cores_in: Box<[usize]> = (0..n).map(|d| if core_cpus[d].is_empty() { workers_in[d].max(1) } else { core_cpus[d].len() }).collect();
+    let running = (0..n).map(|_| OwnLine(AtomicUsize::new(0))).collect();
+    let pool = Pool {
+        callers: AtomicUsize::new(0),
+        threads,
+        sme2,
+        one: n == 1,
+        park,
+        more,
+        domains,
+        workers_in: workers_in.into(),
+        worker_at,
+        cores_in,
+        running,
+        core_cpus,
+    };
     assert!(POOL.set(pool).is_ok(), "initialize_multithreaded creates the pool once");
     if threads == 1 {
         return;
@@ -716,7 +907,7 @@ fn forked() -> ! {
 /// Whether every worker is parked: false before the pool exists
 /// ([`crate::__all_workers_parked`], for tests).
 pub(crate) fn all_workers_parked() -> bool {
-    POOL.get().is_some_and(|pool| pool.park.parked_count() == pool.workers())
+    POOL.get().is_some_and(|pool| pool.parks().map(|p| p.parked_count()).sum::<usize>() == pool.workers())
 }
 
 /// The pool. The caller must have called
@@ -760,7 +951,7 @@ impl Pool {
     /// hashes pieces `0..own` on `own_platform`, back to back (the SME2
     /// thread's prefix; the workers' pieces start after it). A caller that
     /// finds no source slot free hashes every piece itself.
-    fn run_job(&self, work: Work, pieces: usize, own: usize, own_platform: Platform) {
+    fn run_job(&self, work: Work, pieces: usize, own: usize, own_platform: Platform, domain: u32) {
         crate::ran(crate::Ran::Pool);
         #[cfg(test)]
         WAKES_WANTED.with(|w| w.set(None));
@@ -774,18 +965,20 @@ impl Pool {
         // wait is over: nothing runs on the normal path).
         let ptr = &job as *const Job as *mut Job<'static>;
         let published = AbortOnUnwind;
-        let target = source.publish_job(ptr, pieces, own);
+        let target = source.publish_job(ptr, pieces, own, domain);
         if slot.is_some() {
             // A worker for each piece past the caller's first (none for a
             // job of one past its own: a wake for none is nothing); for a
-            // tree, within the wide kernel's thread budget.
+            // tree, within the wide kernel's thread budget for the job's domain.
             let wanted = match &job.work {
-                Work::Tree { input, .. } => (pieces - own - 1).min(tree_threads(input.len(), self.threads, own_platform.simd_degree()).saturating_sub(1)),
+                Work::Tree { input, .. } => {
+                    (pieces - own - 1).min(tree_threads(input.len(), self.threads_for(domain), own_platform.simd_degree()).saturating_sub(1))
+                }
                 _ => pieces - own - 1,
             };
             #[cfg(test)]
             WAKES_WANTED.with(|w| w.set(Some(wanted)));
-            self.wake_for(wanted);
+            self.wake_for(wanted, domain);
         }
         for index in 0..own {
             // Sound: the workers' pieces start past these.
@@ -806,9 +999,113 @@ impl Pool {
         }
     }
 
-    /// Wake workers for `wanted` pieces of new work (crate::park).
-    pub(crate) fn wake_for(&self, wanted: usize) {
-        self.park.wake_for(wanted, self.workers());
+    /// Domain `d`'s park.
+    fn park_of(&self, d: usize) -> &crate::park::Park {
+        if d == 0 { &self.park } else { &self.more[d - 1] }
+    }
+
+    /// Every park, domain 0's first.
+    fn parks(&self) -> impl Iterator<Item = &crate::park::Park> {
+        core::iter::once(&self.park).chain(self.more.iter())
+    }
+
+    /// Wake workers in `domain` (EVERY: in each domain, in proportion to
+    /// its workers) for `wanted` pieces of new work (crate::park).
+    pub(crate) fn wake_for(&self, wanted: usize, domain: u32) {
+        if self.one {
+            self.park.wake_for(wanted, self.workers());
+        } else {
+            self.wake_for_domains(wanted, domain);
+        }
+    }
+
+    #[inline(never)]
+    fn wake_for_domains(&self, wanted: usize, domain: u32) {
+        if domain == EVERY {
+            let workers = self.workers();
+            for (d, park) in self.parks().enumerate() {
+                let share = (wanted * self.workers_in[d]).div_ceil(workers.max(1));
+                park.wake_for(share, self.workers_in[d]);
+            }
+        } else {
+            self.park_of(domain as usize).wake_for(wanted, self.workers_in[domain as usize]);
+        }
+    }
+
+    /// Wake one parked worker of `domain` (EVERY: of any domain).
+    pub(crate) fn wake_one(&self, domain: u32) -> bool {
+        if self.one { self.park.wake_one() } else { self.wake_one_domains(domain) }
+    }
+
+    #[inline(never)]
+    fn wake_one_domains(&self, domain: u32) -> bool {
+        if domain == EVERY {
+            return self.parks().any(|p| p.wake_one());
+        }
+        // A busy domain's next task is for another domain's cores.
+        if self.busy(domain) {
+            return self.parks().enumerate().any(|(d, p)| d != domain as usize && p.wake_one()) || self.park_of(domain as usize).wake_one();
+        }
+        self.park_of(domain as usize).wake_one()
+    }
+
+    /// Domain `d`'s primaries: its first workers, one a core (all of them
+    /// where the cores are unknown). PROBE #196, splitwake.
+    fn primaries(&self, d: usize) -> usize {
+        let c = self.core_cpus.get(d).map_or(0, |c| c.len());
+        if c == 0 { usize::MAX } else { c }
+    }
+
+    /// Wake one parked primary for a stream's task: of `domain`, or, where
+    /// it is busy, of another domain first (EVERY: of any). PROBE #196,
+    /// splitwake.
+    pub(crate) fn wake_stream(&self, domain: u32) -> bool {
+        if self.one {
+            return self.park.wake_one_below(self.primaries(0));
+        }
+        if domain == EVERY {
+            return self.parks().enumerate().any(|(d, p)| p.wake_one_below(self.primaries(d)));
+        }
+        if self.busy(domain) {
+            return self.parks().enumerate().any(|(d, p)| d != domain as usize && p.wake_one_below(self.primaries(d)))
+                || self.park_of(domain as usize).wake_one_below(self.primaries(domain as usize));
+        }
+        self.park_of(domain as usize).wake_one_below(self.primaries(domain as usize))
+    }
+
+    /// Whether `domain` runs as many stream tasks as it has cores (PROBE
+    /// #196, lend by cores).
+    fn busy(&self, domain: u32) -> bool {
+        self.running[domain as usize].load(Ordering::Relaxed) >= self.cores_in[domain as usize]
+    }
+
+    /// The threads a job of `domain` runs on: its caller and that domain's
+    /// workers (EVERY: the pool's).
+    fn threads_for(&self, domain: u32) -> usize {
+        if domain == EVERY || self.one { self.threads } else { 1 + self.workers_in[domain as usize] }
+    }
+
+    /// The domain a new job of `len` input bytes goes to: every domain
+    /// from EVERY_LEN, else the caller's.
+    fn domain_for(&self, len: usize) -> u32 {
+        if self.one {
+            0
+        } else if len >= EVERY_LEN {
+            EVERY
+        } else {
+            self.home()
+        }
+    }
+
+    /// The calling thread's domain for the work it publishes: its own, or
+    /// every domain where its own has no worker. A pool of fewer workers
+    /// than domains leaves some with none (two threads over the EPYC 9255's
+    /// four), and a caller there once cut a one-shot for one thread, which
+    /// panicked, and waited forever in a stream's collect for takers its
+    /// domain didn't have (#196, Sam's runs).
+    fn home(&self) -> u32 {
+        let here = self.domains.here();
+        if self.workers_in.get(here as usize).is_some_and(|&w| w > 0) { here } else { EVERY }
     }
 
     /// The pool's workers: every thread but the calling one.
@@ -824,17 +1121,29 @@ impl Pool {
     /// when a stream is open (more is coming), else parked, whenever it
     /// finds nothing.
     fn serve(&self, me: usize) -> ! {
+        // One domain: the loop as it was before domains, compiled without
+        // the domain filter (a machine of one L3 pays nothing for them).
+        if self.one {
+            self.serve_as::<false>(me, EVERY, &self.park, me)
+        }
+        let (d, local) = self.worker_at[me];
+        self.serve_as::<true>(me, d, self.park_of(d as usize), local)
+    }
+
+    /// The loop of worker `me`, of domain `mine` (with MULTI, several
+    /// domains), parking in `park` at `local`.
+    fn serve_as<const MULTI: bool>(&self, _me: usize, mine: u32, park: &crate::park::Park, local: usize) -> ! {
         loop {
-            if sources::run_one() {
+            if sources::run_one::<MULTI>(mine) {
                 continue;
             }
-            if sources::open() && spin_for_work() {
+            if sources::open() && spin_for_work::<MULTI>(mine) {
                 continue;
             }
             // Park unless work shows (crate::park's handshake); woken, pay
             // the wakes owed before working.
-            if self.park.park_unless(me, || sources::visible(false)) {
-                self.park.pay_owed();
+            if park.park_unless(local, || sources::visible::<MULTI>(false, mine)) {
+                park.pay_owed();
             }
         }
     }
@@ -848,12 +1157,12 @@ impl Pool {
 const SPIN: std::time::Duration = std::time::Duration::from_micros(5);
 
 /// Look for work for up to SPIN: whether some appeared.
-fn spin_for_work() -> bool {
+fn spin_for_work<const MULTI: bool>(mine: u32) -> bool {
     let started = now();
     loop {
         for _ in 0..16 {
             noted(Noted::Poll);
-            if sources::visible(false) {
+            if sources::visible::<MULTI>(false, mine) {
                 return true;
             }
             core::hint::spin_loop();
@@ -912,6 +1221,11 @@ pub(crate) mod sources {
         /// between the waiting caller and the worker finishing its last
         /// piece (crate::finish, which Loom checks).
         finish: crate::finish::Finish,
+        /// The domain its published items are for (EVERY: any), written
+        /// before a publication that changes it. Last, so the fields above
+        /// keep the places they had before domains (a field between them
+        /// slowed servil mt's streams 3-11% on the VM's one L3).
+        domain: core::sync::atomic::AtomicU32,
     }
 
     // Sound: a ring slot is written by its stream only above `published`
@@ -938,6 +1252,7 @@ pub(crate) mod sources {
                 job: AtomicPtr::new(core::ptr::null_mut()),
                 base: AtomicUsize::new(0),
                 finish: crate::finish::Finish::new(),
+                domain: core::sync::atomic::AtomicU32::new(EVERY),
             }
         }
 
@@ -958,6 +1273,20 @@ pub(crate) mod sources {
         /// then the SME2 thread first, and with two or more waiting and a
         /// worker parked, a worker.
         pub(crate) fn publish(&self, task: Task) {
+            let pool = pool();
+            // The domain, stored only on a machine of several: the field
+            // shares a line with what the workers read as they take, and a
+            // store a publication cost servil mt's 64 MiB stream 8% on the
+            // VM's one L3 (its check of 9c25ed9e).
+            let domain = if pool.one {
+                0
+            } else {
+                let here = pool.home();
+                if self.domain.load(Ordering::Relaxed) != here {
+                    self.domain.store(here, Ordering::Relaxed);
+                }
+                here
+            };
             let p = self.finish.published.load(Ordering::Relaxed);
             debug_assert!(p - self.claimed.load(Ordering::Relaxed) < self.ring.len(), "a source's ring holds every task not yet taken");
             // Sound: slot p % len is free (its last task was taken), and
@@ -965,18 +1294,20 @@ pub(crate) mod sources {
             unsafe { (*self.ring[p % self.ring.len()].get()).write(task) };
             self.finish.published.store(p + 1, Ordering::Release);
             core::sync::atomic::fence(Ordering::SeqCst);
-            let pool = pool();
             if pool.sme2 {
                 wake_sme2();
             }
             if p + 1 - self.claimed.load(Ordering::Relaxed) >= 2 {
-                pool.park.wake_one();
+                pool.wake_stream(domain);
             }
         }
 
         /// Make `job` the caller's current job, its pieces `0..own` the
         /// caller's own: the number `finished` must reach when it is done.
-        pub(crate) fn publish_job(&self, job: *mut Job<'static>, pieces: usize, own: usize) -> usize {
+        pub(crate) fn publish_job(&self, job: *mut Job<'static>, pieces: usize, own: usize, domain: u32) -> usize {
+            if self.domain.load(Ordering::Relaxed) != domain {
+                self.domain.store(domain, Ordering::Relaxed);
+            }
             let base = self.finish.published.load(Ordering::Relaxed);
             debug_assert_eq!(self.finish.finished_count(), base, "the last job is finished");
             self.job.store(job, Ordering::Relaxed);
@@ -1036,7 +1367,7 @@ pub(crate) mod sources {
         pub(crate) fn wake_for_waiting(&self) {
             let pool = pool();
             if self.waiting() > 0 {
-                pool.park.wake_one();
+                pool.wake_stream(self.domain.load(Ordering::Relaxed));
             }
         }
 
@@ -1109,15 +1440,43 @@ pub(crate) mod sources {
         OPEN.load(Ordering::Relaxed) > 0
     }
 
-    /// The first registered source for which `f` says yes.
-    fn find(mut f: impl FnMut(&'static Source) -> bool) -> bool {
+    /// The first registered source for which `f` says yes, among those
+    /// `mine` may take from: a worker's domain, its own sources and every
+    /// domain's (its streams only while it isn't busy, Pool::busy), then a
+    /// busy domain's streams; EVERY (one domain, the SME2 thread, a test),
+    /// all.
+    fn find<const MULTI: bool>(mine: u32, mut f: impl FnMut(&'static Source) -> bool) -> bool {
+        find_in::<MULTI>(mine, false, &mut f) || (MULTI && mine != EVERY && find_in::<MULTI>(mine, true, &mut f))
+    }
+
+    /// `find`'s walk: with `lent`, only busy domains' streams.
+    fn find_in<const MULTI: bool>(mine: u32, lent: bool, f: &mut impl FnMut(&'static Source) -> bool) -> bool {
         let mut active = ACTIVE.load(Ordering::SeqCst);
         while active != 0 {
             let slot = active.trailing_zeros() as usize;
             active &= active - 1;
             let ptr = REGISTERED[slot].load(Ordering::Acquire);
+            if ptr.is_null() {
+                continue;
+            }
             // Sound: sources are never freed (they are recycled).
-            if !ptr.is_null() && f(unsafe { &*ptr }) {
+            let source = unsafe { &*ptr };
+            if MULTI && mine != EVERY {
+                let d = source.domain.load(Ordering::Relaxed);
+                let own = d == EVERY || d == mine;
+                let stream = !source.ring.is_empty();
+                let skip = if stream && !PRIMARY.with(|p| p.get()) {
+                    true
+                } else if lent {
+                    own || !stream || !pool().busy(d)
+                } else {
+                    !own || (stream && d != EVERY && pool().busy(mine))
+                };
+                if skip {
+                    continue;
+                }
+            }
+            if f(source) {
                 return true;
             }
         }
@@ -1127,13 +1486,23 @@ pub(crate) mod sources {
     /// Run one item from any source: whether there was one. When two or
     /// more wait and a worker is parked, this one wakes the next first
     /// (the chain).
-    pub(crate) fn run_one() -> bool {
-        find(|source| {
+    pub(crate) fn run_one<const MULTI: bool>(mine: u32) -> bool {
+        find::<MULTI>(mine, |source| {
             let Some(item) = source.take() else { return false };
             if source.waiting() >= 2 {
-                pool().park.wake_one();
+                if source.ring.is_empty() {
+                    pool().wake_one(source.domain.load(Ordering::Relaxed));
+                } else {
+                    pool().wake_stream(source.domain.load(Ordering::Relaxed));
+                }
             }
             match item {
+                Item::Task(task) if MULTI && mine != EVERY => {
+                    let running = &pool().running[mine as usize];
+                    running.fetch_add(1, Ordering::Relaxed);
+                    task.run(pool_platform());
+                    running.fetch_sub(1, Ordering::Relaxed);
+                }
                 Item::Task(task) => task.run(pool_platform()),
                 Item::Pieces(job, index, n) => {
                     // Sound: the job lives until its pieces are finished,
@@ -1151,7 +1520,7 @@ pub(crate) mod sources {
     /// A task from any stream (the SME2 thread takes these alone).
     pub(crate) fn take_stream_task() -> Option<Task> {
         let mut found = None;
-        find(|source| {
+        find::<false>(EVERY, |source| {
             found = if source.ring.is_empty() { None } else { source.take_task() };
             found.is_some()
         });
@@ -1159,8 +1528,8 @@ pub(crate) mod sources {
     }
 
     /// Whether any source has work waiting (`streams`: any stream).
-    pub(crate) fn visible(streams: bool) -> bool {
-        find(|source| (!streams || !source.ring.is_empty()) && source.waiting() > 0)
+    pub(crate) fn visible<const MULTI: bool>(streams: bool, mine: u32) -> bool {
+        find::<MULTI>(mine, |source| (!streams || !source.ring.is_empty()) && source.waiting() > 0)
     }
 
     #[cfg(test)]
@@ -1174,29 +1543,29 @@ pub(crate) mod sources {
         fn test_unregister_gives_the_slot_back() {
             let source: &'static Source = &*Box::leak(Box::new(Source::new(0)));
             let slot = source.register().expect("a free slot");
-            assert!(find(|t| core::ptr::eq(t, source)), "a registered source is reached");
+            assert!(find::<false>(EVERY, |t| core::ptr::eq(t, source)), "a registered source is reached");
             Source::unregister(slot);
-            assert!(!find(|t| core::ptr::eq(t, source)), "an unregistered source is still reached");
+            assert!(!find::<false>(EVERY, |t| core::ptr::eq(t, source)), "an unregistered source is still reached");
         }
 
         /// What a worker looks for before it parks: a registered source
         /// with an item published and not yet claimed, any source's for a
-        /// worker (visible(false)), a stream's alone for the SME2 thread
-        /// (visible(true)). The predicate alone, no thread: its four
+        /// worker (visible::<false>(false, EVERY)), a stream's alone for the SME2 thread
+        /// (visible::<false>(true, EVERY)). The predicate alone, no thread: its four
         /// survivors under the mutation check had stood as scheduling.
         #[test]
         fn test_visible_sees_a_waiting_item_and_its_kind() {
             let job: &'static Source = &*Box::leak(Box::new(Source::new(0)));
             let stream: &'static Source = &*Box::leak(Box::new(Source::new(4)));
             let slots = [job.register().expect("a free slot"), stream.register().expect("a free slot")];
-            assert!(!visible(false) && !visible(true), "nothing published: nothing visible");
+            assert!(!visible::<false>(false, EVERY) && !visible::<false>(true, EVERY), "nothing published: nothing visible");
             job.finish.published.store(1, Ordering::SeqCst);
-            assert!(visible(false), "a job's piece waits: a worker sees it");
-            assert!(!visible(true), "the SME2 thread looks at streams alone");
+            assert!(visible::<false>(false, EVERY), "a job's piece waits: a worker sees it");
+            assert!(!visible::<false>(true, EVERY), "the SME2 thread looks at streams alone");
             job.claimed.store(1, Ordering::SeqCst);
-            assert!(!visible(false), "the piece was claimed: nothing waits");
+            assert!(!visible::<false>(false, EVERY), "the piece was claimed: nothing waits");
             stream.finish.published.store(1, Ordering::SeqCst);
-            assert!(visible(false) && visible(true), "a stream's task waits: both see it");
+            assert!(visible::<false>(false, EVERY) && visible::<false>(true, EVERY), "a stream's task waits: both see it");
             for slot in slots {
                 Source::unregister(slot);
             }
@@ -1221,9 +1590,9 @@ pub(crate) mod sources {
             let sources: Vec<&'static Source> = (0..3).map(|_| &*Box::leak(Box::new(Source::new(0)))).collect();
             let slots: Vec<usize> = sources.iter().map(|s| s.register().expect("a free slot")).collect();
             Source::unregister(slots[1]);
-            assert!(!find(|t| core::ptr::eq(t, sources[1])), "the unregistered source is still reached");
+            assert!(!find::<false>(EVERY, |t| core::ptr::eq(t, sources[1])), "the unregistered source is still reached");
             for &i in &[0, 2] {
-                assert!(find(|t| core::ptr::eq(t, sources[i])), "source {i} lost its registration with another's");
+                assert!(find::<false>(EVERY, |t| core::ptr::eq(t, sources[i])), "source {i} lost its registration with another's");
             }
             for &i in &[0, 2] {
                 Source::unregister(slots[i]);
@@ -1241,7 +1610,7 @@ pub(crate) mod sources {
                 s.register().expect("a free slot");
             }
             for (i, s) in sources.iter().enumerate() {
-                assert!(find(|t| core::ptr::eq(t, *s)), "find reaches registered source {i} of 3");
+                assert!(find::<false>(EVERY, |t| core::ptr::eq(t, *s)), "find reaches registered source {i} of 3");
             }
         }
     }
@@ -1446,7 +1815,7 @@ fn sme2_serve() -> ! {
         }
         // Park as a worker does: the flag, one more look, the token.
         SME2_PARKED.store(true, Ordering::SeqCst);
-        if sources::visible(true) {
+        if sources::visible::<false>(true, EVERY) {
             SME2_PARKED.store(false, Ordering::SeqCst);
             continue;
         }
@@ -1489,7 +1858,29 @@ fn worker_main(me: usize) {
     // the panic's message printed first by the panic hook.
     let _ = std::panic::catch_unwind(move || {
         let pool = pool();
-        pool.park.register(me);
+        let (d, local) = pool.worker_at[me];
+        // The core's second worker takes no stream task (PRIMARY).
+        let cores = &pool.core_cpus[d as usize];
+        if !cores.is_empty() && local >= cores.len() {
+            PRIMARY.with(|p| p.set(false));
+        }
+        #[cfg(target_os = "linux")]
+        if !pool.domains.cpus[d as usize].is_empty() {
+            // This worker on its domain's CPUs (a mask of 1024), floating
+            // among them: the bench's use cases read pinning each worker to
+            // one core alike (Sam's splitfloat runs, #196), so the simpler rule.
+            unsafe extern "C" {
+                fn sched_setaffinity(pid: i32, size: usize, mask: *const u64) -> i32;
+            }
+            let mut mask = [0u64; 16];
+            let cpus = &pool.domains.cpus[d as usize];
+            for &c in cpus {
+                mask[c / 64] |= 1 << (c % 64);
+            }
+            // Sound: a mask of 1024 CPUs for this thread (pid 0).
+            assert_eq!(unsafe { sched_setaffinity(0, 128, mask.as_ptr()) }, 0, "pinning a worker to its domain");
+        }
+        pool.park_of(d as usize).register(local);
         pool.serve(me)
     });
     std::process::abort()
@@ -1548,7 +1939,7 @@ mod test {
         // waiting forever (a broken build's every mutant hung this test).
         let _ = pool();
         let source = sources::job_source();
-        let target = source.publish_job(core::ptr::null_mut(), 1, 0);
+        let target = source.publish_job(core::ptr::null_mut(), 1, 0, EVERY);
         // An unpark this thread received earlier would let one park()
         // return at once and hide a missing wake-up.
         std::thread::park_timeout(core::time::Duration::ZERO);
@@ -1906,17 +2297,17 @@ mod test {
         let _ = pool();
         counts();
         clock(1000, 1);
-        assert!(!spin_for_work(), "no stream open: no work appears");
+        assert!(!spin_for_work::<false>(0), "no stream open: no work appears");
         assert_eq!(counts()[Noted::Poll as usize], 16, "no stream open: one look and park");
         sources::opened();
         clock(1000, 1);
-        assert!(!spin_for_work());
+        assert!(!spin_for_work::<false>(0));
         assert_eq!(counts()[Noted::Poll as usize], 80, "a stream open: looks until 5 us have passed");
         clock(1000, 5);
-        assert!(!spin_for_work());
+        assert!(!spin_for_work::<false>(0));
         assert_eq!(counts()[Noted::Poll as usize], 16, "5 us passed at the first check: one look");
         clock(1000, 4);
-        assert!(!spin_for_work());
+        assert!(!spin_for_work::<false>(0));
         assert_eq!(counts()[Noted::Poll as usize], 32, "4 us, then 8: two looks");
         sources::closed();
         TEST_CLOCK.with(|c| c.set(None));
@@ -2076,7 +2467,7 @@ mod test {
         assert_eq!((pieces.len(), own), (3, 0));
         let mut cvs = std::vec![ChainingValue::default(); 3];
         let work = Work::Tree { input: &input[..24 * 1024], pieces: &pieces, cvs: cvs.as_mut_ptr(), key: *crate::IV, counter: 0, flags: 0 };
-        pool.run_job(work, 3, 0, Platform::detect());
+        pool.run_job(work, 3, 0, Platform::detect(), EVERY);
         let budget = tree_threads(24 * 1024, pool.threads, degree) - 1;
         assert_eq!(wanted(), Some(2.min(budget)), "three pieces: two workers, or the budget");
         assert_eq!(merge_root(&pieces, &mut cvs, crate::IV, 0), crate::convenience::hash(&input[..24 * 1024]));
@@ -2303,7 +2694,7 @@ mod test {
     fn test_idle_workers_park_while_a_stream_is_open() {
         let pool = pool();
         let workers = pool.threads - 1;
-        let all_parked = || pool.park.parked_count() == workers;
+        let all_parked = || pool.parks().map(|p| p.parked_count()).sum::<usize>() == workers;
         crate::performance::stream(
             crate::Mode::Plain,
             |_: &mut [Hash]| {},
