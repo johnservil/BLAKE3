@@ -1274,20 +1274,12 @@ pub(crate) mod sources {
         /// then the SME2 thread first, and with two or more waiting and a
         /// worker parked, a worker.
         pub(crate) fn publish(&self, task: Task) {
-            let pool = pool();
-            // The domain, stored only on a machine of several: the field
-            // shares a line with what the workers read as they take, and a
-            // store a publication cost servil mt's 64 MiB stream 8% on the
-            // VM's one L3 (its check of 9c25ed9e).
-            let domain = if pool.one {
-                0
-            } else {
-                let here = pool.home();
-                if self.domain.load(Ordering::Relaxed) != here {
-                    self.domain.store(here, Ordering::Relaxed);
-                }
-                here
-            };
+            // On a machine of several L3s, the domain, stored before the
+            // task so its takers see it (out of line: a machine of one runs
+            // servil's publication, experiment 3 of the VM's one-L3 cost).
+            if !pool().one {
+                self.set_home();
+            }
             let p = self.finish.published.load(Ordering::Relaxed);
             debug_assert!(p - self.claimed.load(Ordering::Relaxed) < self.ring.len(), "a source's ring holds every task not yet taken");
             // Sound: slot p % len is free (its last task was taken), and
@@ -1295,11 +1287,29 @@ pub(crate) mod sources {
             unsafe { (*self.ring[p % self.ring.len()].get()).write(task) };
             self.finish.published.store(p + 1, Ordering::Release);
             core::sync::atomic::fence(Ordering::SeqCst);
+            let pool = pool();
             if pool.sme2 {
                 wake_sme2();
             }
             if p + 1 - self.claimed.load(Ordering::Relaxed) >= 2 {
-                pool.wake_stream(domain);
+                if pool.one {
+                    pool.park.wake_one();
+                } else {
+                    pool.wake_stream(self.domain.load(Ordering::Relaxed));
+                }
+            }
+        }
+
+        /// The caller's domain as this source's (a store only where it
+        /// changes: the field shares a line with what the workers read as
+        /// they take, and a store a publication cost servil mt's 64 MiB
+        /// stream 8% on the VM's one L3, its check of 9c25ed9e).
+        #[cold]
+        #[inline(never)]
+        fn set_home(&self) {
+            let here = pool().home();
+            if self.domain.load(Ordering::Relaxed) != here {
+                self.domain.store(here, Ordering::Relaxed);
             }
         }
 
