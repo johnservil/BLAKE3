@@ -256,6 +256,9 @@ mod park;
 mod self_test;
 #[cfg(feature = "std")]
 mod stream;
+#[cfg(feature = "std")]
+#[doc(hidden)]
+pub use stream::{PROBE_LONG, PROBE_LONG_RING};
 mod tree;
 
 /// A kind of kernel or path a call ran, for the tests that check which

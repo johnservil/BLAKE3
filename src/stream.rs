@@ -59,6 +59,13 @@ const LONG_RING_BYTES: usize = 64 << 20;
 /// caches where the 2 MiB ring is kept hot.
 const LONG: usize = 4 << 20;
 
+/// PROBE (long-ring-size): the long ring's lap and the shortest long
+/// message, read as each stream opens.
+#[doc(hidden)]
+pub static PROBE_LONG_RING: AtomicUsize = AtomicUsize::new(LONG_RING_BYTES);
+#[doc(hidden)]
+pub static PROBE_LONG: AtomicUsize = AtomicUsize::new(LONG);
+
 /// The most entries (messages and pieces) in flight in one stream (1024:
 /// 4 KiB to 16 KiB messages 8-9% faster than at 8192, i7-12700K; 256 lost
 /// 26-130% at 64 and 256 B).
@@ -220,6 +227,8 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
             tail: 0,
             long_head: 0,
             long_tail: 0,
+            long_len: PROBE_LONG_RING.load(Ordering::Relaxed).min(LONG_RING_BYTES),
+            long_min: PROBE_LONG.load(Ordering::Relaxed),
             open: None,
             stack: arrayvec::ArrayVec::new(),
             pieces: 0,
@@ -377,6 +386,8 @@ pub struct Stream<'env, D> {
     /// The long ring's bytes reserved, and freed, as `head` and `tail`.
     long_head: usize,
     long_tail: usize,
+    long_len: usize,
+    long_min: usize,
     /// Short messages gathered, not yet handed to the pool.
     open: Option<Task>,
     /// A long message being handed back: its pieces' chaining values so
@@ -430,7 +441,7 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
     /// `submit` does.
     pub fn submit_with(&mut self, len: usize, mut fill: impl FnMut(usize, &mut [u8]) -> usize, out: &'env mut Hash) {
         let out: *mut Hash = out;
-        if len >= LONG {
+        if len >= self.long_min {
             return self.submit_long(len, &mut fill, out);
         }
         let pieces = len.div_ceil(PIECE).max(1);
@@ -687,8 +698,8 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
 
     /// `reserve`, in the long ring.
     fn reserve_long(&mut self, len: usize) -> usize {
-        let (at, taken) = room(self.long_head, LONG_RING_BYTES, len);
-        while LONG_RING_BYTES - (self.long_head - self.long_tail) < taken {
+        let (at, taken) = room(self.long_head, self.long_len, len);
+        while self.long_len - (self.long_head - self.long_tail) < taken {
             self.publish();
             self.help();
         }
@@ -798,7 +809,7 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
                 }
                 Kind::Piece { counter, last, long, out } => {
                     if long {
-                        self.long_tail += room(self.long_tail, LONG_RING_BYTES, len).1;
+                        self.long_tail += room(self.long_tail, self.long_len, len).1;
                     }
                     // Sound: the task wrote its out before counting `left` down.
                     let piece = unsafe { *self.s.pieces_out[index].0.0.get() };
