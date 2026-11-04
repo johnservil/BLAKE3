@@ -208,7 +208,7 @@ mod each;
 mod gpu;
 #[cfg(blake3_gpu)]
 #[doc(hidden)]
-pub use gpu::__gpu_probe;
+pub use gpu::{__gpu_probe, __gpu_probe_tasks};
 
 pub mod performance;
 
@@ -937,7 +937,7 @@ fn hash_one_chunk_root(input: &[u8], key: &CVWords, flags: u8) -> Hash {
 // tree::hash.
 #[cfg(feature = "std")]
 #[inline]
-fn hash_all_at_once(input: &[u8], key: &CVWords, chunk_counter: u64, flags: u8, platform: Platform) -> Output {
+pub(crate) fn hash_all_at_once(input: &[u8], key: &CVWords, chunk_counter: u64, flags: u8, platform: Platform) -> Output {
     // The input is a complete subtree at chunk_counter, or the whole
     // input (including empty) at counter zero. Its byte offset fits u64.
     debug_assert!(chunk_counter <= u64::MAX / CHUNK_LEN as u64);

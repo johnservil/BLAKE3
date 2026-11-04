@@ -22,7 +22,7 @@ void require(bool ok, const char *message) {
 struct Engine {
     id<MTLDevice> device;
     id<MTLCommandQueue> queue;
-    id<MTLComputePipelineState> leaves, parents;
+    id<MTLComputePipelineState> leaves, parents, tasks;
 };
 // Set once by blake3_servil_gpu_start, before src/gpu.rs publishes the
 // GPU as ready (its Release store, the readers' Acquire load).
@@ -72,7 +72,9 @@ extern "C" bool blake3_servil_gpu_start(char *error) {
             require(leaves != nil, "Metal leaf pipeline failed");
             id<MTLComputePipelineState> parents = [device newComputePipelineStateWithFunction:[library newFunctionWithName:@"parents"] error:&e];
             require(parents != nil, "Metal parent pipeline failed");
-            engine = new Engine{device, queue, leaves, parents};
+            id<MTLComputePipelineState> tasks = [device newComputePipelineStateWithFunction:[library newFunctionWithName:@"tasks"] error:&e];
+            require(tasks != nil && tasks.maxTotalThreadsPerThreadgroup >= 64, "Metal tasks pipeline failed");
+            engine = new Engine{device, queue, leaves, parents, tasks};
             return true;
         } catch (const std::exception &x) {
             snprintf(error, 512, "%s", x.what());
@@ -169,4 +171,39 @@ extern "C" bool blake3_servil_gpu_wait(void *slots, size_t slot, uint8_t *out, c
             return false;
         }
     }
+}
+
+// PROBE (gpu-tasks): hash `count` tasks of 64 chunks from the slot's start,
+// at chunk counter `first`, one threadgroup each, and wait; their chaining
+// values (32 bytes each) are then at blake3_servil_gpu_probe_cvs.
+extern "C" bool blake3_servil_gpu_probe_tasks(void *slots, size_t slot, size_t count, uint64_t first, const uint32_t *key, uint32_t flags,
+                                              char *error) {
+    @autoreleasepool {
+        try {
+            Slot &s = static_cast<Slots *>(slots)->slots.at(slot);
+            require(s.cmd == nil && count >= 1 && count * 65536 <= s.capacity, "a GPU slot in flight or too small");
+            Args args{count * 65536, first, {}, flags};
+            std::memcpy(args.key, key, sizeof(args.key));
+            id<MTLCommandBuffer> cmd = [engine->queue commandBuffer];
+            require(cmd != nil, "Metal command buffer allocation failed");
+            id<MTLComputeCommandEncoder> encoder = [cmd computeCommandEncoder];
+            [encoder setComputePipelineState:engine->tasks];
+            [encoder setBuffer:s.input offset:0 atIndex:0];
+            [encoder setBuffer:s.a offset:0 atIndex:1];
+            [encoder setBytes:&args length:sizeof(args) atIndex:2];
+            [encoder dispatchThreadgroups:MTLSizeMake(count, 1, 1) threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
+            [encoder endEncoding];
+            [cmd commit];
+            [cmd waitUntilCompleted];
+            require(cmd.status == MTLCommandBufferStatusCompleted, "the GPU command failed");
+            return true;
+        } catch (const std::exception &x) {
+            snprintf(error, 512, "%s", x.what());
+            return false;
+        }
+    }
+}
+
+extern "C" const uint8_t *blake3_servil_gpu_probe_cvs(void *slots, size_t slot) {
+    return static_cast<const uint8_t *>(static_cast<Slots *>(slots)->slots.at(slot).a.contents);
 }

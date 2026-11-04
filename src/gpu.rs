@@ -43,6 +43,8 @@ unsafe extern "C" {
     fn blake3_servil_gpu_submit(slots: *mut c_void, slot: usize, length: usize, key: *const u32, flags: u32, error: *mut c_char) -> bool;
     fn blake3_servil_gpu_done(slots: *mut c_void, slot: usize) -> bool;
     fn blake3_servil_gpu_wait(slots: *mut c_void, slot: usize, out: *mut u8, error: *mut c_char) -> bool;
+    fn blake3_servil_gpu_probe_tasks(slots: *mut c_void, slot: usize, count: usize, first: u64, key: *const u32, flags: u32, error: *mut c_char) -> bool;
+    fn blake3_servil_gpu_probe_cvs(slots: *mut c_void, slot: usize) -> *const u8;
 }
 
 /// The shortest message a stream hashes on the GPU: at 4 MiB its
@@ -450,4 +452,51 @@ pub(crate) mod test {
         s.release_cpu();
         assert!(s.uses[..4] == [Use::Free, Use::Free, gpu(2), Use::Orphaned]);
     }
+}
+
+/// PROBE (gpu-tasks): the GPU hashing a batch of `mib` MiB of 64 KiB tasks
+/// in one command, each task's chaining value checked against the CPU's
+/// first; then the command's time in ns, (the first after 50 ms idle, the
+/// mean of `reps` back to back, the mean of `reps` each after a 2 ms gap).
+#[doc(hidden)]
+pub fn __gpu_probe_tasks(mib: usize, reps: usize) -> [u64; 3] {
+    while !ready() {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let len = mib << 20;
+    let tasks = len / 65536;
+    let mut slots = Slots::new();
+    let room = slots.room(0, len);
+    for (i, b) in room.iter_mut().enumerate() {
+        *b = (i.wrapping_mul(2654435761) >> 13) as u8;
+    }
+    let key = *crate::IV;
+    let run = |slots: &mut Slots| {
+        let mut error = [0; 512];
+        let t0 = std::time::Instant::now();
+        // Sound: the slot holds len bytes, and no command is in flight.
+        let ok = unsafe { blake3_servil_gpu_probe_tasks(slots.handle, 0, tasks, 0, key.as_ptr(), 0, error.as_mut_ptr()) };
+        assert!(ok, "{}", message(&error));
+        t0.elapsed().as_nanos() as u64
+    };
+    run(&mut slots);
+    // Every task's value, against the CPU's.
+    let platform = crate::platform::Platform::detect();
+    // Sound: the command has ended; its output holds tasks * 32 bytes.
+    let cvs = unsafe { core::slice::from_raw_parts(blake3_servil_gpu_probe_cvs(slots.handle, 0), tasks * 32) };
+    for t in 0..tasks {
+        let want = crate::hash_all_at_once(&room[t * 65536..][..65536], &key, (t * 64) as u64, 0, platform).chaining_value();
+        assert_eq!(&cvs[t * 32..][..32], &want[..], "task {t}'s chaining value");
+    }
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    let cold = run(&mut slots);
+    let steady = (0..reps).map(|_| run(&mut slots)).sum::<u64>() / reps as u64;
+    let gapped = (0..reps)
+        .map(|_| {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            run(&mut slots)
+        })
+        .sum::<u64>()
+        / reps as u64;
+    [cold, steady, gapped]
 }

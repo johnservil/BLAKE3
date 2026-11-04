@@ -13,8 +13,11 @@
 use blake3_servil::{Hash, Mode};
 
 fn main() {
-    let part = std::env::args().nth(1).expect("host_lab short [MIB_PER_CELL]");
-    assert_eq!(part, "short", "the one part: short");
+    let part = std::env::args().nth(1).expect("host_lab short [MIB_PER_CELL] | tasks");
+    if part == "tasks" {
+        return tasks();
+    }
+    assert_eq!(part, "short", "the parts: short, tasks");
     let budget: usize = std::env::args().nth(2).map_or(4096, |a| a.parse().expect("MIB_PER_CELL")) << 20;
     blake3_servil::initialize_multithreaded(None);
     let input: Vec<u8> = (0..64usize << 20).map(|i| (i % 251) as u8).collect();
@@ -103,4 +106,41 @@ fn one(input: &[u8], len: usize, n: usize) -> (u64, u64) {
     let total = clocks::since_ns(start);
     assert_eq!(places[0], blake3_servil::convenience::hash(message));
     (submitted, total)
+}
+
+/// The GPU hashing a batch of 64 KiB tasks in one command (each checked
+/// against the CPU first), beside the CPU pool hashing the same bytes, by
+/// batch size: what a GPU worker taking tasks from a stream's ring would pay.
+fn tasks() {
+    blake3_servil::initialize_multithreaded(None);
+    println!("# MiB\tgpu_first_after_idle_us\tgpu_back_to_back_us\tgpu_after_2ms_gap_us\tgpu_GB/s_back_to_back\tcpu_pool_us\tcpu_GB/s");
+    for mib in [1usize, 2, 4, 8, 16, 32, 64] {
+        #[cfg(target_os = "macos")]
+        let [cold, steady, gapped] = blake3_servil::__gpu_probe_tasks(mib, 20);
+        #[cfg(not(target_os = "macos"))]
+        let [cold, steady, gapped] = [0u64; 3];
+        let blocks = vec![blake3_servil::performance::Block::ZERO; (mib << 20) / 64];
+        let len = mib << 20;
+        for _ in 0..5 {
+            std::hint::black_box(blake3_servil::performance::hash_multithreaded(blake3_servil::Mode::Plain, &blocks, len));
+        }
+        let reps = 20u64;
+        let t0 = clocks::now();
+        for _ in 0..reps {
+            std::hint::black_box(blake3_servil::performance::hash_multithreaded(blake3_servil::Mode::Plain, &blocks, len));
+        }
+        let cpu = clocks::since_ns(t0) / reps;
+        let bytes = (mib as u64) << 20;
+        println!(
+            "{mib}\t{}\t{}\t{}\t{}\t{}\t{}",
+            (cold + 500) / 1000,
+            (steady + 500) / 1000,
+            (gapped + 500) / 1000,
+            (bytes + steady.max(1) / 2) / steady.max(1),
+            (cpu + 500) / 1000,
+            (bytes + cpu / 2) / cpu
+        );
+    }
+    clocks::load::tick();
+    println!("# load: {}", clocks::load::describe(&clocks::load::windows()));
 }

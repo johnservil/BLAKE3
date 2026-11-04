@@ -96,3 +96,44 @@ kernel void parents(device const uint *input [[buffer(0)]], device uint *output 
     }
     for (uint j = 0; j < 8; j++) output[index * 8 + j] = cv[j];
 }
+
+// PROBE (gpu-tasks): a batch of the stream's tasks, one threadgroup each.
+// Task t is 64 whole chunks from byte t * 65536, at chunk counter args.first
+// + 64 t; its subtree's chaining value (no ROOT: a piece of a longer
+// message) goes to output[t]. A thread a chunk, then the 64 values reduced
+// in the group, a level a step.
+kernel void tasks(device const uchar *input [[buffer(0)]], device uint *output [[buffer(1)]],
+                  constant Args &args [[buffer(2)]], uint t [[threadgroup_position_in_grid]],
+                  uint c [[thread_position_in_threadgroup]]) {
+    threadgroup uint cvs[64 * 8];
+    ulong chunk = ulong(t) * 64 + c;
+    device const uint *words = reinterpret_cast<device const uint *>(input + chunk * 1024);
+    uint cv[8];
+    for (uint i = 0; i < 8; i++) cv[i] = args.key[i];
+    for (uint b = 0; b < 16; b++) {
+        uint m[16];
+        #pragma unroll
+        for (uint j = 0; j < 16; j++) m[j] = words[b * 16 + j];
+        uint flags = args.flags | (b == 0 ? b3::CHUNK_START : 0u) | (b == 15 ? b3::CHUNK_END : 0u);
+        b3::compress(cv, m, args.first + chunk, 64, flags);
+    }
+    for (uint j = 0; j < 8; j++) cvs[c * 8 + j] = cv[j];
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint width = 32; width >= 1; width >>= 1) {
+        uint p[8];
+        if (c < width) {
+            uint m[16];
+            for (uint i = 0; i < 16; i++) m[i] = cvs[c * 16 + i];
+            for (uint i = 0; i < 8; i++) p[i] = args.key[i];
+            b3::compress(p, m, 0, 64, args.flags | b3::PARENT);
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (c < width) {
+            for (uint j = 0; j < 8; j++) cvs[c * 8 + j] = p[j];
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    if (c == 0) {
+        for (uint j = 0; j < 8; j++) output[t * 8 + j] = cvs[j];
+    }
+}
