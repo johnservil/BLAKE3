@@ -404,8 +404,22 @@ fn run() -> usize {
     compiled_features_present();
     let platform = Platform::detect_unchecked();
     let mut checked = 0;
+    #[cfg(test)]
+    let mut index = 0;
     let previous = chain(
-        |case, input, previous, out| outputs(platform, case, input, previous, out),
+        |case, input, previous, out| {
+            let written = outputs(platform, case, input, previous, out);
+            // A wrong digest a test plants in one case, as a CPU or build
+            // that computes one would give.
+            #[cfg(test)]
+            {
+                if index == PLANTED_WRONG_CASE.load(core::sync::atomic::Ordering::Relaxed) {
+                    out[written - 1] ^= 1;
+                }
+                index += 1;
+            }
+            written
+        },
         |index, folded| {
             checked += 1;
             if folded != EXPECTED[index] {
@@ -519,6 +533,11 @@ static WAITING: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsiz
 /// a CPU or build that computes wrong digests would fail it.
 #[cfg(test)]
 static PLANTED_FAILURE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// The case whose last output byte a test flips (test builds only); none
+/// by default.
+#[cfg(test)]
+static PLANTED_WRONG_CASE: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(usize::MAX);
 
 /// Run the self-test unless it has passed: once per process, the first
 /// caller running it and any other waiting. It publishes no data, so a
@@ -762,6 +781,46 @@ mod test {
 #[cfg(all(test, unix))]
 mod stops {
     use super::*;
+
+    /// A wrong digest in any one case stops the process, naming that case:
+    /// each of the startup chain's cases, one child process each (all at
+    /// once), with that case's last output byte flipped (BLAKE3 #238's
+    /// extra mutations: no test made a case's comparison fail, so the check
+    /// `folded != EXPECTED[index]` could be `false` and the self-test pass
+    /// any digest). The wide kernels' own check has
+    /// wide_self_test_rejects_corruption.
+    #[test]
+    fn test_a_wrong_digest_in_any_case_stops_the_process() {
+        use core::sync::atomic::Ordering::Relaxed;
+        const CHILD: &str = "BLAKE3_SERVIL_TEST_WRONG_CASE";
+        if let Some(case) = std::env::var_os(CHILD) {
+            PLANTED_WRONG_CASE.store(case.to_str().unwrap().parse().unwrap(), Relaxed);
+            run();
+            std::process::exit(0);
+        }
+        let children: std::vec::Vec<_> = (0..CASES.len())
+            .map(|case| {
+                let child = std::process::Command::new(std::env::current_exe().unwrap())
+                    .args(["--exact", "self_test::stops::test_a_wrong_digest_in_any_case_stops_the_process", "--nocapture", "--test-threads", "1"])
+                    .env(CHILD, std::format!("{case}"))
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::piped())
+                    .spawn()
+                    .expect("the test binary runs again");
+                (case, child)
+            })
+            .collect();
+        use std::os::unix::process::ExitStatusExt as _;
+        for (case, child) in children {
+            let out = child.wait_with_output().unwrap();
+            let stderr = std::string::String::from_utf8_lossy(&out.stderr);
+            let signal = if cfg!(feature = "std") { 6 } else { 4 };
+            assert_eq!(out.status.signal(), Some(signal), "case {case}: the child stops: {:?}\n{stderr}", out.status);
+            if cfg!(feature = "std") {
+                assert!(stderr.contains(&std::format!("self-test failed: case {case}, ")), "case {case}: it names the case: {stderr}");
+            }
+        }
+    }
 
     /// A self-test that fails stops the process: no caller can catch it
     /// and go on hashing wrong digests (with std an abort, SIGABRT; without
