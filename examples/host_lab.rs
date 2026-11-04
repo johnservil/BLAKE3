@@ -7,7 +7,7 @@
 //! the largest backlog a feed saw, the process's CPU time a stream, and the
 //! caller's clock. Configurations interleave, three rounds.
 //!
-//!     cargo run --release --example gpu_share
+//!     cargo run --release --example host_lab
 use blake3_servil::{Hash, Mode};
 use core::sync::atomic::Ordering;
 
