@@ -43,7 +43,16 @@ unsafe extern "C" {
     fn blake3_servil_gpu_submit(slots: *mut c_void, slot: usize, length: usize, key: *const u32, flags: u32, error: *mut c_char) -> bool;
     fn blake3_servil_gpu_done(slots: *mut c_void, slot: usize) -> bool;
     fn blake3_servil_gpu_wait(slots: *mut c_void, slot: usize, out: *mut u8, error: *mut c_char) -> bool;
-    fn blake3_servil_gpu_probe_tasks(slots: *mut c_void, slot: usize, count: usize, first: u64, key: *const u32, flags: u32, error: *mut c_char) -> bool;
+    fn blake3_servil_gpu_probe_tasks(
+        slots: *mut c_void,
+        slot: usize,
+        count: usize,
+        first: u64,
+        key: *const u32,
+        flags: u32,
+        depth: usize,
+        error: *mut c_char,
+    ) -> bool;
     fn blake3_servil_gpu_probe_cvs(slots: *mut c_void, slot: usize) -> *const u8;
 }
 
@@ -457,9 +466,10 @@ pub(crate) mod test {
 /// PROBE (gpu-tasks): the GPU hashing a batch of `mib` MiB of 64 KiB tasks
 /// in one command, each task's chaining value checked against the CPU's
 /// first; then the command's time in ns, (the first after 50 ms idle, the
-/// mean of `reps` back to back, the mean of `reps` each after a 2 ms gap).
+/// mean of `reps` back to back, the mean of `reps` each after a 2 ms gap,
+/// the mean of `reps` with 4 in flight).
 #[doc(hidden)]
-pub fn __gpu_probe_tasks(mib: usize, reps: usize) -> [u64; 3] {
+pub fn __gpu_probe_tasks(mib: usize, reps: usize) -> [u64; 4] {
     while !ready() {
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
@@ -471,14 +481,15 @@ pub fn __gpu_probe_tasks(mib: usize, reps: usize) -> [u64; 3] {
         *b = (i.wrapping_mul(2654435761) >> 13) as u8;
     }
     let key = *crate::IV;
-    let run = |slots: &mut Slots| {
+    let run_deep = |slots: &mut Slots, depth: usize| {
         let mut error = [0; 512];
         let t0 = std::time::Instant::now();
         // Sound: the slot holds len bytes, and no command is in flight.
-        let ok = unsafe { blake3_servil_gpu_probe_tasks(slots.handle, 0, tasks, 0, key.as_ptr(), 0, error.as_mut_ptr()) };
+        let ok = unsafe { blake3_servil_gpu_probe_tasks(slots.handle, 0, tasks, 0, key.as_ptr(), 0, depth, error.as_mut_ptr()) };
         assert!(ok, "{}", message(&error));
         t0.elapsed().as_nanos() as u64
     };
+    let run = |slots: &mut Slots| run_deep(slots, 1);
     run(&mut slots);
     // Every task's value, against the CPU's.
     let platform = crate::platform::Platform::detect();
@@ -498,5 +509,6 @@ pub fn __gpu_probe_tasks(mib: usize, reps: usize) -> [u64; 3] {
         })
         .sum::<u64>()
         / reps as u64;
-    [cold, steady, gapped]
+    let deep = (0..reps).map(|_| run_deep(&mut slots, 4)).sum::<u64>() / (4 * reps as u64);
+    [cold, steady, gapped, deep]
 }

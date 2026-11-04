@@ -113,12 +113,12 @@ fn one(input: &[u8], len: usize, n: usize) -> (u64, u64) {
 /// batch size: what a GPU worker taking tasks from a stream's ring would pay.
 fn tasks() {
     blake3_servil::initialize_multithreaded(None);
-    println!("# MiB\tgpu_first_after_idle_us\tgpu_back_to_back_us\tgpu_after_2ms_gap_us\tgpu_GB/s_back_to_back\tcpu_pool_us\tcpu_GB/s");
+    println!("# MiB\tgpu_first_after_idle_us\tgpu_back_to_back_us\tgpu_after_2ms_gap_us\tgpu_4_in_flight_us\tgpu_GB/s_4_in_flight\tcpu_pool_us\tcpu_GB/s");
     for mib in [1usize, 2, 4, 8, 16, 32, 64] {
         #[cfg(target_os = "macos")]
-        let [cold, steady, gapped] = blake3_servil::__gpu_probe_tasks(mib, 20);
+        let [cold, steady, gapped, deep] = blake3_servil::__gpu_probe_tasks(mib, 20);
         #[cfg(not(target_os = "macos"))]
-        let [cold, steady, gapped] = [0u64; 3];
+        let [cold, steady, gapped, deep] = [0u64; 4];
         let blocks = vec![blake3_servil::performance::Block::ZERO; (mib << 20) / 64];
         let len = mib << 20;
         for _ in 0..5 {
@@ -132,11 +132,12 @@ fn tasks() {
         let cpu = clocks::since_ns(t0) / reps;
         let bytes = (mib as u64) << 20;
         println!(
-            "{mib}\t{}\t{}\t{}\t{}\t{}\t{}",
+            "{mib}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
             (cold + 500) / 1000,
             (steady + 500) / 1000,
             (gapped + 500) / 1000,
-            (bytes + steady.max(1) / 2) / steady.max(1),
+            (deep + 500) / 1000,
+            (bytes + deep.max(1) / 2) / deep.max(1),
             (cpu + 500) / 1000,
             (bytes + cpu / 2) / cpu
         );

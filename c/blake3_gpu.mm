@@ -177,23 +177,27 @@ extern "C" bool blake3_servil_gpu_wait(void *slots, size_t slot, uint8_t *out, c
 // at chunk counter `first`, one threadgroup each, and wait; their chaining
 // values (32 bytes each) are then at blake3_servil_gpu_probe_cvs.
 extern "C" bool blake3_servil_gpu_probe_tasks(void *slots, size_t slot, size_t count, uint64_t first, const uint32_t *key, uint32_t flags,
-                                              char *error) {
+                                              size_t depth, char *error) {
     @autoreleasepool {
         try {
             Slot &s = static_cast<Slots *>(slots)->slots.at(slot);
             require(s.cmd == nil && count >= 1 && count * 65536 <= s.capacity, "a GPU slot in flight or too small");
             Args args{count * 65536, first, {}, flags};
             std::memcpy(args.key, key, sizeof(args.key));
-            id<MTLCommandBuffer> cmd = [engine->queue commandBuffer];
-            require(cmd != nil, "Metal command buffer allocation failed");
-            id<MTLComputeCommandEncoder> encoder = [cmd computeCommandEncoder];
-            [encoder setComputePipelineState:engine->tasks];
-            [encoder setBuffer:s.input offset:0 atIndex:0];
-            [encoder setBuffer:s.a offset:0 atIndex:1];
-            [encoder setBytes:&args length:sizeof(args) atIndex:2];
-            [encoder dispatchThreadgroups:MTLSizeMake(count, 1, 1) threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
-            [encoder endEncoding];
-            [cmd commit];
+            // `depth` commands committed before waiting on the last: a worker's batches in flight.
+            id<MTLCommandBuffer> cmd = nil;
+            for (size_t d = 0; d < depth; d++) {
+                cmd = [engine->queue commandBuffer];
+                require(cmd != nil, "Metal command buffer allocation failed");
+                id<MTLComputeCommandEncoder> encoder = [cmd computeCommandEncoder];
+                [encoder setComputePipelineState:engine->tasks];
+                [encoder setBuffer:s.input offset:0 atIndex:0];
+                [encoder setBuffer:s.a offset:0 atIndex:1];
+                [encoder setBytes:&args length:sizeof(args) atIndex:2];
+                [encoder dispatchThreadgroups:MTLSizeMake(count, 1, 1) threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
+                [encoder endEncoding];
+                [cmd commit];
+            }
             [cmd waitUntilCompleted];
             require(cmd.status == MTLCommandBufferStatusCompleted, "the GPU command failed");
             return true;
