@@ -266,6 +266,29 @@ mod test {
         Batch::new(128, 2).digests_mut();
     }
 
+    /// blocks_mut writes the messages themselves: the digests are of what it
+    /// wrote, and a borrowed batch copies its blocks first, leaving the
+    /// program's untouched (BLAKE3 #238: no test wrote through it).
+    #[test]
+    fn test_blocks_mut_writes_the_messages() {
+        crate::initialize();
+        let mut batch = Batch::new(128, 3);
+        for (i, b) in Block::bytes_mut(batch.blocks_mut()).iter_mut().enumerate() {
+            *b = (i / 128) as u8 + 1;
+        }
+        let mut golden = crate::test::Golden::new("blocks_mut");
+        let mut out = [[0u8; 32]; 3];
+        hash_many(Mode::Plain, &batch, &mut out);
+        golden.add(out.as_flattened(), || (1..=3u8).flat_map(|v| crate::test::official::hash(Mode::Plain, &[v; 128])).collect());
+        let mine = std::vec![Block([7u8; 64]); 2];
+        let mut borrowed = Batch::from_blocks(&mine, 64);
+        Block::bytes_mut(borrowed.blocks_mut())[..64].fill(9);
+        assert_eq!(Block::bytes(&mine)[0], 7, "the program's blocks untouched");
+        hash_many(Mode::Plain, &borrowed, &mut out[..2]);
+        golden.add(out[..2].as_flattened(), || [9u8, 7].iter().flat_map(|&v| crate::test::official::hash(Mode::Plain, &[v; 64])).collect());
+        golden.check(0x82788877fe5281c8);
+    }
+
     #[test]
     #[should_panic(expected = "leave no bytes past their ends")]
     fn test_blocks_mut_refuses_messages_with_padding() {

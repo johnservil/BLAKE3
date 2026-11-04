@@ -449,6 +449,89 @@ pub fn test_xof_many_fn(xof_many_function: XofManyFunction) {
     }
 }
 
+/// A reader cloned mid-output carries on as the original does, from the
+/// same position, each then independent; an empty fill reads nothing and
+/// moves nothing (BLAKE3 #238: no test cloned a reader or filled nothing).
+#[test]
+fn test_xof_clone_and_empty_fill() {
+    let mut golden = Golden::new("xof_clone_and_empty_fill");
+    let mut whole = [0; 400];
+    let mut hasher = crate::Hasher::new(crate::Mode::Plain);
+    hasher.update(b"foo");
+    hasher.finalize_xof().fill(&mut whole);
+    golden.add(&whole, || official::xof(crate::Mode::Plain, b"foo", 0, 400));
+
+    let mut reader = hasher.finalize_xof();
+    let mut head = [0; 100];
+    reader.fill(&mut head);
+    let mut copy = reader.clone();
+    assert_eq!(copy.position(), 100);
+    let (mut a, mut b) = ([0; 150], [0; 150]);
+    reader.fill(&mut a);
+    copy.fill(&mut b);
+    assert_eq!(a, b);
+    assert_eq!(&whole[100..250], &a[..]);
+    // Each its own afterwards.
+    reader.fill(&mut a[..10]);
+    assert_eq!((reader.position(), copy.position()), (260, 250));
+
+    reader.fill(&mut []);
+    assert_eq!(reader.position(), 260, "an empty fill moves nothing");
+    let mut rest = [0; 140];
+    reader.fill(&mut rest);
+    assert_eq!(&whole[260..], &rest[..]);
+    golden.check(0x5bbf88ec4d96901e);
+}
+
+/// pair's hash_many_blocks on every platform this build has: AVX2's and
+/// AVX-512's assembly, and the fallback, one input after another on the
+/// platform's compression, which SSE4.1 takes (BLAKE3 #238: no test ran
+/// the fallback; it is in an unsafe fn, which cargo-mutants never mutates).
+/// Block counts of 1, 2, 3 and 16 (a whole chunk), one to five inputs,
+/// counters incremented or not, the chunk flags at start and end.
+#[test]
+fn test_pair_hash_many_blocks_every_platform() {
+    use crate::{CHUNK_END, CHUNK_START, IV};
+    fn case<const N: usize>(golden: &mut Golden, input: &[u8]) {
+        let blocks = N / crate::BLOCK_LEN;
+        for count in 1..=5usize {
+            for increment in [false, true] {
+                let inputs: Vec<&[u8; N]> = (0..count).map(|i| input[i * 61..][..N].try_into().unwrap()).collect();
+                let ptrs: Vec<*const u8> = inputs.iter().map(|x| x.as_ptr()).collect();
+                let mut first: Option<Vec<u8>> = None;
+                for platform in every_platform() {
+                    let mut out = std::vec![0u8; count * crate::OUT_LEN];
+                    // Sound: each pointer reaches N bytes, `blocks` blocks; every_platform's CPUs are this one's.
+                    unsafe { crate::pair::hash_many_blocks(platform, &ptrs, blocks, IV, 7, increment, 0, CHUNK_START, CHUNK_END, &mut out) };
+                    match &first {
+                        None => first = Some(out),
+                        Some(f) => assert_eq!(
+                            &out,
+                            f,
+                            "{} against {}: {blocks} blocks, {count} inputs, increment {increment}",
+                            platform.name(),
+                            every_platform()[0].name()
+                        ),
+                    }
+                }
+                let first = first.expect("a platform");
+                golden.add(&first, || {
+                    let mut o = std::vec![0u8; count * crate::OUT_LEN];
+                    official::hash_many(&inputs, IV, 7, increment, 0, CHUNK_START, CHUNK_END, &mut o);
+                    o
+                });
+            }
+        }
+    }
+    let input: Vec<u8> = (0..5 * 61 + crate::CHUNK_LEN).map(|i| (i * 37 + i / 251) as u8).collect();
+    let mut golden = Golden::new("pair_hash_many_blocks");
+    case::<{ crate::BLOCK_LEN }>(&mut golden, &input);
+    case::<{ 2 * crate::BLOCK_LEN }>(&mut golden, &input);
+    case::<{ 3 * crate::BLOCK_LEN }>(&mut golden, &input);
+    case::<{ crate::CHUNK_LEN }>(&mut golden, &input);
+    golden.check(0xad2b2ab90bb1e3b5);
+}
+
 #[test]
 fn test_xof_seek() {
     let mut out = [0; 533];
