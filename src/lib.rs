@@ -114,7 +114,8 @@
 //!   hash on the calling thread. Above it they keep a list of the pieces
 //!   they hand out, freed when they return: 48 bytes for each 128 KiB of
 //!   input, and at most 200 bytes for each CPU (1 GiB on 16 CPUs: 390 KiB).
-//! - **A [stream](performance::stream)** takes its storage (its 2 MiB ring and its entries)
+//! - **A [stream](performance::stream)** takes its storage (its 2 MiB ring, 64 MiB more for
+//!   messages of 4 MiB or more, of which only the pages used are faulted in, and its entries)
 //!   from a pool the process keeps: a thread's first stream allocates it
 //!   and later streams reuse it, never freed.
 //! - **Once per process**: the startup self-test's buffers, about 45 KiB

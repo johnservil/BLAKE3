@@ -46,6 +46,19 @@ pub(crate) const PIECE: usize = TASK_LEN;
 /// and 2-4 points less fast than 4 MiB on some other cells.
 const RING_BYTES: usize = 2 << 20;
 
+/// The bytes a stream keeps for the pieces of long messages written in
+/// place (LONG or more): 64 MiB, as many pieces as the stream has entries,
+/// so the program writing them runs as far ahead of the threads hashing
+/// them as the entries allow. In the 2 MiB ring, 32 pieces in flight,
+/// streams of 16 MiB messages ran 28-31 GB/s, the program waiting for the
+/// oldest piece to come back; with this ring, 37-42 (Apple M4 Max, job
+/// 1892). Only the pages a stream uses are faulted in.
+const LONG_RING_BYTES: usize = 64 << 20;
+
+/// The shortest message whose pieces go to the long ring: 4 MiB, past the
+/// caches where the 2 MiB ring is kept hot.
+const LONG: usize = 4 << 20;
+
 /// The most entries (messages and pieces) in flight in one stream (1024:
 /// 4 KiB to 16 KiB messages 8-9% faster than at 8192, i7-12700K; 256 lost
 /// 26-130% at 64 and 256 B).
@@ -75,8 +88,13 @@ enum Kind {
     /// A whole message: its digest at `out`.
     Message { out: *mut Hash },
     /// A piece of a long message: its first chunk's index, whether it is
-    /// the message's last piece, and where the message's digest goes.
-    Piece { counter: u64, last: bool, out: *mut Hash },
+    /// the message's last piece, whether it lies in the long ring, and
+    /// where the message's digest goes. (The long ring's pieces come back
+    /// in the order they were reserved, so handing one back frees its room
+    /// by reserving it again from the tail: no end kept, so an entry stays
+    /// 56 bytes. With the end kept, 64 bytes made multithreaded streams of
+    /// 512 B messages 3.6% slower, Mac check 1893.)
+    Piece { counter: u64, last: bool, long: bool, out: *mut Hash },
     /// A part of a batch of messages of `message_len` bytes laid out as
     /// hash_many takes them (an empty batch: one part of none), its
     /// digests written into the batch's space; the batch's last part holds
@@ -200,6 +218,8 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
             delivered: 0,
             head: 0,
             tail: 0,
+            long_head: 0,
+            long_tail: 0,
             open: None,
             stack: arrayvec::ArrayVec::new(),
             pieces: 0,
@@ -219,6 +239,9 @@ struct Storage {
     /// of their entries: an allocation of its own, reached by pointer
     /// alone (the program writes some bytes while threads read others).
     ring: *mut u8,
+    /// LONG_RING_BYTES for the pieces of long messages written in place
+    /// (`Stream::submit_long`), reached as the ring is.
+    long_ring: *mut u8,
     pieces_out: Box<[OwnLine<Out<64>>]>,
     /// For a task's first entry, the count of the task's entries still
     /// unhashed: on lines of their own (128 bytes, as the adjacent-line
@@ -253,17 +276,8 @@ impl Storage {
         Storage {
             source: Box::leak(Box::new(crate::lanes::sources::Source::new(ENTRIES))),
             entries: std::vec![Entry { len: 0, kind: Kind::Abandoned, first: 0, ring_end: 0 }; ENTRIES].into_boxed_slice(),
-            ring: {
-                // Zeroed, untouched pages (only the bytes used are faulted
-                // in: calloc maps them lazily, where an aligned allocation
-                // would write all 2 MiB), starting at the first 64-byte
-                // boundary, as each room's offset is, so every room starts
-                // a cache line (glibc puts a 2 MiB block 16 bytes into
-                // one). Kept for good, as the storage is.
-                let block = Box::leak(std::vec![0u8; RING_BYTES + 64].into_boxed_slice());
-                let start = block.as_ptr().align_offset(64);
-                block[start..].as_mut_ptr()
-            },
+            ring: ring(RING_BYTES),
+            long_ring: ring(LONG_RING_BYTES),
             pieces_out: (0..ENTRIES).map(|_| OwnLine(Out(UnsafeCell::new([0; 64])))).collect(),
             lefts: (0..ENTRIES).map(|_| OwnLine(AtomicUsize::new(0))).collect(),
         }
@@ -288,6 +302,34 @@ impl Storage {
         // Sound: `at` is in the ring.
         unsafe { self.ring.add(at) }
     }
+
+    /// The long ring's byte at `at`.
+    fn long_at(&self, at: usize) -> *mut u8 {
+        debug_assert!(at <= LONG_RING_BYTES);
+        // Sound: `at` is in the long ring.
+        unsafe { self.long_ring.add(at) }
+    }
+}
+
+/// A ring of `len` bytes, kept for good, as the storage is: zeroed,
+/// untouched pages (only the bytes used are faulted in: calloc maps them
+/// lazily, where an aligned allocation would write them all), starting at
+/// the first 64-byte boundary, as each room's offset is, so every room
+/// starts a cache line (glibc puts a 2 MiB block 16 bytes into one).
+fn ring(len: usize) -> *mut u8 {
+    let block = Box::leak(std::vec![0u8; len + 64].into_boxed_slice());
+    let start = block.as_ptr().align_offset(64);
+    block[start..].as_mut_ptr()
+}
+
+/// Where `len` bytes go in a ring of `ring` bytes whose head is at `head`
+/// (counting on), at a 64-byte boundary, whole before its end: their
+/// offset, and the bytes they take from the head (a room that would cross
+/// the end starts the next lap, the rest of this one skipped).
+fn room(head: usize, ring: usize, len: usize) -> (usize, usize) {
+    let slot = len.div_ceil(64) * 64;
+    let at = head % ring;
+    if at + slot > ring { (0, ring - at + slot) } else { (at, slot) }
 }
 
 /// `fill` called as `Read::read_exact` calls `read`, until `room` is full:
@@ -308,8 +350,8 @@ fn fill_all(fill: &mut impl FnMut(usize, &mut [u8]) -> usize, at: usize, room: &
 
 /// Part `i` of a message in `pieces` parts, its digest at `out`: the
 /// message whole, or a piece.
-fn part_kind(i: usize, pieces: usize, out: *mut Hash) -> Kind {
-    if pieces == 1 { Kind::Message { out } } else { Kind::Piece { counter: (i * PIECE / CHUNK_LEN) as u64, last: i + 1 == pieces, out } }
+fn part_kind(i: usize, pieces: usize, out: *mut Hash, long: bool) -> Kind {
+    if pieces == 1 { Kind::Message { out } } else { Kind::Piece { counter: (i * PIECE / CHUNK_LEN) as u64, last: i + 1 == pieces, long, out } }
 }
 
 /// The messages of one [`stream`] call, and the places for their digests,
@@ -332,6 +374,9 @@ pub struct Stream<'env, D> {
     /// head - tail).
     head: usize,
     tail: usize,
+    /// The long ring's bytes reserved, and freed, as `head` and `tail`.
+    long_head: usize,
+    long_tail: usize,
     /// Short messages gathered, not yet handed to the pool.
     open: Option<Task>,
     /// A long message being handed back: its pieces' chaining values so
@@ -363,7 +408,7 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
         for i in 0..pieces {
             let part = &message[i * PIECE..][..(message.len() - i * PIECE).min(PIECE)];
             let at = self.head;
-            self.add_part(part.as_ptr(), part.len(), part_kind(i, pieces, out), at, out as *mut u8);
+            self.add_part(part.as_ptr(), part.len(), part_kind(i, pieces, out, false), at, out as *mut u8);
         }
     }
 
@@ -380,10 +425,14 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
     /// streams, so a room may hold bytes an earlier message left (a program
     /// that must keep one caller's secrets from another reads none of
     /// `room` before writing it). The stream reuses the bytes once `out`
-    /// is handed back; a stream keeps 2 MiB of them, and `submit_with`
-    /// waits for room as `submit` does.
+    /// is handed back; a stream keeps 2 MiB of them, and 64 MiB more for
+    /// messages of 4 MiB or more, and `submit_with` waits for room as
+    /// `submit` does.
     pub fn submit_with(&mut self, len: usize, mut fill: impl FnMut(usize, &mut [u8]) -> usize, out: &'env mut Hash) {
         let out: *mut Hash = out;
+        if len >= LONG {
+            return self.submit_long(len, &mut fill, out);
+        }
         let pieces = len.div_ceil(PIECE).max(1);
         for i in 0..pieces {
             let part_len = (len - i * PIECE).min(PIECE);
@@ -393,7 +442,31 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
             let room = unsafe { core::slice::from_raw_parts_mut(self.s.ring_at(at), part_len) };
             fill_all(&mut fill, i * PIECE, room);
             let end = self.head;
-            self.add_part(room.as_ptr(), part_len, part_kind(i, pieces, out), end, out as *mut u8);
+            self.add_part(room.as_ptr(), part_len, part_kind(i, pieces, out, false), end, out as *mut u8);
+        }
+    }
+
+    /// `submit_with` for a long message (LONG bytes or more): its pieces in
+    /// the long ring (out of line: the short messages' path keeps only the
+    /// length's test).
+    #[inline(never)]
+    fn submit_long(&mut self, len: usize, fill: &mut impl FnMut(usize, &mut [u8]) -> usize, out: *mut Hash) {
+        let pieces = len.div_ceil(PIECE);
+        for i in 0..pieces {
+            let part_len = (len - i * PIECE).min(PIECE);
+            let at = self.reserve_long(part_len);
+            // Sound: [at, at + part_len) is reserved and free in the long
+            // ring (no entry in flight holds it), and `&mut self` keeps
+            // every other writer out.
+            let room = unsafe { core::slice::from_raw_parts_mut(self.s.long_at(at), part_len) };
+            fill_all(fill, i * PIECE, room);
+            // No bytes of the 2 MiB ring: its head is the piece's end there.
+            // Not through add_part: one more caller there, and the compiler
+            // stopped inlining it into submit_with (multithreaded 64 B and
+            // 256 B continuous messages 3.4-4.1% slower, the VM's check).
+            let end = self.head;
+            let entry = self.add_entry(part_len, part_kind(i, pieces, out, true), end);
+            self.hand_over_piece(entry, room.as_ptr(), part_len, (i * PIECE / CHUNK_LEN) as u64);
         }
     }
 
@@ -444,7 +517,7 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
                 }
                 Some(_) => false,
             };
-            let kind = if i == 0 && last { Kind::Message { out } } else { Kind::Piece { counter: (i * PIECE / CHUNK_LEN) as u64, last, out } };
+            let kind = if i == 0 && last { Kind::Message { out } } else { Kind::Piece { counter: (i * PIECE / CHUNK_LEN) as u64, last, long: false, out } };
             // [at, at + n): this piece's reserved room, written.
             let input = self.s.ring_at(at);
             self.add_part(input, n, kind, end, out as *mut u8);
@@ -554,17 +627,7 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
             Kind::Batch { .. } if len == 0 => return,
             Kind::Batch { message_len, .. } => Some(message_len),
             Kind::Piece { counter, .. } => {
-                self.s.lefts[entry].store(1, Ordering::Relaxed);
-                // Sound: the bytes stay in place until the entry is handed back.
-                let bytes = unsafe { core::slice::from_raw_parts(input, len) };
-                let task = Task {
-                    key: self.key,
-                    flags: self.flags,
-                    out: self.s.pieces_out[entry].0.0.get() as *mut u8,
-                    left: &*self.s.lefts[entry],
-                    ..Task::of(bytes, counter)
-                };
-                self.hand_over(task);
+                self.hand_over_piece(entry, input, len, counter);
                 return;
             }
         };
@@ -591,22 +654,45 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
         }
     }
 
+    /// Entry `entry`, a piece of a long message, `len` bytes at `input`
+    /// from chunk `counter`: a task of its own, a whole subtree at its
+    /// offset, handed over.
+    #[inline(always)]
+    fn hand_over_piece(&mut self, entry: usize, input: *const u8, len: usize, counter: u64) {
+        self.s.lefts[entry].store(1, Ordering::Relaxed);
+        // Sound: the bytes stay in place until the entry is handed back.
+        let bytes = unsafe { core::slice::from_raw_parts(input, len) };
+        let task = Task {
+            key: self.key,
+            flags: self.flags,
+            out: self.s.pieces_out[entry].0.0.get() as *mut u8,
+            left: &*self.s.lefts[entry],
+            ..Task::of(bytes, counter)
+        };
+        self.hand_over(task);
+    }
+
     /// The ring offset of `len` free bytes at a 64-byte boundary (whole,
     /// before the ring's end), reserved: waits, handing places back and
     /// hashing tasks, until entries in flight free them.
     fn reserve(&mut self, len: usize) -> usize {
-        let slot = len.div_ceil(64) * 64;
-        let mut at = self.head % RING_BYTES;
-        // A slot that would cross the end starts the next lap instead.
-        let skip = if at + slot > RING_BYTES { RING_BYTES - at } else { 0 };
-        while RING_BYTES - (self.head - self.tail) < skip + slot {
+        let (at, taken) = room(self.head, RING_BYTES, len);
+        while RING_BYTES - (self.head - self.tail) < taken {
             self.publish();
             self.help();
         }
-        if skip > 0 {
-            at = 0;
+        self.head += taken;
+        at
+    }
+
+    /// `reserve`, in the long ring.
+    fn reserve_long(&mut self, len: usize) -> usize {
+        let (at, taken) = room(self.long_head, LONG_RING_BYTES, len);
+        while LONG_RING_BYTES - (self.long_head - self.long_tail) < taken {
+            self.publish();
+            self.help();
         }
-        self.head += skip + slot;
+        self.long_head += taken;
         at
     }
 
@@ -710,7 +796,10 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
                     self.stack.clear();
                     self.pieces = 0;
                 }
-                Kind::Piece { counter, last, out } => {
+                Kind::Piece { counter, last, long, out } => {
+                    if long {
+                        self.long_tail += room(self.long_tail, LONG_RING_BYTES, len).1;
+                    }
                     // Sound: the task wrote its out before counting `left` down.
                     let piece = unsafe { *self.s.pieces_out[index].0.0.get() };
                     let (key, flags, platform) = (self.key, self.flags, Platform::detect());
@@ -1069,6 +1158,80 @@ mod test {
             assert_eq!(got, want, "place {i}");
         }
         assert_eq!(handed.len(), lens.len() + fails.len() * after.len(), "a place back per message read, none for a failed reader");
+    }
+
+    /// Long messages (4 MiB or more, in the long ring) among short ones and
+    /// messages just short of 4 MiB, in every mode, written in reads of up
+    /// to 1000 bytes, past the long ring's 64 MiB (so it wraps): each
+    /// digest the CPU's, handed back once, in order; with collect after
+    /// each, and finishing at once.
+    #[test]
+    fn test_long_messages_against_hash_with() {
+        let mut input = std::vec![0u8; (16 << 20) + 300];
+        crate::test::paint_test_input(&mut input);
+        let key = [9u8; 32];
+        let lens = [LONG, LONG + 1, 100, (5 << 20) + 1023, 16 << 20, LONG - 1, PIECE + 1, (16 << 20) + 1, (6 << 20) + 7, 8 << 20, 0, 16 << 20];
+        let message = |i: usize| &input[64 * (i % 3)..][..lens[i % lens.len()]];
+        for (mode, collect, read) in
+            [(Mode::Plain, false, 1000), (Mode::Keyed(&key), true, usize::MAX), (Mode::DeriveKey("long stream test"), false, usize::MAX)]
+        {
+            let mut got = places(2 * lens.len());
+            let want_handed: std::vec::Vec<(usize, usize)> = got.iter().map(|h| (h as *const Hash as usize, 1)).collect();
+            let mut handed = std::vec::Vec::new();
+            stream(mode, record(&mut handed), |s| {
+                for (i, out) in got.iter_mut().enumerate() {
+                    s.submit_with(
+                        lens[i % lens.len()],
+                        |at, room| {
+                            let n = room.len().min(read);
+                            room[..n].copy_from_slice(&message(i)[at..][..n]);
+                            n
+                        },
+                        out,
+                    );
+                    if collect {
+                        s.collect();
+                    }
+                }
+                assert!(s.long_head > LONG_RING_BYTES, "the long ring wrapped");
+                s.finish();
+                assert_eq!(s.long_tail, s.long_head, "every long piece back frees exactly its room");
+            });
+            assert!(handed == want_handed, "every place handed back once, in order");
+            for (i, got) in got.iter().enumerate() {
+                assert_eq!(*got, crate::convenience::hash_with(mode, message(i)), "message {i}, {} bytes", lens[i % lens.len()]);
+            }
+        }
+    }
+
+    /// The long ring's arithmetic, exact on every machine: 16 messages of
+    /// 4 MiB, 1024 whole pieces, fill it to its end with no lap skipped
+    /// and no wait for room, and the 2 MiB ring keeps none of their bytes.
+    #[test]
+    fn test_long_messages_fill_the_long_ring_to_its_end() {
+        let input = std::vec![5u8; LONG];
+        let mut got = places(LONG_RING_BYTES / LONG);
+        stream(
+            Mode::Plain,
+            |_| {},
+            |s| {
+                for out in got.iter_mut() {
+                    s.submit_with(
+                        LONG,
+                        |at, room| {
+                            room.copy_from_slice(&input[at..][..room.len()]);
+                            room.len()
+                        },
+                        out,
+                    );
+                }
+                assert_eq!((s.long_head, s.head), (LONG_RING_BYTES, 0), "1024 pieces end the long ring's first lap exactly");
+                assert_eq!(s.delivered, 0, "and nothing waited for room");
+                s.finish();
+                assert_eq!(s.long_tail, LONG_RING_BYTES, "every long piece back frees exactly its room");
+            },
+        );
+        assert!(got.iter().all(|h| *h == crate::convenience::hash(&input)));
     }
 
     /// The ring's arithmetic, exact on every machine (the caller's own,
