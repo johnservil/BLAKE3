@@ -771,7 +771,7 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
     fn feed(&mut self) -> bool {
         #[cfg(blake3_gpu)]
         if let Some(gpu) = self.s.gpu.as_ref() {
-            if self.long_len == crate::gpu::RING_BYTES && self.slot.is_some() {
+            if self.long_len == crate::gpu::RING_BYTES && self.slot.is_some() && self.long_head >= crate::gpu::probe::AFTER.load(Ordering::Relaxed) {
                 return crate::gpu::feed(gpu, self.s.source, self.gpu_run.start, self.gpu_run.end, &self.key, self.flags);
             }
         }

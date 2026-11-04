@@ -340,6 +340,8 @@ pub mod probe {
     pub static BATCH: AtomicUsize = AtomicUsize::new(256);
     pub static KEEP: AtomicUsize = AtomicUsize::new(0);
     pub static TASKS: AtomicUsize = AtomicUsize::new(0);
+    /// The long bytes a stream writes before its GPU may claim.
+    pub static AFTER: AtomicUsize = AtomicUsize::new(0);
 }
 
 // Sound: the raw pointers are Metal's buffers and the commands' tasks,
