@@ -83,6 +83,8 @@ libc = { version = "0.2", default-features = false }
 libc = { version = "0.2", default-features = false }
 
 [dev-dependencies]
+# PROBE: the probe's clocks, bench-hashes' (examples/gpu_share.rs).
+clocks = { git = "https://github.com/johnservil/bench-hashes", rev = "f42147637255514b4084eda337af2602c9433552" }
 # Official BLAKE3, the tests' independent implementation: it generates their
 # fixed expected values (BLAKE3_GOLDEN=1, src/test.rs's `golden`), and the
 # co-linking test checks its native symbols never replace ours.

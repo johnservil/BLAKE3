@@ -445,7 +445,7 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
         #[cfg(blake3_gpu)]
         // With a slot (a pool asked for one thread has none, and keeps to
         // its CPU core: AGENTS, the GPU wherever it is efficient).
-        if len >= crate::gpu::MIN_LEN && self.slot.is_some() && self.s.run.engaged() && crate::gpu::ready() {
+        if len >= crate::gpu::MIN_LEN && self.slot.is_some() && !crate::gpu::probe::OFF.load(Ordering::Relaxed) && self.s.run.engaged() && crate::gpu::ready() {
             return self.submit_gpu(len, &mut fill, out);
         }
         let pieces = len.div_ceil(PIECE).max(1);

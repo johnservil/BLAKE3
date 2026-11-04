@@ -57,8 +57,8 @@ pub(crate) const MIN_LEN: usize = 4 << 20;
 pub(crate) const RING_BYTES: usize = 64 << 20;
 
 /// The tasks a command takes: 128, 8 MiB (job 1889: 39 GB/s with 4 in
-/// flight, where 4 MiB reached 18).
-const BATCH: usize = 128;
+/// flight, where 4 MiB reached 18). PROBE: room for 256.
+const BATCH: usize = 256;
 
 /// The most commands a stream has in flight: 4, so the GPU always has the
 /// next command queued as one ends.
@@ -317,7 +317,9 @@ pub(crate) fn feed(gpu: &Gpu, source: &crate::lanes::sources::Source, from: usiz
         return false;
     }
     let mut taken = false;
-    source.take_run(from, to, BATCH, BATCH, |tasks| {
+    let (batch, keep) = probe::rule();
+    probe::BACKLOG.fetch_max(source.waiting_now(), Ordering::Relaxed);
+    source.take_run(from, to, batch, keep, |tasks| {
         taken = gpu.commit(tasks, key, flags);
         assert!(taken, "a command stays free on the stream's own thread");
     });
@@ -325,7 +327,28 @@ pub(crate) fn feed(gpu: &Gpu, source: &crate::lanes::sources::Source, from: usiz
     if taken {
         test::GPU_BATCHES.fetch_add(1, Ordering::Relaxed);
     }
+    if taken {
+        probe::TASKS.fetch_add(batch, Ordering::Relaxed);
+    }
     taken
+}
+
+/// PROBE (gpu-3-share): the claim rule, set by the probe (tasks a batch,
+/// tasks kept behind it), the GPU path's switch, and counts.
+pub mod probe {
+    use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    pub static TASKS: AtomicUsize = AtomicUsize::new(0);
+    pub static BACKLOG: AtomicUsize = AtomicUsize::new(0);
+    pub static BATCH: AtomicUsize = AtomicUsize::new(128);
+    pub static KEEP: AtomicUsize = AtomicUsize::new(128);
+    pub static OFF: AtomicBool = AtomicBool::new(false);
+    pub fn rule() -> (usize, usize) {
+        (BATCH.load(Ordering::Relaxed).min(super::BATCH), KEEP.load(Ordering::Relaxed))
+    }
+    /// GPU tasks so far, and the largest backlog a feed saw (then zeroed).
+    pub fn take() -> (usize, usize) {
+        (TASKS.swap(0, Ordering::Relaxed), BACKLOG.swap(0, Ordering::Relaxed))
+    }
 }
 
 // Sound: the raw pointers are Metal's buffers and the commands' tasks,

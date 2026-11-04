@@ -972,6 +972,12 @@ pub(crate) mod sources {
             true
         }
 
+        /// PROBE: tasks waiting now.
+        #[cfg(blake3_gpu)]
+        pub(crate) fn waiting_now(&self) -> usize {
+            self.waiting()
+        }
+
         /// The count of tasks published (a stream's own, on its thread).
         #[cfg(blake3_gpu)]
         pub(crate) fn published(&self) -> usize {
