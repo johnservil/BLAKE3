@@ -729,8 +729,16 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
         let Some((slot, on_gpu)) = slots.free(len, &s.lefts, handed) else { return false };
         let room = slots.room(slot, len);
         if on_gpu {
+            // Each MiB to the GPU as soon as it is written (its leaves), so
+            // the GPU hashes while the program writes the rest.
+            let (mut sent, chunks) = (0, len.div_ceil(CHUNK_LEN));
             for (i, piece) in room.chunks_mut(PIECE).enumerate() {
                 fill_all(fill, i * PIECE, piece);
+                let written = (i * PIECE + piece.len()).div_ceil(CHUNK_LEN);
+                if written == chunks || written - sent >= crate::gpu::PIECE / CHUNK_LEN {
+                    slots.leaves(slot, sent, written - sent, len, &self.key, self.flags);
+                    sent = written;
+                }
             }
             let head = self.head;
             let index = self.add_entry(len, Kind::Gpu { out }, head);

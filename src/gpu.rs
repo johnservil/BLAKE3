@@ -40,6 +40,16 @@ unsafe extern "C" {
     fn blake3_servil_gpu_start(error: *mut c_char) -> bool;
     fn blake3_servil_gpu_slots_new(count: usize) -> *mut c_void;
     fn blake3_servil_gpu_room(slots: *mut c_void, slot: usize, capacity: usize, error: *mut c_char) -> *mut u8;
+    fn blake3_servil_gpu_leaves(
+        slots: *mut c_void,
+        slot: usize,
+        first: usize,
+        chunks: usize,
+        length: usize,
+        key: *const u32,
+        flags: u32,
+        error: *mut c_char,
+    ) -> bool;
     fn blake3_servil_gpu_submit(slots: *mut c_void, slot: usize, length: usize, key: *const u32, flags: u32, error: *mut c_char) -> bool;
     fn blake3_servil_gpu_done(slots: *mut c_void, slot: usize) -> bool;
     fn blake3_servil_gpu_wait(slots: *mut c_void, slot: usize, out: *mut u8, error: *mut c_char) -> bool;
@@ -55,6 +65,11 @@ pub(crate) const MIN_LEN: usize = 4 << 20;
 /// The longest: a slot holds a whole message, kept for the thread's next
 /// stream, so a stream keeps at most SLOTS times this of GPU memory.
 pub(crate) const MAX_LEN: usize = 64 << 20;
+
+/// How much of a message the GPU takes at once as the program writes it: a
+/// MiB, a command of its leaves as soon as its bytes are in, so the GPU
+/// hashes while the program writes (the parents follow the last).
+pub(crate) const PIECE: usize = 1 << 20;
 
 /// The most slots a stream has (see SLOT_BYTES).
 pub(crate) const SLOTS: usize = 32;
@@ -288,8 +303,18 @@ impl Slots {
         unsafe { core::slice::from_raw_parts(self.memory[slot], len) }
     }
 
-    /// Start hashing the slot's first `len` bytes under `key` and `flags`,
-    /// its digest for entry `entry`, into `place`.
+    /// Start hashing the leaves of `chunks` chunks from `first` of the
+    /// slot's message of `len` bytes, under `key` and `flags`: their bytes
+    /// are written.
+    pub(crate) fn leaves(&mut self, slot: usize, first: usize, chunks: usize, len: usize, key: &CVWords, flags: u8) {
+        let mut error = [0; 512];
+        // Sound: the slot's memory holds the message's first bytes, past these chunks'.
+        let ok = unsafe { blake3_servil_gpu_leaves(self.handle, slot, first, chunks, len, key.as_ptr(), u32::from(flags), error.as_mut_ptr()) };
+        assert!(ok, "{}", message(&error));
+    }
+
+    /// Finish the slot's message of `len` bytes, every leaf of it started:
+    /// its parents, its digest for entry `entry`, into `place`.
     pub(crate) fn submit(&mut self, slot: usize, len: usize, key: &CVWords, flags: u8, entry: usize, place: *mut Hash) {
         let mut error = [0; 512];
         let ok = unsafe { blake3_servil_gpu_submit(self.handle, slot, len, key.as_ptr(), u32::from(flags), error.as_mut_ptr()) };
@@ -348,6 +373,11 @@ impl Slots {
 /// The start's own check: one message on slot 0, waited for.
 fn check_one(slots: &mut Slots, input: &[u8], key: &CVWords, flags: u8) -> Hash {
     slots.room(0, input.len()).copy_from_slice(input);
+    // In pieces, as a stream's message goes, the last a partial one.
+    let chunks = input.len().div_ceil(1024);
+    for first in (0..chunks).step_by(PIECE / 1024) {
+        slots.leaves(0, first, (chunks - first).min(PIECE / 1024), input.len(), key, flags);
+    }
     slots.submit(0, input.len(), key, flags, 0, core::ptr::null_mut());
     let digest = slots.wait(0);
     slots.uses[0] = Use::Free;

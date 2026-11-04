@@ -37,6 +37,10 @@ struct Args {
 
 struct Slot {
     id<MTLBuffer> input, a, b, result;
+    // The leaves' commands of the message in flight, committed as its bytes
+    // came; then `cmd`, its parents', which reads what they wrote (Metal
+    // orders it after them).
+    std::vector<id<MTLCommandBuffer>> leaves;
     id<MTLCommandBuffer> cmd;
     size_t capacity = 0;
 };
@@ -111,26 +115,52 @@ extern "C" uint8_t *blake3_servil_gpu_room(void *slots, size_t slot, size_t capa
     }
 }
 
-// Commit the hash of the slot's first `length` bytes (1 or more) under
-// `key` and `flags`, without waiting.
+// Commit the leaves of `chunks` of the slot's chunks from `first`, of a
+// message of `length` bytes (1 or more) under `key` and `flags`, without
+// waiting: their bytes are in the slot.
+extern "C" bool blake3_servil_gpu_leaves(void *slots, size_t slot, size_t first, size_t chunks, size_t length, const uint32_t *key,
+                                         uint32_t flags, char *error) {
+    @autoreleasepool {
+        try {
+            Slot &s = static_cast<Slots *>(slots)->slots.at(slot);
+            require(s.cmd == nil && length >= 1 && length <= s.capacity && chunks >= 1 && first + chunks <= (length - 1) / 1024 + 1,
+                    "a GPU slot in flight, too small, or chunks past its message");
+            Args args{length, first, {}, flags};
+            std::memcpy(args.key, key, sizeof(args.key));
+            id<MTLCommandBuffer> cmd = [engine->queue commandBuffer];
+            require(cmd != nil, "Metal command buffer allocation failed");
+            encode(cmd, engine->leaves, s.input, s.a, args, chunks);
+            [cmd commit];
+            s.leaves.push_back(cmd);
+            return true;
+        } catch (const std::exception &x) {
+            snprintf(error, 512, "%s", x.what());
+            return false;
+        }
+    }
+}
+
+// Commit the parents of the slot's message of `length` bytes, whose every
+// leaf is committed, without waiting. A message of one chunk has its root
+// among the leaves; its one parent dispatch copies it, so that this command,
+// like every other, follows the leaves it reads.
 extern "C" bool blake3_servil_gpu_submit(void *slots, size_t slot, size_t length, const uint32_t *key, uint32_t flags, char *error) {
     @autoreleasepool {
         try {
             Slot &s = static_cast<Slots *>(slots)->slots.at(slot);
-            require(s.cmd == nil && length >= 1 && length <= s.capacity, "a GPU slot in flight or too small");
-            Args args{length, 0, {}, flags};
+            require(s.cmd == nil && !s.leaves.empty() && length >= 1 && length <= s.capacity, "a GPU slot in flight, with no leaves, or too small");
+            Args args{1, 0, {}, flags};
             std::memcpy(args.key, key, sizeof(args.key));
             uint64_t count = (length - 1) / 1024 + 1;
             id<MTLCommandBuffer> cmd = [engine->queue commandBuffer];
             require(cmd != nil, "Metal command buffer allocation failed");
-            encode(cmd, engine->leaves, s.input, s.a, args, count);
             id<MTLBuffer> src = s.a, dst = s.b;
-            while (count > 1) {
+            do {
                 args.length = count;
                 encode(cmd, engine->parents, src, dst, args, (count + 1) / 2);
                 count = (count + 1) / 2;
                 std::swap(src, dst);
-            }
+            } while (count > 1);
             s.result = src;
             [cmd commit];
             s.cmd = cmd;
@@ -158,9 +188,19 @@ extern "C" bool blake3_servil_gpu_wait(void *slots, size_t slot, uint8_t *out, c
             Slot &s = static_cast<Slots *>(slots)->slots.at(slot);
             require(s.cmd != nil, "a GPU slot with no command");
             [s.cmd waitUntilCompleted];
-            bool ok = s.cmd.status == MTLCommandBufferStatusCompleted;
-            const char *why = ok ? nullptr : (s.cmd.error ? s.cmd.error.localizedDescription.UTF8String : "the GPU command failed");
-            if (!ok) snprintf(error, 512, "%s", why);
+            bool ok = true;
+            for (id<MTLCommandBuffer> c : s.leaves) {
+                [c waitUntilCompleted];
+                if (ok && c.status != MTLCommandBufferStatusCompleted) {
+                    ok = false;
+                    snprintf(error, 512, "%s", c.error ? c.error.localizedDescription.UTF8String : "the GPU command failed");
+                }
+            }
+            if (ok && s.cmd.status != MTLCommandBufferStatusCompleted) {
+                ok = false;
+                snprintf(error, 512, "%s", s.cmd.error ? s.cmd.error.localizedDescription.UTF8String : "the GPU command failed");
+            }
+            s.leaves.clear();
             s.cmd = nil;
             std::memcpy(out, s.result.contents, 32);
             return ok;
