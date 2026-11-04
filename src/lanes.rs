@@ -1061,7 +1061,8 @@ impl Pool {
     /// splitwake.
     pub(crate) fn wake_stream(&self, domain: u32) -> bool {
         if self.one {
-            return self.park.wake_one_below(self.primaries(0));
+            // One L3: servil's wake (experiment 1 of the VM's one-L3 cost, #196).
+            return self.park.wake_one();
         }
         if domain == EVERY {
             return self.parks().enumerate().any(|(d, p)| p.wake_one_below(self.primaries(d)));
