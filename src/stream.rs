@@ -205,6 +205,20 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
         crate::lanes::require();
         let (key, flags) = mode.key_and_flags();
         let s = Storage::take();
+        // PROBE (gpu-4): the GPU ring as the long ring, where asked.
+        #[cfg(blake3_gpu)]
+        let gpu = crate::gpu::probe::GPU.load(Ordering::Relaxed) && crate::lanes::splits() && crate::gpu::ready();
+        #[cfg(not(blake3_gpu))]
+        let gpu = false;
+        #[cfg(blake3_gpu)]
+        if gpu {
+            s.gpu.get_or_insert_with(|| crate::gpu::Gpu::new(crate::gpu::RING_BYTES));
+        }
+        #[cfg(blake3_gpu)]
+        let (long_base, long_len) = if gpu { (s.gpu.as_ref().unwrap().ring, crate::gpu::RING_BYTES) } else { (s.long_ring, LONG_RING_BYTES) };
+        #[cfg(not(blake3_gpu))]
+        let (long_base, long_len) = (s.long_ring, LONG_RING_BYTES);
+        let _ = gpu;
         // A slot, where some thread beside this one can take tasks (with one
         // CPU none can: then every task is hashed here as it is handed over,
         // as when every slot is taken).
@@ -223,6 +237,10 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
             tail: 0,
             long_head: 0,
             long_tail: 0,
+            long_base,
+            long_len,
+            #[cfg(blake3_gpu)]
+            gpu_run: 0..0,
             open: None,
             stack: arrayvec::ArrayVec::new(),
             pieces: 0,
@@ -245,6 +263,9 @@ struct Storage {
     /// LONG_RING_BYTES for the pieces of long messages written in place
     /// (`Stream::submit_long`), reached as the ring is.
     long_ring: *mut u8,
+    /// PROBE (gpu-4): the storage's GPU ring and commands.
+    #[cfg(blake3_gpu)]
+    gpu: Option<crate::gpu::Gpu>,
     pieces_out: Box<[OwnLine<Out<64>>]>,
     /// For a task's first entry, the count of the task's entries still
     /// unhashed: on lines of their own (128 bytes, as the adjacent-line
@@ -281,6 +302,8 @@ impl Storage {
             entries: std::vec![Entry { len: 0, kind: Kind::Abandoned, first: 0, ring_end: 0 }; ENTRIES].into_boxed_slice(),
             ring: ring(RING_BYTES),
             long_ring: ring(LONG_RING_BYTES),
+            #[cfg(blake3_gpu)]
+            gpu: None,
             pieces_out: (0..ENTRIES).map(|_| OwnLine(Out(UnsafeCell::new([0; 64])))).collect(),
             lefts: (0..ENTRIES).map(|_| OwnLine(AtomicUsize::new(0))).collect(),
         }
@@ -304,13 +327,6 @@ impl Storage {
         debug_assert!(at <= RING_BYTES);
         // Sound: `at` is in the ring.
         unsafe { self.ring.add(at) }
-    }
-
-    /// The long ring's byte at `at`.
-    fn long_at(&self, at: usize) -> *mut u8 {
-        debug_assert!(at <= LONG_RING_BYTES);
-        // Sound: `at` is in the long ring.
-        unsafe { self.long_ring.add(at) }
     }
 }
 
@@ -380,6 +396,13 @@ pub struct Stream<'env, D> {
     /// The long ring's bytes reserved, and freed, as `head` and `tail`.
     long_head: usize,
     long_tail: usize,
+    /// PROBE (gpu-4): this stream's long ring, the storage's or its GPU's.
+    long_base: *mut u8,
+    long_len: usize,
+    /// The positions in the source of the latest run of tasks the GPU may
+    /// take: whole pieces in its ring, published one after another.
+    #[cfg(blake3_gpu)]
+    gpu_run: core::ops::Range<usize>,
     /// Short messages gathered, not yet handed to the pool.
     open: Option<Task>,
     /// A long message being handed back: its pieces' chaining values so
@@ -461,7 +484,7 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
             // Sound: [at, at + part_len) is reserved and free in the long
             // ring (no entry in flight holds it), and `&mut self` keeps
             // every other writer out.
-            let room = unsafe { core::slice::from_raw_parts_mut(self.s.long_at(at), part_len) };
+            let room = unsafe { core::slice::from_raw_parts_mut(self.long_base.add(at), part_len) };
             fill_all(fill, i * PIECE, room);
             // No bytes of the 2 MiB ring: its head is the piece's end there.
             // Not through add_part: one more caller there, and the compiler
@@ -470,6 +493,17 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
             let end = self.head;
             let entry = self.add_entry(part_len, part_kind(i, pieces, out, true), end);
             self.hand_over_piece(entry, room.as_ptr(), part_len, (i * PIECE / CHUNK_LEN) as u64);
+            #[cfg(blake3_gpu)]
+            if self.s.gpu.is_some() && self.long_len == crate::gpu::RING_BYTES && self.slot.is_some() {
+                if part_len == PIECE {
+                    let p = self.s.source.published();
+                    if self.gpu_run.end != p - 1 {
+                        self.gpu_run.start = p - 1;
+                    }
+                    self.gpu_run.end = p;
+                }
+                self.feed();
+            }
         }
     }
 
@@ -690,8 +724,8 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
 
     /// `reserve`, in the long ring.
     fn reserve_long(&mut self, len: usize) -> usize {
-        let (at, taken) = room(self.long_head, LONG_RING_BYTES, len);
-        while LONG_RING_BYTES - (self.long_head - self.long_tail) < taken {
+        let (at, taken) = room(self.long_head, self.long_len, len);
+        while self.long_len - (self.long_head - self.long_tail) < taken {
             self.publish();
             self.help();
         }
@@ -727,9 +761,21 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
     /// Hand back what is done; with nothing done, hash a waiting task or
     /// pause.
     fn help(&mut self) {
-        if self.deliver() == 0 && !self.s.run_waiting() {
+        if self.deliver() == 0 && !self.feed() && !self.s.run_waiting() {
             core::hint::spin_loop();
         }
+    }
+
+    /// PROBE (gpu-4): give the GPU a batch if it may take one now.
+    #[inline(always)]
+    fn feed(&mut self) -> bool {
+        #[cfg(blake3_gpu)]
+        if let Some(gpu) = self.s.gpu.as_ref() {
+            if self.long_len == crate::gpu::RING_BYTES && self.slot.is_some() {
+                return crate::gpu::feed(gpu, self.s.source, self.gpu_run.start, self.gpu_run.end, &self.key, self.flags);
+            }
+        }
+        false
     }
 
     /// A new entry of `len` bytes, waiting for room when every entry is in
@@ -801,7 +847,7 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
                 }
                 Kind::Piece { counter, last, long, out } => {
                     if long {
-                        self.long_tail += room(self.long_tail, LONG_RING_BYTES, len).1;
+                        self.long_tail += room(self.long_tail, self.long_len, len).1;
                     }
                     // Sound: the task wrote its out before counting `left` down.
                     let piece = unsafe { *self.s.pieces_out[index].0.0.get() };
