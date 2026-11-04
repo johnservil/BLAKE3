@@ -1071,6 +1071,58 @@ mod test {
         assert_eq!(handed.len(), lens.len() + fails.len() * after.len(), "a place back per message read, none for a failed reader");
     }
 
+    /// A reader failing in its first piece where that piece's room would
+    /// start the ring's next lap (`reserve` skipped the lap's end) keeps no
+    /// room either: the head goes back to where it was, not to the next
+    /// lap's start (BLAKE3 #238's extra mutations: `i == 0` replaced with
+    /// `false` kept the skip, and no test failed a reader there: a reader
+    /// reserves whole pieces, so readers alone never skip). Copied 700-byte
+    /// messages (704-byte slots) bring the head within a piece of the lap's
+    /// end; then the failure, and the ring goes on to hash the rest.
+    #[test]
+    fn test_submit_reader_failing_where_its_piece_skips_the_lap_end() {
+        let input: std::vec::Vec<u8> = (0..PIECE + 99).map(|i| (i % 251) as u8).collect();
+        let mut lens = std::vec::Vec::new();
+        let mut got = places(RING_BYTES / 704 + 40);
+        let mut handed = std::vec::Vec::new();
+        let mut rest: &mut [Hash] = &mut got;
+        stream(Mode::Plain, record(&mut handed), |s| {
+            while s.head % RING_BYTES <= RING_BYTES - PIECE {
+                lens.push(700);
+                s.submit_with(
+                    700,
+                    |at, room| {
+                        room.copy_from_slice(&input[at..][..room.len()]);
+                        room.len()
+                    },
+                    &mut take(&mut rest, 1)[0],
+                );
+            }
+            let (before, next) = (s.head, s.next);
+            assert!(s.submit_reader(Uneven::new(&input, Some(10)), None, &mut take(&mut rest, 1)[0]).is_err());
+            assert_eq!(
+                (s.head - before, s.next - next),
+                (0, 0),
+                "a reader failing in its first piece at {} keeps no room and adds no entry",
+                before % RING_BYTES
+            );
+            lens.push(usize::MAX);
+            for len in [PIECE + 99, 1, PIECE] {
+                lens.push(len);
+                s.submit_reader(Uneven::new(&input[..len], None), None, &mut take(&mut rest, 1)[0]).unwrap();
+            }
+            s.finish();
+        });
+        let mut golden = crate::test::Golden::new("submit_reader_failing_at_the_lap_end");
+        for (len, got) in lens.iter().zip(&got) {
+            if *len != usize::MAX {
+                golden.add(got.as_bytes(), || crate::test::official::hash(Mode::Plain, &input[..*len]).to_vec());
+            }
+        }
+        golden.check(0x6449952b3442e340);
+        assert_eq!(handed.len(), lens.len() - 1, "a place back per message read, none for the failed reader");
+    }
+
     /// The ring's arithmetic, exact on every machine (the caller's own,
     /// whatever the threads do): 32 whole pieces fill the 2 MiB ring to its
     /// end, the last fitting exactly with no lap skipped and no wait for
