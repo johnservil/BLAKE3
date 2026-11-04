@@ -1745,9 +1745,12 @@ mod prefetch_counts {
     /// 97 bytes; its later updates never prefetch.
     #[test]
     fn test_a_fresh_hashers_first_update_after_a_pause_prefetches_what_it_runs() {
-        if !matches!(Platform::detect(), Platform::NEON) {
-            return; // a Hasher takes the machine's platform: SME2's paths are the SME2 rows'
-        }
+        // A Hasher on the NEON platform whatever the machine, as the other
+        // tests here call hash_serial_from(Platform::NEON, ..): on an SME2
+        // machine a Hasher::new would take SME2, and the test once returned
+        // there, leaving the family's mutants uncaught on SME2 (the VM's
+        // whole run, BLAKE3 #219, November 4).
+        let neon = || crate::Hasher::from_core(crate::incremental::HasherCore::new_from(IV, 0, Platform::NEON));
         let input = painted(crate::PREFETCH_BELOW + CHUNK_LEN);
         for len in (CHUNK_LEN - 7..=crate::PREFETCH_BELOW + 7).step_by(97).chain([
             CHUNK_LEN,
@@ -1759,10 +1762,10 @@ mod prefetch_counts {
         ]) {
             let prefetches = (CHUNK_LEN + 1..crate::PREFETCH_BELOW).contains(&len);
             check(&std::format!("a fresh Hasher's update of {len} bytes and its finalize"), prefetches, || {
-                std::hint::black_box(crate::Hasher::new(crate::Mode::Plain).update(&input[..len]).finalize());
+                std::hint::black_box(neon().update(&input[..len]).finalize());
             });
             // A second update, after a pause: never.
-            let mut h = crate::Hasher::new(crate::Mode::Plain);
+            let mut h = neon();
             h.update(&input[..1]);
             taken();
             at(1 << 40);
