@@ -776,9 +776,13 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
         let slots = s.gpu.as_mut().expect("a GPU entry's slots");
         slots.reap(&s.lefts, handed);
         let Some(slot) = slots.owing(index) else { return false };
+        // PROBE: the race's start, count and outcome.
+        let t0 = std::time::Instant::now();
+        crate::gpu::PROBE[2].fetch_add(1, Ordering::Relaxed);
         let mut hasher = crate::incremental::Hasher::from_core(crate::incremental::HasherCore::new_internal(&self.key, self.flags));
         for piece in slots.bytes(slot, len).chunks(RACE_PIECE) {
             if slots.done(slot) {
+                crate::gpu::PROBE[4].fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
                 return false;
             }
             hasher.update_multithreaded(piece);
@@ -787,6 +791,10 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
         // not yet handed back; its slot will not write it (orphaned).
         unsafe { *out = hasher.finalize() };
         slots.orphan(slot);
+        let ns = t0.elapsed().as_nanos() as u64;
+        crate::gpu::PROBE[3].fetch_add(1, Ordering::Relaxed);
+        crate::gpu::PROBE[4].fetch_add(ns, Ordering::Relaxed);
+        crate::gpu::PROBE[5].fetch_add(ns, Ordering::Relaxed);
         s.lefts[index].store(0, Ordering::Relaxed);
         #[cfg(test)]
         test::GPU_RACES_WON.fetch_add(1, Ordering::Relaxed);

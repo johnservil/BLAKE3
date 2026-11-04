@@ -30,6 +30,8 @@ fn main() {
                 one(&input, len, n);
             }
             let (mut submit, mut total) = (0u64, 0u64);
+            #[cfg(target_os = "macos")]
+            blake3_servil::__gpu_probe();
             let cpu0 = clocks::process_cpu_ns();
             let counts0 = clocks::Counts::read();
             for _ in 0..streams {
@@ -45,8 +47,21 @@ fn main() {
             };
             let k = streams as u64;
             let bytes = (len * n * streams) as u64;
+            // PROBE: what the stream's ends waited on (GPU commands, races).
+            #[cfg(target_os = "macos")]
+            let probe = {
+                let [done, done_ns, races, won, race_ns, won_ns] = blake3_servil::__gpu_probe();
+                format!(
+                    "\tgpu {done} done, {} us each; races {races}, CPU won {won}; {} us a race, {} us a won one",
+                    done_ns / done.max(1) / 1000,
+                    race_ns / races.max(1) / 1000,
+                    won_ns / won.max(1) / 1000
+                )
+            };
+            #[cfg(not(target_os = "macos"))]
+            let probe = String::new();
             println!(
-                "{}\t{n}\t{streams}\t{}\t{}\t{}\t{}\t{}\t{mhz}",
+                "{}\t{n}\t{streams}\t{}\t{}\t{}\t{}\t{}\t{mhz}{probe}",
                 len >> 20,
                 (submit + k * 500) / (k * 1000),
                 (total - submit + k * 500) / (k * 1000),

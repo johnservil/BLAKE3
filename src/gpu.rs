@@ -22,7 +22,18 @@
 //! Metal has no device, the CPU hashes everything, as on any machine.
 
 use crate::{CVWords, Hash};
-use core::sync::atomic::{AtomicU8, Ordering};
+use core::sync::atomic::{AtomicU8, AtomicU64, Ordering};
+
+/// PROBE (gpu-short-streams-race): what a stream's end waits on. 0, GPU
+/// commands seen done; 1, their ns from submission to seen done; 2, races
+/// started; 3, races the CPU won; 4, ns in races; 5, ns in races the CPU won.
+pub(crate) static PROBE: [AtomicU64; 6] = [const { AtomicU64::new(0) }; 6];
+
+/// The probe's counts since the last call, each taken back to 0.
+#[doc(hidden)]
+pub fn __gpu_probe() -> [u64; 6] {
+    core::array::from_fn(|i| PROBE[i].swap(0, Ordering::Relaxed))
+}
 use std::ffi::{CStr, c_char, c_void};
 
 unsafe extern "C" {
@@ -169,6 +180,8 @@ enum Use {
 pub(crate) struct Slots {
     handle: *mut c_void,
     uses: [Use; SLOTS],
+    /// PROBE: when each GPU slot's command was submitted.
+    submitted: [Option<std::time::Instant>; SLOTS],
     /// Each slot's memory, as `room` last gave it (it moves only when the
     /// slot grows, which only `room` does).
     memory: [*mut u8; SLOTS],
@@ -191,7 +204,12 @@ impl Slots {
     /// New slots (no memory until first used). Requires a started GPU.
     pub(crate) fn new() -> Self {
         // Sound: Metal started (READY, or inside start).
-        Slots { handle: unsafe { blake3_servil_gpu_slots_new(SLOTS) }, uses: [Use::Free; SLOTS], memory: [core::ptr::null_mut(); SLOTS] }
+        Slots {
+            handle: unsafe { blake3_servil_gpu_slots_new(SLOTS) },
+            uses: [Use::Free; SLOTS],
+            submitted: [None; SLOTS],
+            memory: [core::ptr::null_mut(); SLOTS],
+        }
     }
 
     /// Every slot done with: a GPU slot whose command has ended writes its
@@ -210,6 +228,10 @@ impl Slots {
                 }
                 Use::Gpu { entry, place } => {
                     if self.done(slot) {
+                        if let Some(t) = self.submitted[slot].take() {
+                            PROBE[0].fetch_add(1, Ordering::Relaxed);
+                            PROBE[1].fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
+                        }
                         let digest = self.wait(slot);
                         // Sound: the place is the program's, lent for the
                         // stream's scope, not yet handed back (its entry counts 1).
@@ -273,6 +295,7 @@ impl Slots {
         let ok = unsafe { blake3_servil_gpu_submit(self.handle, slot, len, key.as_ptr(), u32::from(flags), error.as_mut_ptr()) };
         assert!(ok, "{}", message(&error));
         self.uses[slot] = Use::Gpu { entry, place };
+        self.submitted[slot] = Some(std::time::Instant::now());
     }
 
     /// The slot's message goes to the pool's tasks; the slot is free once
@@ -345,7 +368,7 @@ pub(crate) mod test {
     fn slots(uses: &[Use]) -> Slots {
         let mut all = [Use::Free; SLOTS];
         all[..uses.len()].copy_from_slice(uses);
-        Slots { handle: core::ptr::null_mut(), uses: all, memory: [core::ptr::null_mut(); SLOTS] }
+        Slots { handle: core::ptr::null_mut(), uses: all, submitted: [None; SLOTS], memory: [core::ptr::null_mut(); SLOTS] }
     }
 
     fn gpu(entry: usize) -> Use {
