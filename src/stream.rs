@@ -54,7 +54,7 @@ const ENTRIES: usize = 1024;
 /// The pool's share of a GPU message between two looks at the GPU, when
 /// this thread races it (`Stream::race`): 1 MiB, about 25 us of the pool.
 #[cfg(blake3_gpu)]
-const RACE_PIECE: usize = 1 << 20;
+const RACE_PIECE: usize = 64 << 20;
 
 /// One message, one piece of a long one, or one part of a batch, from its
 /// submission to its delivery: what the program's thread keeps of it. Its
