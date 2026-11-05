@@ -208,6 +208,9 @@ pub mod convenience;
 mod each;
 #[cfg(blake3_gpu)]
 mod gpu;
+#[cfg(blake3_gpu)]
+#[doc(hidden)]
+pub use gpu::probe as __gpu_probe;
 pub mod performance;
 
 mod platform;

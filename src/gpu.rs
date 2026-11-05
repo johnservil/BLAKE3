@@ -278,6 +278,23 @@ impl Gpu {
     /// `key` and `flags`) on a free command: false, with nothing done,
     /// when every command is in flight. Each task's output and count, as
     /// its worker would, once the command ends.
+    /// PROBE (gpu-first): `commit` for pieces held by the stream, never
+    /// published (each a whole piece in the ring).
+    pub(crate) fn commit_held(&self, held: &[Held], key: &crate::CVWords, flags: u8) -> bool {
+        let tasks: std::vec::Vec<Task> = held
+            .iter()
+            .map(|h| Task {
+                key: *key,
+                flags,
+                out: h.out,
+                left: h.left,
+                // Sound: the piece lies in the ring until its count is zero.
+                ..Task::of(unsafe { core::slice::from_raw_parts(h.input, PIECE) }, h.counter)
+            })
+            .collect();
+        self.commit(tasks.iter(), key, flags)
+    }
+
     pub(crate) fn commit<'a>(&self, tasks: impl Iterator<Item = &'a Task>, key: &crate::CVWords, flags: u8) -> bool {
         let Some(command) = self.commands.iter().find(|c| c.state.load(Ordering::Acquire) == FREE) else { return false };
         let mut pieces = [Piece { offset: 0, counter: 0 }; BATCH];
@@ -392,6 +409,15 @@ pub(crate) fn feed(gpu: &Gpu, source: &crate::lanes::sources::Source, from: usiz
         test::GPU_BATCHES.fetch_add(1, Ordering::Relaxed);
     }
     taken
+}
+
+/// PROBE (gpu-first): the modes, and the GPU's and the overflow's pieces.
+pub mod probe {
+    use core::sync::atomic::{AtomicBool, AtomicUsize};
+    pub static GPU_FIRST: AtomicBool = AtomicBool::new(false);
+    pub static OFF: AtomicBool = AtomicBool::new(false);
+    pub static GPU_PIECES: AtomicUsize = AtomicUsize::new(0);
+    pub static CPU_PIECES: AtomicUsize = AtomicUsize::new(0);
 }
 
 // Sound: the raw pointers are Metal's buffers and the commands' tasks,

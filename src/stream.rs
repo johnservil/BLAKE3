@@ -237,6 +237,8 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
             gpu_tail: 0,
             #[cfg(blake3_gpu)]
             gpu_run: 0..0,
+            #[cfg(blake3_gpu)]
+            pending: std::vec::Vec::new(),
             open: None,
             stack: arrayvec::ArrayVec::new(),
             pieces: 0,
@@ -434,6 +436,9 @@ pub struct Stream<'env, D> {
     /// take: whole pieces in its ring, published one after another.
     #[cfg(blake3_gpu)]
     gpu_run: core::ops::Range<usize>,
+    /// PROBE (gpu-first): whole GPU pieces held for the GPU's next batch.
+    #[cfg(blake3_gpu)]
+    pending: std::vec::Vec<crate::gpu::Held>,
     /// Short messages gathered, not yet handed to the pool.
     open: Option<Task>,
     /// A long message being handed back: its pieces' chaining values so
@@ -514,7 +519,7 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
         // take (crate::gpu); a pool asked for one thread has no slot, and
         // keeps to its CPU core (AGENTS: the GPU wherever it is efficient).
         #[cfg(blake3_gpu)]
-        let gpu = self.slot.is_some() && self.s.run.engaged() && crate::gpu::ready();
+        let gpu = self.slot.is_some() && !crate::gpu::probe::OFF.load(Ordering::Relaxed) && self.s.run.engaged() && crate::gpu::ready();
         #[cfg(blake3_gpu)]
         let gpu_ring = if gpu { self.s.gpu.get_or_insert_with(|| crate::gpu::Gpu::new(crate::gpu::RING_BYTES)).ring } else { core::ptr::null_mut() };
         let pieces = len.div_ceil(PIECE);
@@ -551,6 +556,27 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
                 *in_gpu = gpu;
             }
             let entry = self.add_entry(part_len, kind, end);
+            #[cfg(blake3_gpu)]
+            if gpu && part_len == PIECE && crate::gpu::probe::GPU_FIRST.load(Ordering::Relaxed) {
+                // PROBE (gpu-first): held for the GPU; overflow to the pool.
+                self.s.lefts[entry].store(1, Ordering::Relaxed);
+                let held = crate::gpu::Held {
+                    input: room.as_ptr(),
+                    counter: (i * PIECE / CHUNK_LEN) as u64,
+                    out: self.s.pieces_out[entry].0.0.get() as *mut u8,
+                    left: &*self.s.lefts[entry],
+                };
+                self.pending.push(held);
+                if self.pending.len() == crate::gpu::BATCH {
+                    if self.s.gpu.as_ref().unwrap().commit_held(&self.pending, &self.key, self.flags) {
+                        crate::gpu::probe::GPU_PIECES.fetch_add(crate::gpu::BATCH, Ordering::Relaxed);
+                        self.pending.clear();
+                    } else {
+                        self.flush_pending();
+                    }
+                }
+                continue;
+            }
             self.hand_over_piece(entry, room.as_ptr(), part_len, (i * PIECE / CHUNK_LEN) as u64);
             #[cfg(blake3_gpu)]
             if gpu {
@@ -933,9 +959,27 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
 
     /// Hand the open task to the pool.
     fn publish(&mut self) {
+        #[cfg(blake3_gpu)]
+        if !self.pending.is_empty() {
+            self.flush_pending();
+        }
         if let Some(task) = self.open.take() {
             // Before the push, whose lock orders it before the threads' reads.
             self.s.lefts[self.open_first].store(task.members, Ordering::Relaxed);
+            self.hand_over(task);
+        }
+    }
+
+    /// PROBE (gpu-first): the held pieces to the pool's workers.
+    #[cfg(blake3_gpu)]
+    #[inline(never)]
+    fn flush_pending(&mut self) {
+        let held = core::mem::take(&mut self.pending);
+        crate::gpu::probe::CPU_PIECES.fetch_add(held.len(), Ordering::Relaxed);
+        for h in held {
+            // Sound: the piece lies in the GPU ring until its count is zero.
+            let bytes = unsafe { core::slice::from_raw_parts(h.input, PIECE) };
+            let task = Task { key: self.key, flags: self.flags, out: h.out, left: h.left, ..Task::of(bytes, h.counter) };
             self.hand_over(task);
         }
     }
