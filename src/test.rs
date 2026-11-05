@@ -231,9 +231,9 @@ pub(crate) fn every_platform() -> Vec<crate::platform::Platform> {
     all
 }
 
-/// A message of 3 whole chunks (and of 7, on 8 lanes) runs its chunks on
-/// the rounded width in one pass (Ran::RoundedUp); 2, 4 and 8 chunks take
-/// the kernel at their own width. The digests are the test vectors' either
+/// A message of 3 whole chunks (and of 5 and 7, on 8 lanes) runs its chunks
+/// on the rounded width in one pass (Ran::RoundedUp, and the widths used);
+/// 2, 4 and 8 chunks take the kernel at their own width. The digests are the test vectors' either
 /// way, so the decision alone can catch a mutant that drops the rounding.
 #[test]
 #[cfg(all(target_arch = "x86_64", blake3_sse41_ffi, feature = "std"))]
@@ -242,18 +242,22 @@ fn test_whole_chunks_round_up_to_the_lanes() {
     let input = std::vec![0x5au8; 8 * CHUNK_LEN];
     let ran = |len: usize| {
         crate::RAN.with(|r| r.set(0));
+        crate::ROUNDED_WIDTH.with(|w| w.set(0));
         std::hint::black_box(crate::convenience::hash(&input[..len]));
-        crate::RAN.with(|r| r.get()) & Ran::RoundedUp as u32 != 0
+        (crate::RAN.with(|r| r.get()) & Ran::RoundedUp as u32 != 0, crate::ROUNDED_WIDTH.with(|w| w.get()))
     };
-    assert!(ran(3 * CHUNK_LEN), "3 whole chunks: 4 lanes, one pass");
-    assert!(!ran(2 * CHUNK_LEN), "2 whole chunks: the pair");
-    assert!(!ran(4 * CHUNK_LEN), "4 whole chunks: 4 lanes already");
-    assert!(!ran(8 * CHUNK_LEN), "8 whole chunks: 8 lanes already");
+    assert_eq!(ran(3 * CHUNK_LEN), (true, 4), "3 whole chunks: 4 lanes, one pass");
+    assert_eq!(ran(2 * CHUNK_LEN), (false, 0), "2 whole chunks: the pair");
+    assert_eq!(ran(4 * CHUNK_LEN), (false, 0), "4 whole chunks: 4 lanes already");
+    assert_eq!(ran(8 * CHUNK_LEN), (false, 0), "8 whole chunks: 8 lanes already");
     if crate::platform::Platform::avx2().is_some() {
-        assert!(ran(7 * CHUNK_LEN), "7 whole chunks on AVX2: 8 lanes, one pass");
+        // 7 chunks on 8 lanes, then their 7 chaining values as 3 parent
+        // blocks and one left over: the 3 parents on 4 lanes.
+        assert_eq!(ran(7 * CHUNK_LEN), (true, 8 | 4), "7 whole chunks on AVX2: 8 lanes, one pass; their 3 parents on 4");
+        assert_eq!(ran(5 * CHUNK_LEN), (true, 8), "5 whole chunks on AVX2: 8 lanes, one pass");
     }
     // 3 chunks and a partial take the spare lane, not the rounding.
-    assert!(!ran(3 * CHUNK_LEN + 500), "3 whole and a partial: the spare lane's pass");
+    assert_eq!(ran(3 * CHUNK_LEN + 500), (false, 0), "3 whole and a partial: the spare lane's pass");
 }
 
 /// The decisions between equally correct paths, exactly as their rules

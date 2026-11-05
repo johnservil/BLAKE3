@@ -314,6 +314,9 @@ pub(crate) enum Ran {
 std::thread_local! {
     /// The kinds this thread's calls ran since the test last cleared it.
     pub(crate) static RAN: core::cell::Cell<u32> = const { core::cell::Cell::new(0) };
+    /// The lanes the rounded-up hash_many calls ran at since the test last
+    /// cleared it, as a mask of widths (4 | 8 = 12: both).
+    pub(crate) static ROUNDED_WIDTH: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
 }
 
 /// Note that `kind` happened: in the tests' record, and nothing in any
@@ -831,6 +834,10 @@ fn hash_many_rounded<const N: usize>(
         while padded.len() < lanes {
             padded.push(last);
         }
+        // The width the kernel ran at, for the test that counts it (a
+        // padding that stopped short would hash the same digests slower).
+        #[cfg(all(test, feature = "std"))]
+        ROUNDED_WIDTH.with(|w| w.set(w.get() | padded.len()));
         let mut scratch = [0u8; 8 * OUT_LEN];
         platform.hash_many(&padded, key, counter, increment_counter, flags, flags_start, flags_end, &mut scratch[..lanes * OUT_LEN]);
         out[..inputs.len() * OUT_LEN].copy_from_slice(&scratch[..inputs.len() * OUT_LEN]);
