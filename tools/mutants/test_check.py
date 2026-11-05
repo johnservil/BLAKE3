@@ -175,3 +175,50 @@ class Leftovers(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Hangs(unittest.TestCase):
+    """BLAKE3 #244: the known hangs stay out of a whole run, and a test
+    nextest ends after another failed is no outcome."""
+
+    listed = ["src/stream.rs:600:15: replace + with - in room",
+              "src/stream.rs:601:9: replace + with - in room",
+              "src/stream.rs:700:3: replace < with <= in Stream<'env, D>::finish",
+              "src/lanes.rs:10:5: replace splits -> bool with true",
+              "src/lanes.rs:90:5: replace splits -> bool with true",
+              "src/park.rs:40:9: replace Park::park_unless with ()",
+              "src/lanes.rs:20:7: replace help with ()"]
+
+    def test_only_names_whose_every_place_hangs_with_a_reason_are_skipped(self):
+        tknown = {"src/stream.rs\treplace + with - in room": (2, "a loop variant broken"),
+                  "src/stream.rs\treplace < with <= in Stream<'env, D>::finish": (1, "a loop variant broken"),
+                  # One of two places hangs: the other's outcome is the run's to find.
+                  "src/lanes.rs\treplace splits -> bool with true": (1, "a hang"),
+                  # A model file's row: the suite and the model decide it together.
+                  "src/park.rs\treplace Park::park_unless with ()": (1, "a hang"),
+                  "src/lanes.rs\treplace help with ()": (1, "OPEN: the machines differ")}
+        with patch.object(check, "LOOM_FILES", ["src/park.rs"]):
+            self.assertEqual(check.known_hangs(tknown, self.listed),
+                             ["src/stream.rs\treplace + with - in room", "src/stream.rs\treplace < with <= in Stream<'env, D>::finish"])
+            unclassified = {"src/stream.rs\treplace + with - in room": (2, "UNCLASSIFIED")}
+            self.assertEqual(check.known_hangs(unclassified, self.listed), [])
+
+    def test_an_excluded_name_matches_its_places_alone(self):
+        import re
+        args = check.exclude_args(["src/stream.rs\treplace + with - in room"])
+        self.assertEqual(args[0], "--exclude-re")
+        pattern = re.compile(args[1])
+        self.assertEqual([l for l in self.listed if pattern.search(l)], self.listed[:2])
+        # Not the same change in another function, nor in another file.
+        for other in ["src/stream.rs:600:15: replace + with - in room_for", "src/lanes.rs:600:15: replace + with - in room",
+                      "src/stream.rs:600:15: replace + with - in Stream::room"]:
+            self.assertIsNone(pattern.search(other), other)
+
+    def test_a_test_ended_after_another_failed_is_no_outcome(self):
+        caught = [("a", "FAIL", 70), ("b", "SIGTERM", 71), ("c", "PASS", 5)]
+        clock = [("a", "TIMEOUT", 30000), ("b", "SIGTERM", 30001), ("c", "PASS", 5)]
+        both = [("a", "TIMEOUT", 30000), ("b", "FAIL", 400)]
+        self.assertFalse(check.clock_only(caught), "a test failed: caught")
+        self.assertTrue(check.clock_only(clock), "the clock stopped one; the rest were ended: timed out")
+        self.assertFalse(check.clock_only(both), "a test failed beside the clock: caught")
+        self.assertFalse(check.clock_only([("a", "PASS", 1)]))

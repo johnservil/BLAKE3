@@ -1,6 +1,6 @@
 """Mutation testing against a list of the mutants known to survive.
 
-    python3 tools/mutants/check.py [--since REV] [--write] [--map] [--whole-suite]
+    python3 tools/mutants/check.py [--since REV] [--write] [--map] [--whole-suite] [--all-hangs]
 
 cargo-mutants plants likely bugs in the files tools/mutants/known-<arch>.txt
 names (its `files:` line), one at a time, and runs the library's and the
@@ -40,6 +40,12 @@ nothing of what they would have found (a loop that never ends, a wait
 that never returns; or a test the load made slow). Time-outs have their
 own list, tools/mutants/timeouts-<arch>.txt, in KNOWN's form, and are
 checked against it the same way (NEW TIME-OUT, NO LONGER TIMES OUT).
+A whole run skips the known hangs (known_hangs: every place of the name a
+time-out, listed for this CPU with its reason, outside the model files):
+each would only wait for the clock again to say what its row says, and they
+were most of a run's test time (64% on an EPYC 9255, BLAKE3 #244). Their
+rows stand as listed; --since runs them on the lines a change touches, and
+--all-hangs runs them in a whole run too.
 Before anything runs, every row of every architecture's lists must name a
 mutant the source holds now (cargo mutants --list, which any machine reads
 for every target): a row a run on older code left stops the check, named.
@@ -49,7 +55,7 @@ verdict on those).
 
 The tests run under cargo-nextest (.config/nextest.toml), each in its own
 process, a test killed at 30 s as a hang; a mutant's tests stop at the
-first that fails. Every run records each test's outcome and time on every
+first that fails, the others ended at once (SIGTERM, no outcome of theirs). Every run records each test's outcome and time on every
 mutant, by its place (one change at several places is a mutant at each),
 and on the unmutated tree (tmp/mutants-last/<run>/tests.tsv). With
 --map, every test runs on every mutant (the `mutants-map` profile, for when
@@ -455,8 +461,7 @@ def run(files, extra=(), shards=SHARDS, label="run", loom=False):
                 # each caught (or not) by tests of its own.
                 tests = read_tests(log)
                 rows += [(f"{name}\t{place}", f"{mutant['file']} {function}", *t) for t in tests]
-                failed = [o for _, o, _ in tests if o != "PASS"]
-                if summary == "CaughtMutant" and failed and all(o == "TIMEOUT" for o in failed):
+                if summary == "CaughtMutant" and clock_only(tests):
                     # No test failed: the clock stopped one. Timed out, not caught.
                     summary = "TimedOut"
                     timed[name] += 1
@@ -576,6 +581,16 @@ SELF_TEST = "(the startup self-test)"
 STATUS = re.compile(r"^\s+(PASS|FAIL|TIMEOUT|SIG[A-Z]+|ABORT)\s+\[\s*([\d.]+)s\]\s+(?:\(\s*\d+/\d+\)\s+)?(\S+)\s+(\S+)")
 
 
+def clock_only(tests):
+    """Whether the clock alone stopped a mutant's tests: some test did not
+    pass, and each such ran to the clock (TIMEOUT). SIGTERM is a test
+    nextest ended because another had failed or timed out (the mutants
+    profile's fail-fast ends the rest at once): no outcome of its own, since
+    nothing in a mutant sends it."""
+    failed = [o for _, o, _ in tests if o not in ("PASS", "SIGTERM")]
+    return bool(failed) and all(o == "TIMEOUT" for o in failed)
+
+
 def read_tests(log):
     """Each test a cargo-nextest log ran: (test, outcome, ms). A failure
     whose output names the startup self-test is the self-test's catch,
@@ -667,6 +682,29 @@ def check_rows_exist():
         print(f"STALE ROW: {name}: {file}\t{mutant}")
     if stale:
         sys.exit(f"mutants: {len(stale)} rows name mutants the source no longer has; remove them")
+    return listed
+
+
+def known_hangs(tknown, listed):
+    """The time-out names a whole run need not run again (BLAKE3 #244):
+    each listed for this CPU with a reason (not OPEN, not UNCLASSIFIED),
+    outside the model files (whose rows the suite and the model decide
+    together, with_model), and with every place of the name a time-out,
+    so skipping it skips no place whose outcome is unknown. Each costs a
+    hang to nextest's clock (30 s) and a build a run, and says what the
+    list already says. A --since run still runs them, as the lines a change
+    touches deserve; --all-hangs runs them in a whole run too."""
+    places = collections.Counter(f"{m.group(1)}\t{m.group(2)}" for m in (NAME.match(l) for l in listed) if m)
+    return sorted(k for k, (count, reason) in tknown.items()
+                  if not reason.startswith(("OPEN", "UNCLASSIFIED"))
+                  and k.split("\t", 1)[0] not in LOOM_FILES
+                  and count == places[k])
+
+
+def exclude_args(names):
+    """cargo-mutants' --exclude-re for each name, every place of it: a
+    name is "file<TAB>mutant", cargo-mutants' "file:line:column: mutant"."""
+    return [arg for k in names for arg in ("--exclude-re", "^" + re.escape(k.split("\t", 1)[0]) + r":\d+:\d+: " + re.escape(k.split("\t", 1)[1]) + "$")]
 
 
 def confirm(found, known, timed, tknown, differ=None):
@@ -803,7 +841,7 @@ def main():
     changed = subprocess.run(["git", "-C", ROOT, "status", "--porcelain", "--untracked-files=no"], capture_output=True, text=True, check=True).stdout.strip()
     print(f"mutants: BLAKE3-Servil at {commit}{', with uncommitted changes' if changed else ''}", flush=True)
     remove_leftovers()
-    check_rows_exist()
+    listed = check_rows_exist()
     files, known = read_known()
     _, tknown = read_known(TIMEOUTS, INACTIVE_TIMEOUTS)
     # A test known to be missing is work to do now, not a survivor to keep:
@@ -860,7 +898,14 @@ def main():
               + ("no new survivor" if not new else f"{len(new)} names with a new survivor")
               + ("" if not new_timed else f", {len(new_timed)} names with a new time-out (no verdict on them)"))
         sys.exit(1 if new else 2 if new_timed else 0)
-    found, functions, timed = run(files)
+    # The known hangs stay out of a whole run (known_hangs); their rows stand
+    # as listed.
+    hangs = [] if "--all-hangs" in sys.argv else known_hangs(tknown, listed)
+    if hangs:
+        print(f"mutants: {len(hangs)} known hangs ({sum(tknown[k][0] for k in hangs)} places) not run, each listed with its reason "
+              f"in {os.path.basename(TIMEOUTS)} (--all-hangs runs them)", flush=True)
+    found, functions, timed = run(files, exclude_args(hangs))
+    timed.update({k: tknown[k][0] for k in hangs})
     if LOOM_FILES:
         found, timed, functions = with_loom(found, timed, functions, run(LOOM_FILES, shards=1, label="loom", loom=True)[1])
     found, timed = confirm(found, known, timed, tknown)

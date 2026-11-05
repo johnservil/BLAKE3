@@ -15,9 +15,13 @@
 slow-timeout = { period = "60s", terminate-after = 1 }
 
 [profile.mutants]
-# A mutant's tests stop at the first that fails: a caught mutant costs the
-# tests up to its first catcher. Each test in its own process.
-fail-fast = true
+# A mutant's tests stop at the first that fails, and the tests still running
+# end at once: a caught mutant costs the tests up to its first catcher. With
+# fail-fast's default (wait), a catch at 0.07 s still waited for any test the
+# mutant hung, to the clock: 42 of an EPYC run's 120 30-second test phases
+# were such catches (BLAKE3 #244). The ended tests read SIGTERM, which
+# check.py counts as no outcome. Each test in its own process.
+fail-fast = { max-fail = 1, terminate = "immediate" }
 # A test still running at 30 s hangs: killed and named. The run's one
 # clock: check.py reports a mutant that only this clock stopped as CLOCK
 # ONLY, not as caught by a test. The slowest test takes under 1 s alone,
