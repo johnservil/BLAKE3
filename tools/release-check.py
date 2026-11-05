@@ -29,7 +29,7 @@ and the rest timed out or have no verdict.
     job's "old_bench_commit".
   - Full mutation run: tmp/night/mutants-C.log with both final summaries
     matching their survivor and timeout lists, from
-    `python3 tools/mutants/check.py` with the commit checked out.
+    `python3 tools/mutants/check.py --whole` with the commit checked out.
   - check-builds: tmp/night/check-builds-C.log ending "every build passes".
   - Publish dry run: tmp/night/publish-dry-run-C.log, from the paired
     package dry-run in CONTRIBUTING.md, followed by "publish-dry-run: ok"
@@ -103,9 +103,13 @@ def log_ends_with(path, text):
 
 
 def mutation_result(path):
-    """check.py exits zero only when both survivor and timeout lists agree."""
+    """check.py exits zero only when both survivor and timeout lists agree.
+    A log of a run over the change alone (check.py's default) is no
+    release gate, whatever its tail says: the gate wants --whole."""
     tail = log_tail(path)
     lines = [] if tail is None else tail.strip().splitlines()
+    if any(line.startswith("mutants: the change since") for line in lines):
+        return False
     if len(lines) < 2:
         return None
     survivors, timeouts = lines[-2:]
@@ -211,7 +215,7 @@ def main():
     step("VM check against the previous release", log_ends_with(f"tmp/night/check-release-vm-{commit[:12]}.log", "no cell slower"),
          f"(cd ../bench-hashes && cargo run --release -- check --fork {ROOT} --against {previous or '<the main line before this release>'} --cells all [--old-bench <bench commit>]) > tmp/night/check-release-vm-{commit[:12]}.log")
     step("full mutation run", mutation_result(f"tmp/night/mutants-{commit[:12]}.log"),
-         f"python3 tools/mutants/check.py > tmp/night/mutants-{commit[:12]}.log, the commit checked out (overnight)")
+         f"python3 tools/mutants/check.py --whole > tmp/night/mutants-{commit[:12]}.log, the commit checked out (overnight; the whole run, since check.py alone covers the change since origin/servil)")
     step("check-builds", log_ends_with(f"tmp/night/check-builds-{commit[:12]}.log", "every build passes"),
          f"sh tools/check-builds.sh > tmp/night/check-builds-{commit[:12]}.log")
     step("cargo publish --dry-run", log_ends_with(f"tmp/night/publish-dry-run-{commit[:12]}.log", "publish-dry-run: ok"),

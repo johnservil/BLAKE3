@@ -163,6 +163,13 @@ class ReleaseEvidence(unittest.TestCase):
         self.assertEqual(code, 1, output)
         self.assertIn("FAIL  full mutation run", output)
 
+    def test_change_only_mutation_log_is_failed(self):
+        # check.py's default covers the change since origin/servil; the gate wants the whole run (--whole).
+        text = "mutants: the change since origin/servil's merge base 0123456789ab (--whole for every mutant in the lists)\n" + MUTATION_OK
+        code, output = self.run_gate(mutation_log=text)
+        self.assertEqual(code, 1, output)
+        self.assertIn("FAIL  full mutation run", output)
+
     def test_incomplete_mutation_log_is_open(self):
         for text in [None, "", MUTATION_OK.splitlines()[0], MUTATION_OK + "interrupted\n"]:
             with self.subTest(text=text):
