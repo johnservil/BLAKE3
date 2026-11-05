@@ -45,7 +45,7 @@ time-out, listed for this CPU with its reason, outside the model files):
 each would only wait for the clock again to say what its row says, and they
 were most of a run's test time (64% on an EPYC 9255, BLAKE3 #244). Their
 rows stand as listed; --since runs them on the lines a change touches, and
---all-hangs runs them in a whole run too.
+--write (which must confirm every row it keeps) and --all-hangs run them.
 Before anything runs, every row of every architecture's lists must name a
 mutant the source holds now (cargo mutants --list, which any machine reads
 for every target): a row a run on older code left stops the check, named.
@@ -693,7 +693,7 @@ def known_hangs(tknown, listed):
     so skipping it skips no place whose outcome is unknown. Each costs a
     hang to nextest's clock (30 s) and a build a run, and says what the
     list already says. A --since run still runs them, as the lines a change
-    touches deserve; --all-hangs runs them in a whole run too."""
+    touches deserve; --write and --all-hangs run them in a whole run too."""
     places = collections.Counter(f"{m.group(1)}\t{m.group(2)}" for m in (NAME.match(l) for l in listed) if m)
     return sorted(k for k, (count, reason) in tknown.items()
                   if not reason.startswith(("OPEN", "UNCLASSIFIED"))
@@ -899,8 +899,10 @@ def main():
               + ("" if not new_timed else f", {len(new_timed)} names with a new time-out (no verdict on them)"))
         sys.exit(1 if new else 2 if new_timed else 0)
     # The known hangs stay out of a whole run (known_hangs); their rows stand
-    # as listed.
-    hangs = [] if "--all-hangs" in sys.argv else known_hangs(tknown, listed)
+    # as listed. A run that rewrites the lists (--write) runs them, so a row
+    # that no longer hangs leaves its list: a skipped one would stay listed
+    # (two sources::find rows, caught at servil 06f6e26d, did in the trial).
+    hangs = [] if "--all-hangs" in sys.argv or "--write" in sys.argv else known_hangs(tknown, listed)
     if hangs:
         print(f"mutants: {len(hangs)} known hangs ({sum(tknown[k][0] for k in hangs)} places) not run, each listed with its reason "
               f"in {os.path.basename(TIMEOUTS)} (--all-hangs runs them)", flush=True)
