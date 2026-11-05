@@ -308,6 +308,10 @@ pub(crate) enum Ran {
     /// A task's members, all of one length of 2 to 15 chunks, ran across
     /// the members (lanes::Task::run_members, many::hash_group_across).
     MembersAcross = 256,
+    /// A task's members of up to a chunk, of any lengths, ran by their
+    /// whole blocks side by side, each last block alone
+    /// (lanes::Task::run_by_blocks).
+    MembersByBlocks = 512,
 }
 
 #[cfg(all(test, feature = "std"))]
@@ -341,6 +345,9 @@ pub(crate) enum Counted {
     /// One root output block computed alone (Output::root_output_block):
     /// OutputReader::fill's tails, where its whole blocks go to xof_many.
     RootBlock = 2,
+    /// A hash_many call of Task::run_by_blocks: up to sixteen members with
+    /// as many whole blocks before their last.
+    ByBlocksCall = 3,
 }
 
 #[cfg(all(test, feature = "std"))]
