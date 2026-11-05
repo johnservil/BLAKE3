@@ -159,6 +159,16 @@ struct Out<const N: usize>(UnsafeCell<[u8; N]>);
 /// `body` share goes in a [`Cell`](core::cell::Cell) or
 /// [`RefCell`](core::cell::RefCell).
 ///
+/// **Speed, even on one thread.** A program hashing many messages one
+/// after another hashes them faster through a stream than through
+/// [`hash`](crate::convenience::hash) on each, even with no other thread
+/// (`initialize_multithreaded(Some(1))`): the stream gathers messages into
+/// tasks and hashes a task's messages side by side, where one call hashes
+/// one message's blocks one after another. On a Ryzen 7 9700X, one thread,
+/// ns a byte: 1 KiB messages 0.13 against hash()'s 0.95, 4 KiB 0.12
+/// against 0.28, mixed lengths around 300 B 0.51 against 1.02; SHA-256
+/// there (the sha2 crate, with the CPU's SHA extensions) 0.40, 0.38 and
+/// 0.45 (BLAKE3-Servil #246).
 /// Each message's place comes back alone, about 1-2 ns a message: for
 /// many short messages of one length, [`Stream::submit_batch`] hands back
 /// one place per batch and hashes them side by side (64-byte messages one
