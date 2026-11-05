@@ -66,7 +66,7 @@ cargo nextest run --release --manifest-path test_vectors/Cargo.toml
 cargo nextest run --release --manifest-path capi/Cargo.toml   # the C API
 sh tools/check-builds.sh            # the builds the suites leave out
 RUSTFLAGS="--cfg shuttle" cargo test --release --test shuttle_finish --test shuttle_park   # the pool's handshakes, every schedule a model checker tries
-python3 tools/mutants/check.py        # about an hour: every surviving mutant known, every time-out known
+python3 tools/mutants/check.py        # the change since origin/servil, a minute; --whole for every mutant (an hour)
 ```
 
 **While working, run the tests a change reaches:** `python3
@@ -211,7 +211,7 @@ what was checked is what lands) once:
   code for targets the VM and Mac do not run (x86-64, AArch64 without
   SME2);
 - mutation testing passes on a change to the Rust
-  (`python3 tools/mutants/check.py --since servil`: the mutants in the
+  (`python3 tools/mutants/check.py`: the mutants in the
   changed lines, and the ones the last map says a changed test catches);
 - the regression check finds no slowdown on AArch64 Linux in a VM and
   natively on an Apple M4 Max. A candidate that changes no compiled code

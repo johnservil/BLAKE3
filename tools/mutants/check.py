@@ -1,6 +1,12 @@
 """Mutation testing against a list of the mutants known to survive.
 
-    python3 tools/mutants/check.py [--since REV] [--write] [--map] [--whole-suite]
+    python3 tools/mutants/check.py [--since REV | --whole] [--write] [--map] [--whole-suite]
+
+By default the check covers the change since the branch left origin/servil
+(git merge-base; a minute for a day's change). --since REV names another
+base; --whole runs every mutant in the lists (an hour or more: a release's
+check, or a list rewritten with --write). A run started by mistake was
+the most expensive mistake this tool allowed (November 5, 2026).
 
 cargo-mutants plants likely bugs in the files tools/mutants/known-<arch>.txt
 names (its `files:` line), one at a time, and runs the library's and the
@@ -797,6 +803,9 @@ def figure(functions, known):
 
 
 def main():
+    if "--help" in sys.argv or "-h" in sys.argv:
+        print(__doc__.strip())
+        return
     # The run's first line names what it measured, so a release gate can
     # hold its log to the release's commit (John Servil, BLAKE3 #125).
     commit = subprocess.run(["git", "-C", ROOT, "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
@@ -814,6 +823,13 @@ def main():
     if missing:
         sys.exit("mutants: the list names missing tests; write them first")
     since = sys.argv[sys.argv.index("--since") + 1] if "--since" in sys.argv else None
+    if since is None and "--whole" not in sys.argv and "--write" not in sys.argv:
+        base = subprocess.run(["git", "-C", ROOT, "merge-base", "HEAD", "origin/servil"], capture_output=True, text=True)
+        if base.returncode == 0:
+            since = base.stdout.strip()
+            print(f"mutants: the change since origin/servil's merge base {since[:12]} (--whole for every mutant in the lists)")
+        else:
+            print("mutants: no origin/servil to take a base from; the whole run")
     extra = []  # the mutants the change's altered tests caught (the map's)
     if since is not None:
         diff = subprocess.run(["git", "-C", ROOT, "diff", f"{since}...HEAD", "--", *files, *LOOM_FILES], capture_output=True, text=True, check=True).stdout
