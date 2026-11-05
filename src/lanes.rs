@@ -1583,19 +1583,7 @@ impl Task {
 /// The fewest members of up to a chunk that Task::run_by_blocks takes.
 const BY_BLOCKS_LEAST: usize = 2;
 
-/// Whether Task::run_by_blocks runs on `platform`: x86-64's AVX2 and
-/// AVX-512 (pair::takes_platform), and NEON (its hybrids, from a table).
-fn by_blocks_takes(platform: Platform) -> bool {
-    #[cfg(target_arch = "x86_64")]
-    return crate::pair::takes_platform(platform);
-    #[cfg(blake3_neon)]
-    return matches!(platform, Platform::NEON);
-    #[allow(unreachable_code)]
-    {
-        let _ = platform;
-        false
-    }
-}
+use crate::each::by_blocks_takes;
 
 impl Task {
     /// The digests of the members of up to a chunk, of any lengths: those
@@ -1606,72 +1594,15 @@ impl Task {
     /// empty) compressed on its own with CHUNK_END and ROOT, CHUNK_START too
     /// where k is 0. Requires a platform by_blocks_takes.
     fn run_by_blocks(&self, platform: Platform) {
-        const GROUP: usize = 16;
         let members = &self.member[..self.members];
-        let whole = |m: &Member| m.len.saturating_sub(1) / crate::BLOCK_LEN;
-        let mut order: arrayvec::ArrayVec<usize, MEMBERS> = (0..members.len()).filter(|&i| members[i].len <= CHUNK_LEN).collect();
-        order.sort_unstable_by_key(|&i| whole(&members[i]));
-        let mut cvs = [*crate::IV; MEMBERS];
-        let mut at = 0;
-        while at < order.len() {
-            let k = whole(&members[order[at]]);
-            let end = at + order[at..].iter().take_while(|&&i| whole(&members[i]) == k).count();
-            if k > 0 {
-                for group in order[at..end].chunks(GROUP) {
-                    let inputs: arrayvec::ArrayVec<*const u8, GROUP> = group.iter().map(|&i| members[i].input).collect();
-                    let mut out = [0u8; GROUP * crate::OUT_LEN];
-                    crate::counted(crate::Counted::ByBlocksCall);
-                    // Sound: each member holds more than k whole blocks; the
-                    // platform takes the assembly (by_blocks_takes).
-                    #[cfg(target_arch = "x86_64")]
-                    unsafe {
-                        crate::pair::hash_many_blocks(
-                            platform,
-                            &inputs,
-                            k,
-                            &self.key,
-                            0,
-                            false,
-                            self.flags,
-                            crate::CHUNK_START,
-                            0,
-                            &mut out[..group.len() * crate::OUT_LEN],
-                        )
-                    };
-                    #[cfg(blake3_neon)]
-                    unsafe {
-                        crate::neon_hybrid::hash_messages_raw(
-                            inputs.as_ptr(),
-                            group.len(),
-                            k,
-                            &self.key,
-                            0,
-                            self.flags,
-                            crate::CHUNK_START,
-                            0,
-                            crate::BLOCK_LEN,
-                            &mut out[..group.len() * crate::OUT_LEN],
-                        )
-                    };
-                    for (n, &i) in group.iter().enumerate() {
-                        cvs[i] = crate::platform::words_from_le_bytes_32(out[n * crate::OUT_LEN..][..crate::OUT_LEN].try_into().unwrap());
-                    }
-                }
-            }
-            at = end;
-        }
-        for &i in &order {
-            let m = &members[i];
-            let k = whole(m);
-            let mut cv = if k == 0 { self.key } else { cvs[i] };
-            let mut block = [0u8; crate::BLOCK_LEN];
-            let last = m.len - k * crate::BLOCK_LEN;
-            // Sound: the member's bytes are in place until the task's `left` is zero.
-            block[..last].copy_from_slice(unsafe { core::slice::from_raw_parts(m.input.add(k * crate::BLOCK_LEN), last) });
-            let start = if k == 0 { crate::CHUNK_START } else { 0 };
-            platform.compress_in_place(&mut cv, &block, last as u8, 0, self.flags | start | crate::CHUNK_END | crate::ROOT);
+        let small = || members.iter().filter(|m| m.len <= CHUNK_LEN);
+        // Sound: the members' bytes are in place until the task's `left` is zero.
+        let items: arrayvec::ArrayVec<&[u8], MEMBERS> = small().map(|m| unsafe { core::slice::from_raw_parts(m.input, m.len) }).collect();
+        let mut digests = [[0u8; crate::OUT_LEN]; MEMBERS];
+        crate::each::hash_by_blocks(&items, &self.key, self.flags, &mut digests[..items.len()], platform);
+        for (m, digest) in small().zip(&digests) {
             // Sound: each member's `out` holds OUT_LEN writable bytes.
-            unsafe { core::ptr::copy_nonoverlapping(crate::hasher::le_bytes(&cv).as_ptr(), m.out, crate::OUT_LEN) };
+            unsafe { core::ptr::copy_nonoverlapping(digest.as_ptr(), m.out, crate::OUT_LEN) };
         }
     }
 
