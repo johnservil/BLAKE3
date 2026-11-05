@@ -827,9 +827,11 @@ def main():
         base = subprocess.run(["git", "-C", ROOT, "merge-base", "HEAD", "origin/servil"], capture_output=True, text=True)
         if base.returncode == 0:
             since = base.stdout.strip()
-            print(f"mutants: the change since origin/servil's merge base {since[:12]} (--whole for every mutant in the lists)")
         else:
-            print("mutants: no origin/servil to take a base from; the whole run")
+            print("mutants: no origin/servil to take a base from")
+    # The log names its own scope on its first line: a release gate reads
+    # a whole run alone (tools/release-check.py's mutation_result).
+    print(f"mutants: the change since {since}" if since is not None else "mutants: the whole run")
     extra = []  # the mutants the change's altered tests caught (the map's)
     if since is not None:
         diff = subprocess.run(["git", "-C", ROOT, "diff", f"{since}...HEAD", "--", *files, *LOOM_FILES], capture_output=True, text=True, check=True).stdout

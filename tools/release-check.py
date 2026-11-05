@@ -103,13 +103,16 @@ def log_ends_with(path, text):
 
 
 def mutation_result(path):
-    """check.py exits zero only when both survivor and timeout lists agree.
-    A log of a run over the change alone (check.py's default) is no
-    release gate, whatever its tail says: the gate wants --whole."""
+    """check.py exits zero only when both survivor and timeout lists agree,
+    and the log's first line names the whole run: a run over the change
+    alone (check.py's default) is no release gate, whatever its tail says."""
     tail = log_tail(path)
-    lines = [] if tail is None else tail.strip().splitlines()
-    if any(line.startswith("mutants: the change since") for line in lines):
+    if tail is None or not tail.strip():
+        return None
+    head = Path(os.path.join(MAIN, path)).read_text(errors="replace")[:4000]
+    if "mutants: the whole run" not in head.splitlines():
         return False
+    lines = tail.strip().splitlines()
     if len(lines) < 2:
         return None
     survivors, timeouts = lines[-2:]

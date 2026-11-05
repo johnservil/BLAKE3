@@ -16,7 +16,7 @@ spec.loader.exec_module(check)
 
 HEAD, OLD = "a" * 40, "b" * 40
 RUN = {"id": 7, "name": "tests", "event": "workflow_dispatch", "status": "completed", "conclusion": "success"}
-MUTATION_OK = "mutants: 12 survive, each known and explained\nmutants: 3 time out, each known (timeouts-x86_64.txt)\n"
+MUTATION_OK = "mutants: the whole run\nmutants: 12 survive, each known and explained\nmutants: 3 time out, each known (timeouts-x86_64.txt)\n"
 
 
 def job(conclusion="success", status="completed"):
@@ -152,23 +152,26 @@ class ReleaseEvidence(unittest.TestCase):
         self.assertEqual(self.run_gate(old="c" * 40)[0], 1)
 
     def test_mutation_timeout_mismatch_is_no_verdict(self):
-        text = "mutants: 12 survive, each known and explained\nmutants: the time-outs differ from timeouts-x86_64.txt (no verdict on those mutants)\n"
+        text = "mutants: the whole run\nmutants: 12 survive, each known and explained\nmutants: the time-outs differ from timeouts-x86_64.txt (no verdict on those mutants)\n"
         code, output = self.run_gate(mutation_log=text)
         self.assertEqual(code, 2, output)
         self.assertIn("NO VERDICT  full mutation run", output)
 
     def test_mutation_survivor_failure_is_failed(self):
-        text = "mutants: the list and this run differ, or a listed mutant has no reason\nmutants: 3 time out, each known (timeouts-x86_64.txt)\n"
+        text = "mutants: the whole run\nmutants: the list and this run differ, or a listed mutant has no reason\nmutants: 3 time out, each known (timeouts-x86_64.txt)\n"
         code, output = self.run_gate(mutation_log=text)
         self.assertEqual(code, 1, output)
         self.assertIn("FAIL  full mutation run", output)
 
-    def test_change_only_mutation_log_is_failed(self):
-        # check.py's default covers the change since origin/servil; the gate wants the whole run (--whole).
-        text = "mutants: the change since origin/servil's merge base 0123456789ab (--whole for every mutant in the lists)\n" + MUTATION_OK
-        code, output = self.run_gate(mutation_log=text)
-        self.assertEqual(code, 1, output)
-        self.assertIn("FAIL  full mutation run", output)
+    def test_a_mutation_log_must_name_the_whole_run(self):
+        # check.py's first line names the run's scope; its default covers the change since
+        # origin/servil, and the gate wants the whole run (--whole).
+        tail = MUTATION_OK.split("\n", 1)[1]
+        for text in ["mutants: the change since 0123456789ab\n" + tail, tail]:
+            with self.subTest(text=text):
+                code, output = self.run_gate(mutation_log=text)
+                self.assertEqual(code, 1, output)
+                self.assertIn("FAIL  full mutation run", output)
 
     def test_incomplete_mutation_log_is_open(self):
         for text in [None, "", MUTATION_OK.splitlines()[0], MUTATION_OK + "interrupted\n"]:
