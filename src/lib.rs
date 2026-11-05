@@ -60,12 +60,8 @@
 //!   every call takes a [`Mode`].
 //!
 //! Start with the convenience calls; when a program needs more speed, it
-//! moves to the performance ones. They differ in what they expect, too:
-//! the convenience calls expect to be called now and then, after other
-//! work, so their kernels are the compact ones that lose least when their
-//! code has left the caches; the performance calls expect to be called
-//! again and again, so where a kernel is faster with its code near and
-//! slower without (performance::hash's on AMD Zen 5), they take it.
+//! moves to the performance ones. Convenience is for a hash now and then,
+//! after other work; performance is for call after call.
 //!
 //! | Your data | Call |
 //! |---|---|

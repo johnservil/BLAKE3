@@ -34,14 +34,9 @@ use crate::{ContextKey, DERIVE_KEY_CONTEXT, Hash, IV, Mode, OUT_LEN};
 /// a batch of one. The message starts a block, so on a cache line; the
 /// bytes past its end, in its last block and any after, are ignored.
 ///
-/// **For calls one after another**, as the performance calls are: where a
-/// kernel that is faster with its code near is slower after a pause, this
-/// call takes it, and [`convenience::hash`](crate::convenience::hash) does
-/// not. On AMD Zen 5, a message of a chunk (1 KiB) or less goes to a
-/// kernel that keeps the state in integer registers: back to back, 128 B
-/// to 1 KiB took 19-35% less time than through `convenience::hash`, but
-/// after other work up to twice as long (EPYC 9255, Ryzen 7 9700X; BLAKE3-Servil
-/// #252). A program that hashes now and then calls `convenience::hash`.
+/// For call after call: where a kernel is faster with its code in the
+/// caches and slower without, this takes it (for a hash now and then,
+/// [`convenience::hash`](crate::convenience::hash)).
 ///
 /// ```
 /// # blake3_servil::initialize();
