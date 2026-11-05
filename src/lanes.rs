@@ -1501,6 +1501,20 @@ impl Task {
                 return;
             }
         }
+        // Members of up to a chunk, of any lengths: each one's whole blocks
+        // before its last side by side with the others' of as many, then
+        // its last block on its own (by_blocks). The rest one at a time.
+        #[cfg(target_arch = "x86_64")]
+        if crate::pair::takes_platform(platform) && members.iter().filter(|m| m.len <= CHUNK_LEN).count() >= BY_BLOCKS_LEAST {
+            crate::ran(crate::Ran::MembersByBlocks);
+            self.run_by_blocks(platform);
+            for m in members.iter().filter(|m| m.len > CHUNK_LEN) {
+                let bytes = unsafe { core::slice::from_raw_parts(m.input, m.len) };
+                let hash = crate::hash_serial_on(bytes, &self.key, self.flags, platform);
+                unsafe { core::ptr::copy_nonoverlapping(hash.as_bytes().as_ptr(), m.out, crate::OUT_LEN) };
+            }
+            return;
+        }
         crate::ran(crate::Ran::MemberAlone);
         for m in members {
             let bytes = unsafe { core::slice::from_raw_parts(m.input, m.len) };
@@ -1510,7 +1524,73 @@ impl Task {
     }
 }
 
+/// The fewest members of up to a chunk that Task::run_by_blocks takes.
+#[cfg(target_arch = "x86_64")]
+const BY_BLOCKS_LEAST: usize = 2;
+
 impl Task {
+    /// The digests of the members of up to a chunk, of any lengths: those
+    /// with as many whole blocks before their last (k) side by side on the
+    /// platform's hash_many, up to sixteen at a time, CHUNK_START on the
+    /// first block and no end, leaving each its chaining value; then each
+    /// one's last block (1 to 64 bytes, zero-padded; an empty message's is
+    /// empty) compressed on its own with CHUNK_END and ROOT, CHUNK_START too
+    /// where k is 0. Requires AVX2 or AVX-512 (pair::takes_platform).
+    #[cfg(target_arch = "x86_64")]
+    fn run_by_blocks(&self, platform: Platform) {
+        const GROUP: usize = 16;
+        let members = &self.member[..self.members];
+        let whole = |m: &Member| m.len.saturating_sub(1) / crate::BLOCK_LEN;
+        let mut order: arrayvec::ArrayVec<usize, MEMBERS> = (0..members.len()).filter(|&i| members[i].len <= CHUNK_LEN).collect();
+        order.sort_unstable_by_key(|&i| whole(&members[i]));
+        let mut cvs = [*crate::IV; MEMBERS];
+        let mut at = 0;
+        while at < order.len() {
+            let k = whole(&members[order[at]]);
+            let end = at + order[at..].iter().take_while(|&&i| whole(&members[i]) == k).count();
+            if k > 0 {
+                for group in order[at..end].chunks(GROUP) {
+                    let inputs: arrayvec::ArrayVec<*const u8, GROUP> = group.iter().map(|&i| members[i].input).collect();
+                    let mut out = [0u8; GROUP * crate::OUT_LEN];
+                    crate::counted(crate::Counted::ByBlocksCall);
+                    // Sound: each member holds more than k whole blocks; the
+                    // platform takes the assembly (pair::takes_platform).
+                    unsafe {
+                        crate::pair::hash_many_blocks(
+                            platform,
+                            &inputs,
+                            k,
+                            &self.key,
+                            0,
+                            false,
+                            self.flags,
+                            crate::CHUNK_START,
+                            0,
+                            &mut out[..group.len() * crate::OUT_LEN],
+                        )
+                    };
+                    for (n, &i) in group.iter().enumerate() {
+                        cvs[i] = crate::platform::words_from_le_bytes_32(out[n * crate::OUT_LEN..][..crate::OUT_LEN].try_into().unwrap());
+                    }
+                }
+            }
+            at = end;
+        }
+        for &i in &order {
+            let m = &members[i];
+            let k = whole(m);
+            let mut cv = if k == 0 { self.key } else { cvs[i] };
+            let mut block = [0u8; crate::BLOCK_LEN];
+            let last = m.len - k * crate::BLOCK_LEN;
+            // Sound: the member's bytes are in place until the task's `left` is zero.
+            block[..last].copy_from_slice(unsafe { core::slice::from_raw_parts(m.input.add(k * crate::BLOCK_LEN), last) });
+            let start = if k == 0 { crate::CHUNK_START } else { 0 };
+            platform.compress_in_place(&mut cv, &block, last as u8, 0, self.flags | start | crate::CHUNK_END | crate::ROOT);
+            // Sound: each member's `out` holds OUT_LEN writable bytes.
+            unsafe { core::ptr::copy_nonoverlapping(crate::hasher::le_bytes(&cv).as_ptr(), m.out, crate::OUT_LEN) };
+        }
+    }
+
     /// The members' digests, each a message of `N` bytes (whole blocks, at
     /// most a chunk; run_members checked), side by side on the multi-lane
     /// kernel from a table of pointers.
@@ -1623,6 +1703,18 @@ fn worker_main(me: usize) {
 #[cfg(test)]
 mod test {
     use super::*;
+
+    /// Whether Task::run_by_blocks runs on `platform` (x86-64's AVX2 and
+    /// AVX-512, pair::takes_platform).
+    fn by_blocks_takes(platform: Platform) -> bool {
+        #[cfg(target_arch = "x86_64")]
+        return crate::pair::takes_platform(platform);
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            let _ = platform;
+            false
+        }
+    }
 
     /// A call gives its place among the pool's callers back: alone in its
     /// process, as each test is, the count is zero again after one call
@@ -1755,15 +1847,20 @@ mod test {
                                 // x86-64): side by side; else one at a time.
                                 let side_by_side =
                                     !mixed && count >= 2 && (len == 64 || (cfg!(target_arch = "x86_64") && matches!(len, 128 | 256 | 512 | 1024)));
+                                // Else, on x86-64's AVX2 and AVX-512, two or more
+                                // members of up to a chunk run by their blocks.
+                                let small = inputs.iter().filter(|i| i.len() - offset <= CHUNK_LEN).count();
+                                let by_blocks = !side_by_side && by_blocks_takes(platform) && small >= 2;
                                 let ran = crate::RAN.with(|r| r.get());
                                 assert_eq!(
                                     ran & crate::Ran::EqualMembers as u32 != 0,
                                     side_by_side,
                                     "{platform:?}, {count} x {len}, mixed {mixed}: side by side"
                                 );
+                                assert_eq!(ran & crate::Ran::MembersByBlocks as u32 != 0, by_blocks, "{platform:?}, {count} x {len}, mixed {mixed}: by blocks");
                                 assert_eq!(
                                     ran & crate::Ran::MemberAlone as u32 != 0,
-                                    !side_by_side,
+                                    !side_by_side && !by_blocks,
                                     "{platform:?}, {count} x {len}, mixed {mixed}: one at a time"
                                 );
                                 assert_eq!(&out[1..count + 1], &expected[..], "{platform:?}, {count} x {len}, mixed {mixed}, offset {offset}, mode {mode}");
@@ -2178,9 +2275,12 @@ mod test {
                             crate::RAN.with(|r| r.set(0));
                             task.run(platform);
                             let across = !mixed && crate::many::across_from(len, platform).is_some_and(|least| count >= least);
+                            let small = inputs.iter().filter(|i| i.len() <= CHUNK_LEN).count();
+                            let by_blocks = !across && by_blocks_takes(platform) && small >= 2;
                             let ran = crate::RAN.with(|r| r.get());
                             assert_eq!(ran & crate::Ran::MembersAcross as u32 != 0, across, "{platform:?}, {count} x {len}, mixed {mixed}: across");
-                            assert_eq!(ran & crate::Ran::MemberAlone as u32 != 0, !across, "{platform:?}, {count} x {len}, mixed {mixed}: alone");
+                            assert_eq!(ran & crate::Ran::MembersByBlocks as u32 != 0, by_blocks, "{platform:?}, {count} x {len}, mixed {mixed}: by blocks");
+                            assert_eq!(ran & crate::Ran::MemberAlone as u32 != 0, !across && !by_blocks, "{platform:?}, {count} x {len}, mixed {mixed}: alone");
                             assert_eq!(&out[1..count + 1], &expected[..], "{platform:?}, {count} x {len}, mixed {mixed}");
                             assert_eq!((out[0], out[count + 1]), ([0xAA; crate::OUT_LEN], [0xAA; crate::OUT_LEN]), "nothing written outside");
                             assert_eq!(done.load(Ordering::Acquire), 0);
@@ -2190,6 +2290,97 @@ mod test {
             }
         }
         golden.check(0xec0b94e75b5abba0);
+    }
+
+    /// Members of up to a chunk, of mixed lengths (empty, under a block,
+    /// whole and partial blocks, 0 to 15 whole blocks before the last, more
+    /// than sixteen of one count), run by their blocks on AVX2 and AVX-512
+    /// and alone on SSE4.1; every digest hash()'s, held to a golden fold.
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn test_mixed_members_run_by_blocks() {
+        let mut golden = crate::test::Golden::new("mixed_members_by_blocks");
+        let mut x = 0x2545_f491u64;
+        for count in [2usize, 3, 5, 16, 17, 40, MEMBERS] {
+            for spread in [64usize, 300, CHUNK_LEN + 1] {
+                let lens: Vec<usize> = (0..count)
+                    .map(|_| {
+                        x ^= x << 13;
+                        x ^= x >> 7;
+                        x ^= x << 17;
+                        (x % spread as u64) as usize
+                    })
+                    .collect();
+                let inputs: Vec<Vec<u8>> = lens.iter().enumerate().map(|(m, &n)| (0..n).map(|i| ((m * 131 + i) % 251) as u8).collect()).collect();
+                let expected: Vec<[u8; crate::OUT_LEN]> = inputs.iter().map(|i| *crate::convenience::hash(i).as_bytes()).collect();
+                golden.add(expected.as_flattened(), || inputs.iter().flat_map(|i| crate::test::official::hash(crate::Mode::Plain, i)).collect());
+                for platform in crate::test::every_platform() {
+                    let done = AtomicUsize::new(count);
+                    let mut out = vec![[0xAA; crate::OUT_LEN]; count + 2];
+                    let mut task = Task::members(crate::IV, 0, None);
+                    task.members = count;
+                    task.left = &done;
+                    let base = out.as_mut_ptr();
+                    for m in 0..count {
+                        task.member[m] = Member { input: inputs[m].as_ptr(), len: inputs[m].len(), out: unsafe { base.add(m + 1) }.cast::<u8>() };
+                    }
+                    crate::RAN.with(|r| r.set(0));
+                    task.run(platform);
+                    let ran = crate::RAN.with(|r| r.get());
+                    let equal = lens.iter().all(|&n| n == lens[0]);
+                    if !equal {
+                        assert_eq!(
+                            ran & crate::Ran::MembersByBlocks as u32 != 0,
+                            by_blocks_takes(platform),
+                            "{platform:?}, {count} members under {spread} B: by blocks"
+                        );
+                    }
+                    assert_eq!(&out[1..count + 1], &expected[..], "{platform:?}, {count} members under {spread} B: {lens:?}");
+                    assert_eq!((out[0], out[count + 1]), ([0xAA; crate::OUT_LEN], [0xAA; crate::OUT_LEN]), "nothing written outside");
+                    assert_eq!(done.load(Ordering::Acquire), 0);
+                }
+            }
+        }
+        golden.check(0xf98187dc4009b9b0);
+    }
+
+    /// run_by_blocks's work, counted (BLAKE3 #219): one hash_many call for
+    /// each count of whole blocks before the last that two or more members
+    /// share, or one, a call per sixteen; none for members with no whole
+    /// block before their last (up to a block, or empty). 40 members,
+    /// interleaved (so the calls count only once they are sorted): 20 of
+    /// 2 whole blocks before the last, 17 of 5, 2 of none, 1 of 9.
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn test_by_blocks_calls_counted() {
+        let kinds: Vec<usize> = (0..40)
+            .map(|m| match m {
+                0..20 => 129 + m,
+                20..37 => 321 + m,
+                37 => 0,
+                38 => 40,
+                _ => 600,
+            })
+            .collect();
+        // From both ends in turn: 2s and 5s alternate.
+        let lens: Vec<usize> = (0..40).map(|m| kinds[if m % 2 == 0 { m / 2 } else { 39 - m / 2 }]).collect();
+        let inputs: Vec<Vec<u8>> = lens.iter().map(|&n| (0..n).map(|i| i as u8).collect()).collect();
+        for platform in crate::test::every_platform().into_iter().filter(|&p| by_blocks_takes(p)) {
+            let done = AtomicUsize::new(lens.len());
+            let mut out = vec![[0u8; crate::OUT_LEN]; lens.len()];
+            let mut task = Task::members(crate::IV, 0, None);
+            task.members = lens.len();
+            task.left = &done;
+            let base = out.as_mut_ptr();
+            for m in 0..lens.len() {
+                task.member[m] = Member { input: inputs[m].as_ptr(), len: lens[m], out: unsafe { base.add(m) }.cast::<u8>() };
+            }
+            crate::COUNTED.with(|c| c[crate::Counted::ByBlocksCall as usize].set(0));
+            task.run(platform);
+            // 20 of two: two calls (16 and 4); 17 of five: two (16 and 1); one of nine: one.
+            assert_eq!(crate::COUNTED.with(|c| c[crate::Counted::ByBlocksCall as usize].get()), 5, "{platform:?}");
+            assert!(out.iter().zip(&inputs).all(|(o, i)| o == crate::convenience::hash(i).as_bytes()), "{platform:?}");
+        }
     }
 
     /// A task of one member runs it alone, whatever its length: the
