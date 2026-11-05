@@ -1478,6 +1478,28 @@ impl Task {
                 CHUNK_LEN => return self.run_equal_members::<CHUNK_LEN>(platform),
                 _ => {}
             }
+            // Messages of 2 to 15 chunks, as a batch's take them: across the
+            // members at every step of their tree, where there are as many
+            // as the shape needs (many::across_from). One at a time, each
+            // message's chain of blocks ran alone, slower than hash() itself
+            // once the stream's copy is counted (1536 B on one thread).
+            #[cfg(target_arch = "x86_64")]
+            if crate::many::across_from(members[0].len, platform).is_some_and(|least| members.len() >= least) {
+                crate::ran(crate::Ran::MembersAcross);
+                let len = members[0].len;
+                for group in members.chunks(crate::many::ACROSS_GROUP) {
+                    // Sound: as below, each member's bytes in place.
+                    let messages: arrayvec::ArrayVec<&[u8], { crate::many::ACROSS_GROUP }> =
+                        group.iter().map(|m| unsafe { core::slice::from_raw_parts(m.input, len) }).collect();
+                    let mut digests = [[0u8; crate::OUT_LEN]; crate::many::ACROSS_GROUP];
+                    crate::many::hash_group_across(&messages, len, &self.key, self.flags, &mut digests[..group.len()], platform);
+                    for (m, digest) in group.iter().zip(&digests) {
+                        // Sound: each member's `out` holds OUT_LEN writable bytes.
+                        unsafe { core::ptr::copy_nonoverlapping(digest.as_ptr(), m.out, crate::OUT_LEN) };
+                    }
+                }
+                return;
+            }
         }
         crate::ran(crate::Ran::MemberAlone);
         for m in members {
@@ -2118,6 +2140,56 @@ mod test {
         );
         assert!(!sources::open(), "the stream finished: nothing open");
         assert_eq!(digest, crate::convenience::hash(&[7u8; 64]));
+    }
+
+    /// A task's members of one length of 2 to 15 chunks run across the
+    /// members (many::hash_group_across) where there are as many as the
+    /// shape needs (many::across_from: 4 where each message's own tree is a
+    /// chain, else the lanes), on every x86-64 platform that takes them;
+    /// fewer, mixed lengths, or SSE4.1: one at a time. Every digest is
+    /// hash()'s, held to a golden fold (official BLAKE3 generated it).
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn test_equal_long_members_run_across() {
+        let key = [9u8; 32];
+        let modes = [(*crate::IV, 0, crate::Mode::Plain), (crate::platform::words_from_le_bytes_32(&key), crate::KEYED_HASH, crate::Mode::Keyed(&key))];
+        let mut golden = crate::test::Golden::new("equal_long_members");
+        for len in [CHUNK_LEN + 1, 1536, 2 * CHUNK_LEN, 3839, 4 * CHUNK_LEN, 7935, 15 * CHUNK_LEN] {
+            for count in [2, 3, 4, 7, 8, 15, 16, 17, 33] {
+                for mixed in [false, true] {
+                    let inputs: Vec<Vec<u8>> = (0..count)
+                        .map(|m| (0..if mixed && m % 3 == 2 { len - 1 } else { len }).map(|i| ((m * 977 + i + i / 1021) % 253) as u8).collect())
+                        .collect();
+                    for (words, flags, api_mode) in &modes {
+                        let expected: Vec<[u8; crate::OUT_LEN]> =
+                            inputs.iter().map(|input| *crate::convenience::hash_with(*api_mode, input).as_bytes()).collect();
+                        golden.add(expected.as_flattened(), || inputs.iter().flat_map(|input| crate::test::official::hash(*api_mode, input)).collect());
+                        for platform in crate::test::every_platform() {
+                            let done = AtomicUsize::new(count);
+                            let mut out = vec![[0xAA; crate::OUT_LEN]; count + 2];
+                            let mut task = Task::members(words, *flags, None);
+                            task.members = count;
+                            task.left = &done;
+                            let base = out.as_mut_ptr();
+                            for m in 0..count {
+                                let out = unsafe { base.add(m + 1) }.cast::<u8>();
+                                task.member[m] = Member { input: inputs[m].as_ptr(), len: inputs[m].len(), out };
+                            }
+                            crate::RAN.with(|r| r.set(0));
+                            task.run(platform);
+                            let across = !mixed && crate::many::across_from(len, platform).is_some_and(|least| count >= least);
+                            let ran = crate::RAN.with(|r| r.get());
+                            assert_eq!(ran & crate::Ran::MembersAcross as u32 != 0, across, "{platform:?}, {count} x {len}, mixed {mixed}: across");
+                            assert_eq!(ran & crate::Ran::MemberAlone as u32 != 0, !across, "{platform:?}, {count} x {len}, mixed {mixed}: alone");
+                            assert_eq!(&out[1..count + 1], &expected[..], "{platform:?}, {count} x {len}, mixed {mixed}");
+                            assert_eq!((out[0], out[count + 1]), ([0xAA; crate::OUT_LEN], [0xAA; crate::OUT_LEN]), "nothing written outside");
+                            assert_eq!(done.load(Ordering::Acquire), 0);
+                        }
+                    }
+                }
+            }
+        }
+        golden.check(0xec0b94e75b5abba0);
     }
 
     /// A task of one member runs it alone, whatever its length: the

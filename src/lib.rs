@@ -298,6 +298,9 @@ pub(crate) enum Ran {
     /// A batch of messages of up to a chunk, two or more, ran on the
     /// kernels' table a run at a time (many::hash_many_on's short path).
     ShortRun = 128,
+    /// A task's members, all of one length of 2 to 15 chunks, ran across
+    /// the members (lanes::Task::run_members, many::hash_group_across).
+    MembersAcross = 256,
 }
 
 #[cfg(all(test, feature = "std"))]
