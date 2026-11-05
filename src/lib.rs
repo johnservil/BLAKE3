@@ -305,6 +305,9 @@ pub(crate) enum Ran {
     /// A batch of messages of up to a chunk, two or more, ran on the
     /// kernels' table a run at a time (many::hash_many_on's short path).
     ShortRun = 128,
+    /// Whole chunks or parents were hashed on a wider kernel than their
+    /// count, the spare lanes a copy of the last (rounded_lanes).
+    RoundedUp = 256,
 }
 
 #[cfg(all(test, feature = "std"))]
@@ -779,6 +782,63 @@ fn spare_lane(platform: Platform, whole: usize, partial: usize) -> Option<usize>
     }
 }
 
+/// The lanes `count` whole inputs run on when the kernels' cascade would
+/// take two or three passes for them: on x86 the many-lane kernels hash 8
+/// (AVX2; 16 on AVX-512) at a time, then 4, then 2, then 1, each pass
+/// about as long as a 1-lane pass of the same blocks (i7-12700K, cycles a
+/// block-step from the thread's counts: 1 lane 226, 2 lanes 248, 4 lanes
+/// 338, 8 lanes 516), so 3 inputs cost a 2-pass and a 1-pass (474) where
+/// one 4-lane pass costs 338, and 7 cost 4 + 2 + 1 (812) where 8 lanes
+/// cost 516. Padding the count up to the width with copies of the last
+/// input, whose results are dropped, takes the one pass. None where the
+/// cascade is already one pass, or the width would not pay (5 and 6 on
+/// AVX2 pay 9-12%; measured November 5, 2026).
+fn rounded_lanes(platform: Platform, count: usize) -> Option<usize> {
+    match (platform, count) {
+        #[cfg(blake3_sse41_ffi)]
+        (Platform::SSE41, 3) => Some(4),
+        #[cfg(blake3_avx2_ffi)]
+        (Platform::AVX2, 3) => Some(4),
+        #[cfg(blake3_avx2_ffi)]
+        (Platform::AVX2, 5..=7) => Some(8),
+        #[cfg(blake3_avx512_ffi)]
+        (Platform::AVX512, 3) => Some(4),
+        #[cfg(blake3_avx512_ffi)]
+        (Platform::AVX512, 5..=7) => Some(8),
+        _ => None,
+    }
+}
+
+/// `platform.hash_many` over `inputs`, on `rounded_lanes` where a wider
+/// kernel takes the count in one pass: the spare lanes hash a copy of the
+/// last input, into scratch.
+fn hash_many_rounded<const N: usize>(
+    platform: Platform,
+    inputs: &[&[u8; N]],
+    key: &CVWords,
+    counter: u64,
+    increment_counter: IncrementCounter,
+    flags: u8,
+    flags_start: u8,
+    flags_end: u8,
+    out: &mut [u8],
+) {
+    if let Some(lanes) = rounded_lanes(platform, inputs.len()) {
+        ran(Ran::RoundedUp);
+        let last = *inputs.last().expect("a count that rounds up is 3 or more");
+        let mut padded = ArrayVec::<&[u8; N], 8>::new();
+        padded.try_extend_from_slice(inputs).unwrap();
+        while padded.len() < lanes {
+            padded.push(last);
+        }
+        let mut scratch = [0u8; 8 * OUT_LEN];
+        platform.hash_many(&padded, key, counter, increment_counter, flags, flags_start, flags_end, &mut scratch[..lanes * OUT_LEN]);
+        out[..inputs.len() * OUT_LEN].copy_from_slice(&scratch[..inputs.len() * OUT_LEN]);
+    } else {
+        platform.hash_many(inputs, key, counter, increment_counter, flags, flags_start, flags_end, out);
+    }
+}
+
 // Use SIMD parallelism to hash up to MAX_SIMD_DEGREE chunks at the same time
 // on a single thread. Write out the chunk chaining values and return the
 // number of chunks hashed. These chunks are never the root and never empty;
@@ -831,7 +891,7 @@ fn compress_chunks_parallel(input: &[u8], key: &CVWords, chunk_counter: u64, fla
         }
         return chunks_array.len() + 1;
     }
-    platform.hash_many(&chunks_array, key, chunk_counter, IncrementCounter::Yes, flags, CHUNK_START, CHUNK_END, out);
+    hash_many_rounded(platform, &chunks_array, key, chunk_counter, IncrementCounter::Yes, flags, CHUNK_START, CHUNK_END, out);
 
     // Hash the remaining partial chunk, if there is one. Note that the empty
     // chunk (meaning the empty message) is a different codepath.
@@ -863,7 +923,8 @@ fn compress_parents_parallel(child_chaining_values: &[u8], key: &CVWords, flags:
     for parent in &mut parents_exact {
         parents_array.push(parent.try_into().unwrap());
     }
-    platform.hash_many(
+    hash_many_rounded(
+        platform,
         &parents_array,
         key,
         0, // Parents always use counter 0.

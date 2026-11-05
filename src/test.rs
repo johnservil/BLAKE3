@@ -231,6 +231,31 @@ pub(crate) fn every_platform() -> Vec<crate::platform::Platform> {
     all
 }
 
+/// A message of 3 whole chunks (and of 7, on 8 lanes) runs its chunks on
+/// the rounded width in one pass (Ran::RoundedUp); 2, 4 and 8 chunks take
+/// the kernel at their own width. The digests are the test vectors' either
+/// way, so the decision alone can catch a mutant that drops the rounding.
+#[test]
+#[cfg(all(target_arch = "x86_64", blake3_sse41_ffi, feature = "std"))]
+fn test_whole_chunks_round_up_to_the_lanes() {
+    use crate::{CHUNK_LEN, Ran};
+    let input = std::vec![0x5au8; 8 * CHUNK_LEN];
+    let ran = |len: usize| {
+        crate::RAN.with(|r| r.set(0));
+        std::hint::black_box(crate::convenience::hash(&input[..len]));
+        crate::RAN.with(|r| r.get()) & Ran::RoundedUp as u32 != 0
+    };
+    assert!(ran(3 * CHUNK_LEN), "3 whole chunks: 4 lanes, one pass");
+    assert!(!ran(2 * CHUNK_LEN), "2 whole chunks: the pair");
+    assert!(!ran(4 * CHUNK_LEN), "4 whole chunks: 4 lanes already");
+    assert!(!ran(8 * CHUNK_LEN), "8 whole chunks: 8 lanes already");
+    if crate::platform::Platform::avx2().is_some() {
+        assert!(ran(7 * CHUNK_LEN), "7 whole chunks on AVX2: 8 lanes, one pass");
+    }
+    // 3 chunks and a partial take the spare lane, not the rounding.
+    assert!(!ran(3 * CHUNK_LEN + 500), "3 whole and a partial: the spare lane's pass");
+}
+
 /// The decisions between equally correct paths, exactly as their rules
 /// say (BLAKE3 #219: a mutant that moves one takes the other path, whose
 /// digest is the same, so only the decision itself can catch it). The
@@ -262,6 +287,33 @@ fn test_the_paths_chosen_exactly() {
         assert_eq!(crate::spare_lane(Platform::AVX512, 1, BLOCK_LEN + 1), Some(4));
         assert_eq!(crate::spare_lane(Platform::AVX512, 1, BLOCK_LEN), None);
         assert_eq!(crate::spare_lane(Platform::AVX512, 3, 0), None);
+    }
+    // rounded_lanes(platform, whole inputs): the width that takes the count
+    // in one pass where the kernels' cascade would take two or three. 3
+    // on 4 lanes everywhere; 5, 6 and 7 on 8 lanes where there are 8; a
+    // count the cascade already takes in one pass, or that no width
+    // pays for (SSE4.1's 5 to 7, 9 and up), none.
+    for (platform, count, lanes) in [
+        (Platform::SSE41, 3, Some(4)),
+        (Platform::AVX2, 3, Some(4)),
+        (Platform::AVX2, 5, Some(8)),
+        (Platform::AVX2, 6, Some(8)),
+        (Platform::AVX2, 7, Some(8)),
+        (Platform::SSE41, 5, None),
+        (Platform::SSE41, 7, None),
+        (Platform::AVX2, 1, None),
+        (Platform::AVX2, 2, None),
+        (Platform::AVX2, 4, None),
+        (Platform::AVX2, 8, None),
+        (Platform::AVX2, 9, None),
+    ] {
+        assert_eq!(crate::rounded_lanes(platform, count), lanes, "{platform:?}, {count} inputs");
+    }
+    #[cfg(blake3_avx512_ffi)]
+    {
+        assert_eq!(crate::rounded_lanes(Platform::AVX512, 3), Some(4));
+        assert_eq!(crate::rounded_lanes(Platform::AVX512, 7), Some(8));
+        assert_eq!(crate::rounded_lanes(Platform::AVX512, 9), None, "9 to 15 on 16 lanes awaits a measurement on an AVX-512 machine");
     }
     // pair::takes(platform, len): a whole chunk and a partial one of two
     // blocks or more, on AVX2 or AVX-512.
