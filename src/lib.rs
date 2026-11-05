@@ -846,17 +846,26 @@ fn hash_many_rounded<const N: usize>(
     flags_end: u8,
     out: &mut [u8],
 ) {
-    // Past the widest kernel: its whole groups, then the rest, which the
-    // rule rounds. The groups are some and not all (progress on both
-    // sides, whatever the rule says), so the recursion ends.
+    // Past the widest kernel, where the rest would round: its whole groups
+    // first, one call each, then the rest below (a loop, each turn a whole
+    // group fewer).
     let widest = lane_widths(platform).last().copied().unwrap_or(usize::MAX);
-    let groups = inputs.len() / widest * widest;
-    if groups > 0 && groups < inputs.len() && rounded_lanes(platform, inputs.len() - groups).is_some() {
-        let (head, rest) = inputs.split_at(groups);
-        platform.hash_many(head, key, counter, increment_counter, flags, flags_start, flags_end, &mut out[..groups * OUT_LEN]);
-        let counter = if increment_counter.yes() { counter + groups as u64 } else { counter };
-        hash_many_rounded(platform, rest, key, counter, increment_counter, flags, flags_start, flags_end, &mut out[groups * OUT_LEN..]);
-    } else if let Some(lanes) = rounded_lanes(platform, inputs.len()) {
+    let mut inputs = inputs;
+    let mut out = out;
+    let mut counter = counter;
+    if inputs.len() > widest && rounded_lanes(platform, inputs.len() % widest).is_some() {
+        while inputs.len() > widest {
+            let (head, rest) = inputs.split_at(widest);
+            let (head_out, rest_out) = out.split_at_mut(widest * OUT_LEN);
+            platform.hash_many(head, key, counter, increment_counter, flags, flags_start, flags_end, head_out);
+            if increment_counter.yes() {
+                counter += widest as u64;
+            }
+            inputs = rest;
+            out = rest_out;
+        }
+    }
+    if let Some(lanes) = rounded_lanes(platform, inputs.len()) {
         ran(Ran::RoundedUp);
         let last = *inputs.last().expect("a count that rounds up is 3 or more");
         let mut padded = ArrayVec::<&[u8; N], 32>::new();
