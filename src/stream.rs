@@ -341,12 +341,17 @@ impl Storage {
 
 /// A ring of `len` bytes, kept for good, as the storage is: zeroed,
 /// untouched pages (only the bytes used are faulted in: calloc maps them
-/// lazily, where an aligned allocation would write them all), starting at
-/// the first 64-byte boundary, as each room's offset is, so every room
-/// starts a cache line (glibc puts a 2 MiB block 16 bytes into one).
+/// lazily, where an aligned allocation would write them all), starting
+/// half a page in: at its first address 2048 bytes past a 4 KiB boundary.
+/// Every room then starts a cache line (each room's offset is a multiple
+/// of 64), and a room never shares its page offset with a source the
+/// program allocated (glibc's large blocks start 16 bytes into a page,
+/// aligned buffers at a page or a line): at the same offset, a copy's
+/// stores alias its loads 4 KiB apart, and glibc's copy runs backward,
+/// 4-7% slower at 1 and 4 MiB messages (Sam Shackleton, #237, EPYC 9255).
 fn ring(len: usize) -> *mut u8 {
-    let block = Box::leak(std::vec![0u8; len + 64].into_boxed_slice());
-    let start = block.as_ptr().align_offset(64);
+    let block = Box::leak(std::vec![0u8; len + 4096].into_boxed_slice());
+    let start = (2048 + 4096 - block.as_ptr() as usize % 4096) % 4096;
     block[start..].as_mut_ptr()
 }
 
@@ -1667,6 +1672,14 @@ mod test {
         }
         golden.check(0x6449952b3442e340);
         assert_eq!(handed.len(), lens.len() - 1, "a place back per message read, none for the failed reader");
+    }
+
+    /// Both rings start half a page in, so no room shares its page offset
+    /// with a source a program allocated (`ring`'s 4 KiB aliasing, #237).
+    #[test]
+    fn test_the_rings_start_half_a_page_in() {
+        let s = Storage::new();
+        assert_eq!((s.ring as usize % 4096, s.long_ring as usize % 4096), (2048, 2048));
     }
 
     /// A ring's room, exact: a 16-byte ring 10 bytes in flight (head 110,
