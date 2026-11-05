@@ -335,12 +335,15 @@ pub(crate) enum Counted {
     /// A message whose bytes past it a stream's batch fill zeroed
     /// (Stream::submit_batch_with).
     BatchZeroed = 1,
+    /// One root output block computed alone (Output::root_output_block):
+    /// OutputReader::fill's tails, where its whole blocks go to xof_many.
+    RootBlock = 2,
 }
 
 #[cfg(all(test, feature = "std"))]
 std::thread_local! {
     /// This thread's counts since the test last cleared them, by Counted.
-    pub(crate) static COUNTED: [core::cell::Cell<u64>; 2] = const { [core::cell::Cell::new(0), core::cell::Cell::new(0)] };
+    pub(crate) static COUNTED: [core::cell::Cell<u64>; 3] = const { [core::cell::Cell::new(0), core::cell::Cell::new(0), core::cell::Cell::new(0)] };
 }
 
 /// Count one of `what`: in the tests' record, and nothing in any other
@@ -659,6 +662,7 @@ impl Output {
     }
 
     fn root_output_block(&self) -> [u8; 2 * OUT_LEN] {
+        counted(Counted::RootBlock);
         self.platform.compress_xof(&self.input_chaining_value, &self.block, self.block_len, self.counter, self.flags | ROOT)
     }
 }
@@ -1368,21 +1372,22 @@ impl OutputReader {
             self.fill_one_block(&mut buf);
         }
 
+        // The whole blocks at once (xof_many takes none as none), then the
+        // tail block alone. Each guard here spares a root block computed for
+        // nothing, which test_fill_computes_each_block_once counts.
         let full_blocks = buf.len() / BLOCK_LEN;
         let full_blocks_len = full_blocks * BLOCK_LEN;
-        if full_blocks > 0 {
-            debug_assert_eq!(0, self.position_within_block);
-            self.inner.platform.xof_many(
-                &self.inner.input_chaining_value,
-                &self.inner.block,
-                self.inner.block_len,
-                self.inner.counter,
-                self.inner.flags | ROOT,
-                &mut buf[..full_blocks_len],
-            );
-            self.inner.counter += full_blocks as u64;
-            buf = &mut buf[full_blocks * BLOCK_LEN..];
-        }
+        debug_assert!(full_blocks == 0 || self.position_within_block == 0);
+        self.inner.platform.xof_many(
+            &self.inner.input_chaining_value,
+            &self.inner.block,
+            self.inner.block_len,
+            self.inner.counter,
+            self.inner.flags | ROOT,
+            &mut buf[..full_blocks_len],
+        );
+        self.inner.counter += full_blocks as u64;
+        buf = &mut buf[full_blocks_len..];
 
         if !buf.is_empty() {
             debug_assert!(buf.len() < BLOCK_LEN);

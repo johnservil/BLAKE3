@@ -484,6 +484,31 @@ fn test_xof_clone_and_empty_fill() {
     golden.check(0x5bbf88ec4d96901e);
 }
 
+/// fill computes each output block once: the whole blocks of a fill from
+/// a block boundary go to xof_many (no block alone), a tail or a head
+/// inside a block is one block alone, an empty fill none. The guards
+/// that keep it so are speed alone (the bytes are right either way), so
+/// the count is what catches a mutant of them (BLAKE3 #219, #238).
+#[cfg(feature = "std")]
+#[test]
+fn test_fill_computes_each_block_once() {
+    let blocks = |call: &mut dyn FnMut()| {
+        crate::COUNTED.with(|c| c[crate::Counted::RootBlock as usize].set(0));
+        call();
+        crate::COUNTED.with(|c| c[crate::Counted::RootBlock as usize].get())
+    };
+    let mut reader = crate::Hasher::new(crate::Mode::Plain).update(b"foo").finalize_xof();
+    let mut buf = [0u8; 300];
+    assert_eq!(blocks(&mut || reader.fill(&mut buf[..128])), 0, "two whole blocks from the boundary: xof_many alone");
+    assert_eq!(blocks(&mut || reader.fill(&mut [])), 0, "an empty fill computes nothing");
+    assert_eq!(blocks(&mut || reader.fill(&mut buf[..100])), 1, "a block and 36 bytes: the tail block alone");
+    assert_eq!(blocks(&mut || reader.fill(&mut buf[..28])), 1, "the rest of that block, from inside it");
+    assert_eq!(blocks(&mut || reader.fill(&mut buf[..64])), 0, "one whole block from the boundary: xof_many");
+    assert_eq!(blocks(&mut || reader.fill(&mut buf[..10])), 1, "10 bytes into a block");
+    assert_eq!(blocks(&mut || reader.fill(&mut buf[..200])), 2, "54 bytes to the boundary, two whole blocks, 18 into the next: two alone");
+    assert_eq!(reader.position(), 128 + 100 + 28 + 64 + 10 + 200);
+}
+
 /// pair's hash_many_blocks on every platform this build has: AVX2's and
 /// AVX-512's assembly, and the fallback, one input after another on the
 /// platform's compression, which SSE4.1 takes (BLAKE3 #238: no test ran
