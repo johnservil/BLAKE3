@@ -181,10 +181,16 @@ impl Kernels for PlatformKernels<'_> {
         // One kernel call that keeps off the stack (src/ffi_chunk_root.rs):
         // a caller's just-written message has none of our loads to hold back.
         // Sound: detect() found the platform's instructions.
+        // The integer-register kernel where it pays (platform::gpr_chunk_root).
         #[cfg(target_arch = "x86_64")]
-        match self.platform {
-            crate::platform::Platform::AVX512 => unsafe { crate::chunk_root::chunk_root(true, input, self.key, self.flags) },
-            crate::platform::Platform::SSE41 | crate::platform::Platform::AVX2 => unsafe { crate::chunk_root::chunk_root(false, input, self.key, self.flags) },
+        {
+            use crate::chunk_root::{Root, chunk_root};
+            let kernel = match self.platform {
+                _ if crate::platform::gpr_chunk_root() => Root::Gpr,
+                crate::platform::Platform::AVX512 => Root::Avx512,
+                crate::platform::Platform::SSE41 | crate::platform::Platform::AVX2 => Root::Sse41,
+            };
+            unsafe { chunk_root(kernel, input, self.key, self.flags) }
         }
     }
 

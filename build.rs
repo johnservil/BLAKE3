@@ -74,6 +74,8 @@ fn build_sse41_avx2_assembly() {
     // in one call).
     build.file("c/blake3_partial_x86-64_unix.S");
     build.file("c/blake3_chunk_root_x86-64_unix.S");
+    // The same, its state in integer registers, for AMD from Zen 5 (src/ffi_chunk_root.rs's Root::Gpr).
+    build.file("c/blake3_gpr_chunk_root_x86-64_unix.S");
     build.compile("blake3_sse41_avx2_assembly");
 }
 
