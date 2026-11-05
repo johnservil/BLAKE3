@@ -42,6 +42,11 @@ use crate::platform::Platform;
 pub(crate) enum Case {
     /// hash() of `len` bytes starting `offset` bytes into the input.
     Hash { offset: usize, len: usize },
+    /// performance::hash's body (crate::hash_hot) over the same: on x86-64
+    /// CPUs that take it, the integer-register chunk root, which hash()
+    /// never reaches. Only the x86-64 list has one.
+    #[cfg_attr(target_arch = "aarch64", allow(dead_code))]
+    Hot { offset: usize, len: usize },
     /// hash_many() of `count` messages of `len` bytes, in slots of whole
     /// blocks, zero between messages, the batch's base `offset` bytes past
     /// an allocation's start.
@@ -154,6 +159,10 @@ pub(crate) const CASES: &[(Case, &str)] = &[
         Xof { len: 100, skip: 37, out: 1100 },
         "seventeen blocks and more of extended output, from an unaligned position, through a Hasher: the extended-output kernels",
     ),
+    (
+        Hot { offset: 2, len: 700 },
+        "performance::hash of ten blocks and a partial one, unaligned: the integer-register chunk root on AMD from Zen 5 (the compact kernel elsewhere)",
+    ),
 ];
 
 /// The largest input any case reads, offset included.
@@ -209,7 +218,7 @@ pub(crate) fn chain(mut outputs: impl FnMut(Case, &[u8], &[u8; 32], &mut [u8]) -
     let mut previous = [0u8; 32];
     for (index, &(case, _)) in CASES.iter().enumerate() {
         let (start, len, count) = match case {
-            Hash { offset, len } => (offset, len, 1),
+            Hash { offset, len } | Hot { offset, len } => (offset, len, 1),
             Many { len, count, .. } => (0, len, count),
             ChunkValues { chunks } => (0, chunks * crate::CHUNK_LEN, 1),
             Keyed { len } | Derive { len } | Incremental { len, .. } | Xof { len, .. } => (0, len, 1),
@@ -276,7 +285,7 @@ const EXPECTED: [u64; 42] = [
 ];
 
 #[cfg(not(target_arch = "aarch64"))]
-const EXPECTED: [u64; 8] = [
+const EXPECTED: [u64; 9] = [
     0x64e806087be9bc85,
     0x7d406241656b8c26,
     0xe80762bc37755db3,
@@ -285,6 +294,7 @@ const EXPECTED: [u64; 8] = [
     0x9e68560dd612af97,
     0xe1a4c5967b2225ff,
     0xdb630ec123f1460e,
+    0x035b090661e66536,
 ];
 
 /// A case's outputs from this build, into `out`, through the entry points'
@@ -297,6 +307,7 @@ pub(crate) fn outputs(platform: Platform, case: Case, input: &[u8], previous: &[
     };
     match case {
         Hash { offset, len } => digest(crate::hash_serial_from(platform, &input[offset..][..len], crate::IV, 0)),
+        Hot { offset, len } => digest(crate::hash_hot_from(platform, &input[offset..][..len], crate::IV, 0)),
         Many { offset, len, count } => many(platform, &input[..len * count], offset, len, &mut out[..count * crate::OUT_LEN]),
         ChunkValues { chunks } => chunk_values(platform, &input[..chunks * crate::CHUNK_LEN], previous, out),
         Keyed { len } => digest(crate::hash_serial_from(platform, &input[..len], &words(previous), crate::KEYED_HASH)),
@@ -671,7 +682,7 @@ mod test {
         use crate::Mode;
         use crate::test::official;
         match case {
-            Hash { offset, len } => official::hash(Mode::Plain, &input[offset..][..len]).to_vec(),
+            Hash { offset, len } | Hot { offset, len } => official::hash(Mode::Plain, &input[offset..][..len]).to_vec(),
             Many { len, count, .. } => (0..count).flat_map(|i| official::hash(Mode::Plain, &input[i * len..][..len])).collect(),
             ChunkValues { chunks } => {
                 let key = crate::platform::words_from_le_bytes_32(previous);

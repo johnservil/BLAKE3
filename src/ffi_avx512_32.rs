@@ -54,7 +54,7 @@ pub(crate) unsafe fn hash16<const N: usize>(inputs: &[&[u8; N]], key: &CVWords, 
 
 // Filled from the independent portable compression callback in the
 // reference-table test, never from these assembly kernels' output.
-pub(crate) const SELF_TEST_EXPECTED: [u64; 3] = [0x8418db51e3b4a019, 0x675dde19182e7dd6, 0xc1b6cd25e25d91f8];
+pub(crate) const SELF_TEST_EXPECTED: [u64; 3] = [0xbb42e8c687193f9c, 0x6c556305af1ea2ad, 0xa6ed079fd4cbfbe9];
 
 pub(crate) fn check_self_test(index: usize, folded: u64) {
     let entry = ["AVX-512 k32", "AVX-512 p32", "AVX-512 p16"][index];

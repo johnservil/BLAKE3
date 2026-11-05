@@ -31,6 +31,13 @@ use crate::{Hash, IV, Mode, OutputReader};
 /// share one accelerator: one runs at full speed and the others at about
 /// two thirds of it.
 ///
+/// **For a hash now and then**: its kernels are the compact ones, which
+/// lose least when a call finds them gone from the caches. A program that
+/// hashes message after message gets more from
+/// [`performance::hash`](crate::performance::hash) (faster back to back on
+/// some CPUs, slower after a pause) or, better, from a batch or a
+/// [stream](crate::performance::stream).
+///
 /// The first hash in a process first runs a self-test (see the crate's
 /// documentation), under 0.2 ms; [`initialize`](crate::initialize) moves it to start-up.
 // Inlined into its caller: its one call, out of line, sat apart from

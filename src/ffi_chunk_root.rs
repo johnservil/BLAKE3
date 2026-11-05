@@ -18,52 +18,13 @@ pub(crate) enum Root {
     /// The SIMD kernel on AVX-512F and AVX-512VL (xmm registers).
     Avx512,
     /// The state in integer registers (c/blake3_gpr_chunk_root_x86-64_unix.S,
-    /// SSE2 only): on AMD from Zen 5 (platform::gpr_chunk_root) while warm
-    /// (gpr_warm), where back-to-back calls of 128 B to 1 KiB ran 19-35%
-    /// faster than the SIMD kernel's (EPYC 9255, Ryzen 7 9700X); on the
-    /// i7-12700K 20-25% slower (BLAKE3 #150), so not there.
+    /// SSE2 only): performance::hash's on AMD from Zen 5
+    /// (platform::gpr_chunk_root, crate::hash_hot), where back-to-back calls
+    /// of 128 B to 1 KiB ran 19-35% faster than the SIMD kernel's (EPYC
+    /// 9255, Ryzen 7 9700X), and after other work up to twice as slow (its
+    /// 2,996 bytes of code, the AVX-512 kernel's 850); on the i7-12700K
+    /// 20-25% slower warm (BLAKE3 #150), so not there.
     Gpr,
-}
-
-/// The TSC ticks within which a thread's chunk roots count as back to back:
-/// 400,000, 80-133 us at the 3-5 GHz of the CPUs that take Root::Gpr.
-#[cfg(feature = "std")]
-const WARM_TICKS: u64 = 400_000;
-
-#[cfg(all(test, feature = "std"))]
-std::thread_local! {
-    /// The tests' time stamp counter: gpr_warm reads it in place of RDTSC where set.
-    pub(crate) static TEST_TSC: core::cell::Cell<Option<u64>> = const { core::cell::Cell::new(None) };
-}
-
-/// Whether this thread's last chunk root was within WARM_TICKS: the GPR
-/// kernel's code is then likely near. Only then does a CPU that takes
-/// Root::Gpr take it; after a pause, the SIMD kernel runs. The GPR kernel's
-/// 2,996 bytes of straight-line code (the AVX-512 kernel's 850) made a call
-/// after other work 59-108% slower on the EPYC 9255 and the Ryzen 7 9700X,
-/// and prefetching that code into L2 first did not recover it; taken only
-/// while warm, no cell of bench-hashes check read slower on either.
-#[cfg(feature = "std")]
-#[inline(always)]
-pub(crate) fn gpr_warm() -> bool {
-    std::thread_local! {
-        static LAST: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
-    }
-    // Sound: RDTSC exists on every x86-64 CPU.
-    #[allow(unused_mut)]
-    let mut now = unsafe { core::arch::x86_64::_rdtsc() };
-    #[cfg(test)]
-    if let Some(t) = TEST_TSC.with(core::cell::Cell::get) {
-        now = t;
-    }
-    now.wrapping_sub(LAST.with(|last| last.replace(now))) <= WARM_TICKS
-}
-
-/// Without std, no thread-local clock: the SIMD kernel always.
-#[cfg(not(feature = "std"))]
-#[inline(always)]
-pub(crate) fn gpr_warm() -> bool {
-    false
 }
 
 /// `input`'s root output (its first 32 bytes), one chunk at counter 0, on
@@ -147,25 +108,6 @@ mod test {
         }
         v.push(Root::Gpr);
         v
-    }
-
-    /// gpr_warm, on the tests' clock (BLAKE3 #219: its threshold and its
-    /// comparison only cost speed, so the decisions are counted): a thread's
-    /// first chunk root is cold; one within WARM_TICKS of the last is warm,
-    /// at the boundary too; one past it is cold; each call resets the clock.
-    #[test]
-    fn test_gpr_warm_on_the_tests_clock() {
-        let at = |t: u64| {
-            TEST_TSC.with(|c| c.set(Some(t)));
-            gpr_warm()
-        };
-        let t = 1u64 << 40;
-        assert!(!at(t), "the first call is cold");
-        assert!(at(t + 1), "back to back");
-        assert!(at(t + 1 + WARM_TICKS), "exactly WARM_TICKS later: warm");
-        assert!(!at(t + 2 + 2 * WARM_TICKS + 1), "past WARM_TICKS: cold");
-        assert!(at(t + 2 + 2 * WARM_TICKS + 1 + 10), "each call resets the clock");
-        TEST_TSC.with(|c| c.set(None));
     }
 
     /// Every length of 0 to 1024 bytes, at four alignments, in the three
