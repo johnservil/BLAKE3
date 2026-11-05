@@ -281,8 +281,7 @@ pub(crate) fn subtree_children(input: &[u8], key: &crate::CVWords, counter: u64,
     assert_eq!(counter % (input.len() / CHUNK_LEN) as u64, 0, "a subtree starts at a multiple of its chunk count");
     let Some((pool, _caller)) = spare_pool() else { return crate::compress_subtree_to_parent_node(input, 0, key, counter, flags, pool_platform()) };
     let (pieces, mut cvs) = tree_cvs(pool, input, key, counter, flags);
-    let count = merge_to_children(&pieces, &mut cvs, key, flags);
-    debug_assert_eq!(count, 2);
+    merge_to_children(&pieces, &mut cvs, key, flags);
     let mut children = [0u8; 2 * crate::OUT_LEN];
     children[..crate::OUT_LEN].copy_from_slice(&cvs[0]);
     children[crate::OUT_LEN..].copy_from_slice(&cvs[1]);
@@ -559,14 +558,13 @@ fn sme2_prefix(len: usize, threads: usize) -> usize {
 /// The final two CVs belong to the root's children, including a short right
 /// subtree, on the pool's platform like the pieces.
 fn merge_root(pieces: &[Piece], cvs: &mut [ChainingValue], key: &crate::CVWords, flags: u8) -> Hash {
-    let count = merge_to_children(pieces, cvs, key, flags);
-    debug_assert_eq!(count, 2);
+    merge_to_children(pieces, cvs, key, flags);
     crate::hasher::parent_output(&cvs[0], &cvs[1], key, flags, pool_platform()).root_hash()
 }
 
 /// [`merge_root`] up to the root's two children, left in `cvs[0]` and
-/// `cvs[1]`; returns 2.
-fn merge_to_children(pieces: &[Piece], cvs: &mut [ChainingValue], key: &crate::CVWords, flags: u8) -> usize {
+/// `cvs[1]`.
+fn merge_to_children(pieces: &[Piece], cvs: &mut [ChainingValue], key: &crate::CVWords, flags: u8) {
     debug_assert_eq!(pieces.len(), cvs.len());
     debug_assert!(pieces.len() >= 2);
     debug_assert_eq!(pieces[0].offset, 0);
@@ -600,7 +598,7 @@ fn merge_to_children(pieces: &[Piece], cvs: &mut [ChainingValue], key: &crate::C
         count = write;
         width *= 2;
     }
-    count
+    debug_assert_eq!(count, 2, "the root's two children");
 }
 
 /// [`cut_with_prefix`] with no prefix (the tests').

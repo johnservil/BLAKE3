@@ -208,15 +208,14 @@ impl Hasher {
         None
     }
 
-    /// The held group's subtree, as [`HasherCore::update_with_results`]
-    /// takes it (its two halves' values at chunk zero, else its own), into
-    /// the core; the stage empty again.
+    /// The held group's subtree, as [`HasherCore::push_group`] takes it
+    /// (its two halves' values at chunk zero, else its own), into the
+    /// core; the stage empty again.
     #[cfg(feature = "std")]
     pub(crate) fn take_held(&mut self, result: &[u8; BLOCK_LEN]) {
         let staged = core::mem::replace(&mut self.staged, 0);
-        // Sound: as in gather_part.
-        let bytes = unsafe { core::slice::from_raw_parts(self.stage.as_ptr() as *const u8, staged) };
-        self.core.update_with_results(bytes, &mut core::iter::once(result));
+        assert_eq!(staged, STAGE_LEN, "a held group fills the stage");
+        self.core.push_group(result);
     }
 
     /// The root's output: the core's, after the stage's bytes.
@@ -443,40 +442,24 @@ impl HasherCore {
         self.cv_stack.push(*new_cv);
     }
 
-    /// [`update`](Hasher::update) with every whole subtree's result taken
-    /// from `results`, one a whole subtree in order (in parts of
-    /// [`lanes::TASK_LEN`], as [`hasher::subtree_len`] cuts them), as
-    /// [`lanes::Task`] computes them.
+    /// [`update`](Hasher::update) with a held group (STAGE_LEN bytes from a
+    /// multiple of STAGE_LEN, the core's chunk empty: Hasher::take_held,
+    /// its one caller), whose subtree value `result` holds as
+    /// [`lanes::Task`] computes it: at chunk zero its two halves' values
+    /// (the group may be the root's), elsewhere its own. The group is one
+    /// whole subtree, so nothing of it reaches the chunk state.
     #[cfg(feature = "std")]
-    pub(crate) fn update_with_results<'a>(&mut self, input: &[u8], results: &mut impl Iterator<Item = &'a [u8; BLOCK_LEN]>) {
-        for part in input.chunks(lanes::TASK_LEN) {
-            self.update_part_with_results(part, results);
+    pub(crate) fn push_group(&mut self, result: &[u8; BLOCK_LEN]) {
+        const CHUNKS: u64 = (STAGE_LEN / CHUNK_LEN) as u64;
+        let counter = self.chunk_state.chunk_counter;
+        assert!(self.chunk_state.count() == 0 && counter % CHUNKS == 0, "a held group starts at a group boundary, the core's chunk empty");
+        if counter == 0 {
+            self.push_cv(result[..OUT_LEN].try_into().unwrap(), 0);
+            self.push_cv(result[OUT_LEN..].try_into().unwrap(), CHUNKS / 2);
+        } else {
+            self.push_cv(result[..OUT_LEN].try_into().unwrap(), counter);
         }
-    }
-
-    #[cfg(feature = "std")]
-    fn update_part_with_results<'a>(&mut self, mut input: &[u8], results: &mut impl Iterator<Item = &'a [u8; BLOCK_LEN]>) {
-        // Its one caller hands it a whole held group, from a group boundary,
-        // where the core's chunk is empty (Hasher::take_held).
-        debug_assert_eq!(self.chunk_state.count(), 0, "a held group starts where the core's chunk is empty");
-        while input.len() > CHUNK_LEN {
-            let len = hasher::subtree_len(self.chunk_state.chunk_counter, input.len());
-            let chunks = (len / CHUNK_LEN) as u64;
-            let result = results.next().expect("a result for every planned subtree");
-            let counter = self.chunk_state.chunk_counter;
-            if counter == 0 && len > CHUNK_LEN {
-                self.push_cv(result[..OUT_LEN].try_into().unwrap(), counter);
-                self.push_cv(result[OUT_LEN..].try_into().unwrap(), counter + chunks / 2);
-            } else {
-                self.push_cv(result[..OUT_LEN].try_into().unwrap(), counter);
-            }
-            self.chunk_state.chunk_counter += chunks;
-            input = &input[len..];
-        }
-        if !input.is_empty() {
-            self.chunk_state.update(input);
-            self.merge_cv_stack(self.chunk_state.chunk_counter);
-        }
+        self.chunk_state.chunk_counter += CHUNKS;
     }
 
     /// `update`'s loop; with `pooled`, whole subtrees of

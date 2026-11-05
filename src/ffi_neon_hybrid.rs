@@ -797,9 +797,11 @@ unsafe fn hash_many_in<const N: usize>(
 
 /// Separate inputs of `blocks` whole blocks (1 to 16) at one `counter`, the
 /// last block `last_len` bytes (1 to 64, zero past it), from a table of
-/// `count` pointers: the parent plans, as [`hash_many_last_len`] runs them
-/// for inputs of a const length, `flags` on every block. Unsafe because the CPU must have NEON and
-/// every pointer must reach `blocks` blocks.
+/// `count` pointers (1 to GROUP: its one caller, many.rs's two-chunk
+/// messages, hands it a group at a time): the parent plans, as
+/// [`hash_many_last_len`] runs them for inputs of a const length, `flags`
+/// on every block. Unsafe because the CPU must have NEON and every pointer
+/// must reach `blocks` blocks.
 #[allow(clippy::too_many_arguments)]
 pub unsafe fn hash_messages_raw(
     table: *const *const u8,
@@ -813,16 +815,11 @@ pub unsafe fn hash_messages_raw(
     last_len: usize,
     out: &mut [u8],
 ) {
-    assert!(out.len() >= count * OUT_LEN, "room for every digest");
+    assert!((1..=GROUP).contains(&count) && out.len() >= count * OUT_LEN, "1 to GROUP inputs, room for every digest");
     assert!((1..=16).contains(&blocks) && (1..=BLOCK_LEN).contains(&last_len), "1 to 16 blocks, the last of 1 to 64 bytes");
     let packed = flags as u64 | (flags_start as u64) << 8 | (flags_end as u64) << 16 | (last_len as u64) << 24;
-    let mut done = 0;
-    while done < count {
-        let n = core::cmp::min(GROUP, count - done);
-        let family = family();
-        unsafe { run_plan(family.parent_plans[n], family.parent_kernels, table.add(done), blocks, key, counter, 0, packed, &mut out[done * OUT_LEN..]) };
-        done += n;
-    }
+    let family = family();
+    unsafe { run_plan(family.parent_plans[count], family.parent_kernels, table, blocks, key, counter, 0, packed, out) };
 }
 
 #[cfg(all(test, feature = "std"))]
