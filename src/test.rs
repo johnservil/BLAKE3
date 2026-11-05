@@ -258,6 +258,24 @@ fn test_whole_chunks_round_up_to_the_lanes() {
     }
     // 3 chunks and a partial take the spare lane, not the rounding.
     assert_eq!(ran(3 * CHUNK_LEN + 500), (false, 0), "3 whole and a partial: the spare lane's pass");
+    // AVX-512: 9 to 15 on 16 lanes; past 16, the whole group of 16 and the
+    // rest rounded (19 = 16 + 3 on 4), or 32 lanes where that kernel runs.
+    #[cfg(blake3_avx512_ffi)]
+    if crate::platform::Platform::avx512().is_some() {
+        let input = std::vec![0x5au8; 19 * CHUNK_LEN];
+        let ran = |len: usize| {
+            crate::RAN.with(|r| r.set(0));
+            crate::ROUNDED_WIDTH.with(|w| w.set(0));
+            std::hint::black_box(crate::convenience::hash(&input[..len]));
+            (crate::RAN.with(|r| r.get()) & Ran::RoundedUp as u32 != 0, crate::ROUNDED_WIDTH.with(|w| w.get()))
+        };
+        // 11 chunks on 16 lanes; their 11 chaining values as 5 parent blocks and one left over: 5 parents on 8.
+        assert_eq!(ran(11 * CHUNK_LEN), (true, 16 | 8), "11 whole chunks on AVX-512: 16 lanes, their 5 parents on 8");
+        assert_eq!(ran(16 * CHUNK_LEN), (false, 0), "16 whole chunks: 16 lanes already; 8 parents on 8");
+        let wide = cfg!(target_os = "linux") && crate::platform::wide_avx512();
+        // 19 chunks: 32 lanes where that kernel runs, else 16 and 3 on 4; their 9 parents (4 blocks + 1 over) on... 4 blocks: no rounding.
+        assert_eq!(ran(19 * CHUNK_LEN), (true, if wide { 32 } else { 4 }), "19 whole chunks on AVX-512");
+    }
 }
 
 /// The decisions between equally correct paths, exactly as their rules
@@ -317,8 +335,18 @@ fn test_the_paths_chosen_exactly() {
     {
         assert_eq!(crate::rounded_lanes(Platform::AVX512, 3), Some(4));
         assert_eq!(crate::rounded_lanes(Platform::AVX512, 7), Some(8));
-        assert_eq!(crate::rounded_lanes(Platform::AVX512, 9), None, "9 to 15 on 16 lanes awaits a measurement on an AVX-512 machine");
+        assert_eq!(crate::rounded_lanes(Platform::AVX512, 9), Some(16), "9 to 15 on 16 lanes (Sam's EPYC, 9700X and Xeon)");
+        assert_eq!(crate::rounded_lanes(Platform::AVX512, 15), Some(16));
+        assert_eq!(crate::rounded_lanes(Platform::AVX512, 16), None);
+        // 17 to 31: 32 lanes where the 32-input kernel runs, else the
+        // groups of 16 and the rest (hash_many_rounded's split).
+        let wide = cfg!(target_os = "linux") && crate::platform::wide_avx512();
+        assert_eq!(crate::rounded_lanes(Platform::AVX512, 19), if wide { Some(32) } else { None });
     }
+    // Counts past the widest kernel split: the whole groups of its width
+    // first, then the rest by the same rule (AVX2: 11 = 8 + 3 on 4).
+    assert_eq!(crate::lane_widths(Platform::AVX2), &[4, 8]);
+    assert_eq!(crate::lane_widths(Platform::SSE41), &[4]);
     // pair::takes(platform, len): a whole chunk and a partial one of two
     // blocks or more, on AVX2 or AVX-512.
     for (len, takes) in

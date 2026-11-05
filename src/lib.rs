@@ -785,36 +785,56 @@ fn spare_lane(platform: Platform, whole: usize, partial: usize) -> Option<usize>
     }
 }
 
-/// The lanes `count` whole inputs run on when the kernels' cascade would
-/// take two or three passes for them: on x86 the many-lane kernels hash 8
-/// (AVX2; 16 on AVX-512) at a time, then 4, then 2, then 1, each pass
-/// about as long as a 1-lane pass of the same blocks (i7-12700K, cycles a
-/// block-step from the thread's counts: 1 lane 226, 2 lanes 248, 4 lanes
-/// 338, 8 lanes 516), so 3 inputs cost a 2-pass and a 1-pass (474) where
-/// one 4-lane pass costs 338, and 7 cost 4 + 2 + 1 (812) where 8 lanes
-/// cost 516. Padding the count up to the width with copies of the last
-/// input, whose results are dropped, takes the one pass. None where the
-/// cascade is already one pass, or the width would not pay (5 and 6 on
-/// AVX2 pay 9-12%; measured November 5, 2026).
-fn rounded_lanes(platform: Platform, count: usize) -> Option<usize> {
-    match (platform, count) {
+/// The widths the platform's many-lane kernels run at, in one pass each,
+/// rising: SSE4.1 four lanes; AVX2 eight (and four); AVX-512 sixteen (and
+/// eight, four), and thirty-two where the 32-input kernel runs
+/// (wide_avx512, Zen 5 on Linux). Below the smallest, one and two lanes
+/// have passes of their own as cheap as one.
+fn lane_widths(platform: Platform) -> &'static [usize] {
+    match platform {
         #[cfg(blake3_sse41_ffi)]
-        (Platform::SSE41, 3) => Some(4),
+        Platform::SSE41 => &[4],
         #[cfg(blake3_avx2_ffi)]
-        (Platform::AVX2, 3) => Some(4),
-        #[cfg(blake3_avx2_ffi)]
-        (Platform::AVX2, 5..=7) => Some(8),
+        Platform::AVX2 => &[4, 8],
         #[cfg(blake3_avx512_ffi)]
-        (Platform::AVX512, 3) => Some(4),
-        #[cfg(blake3_avx512_ffi)]
-        (Platform::AVX512, 5..=7) => Some(8),
-        _ => None,
+        Platform::AVX512 => {
+            if cfg!(target_os = "linux") && crate::platform::wide_avx512() {
+                &[4, 8, 16, 32]
+            } else {
+                &[4, 8, 16]
+            }
+        }
+        _ => &[],
     }
+}
+
+/// The lanes `count` whole inputs run on when the kernels' cascade would
+/// take two or more passes for them: on x86 a many-lane kernel hashes its
+/// width at a time, then the next width down, and so on to one, each
+/// pass about as long as a 1-lane pass of the same blocks (i7-12700K,
+/// cycles a block-step from the thread's counts: 1 lane 226, 2 lanes 248,
+/// 4 lanes 338, 8 lanes 516), so 3 inputs cost a 2-pass and a 1-pass
+/// (474) where one 4-lane pass costs 338, and 7 cost 4 + 2 + 1 (812)
+/// where 8 lanes cost 516. The smallest width at or above the count takes
+/// it in one pass, the spare lanes a copy of the last input whose results
+/// are dropped. None for one or two inputs (passes of their own), for a
+/// count that is a width, or past the widest (hash_many_rounded takes
+/// the whole groups of the widest first, then the rest by this rule).
+/// Measured (November 5, 2026): the i7's 3 and 5-7 (-14 to -39%); Sam
+/// Shackleton's EPYC 9255 and Ryzen 9700X, 9-15 on 16 lanes -39 to
+/// -67%, 17-31 on 32 lanes -20 to -65%; her Xeon Gold 6330, 9-15 on 16
+/// -7 to -43%, and the remainder past 16 rounded -2 to -29%.
+fn rounded_lanes(platform: Platform, count: usize) -> Option<usize> {
+    if count <= 2 {
+        return None;
+    }
+    lane_widths(platform).iter().copied().find(|&w| w >= count).filter(|&w| w != count)
 }
 
 /// `platform.hash_many` over `inputs`, on `rounded_lanes` where a wider
 /// kernel takes the count in one pass: the spare lanes hash a copy of the
-/// last input, into scratch.
+/// last input, into scratch. Past the widest kernel, the whole groups of
+/// its width first, then the rest rounded.
 fn hash_many_rounded<const N: usize>(
     platform: Platform,
     inputs: &[&[u8; N]],
@@ -826,10 +846,16 @@ fn hash_many_rounded<const N: usize>(
     flags_end: u8,
     out: &mut [u8],
 ) {
-    if let Some(lanes) = rounded_lanes(platform, inputs.len()) {
+    let widest = lane_widths(platform).last().copied().unwrap_or(usize::MAX);
+    if inputs.len() > widest && rounded_lanes(platform, inputs.len() % widest).is_some() {
+        let head = inputs.len() / widest * widest;
+        platform.hash_many(&inputs[..head], key, counter, increment_counter, flags, flags_start, flags_end, &mut out[..head * OUT_LEN]);
+        let counter = if increment_counter.yes() { counter + head as u64 } else { counter };
+        hash_many_rounded(platform, &inputs[head..], key, counter, increment_counter, flags, flags_start, flags_end, &mut out[head * OUT_LEN..]);
+    } else if let Some(lanes) = rounded_lanes(platform, inputs.len()) {
         ran(Ran::RoundedUp);
         let last = *inputs.last().expect("a count that rounds up is 3 or more");
-        let mut padded = ArrayVec::<&[u8; N], 8>::new();
+        let mut padded = ArrayVec::<&[u8; N], 32>::new();
         padded.try_extend_from_slice(inputs).unwrap();
         while padded.len() < lanes {
             padded.push(last);
@@ -838,7 +864,7 @@ fn hash_many_rounded<const N: usize>(
         // padding that stopped short would hash the same digests slower).
         #[cfg(all(test, feature = "std"))]
         ROUNDED_WIDTH.with(|w| w.set(w.get() | padded.len()));
-        let mut scratch = [0u8; 8 * OUT_LEN];
+        let mut scratch = [0u8; 32 * OUT_LEN];
         platform.hash_many(&padded, key, counter, increment_counter, flags, flags_start, flags_end, &mut scratch[..lanes * OUT_LEN]);
         out[..inputs.len() * OUT_LEN].copy_from_slice(&scratch[..inputs.len() * OUT_LEN]);
     } else {
