@@ -1508,13 +1508,9 @@ impl Task {
         if members.len() >= 2 && members.iter().all(|m| m.len == members[0].len) {
             match members[0].len {
                 crate::BLOCK_LEN => return self.run_equal_members::<{ crate::BLOCK_LEN }>(platform),
-                #[cfg(target_arch = "x86_64")]
                 128 => return self.run_equal_members::<128>(platform),
-                #[cfg(target_arch = "x86_64")]
                 256 => return self.run_equal_members::<256>(platform),
-                #[cfg(target_arch = "x86_64")]
                 512 => return self.run_equal_members::<512>(platform),
-                #[cfg(target_arch = "x86_64")]
                 CHUNK_LEN => return self.run_equal_members::<CHUNK_LEN>(platform),
                 _ => {}
             }
@@ -1544,8 +1540,7 @@ impl Task {
         // Members of up to a chunk, of any lengths: each one's whole blocks
         // before its last side by side with the others' of as many, then
         // its last block on its own (by_blocks). The rest one at a time.
-        #[cfg(target_arch = "x86_64")]
-        if crate::pair::takes_platform(platform) && members.iter().filter(|m| m.len <= CHUNK_LEN).count() >= BY_BLOCKS_LEAST {
+        if by_blocks_takes(platform) && members.iter().filter(|m| m.len <= CHUNK_LEN).count() >= BY_BLOCKS_LEAST {
             crate::ran(crate::Ran::MembersByBlocks);
             self.run_by_blocks(platform);
             for m in members.iter().filter(|m| m.len > CHUNK_LEN) {
@@ -1565,8 +1560,21 @@ impl Task {
 }
 
 /// The fewest members of up to a chunk that Task::run_by_blocks takes.
-#[cfg(target_arch = "x86_64")]
 const BY_BLOCKS_LEAST: usize = 2;
+
+/// Whether Task::run_by_blocks runs on `platform`: x86-64's AVX2 and
+/// AVX-512 (pair::takes_platform), and NEON (its hybrids, from a table).
+fn by_blocks_takes(platform: Platform) -> bool {
+    #[cfg(target_arch = "x86_64")]
+    return crate::pair::takes_platform(platform);
+    #[cfg(blake3_neon)]
+    return matches!(platform, Platform::NEON);
+    #[allow(unreachable_code)]
+    {
+        let _ = platform;
+        false
+    }
+}
 
 impl Task {
     /// The digests of the members of up to a chunk, of any lengths: those
@@ -1575,8 +1583,7 @@ impl Task {
     /// first block and no end, leaving each its chaining value; then each
     /// one's last block (1 to 64 bytes, zero-padded; an empty message's is
     /// empty) compressed on its own with CHUNK_END and ROOT, CHUNK_START too
-    /// where k is 0. Requires AVX2 or AVX-512 (pair::takes_platform).
-    #[cfg(target_arch = "x86_64")]
+    /// where k is 0. Requires a platform by_blocks_takes.
     fn run_by_blocks(&self, platform: Platform) {
         const GROUP: usize = 16;
         let members = &self.member[..self.members];
@@ -1594,7 +1601,8 @@ impl Task {
                     let mut out = [0u8; GROUP * crate::OUT_LEN];
                     crate::counted(crate::Counted::ByBlocksCall);
                     // Sound: each member holds more than k whole blocks; the
-                    // platform takes the assembly (pair::takes_platform).
+                    // platform takes the assembly (by_blocks_takes).
+                    #[cfg(target_arch = "x86_64")]
                     unsafe {
                         crate::pair::hash_many_blocks(
                             platform,
@@ -1606,6 +1614,21 @@ impl Task {
                             self.flags,
                             crate::CHUNK_START,
                             0,
+                            &mut out[..group.len() * crate::OUT_LEN],
+                        )
+                    };
+                    #[cfg(blake3_neon)]
+                    unsafe {
+                        crate::neon_hybrid::hash_messages_raw(
+                            inputs.as_ptr(),
+                            group.len(),
+                            k,
+                            &self.key,
+                            0,
+                            self.flags,
+                            crate::CHUNK_START,
+                            0,
+                            crate::BLOCK_LEN,
                             &mut out[..group.len() * crate::OUT_LEN],
                         )
                     };
@@ -1744,18 +1767,6 @@ fn worker_main(me: usize) {
 mod test {
     use super::*;
 
-    /// Whether Task::run_by_blocks runs on `platform` (x86-64's AVX2 and
-    /// AVX-512, pair::takes_platform).
-    fn by_blocks_takes(platform: Platform) -> bool {
-        #[cfg(target_arch = "x86_64")]
-        return crate::pair::takes_platform(platform);
-        #[cfg(not(target_arch = "x86_64"))]
-        {
-            let _ = platform;
-            false
-        }
-    }
-
     /// A call gives its place among the pool's callers back: alone in its
     /// process, as each test is, the count is zero again after one call
     /// that went to the pool (a place kept would leave the pool "busy" for
@@ -1885,9 +1896,8 @@ mod test {
                                 // members or more, a length with a kernel
                                 // (one block everywhere; 128 B to 1 KiB on
                                 // x86-64): side by side; else one at a time.
-                                let side_by_side =
-                                    !mixed && count >= 2 && (len == 64 || (cfg!(target_arch = "x86_64") && matches!(len, 128 | 256 | 512 | 1024)));
-                                // Else, on x86-64's AVX2 and AVX-512, two or more
+                                let side_by_side = !mixed && count >= 2 && matches!(len, 64 | 128 | 256 | 512 | 1024);
+                                // Else, on AVX2, AVX-512 and NEON, two or more
                                 // members of up to a chunk run by their blocks.
                                 let small = inputs.iter().filter(|i| i.len() - offset <= CHUNK_LEN).count();
                                 let by_blocks = !side_by_side && by_blocks_takes(platform) && small >= 2;
@@ -2405,7 +2415,6 @@ mod test {
     /// than sixteen of one count), run by their blocks on AVX2 and AVX-512
     /// and alone on SSE4.1; every digest hash()'s, held to a golden fold.
     #[test]
-    #[cfg(target_arch = "x86_64")]
     fn test_mixed_members_run_by_blocks() {
         let mut golden = crate::test::Golden::new("mixed_members_by_blocks");
         let mut x = 0x2545_f491u64;
@@ -2459,7 +2468,6 @@ mod test {
     /// interleaved (so the calls count only once they are sorted): 20 of
     /// 2 whole blocks before the last, 17 of 5, 2 of none, 1 of 9.
     #[test]
-    #[cfg(target_arch = "x86_64")]
     fn test_by_blocks_calls_counted() {
         let kinds: Vec<usize> = (0..40)
             .map(|m| match m {
