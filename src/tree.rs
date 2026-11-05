@@ -186,7 +186,7 @@ impl Kernels for PlatformKernels<'_> {
         {
             use crate::chunk_root::{Root, chunk_root};
             let kernel = match self.platform {
-                _ if crate::platform::gpr_chunk_root() => Root::Gpr,
+                _ if crate::platform::gpr_chunk_root() && crate::chunk_root::gpr_warm() => Root::Gpr,
                 crate::platform::Platform::AVX512 => Root::Avx512,
                 crate::platform::Platform::SSE41 | crate::platform::Platform::AVX2 => Root::Sse41,
             };

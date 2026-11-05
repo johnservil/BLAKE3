@@ -556,10 +556,11 @@ fn wide_cpu(amd: bool, family: u32) -> bool {
     amd && family >= 0x1A
 }
 
-/// Whether one chunk or less as the root goes to the integer-register
-/// kernel (chunk_root::Root::Gpr): AMD from family 0x1A (Zen 5), where it
-/// was measured faster warm (EPYC 9255, Ryzen 7 9700X); Intel's P cores ran
-/// it slower (i7-12700K), so every other CPU keeps the SIMD kernel.
+/// Whether one chunk or less as the root may go to the integer-register
+/// kernel (chunk_root::Root::Gpr, while warm: chunk_root::gpr_warm): AMD
+/// from family 0x1A (Zen 5), where it was measured faster warm (EPYC 9255,
+/// Ryzen 7 9700X); Intel's P cores ran it slower (i7-12700K), so every
+/// other CPU keeps the SIMD kernel.
 #[cfg(target_arch = "x86_64")]
 #[cfg_attr(not(blake3_sse41_ffi), allow(dead_code))]
 fn gpr_cpu(amd: bool, family: u32) -> bool {
@@ -872,13 +873,22 @@ mod x86_features_test {
         let want = field("vendor_id") == "AuthenticAMD" && field("cpu family").parse::<u32>().expect("cpu family") >= 0x1A;
         assert_eq!(super::gpr_chunk_root(), want, "gpr_chunk_root");
         for len in [0usize, 64, 1000, crate::CHUNK_LEN] {
-            crate::RAN_ENTRIES.with(|r| r.borrow_mut().clear());
             let input = std::vec![9u8; len];
+            // A call just before: the code is warm (a cold call takes SIMD, chunk_root::gpr_warm).
+            let _ = crate::convenience::hash(&input);
+            crate::RAN_ENTRIES.with(|r| r.borrow_mut().clear());
             let hash = crate::convenience::hash(&input);
             let ran = crate::RAN_ENTRIES.with(|r| r.borrow().clone());
             let gpr = crate::chunk_root::ffi::blake3_servil_gpr_chunk_root as *const () as usize;
             assert_eq!(ran.contains(&gpr), want, "{len} B: the GPR kernel ran exactly where it pays");
             assert_eq!(*hash.as_bytes(), crate::test::official::hash(crate::Mode::Plain, &input), "{len} B");
+            // A cold call (the tests' clock far past the last call): the SIMD kernel, on every CPU.
+            let far = crate::chunk_root::TEST_TSC.with(|c| c.get()).unwrap_or(0).wrapping_add(1 << 40);
+            crate::chunk_root::TEST_TSC.with(|c| c.set(Some(far)));
+            crate::RAN_ENTRIES.with(|r| r.borrow_mut().clear());
+            assert_eq!(*crate::convenience::hash(&input).as_bytes(), crate::test::official::hash(crate::Mode::Plain, &input));
+            assert!(!crate::RAN_ENTRIES.with(|r| r.borrow().contains(&gpr)), "{len} B: a cold call takes the SIMD kernel");
+            crate::chunk_root::TEST_TSC.with(|c| c.set(None));
         }
     }
 
