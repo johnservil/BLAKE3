@@ -1537,13 +1537,34 @@ impl Task {
                 return;
             }
         }
-        // Members of up to a chunk, of any lengths: each one's whole blocks
-        // before its last side by side with the others' of as many, then
-        // its last block on its own (by_blocks). The rest one at a time.
-        if by_blocks_takes(platform) && members.iter().filter(|m| m.len <= CHUNK_LEN).count() >= BY_BLOCKS_LEAST {
-            crate::ran(crate::Ran::MembersByBlocks);
-            self.run_by_blocks(platform);
-            for m in members.iter().filter(|m| m.len > CHUNK_LEN) {
+        // Members of any lengths. Those of up to a chunk: each one's whole
+        // blocks before its last side by side with the others' of as many,
+        // then its last block on its own (by_blocks). Longer ones as a
+        // collection's (each::hash_each_on): those of 2 to 15 chunks their
+        // whole chunks side by side, chunk by chunk, longer ones alone.
+        let small = members.iter().filter(|m| m.len <= CHUNK_LEN).count();
+        let middle = members.iter().filter(|m| m.len > CHUNK_LEN).count();
+        let by_blocks = by_blocks_takes(platform) && small >= BY_BLOCKS_LEAST;
+        if by_blocks || middle >= 2 {
+            if by_blocks {
+                crate::ran(crate::Ran::MembersByBlocks);
+                self.run_by_blocks(platform);
+            }
+            if middle >= 2 {
+                crate::ran(crate::Ran::MembersEach);
+                // Sound: the members' bytes are in place until the task's `left` is zero.
+                let items: arrayvec::ArrayVec<&[u8], MEMBERS> =
+                    members.iter().filter(|m| m.len > CHUNK_LEN).map(|m| unsafe { core::slice::from_raw_parts(m.input, m.len) }).collect();
+                let mut digests = [[0u8; crate::OUT_LEN]; MEMBERS];
+                crate::each::hash_each_on(&self.key, self.flags, &items, &mut digests[..items.len()], platform, |item| {
+                    crate::hash_serial_on(item, &self.key, self.flags, platform)
+                });
+                for (m, digest) in members.iter().filter(|m| m.len > CHUNK_LEN).zip(&digests) {
+                    // Sound: each member's `out` holds OUT_LEN writable bytes.
+                    unsafe { core::ptr::copy_nonoverlapping(digest.as_ptr(), m.out, crate::OUT_LEN) };
+                }
+            }
+            for m in members.iter().filter(|m| if m.len <= CHUNK_LEN { !by_blocks } else { middle < 2 }) {
                 let bytes = unsafe { core::slice::from_raw_parts(m.input, m.len) };
                 let hash = crate::hash_serial_on(bytes, &self.key, self.flags, platform);
                 unsafe { core::ptr::copy_nonoverlapping(hash.as_bytes().as_ptr(), m.out, crate::OUT_LEN) };
@@ -1901,6 +1922,8 @@ mod test {
                                 // members of up to a chunk run by their blocks.
                                 let small = inputs.iter().filter(|i| i.len() - offset <= CHUNK_LEN).count();
                                 let by_blocks = !side_by_side && by_blocks_takes(platform) && small >= 2;
+                                let middle = inputs.iter().filter(|i| i.len() - offset > CHUNK_LEN).count();
+                                let each = !side_by_side && middle >= 2;
                                 let ran = crate::RAN.with(|r| r.get());
                                 assert_eq!(
                                     ran & crate::Ran::EqualMembers as u32 != 0,
@@ -1910,7 +1933,7 @@ mod test {
                                 assert_eq!(ran & crate::Ran::MembersByBlocks as u32 != 0, by_blocks, "{platform:?}, {count} x {len}, mixed {mixed}: by blocks");
                                 assert_eq!(
                                     ran & crate::Ran::MemberAlone as u32 != 0,
-                                    !side_by_side && !by_blocks,
+                                    !side_by_side && !by_blocks && !each,
                                     "{platform:?}, {count} x {len}, mixed {mixed}: one at a time"
                                 );
                                 assert_eq!(&out[1..count + 1], &expected[..], "{platform:?}, {count} x {len}, mixed {mixed}, offset {offset}, mode {mode}");
@@ -2395,10 +2418,17 @@ mod test {
                             let across = !mixed && crate::many::across_from(len, platform).is_some_and(|least| count >= least);
                             let small = inputs.iter().filter(|i| i.len() <= CHUNK_LEN).count();
                             let by_blocks = !across && by_blocks_takes(platform) && small >= 2;
+                            let middle = inputs.iter().filter(|i| i.len() > CHUNK_LEN).count();
+                            let each = !across && middle >= 2;
                             let ran = crate::RAN.with(|r| r.get());
                             assert_eq!(ran & crate::Ran::MembersAcross as u32 != 0, across, "{platform:?}, {count} x {len}, mixed {mixed}: across");
                             assert_eq!(ran & crate::Ran::MembersByBlocks as u32 != 0, by_blocks, "{platform:?}, {count} x {len}, mixed {mixed}: by blocks");
-                            assert_eq!(ran & crate::Ran::MemberAlone as u32 != 0, !across && !by_blocks, "{platform:?}, {count} x {len}, mixed {mixed}: alone");
+                            assert_eq!(ran & crate::Ran::MembersEach as u32 != 0, each, "{platform:?}, {count} x {len}, mixed {mixed}: chunk by chunk");
+                            assert_eq!(
+                                ran & crate::Ran::MemberAlone as u32 != 0,
+                                !across && !by_blocks && !each,
+                                "{platform:?}, {count} x {len}, mixed {mixed}: alone"
+                            );
                             assert_eq!(&out[1..count + 1], &expected[..], "{platform:?}, {count} x {len}, mixed {mixed}");
                             assert_eq!((out[0], out[count + 1]), ([0xAA; crate::OUT_LEN], [0xAA; crate::OUT_LEN]), "nothing written outside");
                             assert_eq!(done.load(Ordering::Acquire), 0);
@@ -2419,7 +2449,7 @@ mod test {
         let mut golden = crate::test::Golden::new("mixed_members_by_blocks");
         let mut x = 0x2545_f491u64;
         for count in [2usize, 3, 5, 16, 17, 40, MEMBERS] {
-            for spread in [64usize, 300, CHUNK_LEN + 1] {
+            for spread in [64usize, 300, CHUNK_LEN + 1, 5000, 20_000] {
                 let lens: Vec<usize> = (0..count)
                     .map(|_| {
                         x ^= x << 13;
@@ -2446,11 +2476,14 @@ mod test {
                     let ran = crate::RAN.with(|r| r.get());
                     let equal = lens.iter().all(|&n| n == lens[0]);
                     if !equal {
+                        let small = lens.iter().filter(|&&n| n <= CHUNK_LEN).count();
+                        let middle = lens.iter().filter(|&&n| n > CHUNK_LEN).count();
                         assert_eq!(
                             ran & crate::Ran::MembersByBlocks as u32 != 0,
-                            by_blocks_takes(platform),
+                            by_blocks_takes(platform) && small >= 2,
                             "{platform:?}, {count} members under {spread} B: by blocks"
                         );
+                        assert_eq!(ran & crate::Ran::MembersEach as u32 != 0, middle >= 2, "{platform:?}, {count} members under {spread} B: chunk by chunk");
                     }
                     assert_eq!(&out[1..count + 1], &expected[..], "{platform:?}, {count} members under {spread} B: {lens:?}");
                     assert_eq!((out[0], out[count + 1]), ([0xAA; crate::OUT_LEN], [0xAA; crate::OUT_LEN]), "nothing written outside");
@@ -2458,7 +2491,7 @@ mod test {
                 }
             }
         }
-        golden.check(0xf98187dc4009b9b0);
+        golden.check(0xcee9a3e8ea54f9b2);
     }
 
     /// run_by_blocks's work, counted (BLAKE3 #219): one hash_many call for

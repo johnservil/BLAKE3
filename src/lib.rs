@@ -312,6 +312,9 @@ pub(crate) enum Ran {
     /// whole blocks side by side, each last block alone
     /// (lanes::Task::run_by_blocks).
     MembersByBlocks = 512,
+    /// A task's members of 2 to 15 chunks, of any lengths, ran chunk by
+    /// chunk side by side, as a collection's (each::hash_each_on).
+    MembersEach = 1024,
 }
 
 #[cfg(all(test, feature = "std"))]
