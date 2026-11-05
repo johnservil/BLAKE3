@@ -278,6 +278,44 @@ fn test_whole_chunks_round_up_to_the_lanes() {
     }
 }
 
+/// Past the widest kernel, hash_many_rounded takes the whole groups of
+/// its width and rounds the rest: 11 one-block inputs on AVX2 (widths 4
+/// and 8) run as 8 and then 3 on 4 lanes, 13 as 8 and 5 on 8, 16 as two
+/// groups of 8 with nothing rounded, 10 as 8 and 2 alone; every digest
+/// the plain kernel's. Driven here with the platform given, so the split
+/// is tested on a machine whose chunks never reach it (an i7's AVX2 gets
+/// at most 8 chunks a call; AVX-512's 16 and 32 reach it in real calls).
+#[test]
+#[cfg(all(target_arch = "x86_64", blake3_avx2_ffi, feature = "std"))]
+fn test_counts_past_the_widest_kernel_split_into_groups_and_a_rounded_rest() {
+    use crate::platform::Platform;
+    use crate::{BLOCK_LEN, CHUNK_LEN, IV, IncrementCounter, OUT_LEN, PARENT, Ran};
+    let Some(avx2) = Platform::avx2() else { return };
+    let bytes: std::vec::Vec<u8> = (0..16 * BLOCK_LEN).map(|i| (i * 7 % 251) as u8).collect();
+    let blocks: std::vec::Vec<&[u8; BLOCK_LEN]> = bytes.chunks_exact(BLOCK_LEN).map(|b| b.try_into().unwrap()).collect();
+    for (count, widths) in [(11, 4), (13, 8), (16, 0), (10, 0), (12, 0), (9, 0), (7, 8), (3, 4)] {
+        crate::RAN.with(|r| r.set(0));
+        crate::ROUNDED_WIDTH.with(|w| w.set(0));
+        let mut rounded = std::vec![0u8; count * OUT_LEN];
+        crate::hash_many_rounded(avx2, &blocks[..count], IV, 0, IncrementCounter::No, PARENT, 0, 0, &mut rounded);
+        let mut plain = std::vec![0u8; count * OUT_LEN];
+        avx2.hash_many(&blocks[..count], IV, 0, IncrementCounter::No, PARENT, 0, 0, &mut plain);
+        assert_eq!(rounded, plain, "{count} parents: the digests the kernel's");
+        assert_eq!(crate::ROUNDED_WIDTH.with(|w| w.get()), widths, "{count} parents on AVX2: the widths rounded to");
+        assert_eq!(crate::RAN.with(|r| r.get()) & Ran::RoundedUp as u32 != 0, widths != 0);
+    }
+    // Chunks at counters counting up split the same way, the rest's
+    // counter after the groups': 11 chunks as 8 then 3 on 4.
+    let input = std::vec![0x5au8; 11 * CHUNK_LEN];
+    let chunks: std::vec::Vec<&[u8; CHUNK_LEN]> = input.chunks_exact(CHUNK_LEN).map(|c| c.try_into().unwrap()).collect();
+    let (mut rounded, mut plain) = (std::vec![0u8; 11 * OUT_LEN], std::vec![0u8; 11 * OUT_LEN]);
+    crate::ROUNDED_WIDTH.with(|w| w.set(0));
+    crate::hash_many_rounded(avx2, &chunks, IV, 7, IncrementCounter::Yes, 0, crate::CHUNK_START, crate::CHUNK_END, &mut rounded);
+    avx2.hash_many(&chunks, IV, 7, IncrementCounter::Yes, 0, crate::CHUNK_START, crate::CHUNK_END, &mut plain);
+    assert_eq!(rounded, plain, "11 chunks from counter 7: the digests the kernel's, the rest's counter 15");
+    assert_eq!(crate::ROUNDED_WIDTH.with(|w| w.get()), 4);
+}
+
 /// The decisions between equally correct paths, exactly as their rules
 /// say (BLAKE3 #219: a mutant that moves one takes the other path, whose
 /// digest is the same, so only the decision itself can catch it). The
