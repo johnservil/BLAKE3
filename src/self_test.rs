@@ -667,6 +667,17 @@ mod test {
         assert!(missing.is_empty(), "the self-test leaves out {missing:?}");
     }
 
+    /// The x86-64 list reaches the integer-register chunk root exactly where
+    /// performance::hash takes it (platform::gpr_chunk_root): the Hot case.
+    #[test]
+    #[cfg(all(target_arch = "x86_64", blake3_sse41_ffi))]
+    fn test_self_test_runs_the_gpr_kernel_where_it_runs() {
+        let gpr = crate::chunk_root::ffi::blake3_servil_gpr_chunk_root as *const () as usize;
+        crate::RAN_ENTRIES.with(|r| r.borrow_mut().clear());
+        run();
+        assert_eq!(crate::RAN_ENTRIES.with(|r| r.borrow().contains(&gpr)), crate::platform::gpr_chunk_root());
+    }
+
     /// `outputs` as `chain` takes it: the bytes written into its buffer.
     fn into(mut outputs: impl FnMut(Case, &[u8], &[u8; 32]) -> std::vec::Vec<u8>) -> impl FnMut(Case, &[u8], &[u8; 32], &mut [u8]) -> usize {
         move |case, input, previous, out| {
