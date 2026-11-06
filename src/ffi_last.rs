@@ -8,7 +8,7 @@
 //! its item. The last block's flags carry CHUNK_END and ROOT, so each
 //! lane's chaining value after it is its digest.
 
-use crate::{BLOCK_LEN, CHUNK_END, CHUNK_START, CVWords, IV, OUT_LEN, ROOT};
+use crate::{BLOCK_LEN, CHUNK_START, CVWords, OUT_LEN};
 
 /// The kernels' parameter block for `W` lanes, laid out as gen_x86.py's
 /// `layout(w, last=True)` says (the test below checks the offsets).
@@ -273,6 +273,7 @@ pub(crate) fn entries(platform: crate::platform::Platform) -> [usize; 2] {
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::IV;
 
     // Inspect the actual block before assembly overwrites its H/SNAP fields.
     // These rows independently express prove_last.py's byte-level contract;
