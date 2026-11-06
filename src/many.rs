@@ -68,6 +68,10 @@ pub(crate) fn hash_many_on(input: &[u8], len: usize, key: &CVWords, flags: u8, o
     }
     let slot = slot_len(len);
     assert_slots(input, len, outputs.len());
+    if len == 0 {
+        outputs.fill(*crate::hash_serial_on(&[], key, flags, platform).as_bytes());
+        return;
+    }
     #[cfg(blake3_sme2)]
     if chunked(len) && platform_is_sme2(platform) && (outputs.len() >= 16 || outputs.len() >= sme2_chunked_min(len)) {
         return hash_chunked(input, len, key, flags, outputs, platform);
