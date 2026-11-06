@@ -28,7 +28,7 @@ older bench, given none, measures the cells whose code the change touches.
 "layouts" is the links a side, a pair
 each, its default check's. "old_bench_commit" builds the old side with the bench at that
 commit (check --old-bench), for an old side that predates the bench's
-calls: 0.8 against the main line before the performance API. Every run's
+calls: 0.8 against the main line before the throughput API. Every run's
 samples file lands in the job's samples/.)
 
 (Any job may add "powermetrics": true: the chip's CPU, GPU, and ANE power

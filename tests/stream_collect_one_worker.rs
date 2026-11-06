@@ -24,11 +24,11 @@ fn a_caller_looping_on_collect_makes_progress_without_workers() {
     let (done, finished) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let messages: Vec<Vec<u8>> = (0..1000usize).map(|i| (0..1 + i * 7 % 3000).map(|j| (j % 251) as u8).collect()).collect();
-        let in_blocks: Vec<Vec<blake3_servil::performance::Block>> = messages
+        let in_blocks: Vec<Vec<blake3_servil::throughput::Block>> = messages
             .iter()
             .map(|m| {
-                let mut b = vec![blake3_servil::performance::Block::ZERO; m.len().div_ceil(64).max(1)];
-                blake3_servil::performance::Block::bytes_mut(&mut b)[..m.len()].copy_from_slice(m);
+                let mut b = vec![blake3_servil::throughput::Block::ZERO; m.len().div_ceil(64).max(1)];
+                blake3_servil::throughput::Block::bytes_mut(&mut b)[..m.len()].copy_from_slice(m);
                 b
             })
             .collect();
@@ -40,7 +40,7 @@ fn a_caller_looping_on_collect_makes_progress_without_workers() {
         let mut places = vec![Hash::from([0; 32]); 4];
         let free = std::cell::RefCell::new(places.iter_mut().collect::<Vec<_>>());
         let got = std::cell::RefCell::new(Vec::new());
-        blake3_servil::performance::stream(
+        blake3_servil::throughput::stream(
             Mode::Plain,
             |place: &mut [Hash]| {
                 got.borrow_mut().push(place[0]);

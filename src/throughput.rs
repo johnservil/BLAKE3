@@ -1,4 +1,4 @@
-//! The performance API, for power users: every way this crate makes
+//! The throughput API, for power users: every way this crate makes
 //! hashing fast (other cores, batches, collections, streams, a message fed
 //! in pieces). The program takes on more of the work, so the calls can be
 //! fast and simple:
@@ -39,10 +39,10 @@ use crate::{ContextKey, DERIVE_KEY_CONTEXT, Hash, IV, Mode, OUT_LEN};
 /// ```
 /// # blake3_servil::initialize();
 /// # #[cfg(feature = "std")] {
-/// use blake3_servil::{Mode, convenience, performance::{self, Batch}};
+/// use blake3_servil::{Mode, convenience, throughput::{self, Batch}};
 /// let mut message = Batch::new(100, 1);
 /// message.set(0, &[7u8; 100]);
-/// assert_eq!(performance::hash(Mode::Plain, message.blocks(), 100), convenience::hash(&[7u8; 100]));
+/// assert_eq!(throughput::hash(Mode::Plain, message.blocks(), 100), convenience::hash(&[7u8; 100]));
 /// # }
 /// ```
 // Inlined, so a constant mode folds to its constants (as
@@ -63,13 +63,13 @@ pub fn hash(mode: Mode, input: &[Block], len: usize) -> Hash {
 /// ```
 /// # blake3_servil::initialize();
 /// # #[cfg(feature = "std")] {
-/// use blake3_servil::{Mode, convenience, performance::{self, Batch}};
+/// use blake3_servil::{Mode, convenience, throughput::{self, Batch}};
 /// let mut leaves = Batch::new(256, 1000);
 /// for i in 0..1000 {
 ///     leaves.set(i, &[7u8; 256]);
 /// }
 /// let mut hashes = vec![[0u8; 32]; 1000];
-/// performance::hash_many(Mode::Plain, &leaves, &mut hashes);
+/// throughput::hash_many(Mode::Plain, &leaves, &mut hashes);
 /// assert_eq!(hashes[3], *convenience::hash(&[7u8; 256]).as_bytes());
 /// # }
 /// ```
@@ -94,10 +94,10 @@ pub fn hash_many(mode: Mode, batch: &Batch, out: &mut [[u8; OUT_LEN]]) {
 /// ```
 /// # blake3_servil::initialize_multithreaded(None);
 /// use blake3_servil::Mode;
-/// let mut leaves = blake3_servil::performance::Batch::new(256, 4096);
+/// let mut leaves = blake3_servil::throughput::Batch::new(256, 4096);
 /// (0..4096).for_each(|i| leaves.set(i, &[7u8; 256]));
 /// let mut hashes = vec![[0u8; 32]; 4096];
-/// blake3_servil::performance::hash_many_multithreaded(Mode::Plain, &leaves, &mut hashes);
+/// blake3_servil::throughput::hash_many_multithreaded(Mode::Plain, &leaves, &mut hashes);
 /// assert!(hashes.iter().all(|h| h == blake3_servil::convenience::hash(&[7u8; 256]).as_bytes()));
 /// ```
 ///
@@ -127,9 +127,9 @@ pub fn hash_many_multithreaded(mode: Mode, batch: &Batch, out: &mut [[u8; OUT_LE
 ///
 /// ```
 /// # blake3_servil::initialize_multithreaded(None);
-/// use blake3_servil::{Mode, performance::{self, Block}};
+/// use blake3_servil::{Mode, throughput::{self, Block}};
 /// let message = vec![Block::ZERO; 1 << 14];
-/// let hash = performance::hash_multithreaded(Mode::Plain, &message, 1 << 20);
+/// let hash = throughput::hash_multithreaded(Mode::Plain, &message, 1 << 20);
 /// assert_eq!(hash, blake3_servil::convenience::hash(&[0u8; 1 << 20]));
 /// ```
 ///
@@ -181,7 +181,7 @@ pub fn hash_multithreaded(mode: Mode, input: &[Block], len: usize) -> Hash {
 /// # blake3_servil::initialize();
 /// use blake3_servil::Mode;
 ///
-/// let context_key = blake3_servil::performance::context_key("foo");
+/// let context_key = blake3_servil::throughput::context_key("foo");
 /// let derived = blake3_servil::convenience::hash_with(Mode::DeriveKeyWith(&context_key), b"bar");
 /// assert_eq!(derived, blake3_servil::convenience::hash_with(Mode::DeriveKey("foo"), b"bar"));
 /// ```

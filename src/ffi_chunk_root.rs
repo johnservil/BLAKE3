@@ -100,7 +100,7 @@ mod test {
         let mut buf = vec![0u8; CHUNK_LEN + 3];
         crate::test::paint_test_input(&mut buf);
         let keyed = crate::platform::words_from_le_bytes_32(&[0x42; 32]);
-        let derive = crate::platform::words_from_le_bytes_32(&crate::performance::context_key("chunk root"));
+        let derive = crate::platform::words_from_le_bytes_32(&crate::throughput::context_key("chunk root"));
         let modes = [(crate::IV, 0), (&keyed, crate::KEYED_HASH), (&derive, crate::DERIVE_KEY_MATERIAL)];
         for &avx512 in &variants {
             for offset in 0..4 {

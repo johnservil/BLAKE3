@@ -38,24 +38,24 @@ fn every_stream_completes_on_one_cpu() {
     // written, and read; and batches small and large.
     let lens = [0, 64, 1000, 16 << 10, 64 << 10, (1 << 20) + 1, 5 << 20];
     let messages: Vec<Vec<u8>> = lens.iter().map(|&len| input(len)).collect();
-    let in_blocks: Vec<Vec<blake3_servil::performance::Block>> = messages
+    let in_blocks: Vec<Vec<blake3_servil::throughput::Block>> = messages
         .iter()
         .map(|m| {
-            let mut b = vec![blake3_servil::performance::Block::ZERO; m.len().div_ceil(64).max(1)];
-            blake3_servil::performance::Block::bytes_mut(&mut b)[..m.len()].copy_from_slice(m);
+            let mut b = vec![blake3_servil::throughput::Block::ZERO; m.len().div_ceil(64).max(1)];
+            blake3_servil::throughput::Block::bytes_mut(&mut b)[..m.len()].copy_from_slice(m);
             b
         })
         .collect();
     let batch = input(64 * 4096);
-    let blocks: Vec<blake3_servil::performance::Block> = batch.chunks_exact(64).map(|b| blake3_servil::performance::Block(b.try_into().unwrap())).collect();
-    let batch_inputs = [16, 4096].map(|count| blake3_servil::performance::Batch::from_blocks(&blocks[..count], 64));
+    let blocks: Vec<blake3_servil::throughput::Block> = batch.chunks_exact(64).map(|b| blake3_servil::throughput::Block(b.try_into().unwrap())).collect();
+    let batch_inputs = [16, 4096].map(|count| blake3_servil::throughput::Batch::from_blocks(&blocks[..count], 64));
     let mut want = Vec::new();
     let mut got = vec![Hash::from_bytes([0; 32]); 3 * messages.len() + 16 + 4096];
     let handed = std::cell::Cell::new(0);
     let (singles, batches) = got.split_at_mut(3 * messages.len());
     let (small, large) = batches.split_at_mut(16);
     let mut singles = singles.iter_mut();
-    blake3_servil::performance::stream(
+    blake3_servil::throughput::stream(
         Mode::Plain,
         |d: &mut [Hash]| handed.set(handed.get() + d.len()),
         |s| {
@@ -88,7 +88,7 @@ fn every_stream_completes_on_one_cpu() {
     let mut places = vec![Hash::from_bytes([0; 32]); 4];
     let free = std::cell::RefCell::new(places.iter_mut().collect::<Vec<_>>());
     let cycled = std::cell::RefCell::new(Vec::new());
-    blake3_servil::performance::stream(
+    blake3_servil::throughput::stream(
         Mode::Plain,
         |d: &mut [Hash]| {
             cycled.borrow_mut().push(d[0]);

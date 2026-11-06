@@ -16,7 +16,7 @@ fn a_caller_looping_on_collect_wakes_a_parked_worker() {
     let (done, finished) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         // 3000 bytes of 7s in blocks: a message as the stream borrows one.
-        let message = vec![blake3_servil::performance::Block([7; 64]); 3000usize.div_ceil(64)];
+        let message = vec![blake3_servil::throughput::Block([7; 64]); 3000usize.div_ceil(64)];
         for round in 0..20 {
             // Every worker parked before the stream opens: waited for, not
             // slept for (a loaded machine could outlast any sleep).
@@ -25,7 +25,7 @@ fn a_caller_looping_on_collect_wakes_a_parked_worker() {
             }
             let mut place = Hash::from([0; 32]);
             let got = std::cell::Cell::new(false);
-            blake3_servil::performance::stream(
+            blake3_servil::throughput::stream(
                 Mode::Plain,
                 |_: &mut [Hash]| got.set(true),
                 |s| {

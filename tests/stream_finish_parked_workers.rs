@@ -12,7 +12,7 @@
 //! SME2 the SME2 thread, woken on every publish, takes the task, so the
 //! condition shows on CPUs without it.
 
-use blake3_servil::performance::Batch;
+use blake3_servil::throughput::Batch;
 use blake3_servil::{Hash, Mode};
 
 /// Twenty rounds of one message, every worker parked first: the stream's
@@ -30,7 +30,7 @@ fn a_finishing_caller_hashes_its_lone_task_with_every_worker_parked() {
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
         let mut place = Hash::from([0; 32]);
-        blake3_servil::performance::stream(
+        blake3_servil::throughput::stream(
             Mode::Plain,
             |_: &mut [Hash]| {},
             |s| {

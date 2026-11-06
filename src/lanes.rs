@@ -1653,7 +1653,7 @@ mod test {
     #[test]
     fn test_simd_merge_matches_recursive() {
         let key = [93u8; KEY_LEN];
-        let context_key = crate::performance::context_key("parallel merge test");
+        let context_key = crate::throughput::context_key("parallel merge test");
         for (threads, len) in [(3, MIN_SPLIT_LEN + 1025), (2, (64 << 20) + 1)] {
             let pieces = cut_subtrees(len, threads);
             let mut cvs = vec![[0u8; crate::OUT_LEN]; pieces.len()];
@@ -1673,7 +1673,7 @@ mod test {
         let pool = pool();
         let input = std::vec![0x3Cu8; MIN_SPLIT_LEN];
         crate::RAN.with(|r| r.set(0));
-        assert_eq!(crate::performance::hash_multithreaded(crate::Mode::Plain, &crate::test::message(&input), input.len()), crate::convenience::hash(&input));
+        assert_eq!(crate::throughput::hash_multithreaded(crate::Mode::Plain, &crate::test::message(&input), input.len()), crate::convenience::hash(&input));
         assert_past_the_split("the call");
         assert_eq!(pool.callers.load(Ordering::SeqCst), 0, "the caller's place given back");
     }
@@ -1726,7 +1726,7 @@ mod test {
         platforms.push(Platform::detect());
         let key = [0x5Au8; crate::KEY_LEN];
         let context = "equal queue members";
-        let context_key = crate::performance::context_key(context);
+        let context_key = crate::throughput::context_key(context);
         let modes = [
             (*crate::IV, 0),
             (crate::platform::words_from_le_bytes_32(&key), crate::KEYED_HASH),
@@ -2207,7 +2207,7 @@ mod test {
         let _ = pool();
         assert!(!sources::open(), "at rest, nothing is open");
         let mut digest = Hash::from([0u8; 32]);
-        crate::performance::stream(
+        crate::throughput::stream(
             crate::Mode::Plain,
             |_: &mut [Hash]| {},
             |s| {
@@ -2357,7 +2357,7 @@ mod test {
                 hash_with_key(&input[..len], &crate::platform::words_from_le_bytes_32(&key), crate::KEYED_HASH),
                 "keyed len = {len}"
             );
-            let context_key = crate::performance::context_key("lanes test");
+            let context_key = crate::throughput::context_key("lanes test");
             assert_eq!(
                 *Hasher::new(crate::Mode::DeriveKeyWith(&context_key)).update(&input[..len]).finalize().as_bytes(),
                 *hash_with_key(&input[..len], &crate::platform::words_from_le_bytes_32(&context_key), crate::DERIVE_KEY_MATERIAL).as_bytes(),
@@ -2452,7 +2452,7 @@ mod test {
             }
             let input = &owned[..];
             let mut want = vec![[0u8; crate::OUT_LEN]; count];
-            crate::performance::hash_many(crate::Mode::Plain, &crate::performance::Batch::in_place(&crate::test::blocks(input), message_len), &mut want);
+            crate::throughput::hash_many(crate::Mode::Plain, &crate::throughput::Batch::in_place(&crate::test::blocks(input), message_len), &mut want);
             for (i, digest) in want.iter().enumerate().take(200) {
                 assert_eq!(*digest, *crate::convenience::hash(&input[i * slot..][..message_len]).as_bytes(), "message {i}");
             }
@@ -2469,7 +2469,7 @@ mod test {
         crate::test::paint_test_input(&mut buffer);
         let count = buffer.len() / crate::BLOCK_LEN;
         let mut want = vec![[0u8; crate::OUT_LEN]; count];
-        crate::performance::hash_many(crate::Mode::Plain, &crate::performance::Batch::in_place(&crate::test::blocks(&buffer), crate::BLOCK_LEN), &mut want);
+        crate::throughput::hash_many(crate::Mode::Plain, &crate::throughput::Batch::in_place(&crate::test::blocks(&buffer), crate::BLOCK_LEN), &mut want);
         let tree_want = crate::convenience::hash(&buffer);
         let (want, buffer) = (&want[..], &buffer[..]);
         let barrier = std::sync::Barrier::new(16);
@@ -2515,7 +2515,7 @@ mod test {
         let pool = pool();
         let workers = pool.threads - 1;
         let all_parked = || pool.park.parked_count() == workers;
-        crate::performance::stream(
+        crate::throughput::stream(
             crate::Mode::Plain,
             |_: &mut [Hash]| {},
             |s| {

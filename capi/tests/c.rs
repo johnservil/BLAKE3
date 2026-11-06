@@ -103,8 +103,8 @@ fn from_c() {
         }
         // b3.h's b3_hasher holds the crate's Hasher.
         let first = out.lines().next().unwrap();
-        assert_eq!(first, format!("hasher {} 64", size_of::<blake3_servil::performance::Hasher>()), "b3.h's B3_HASHER_SIZE");
-        assert!(align_of::<blake3_servil::performance::Hasher>() <= 64);
+        assert_eq!(first, format!("hasher {} 64", size_of::<blake3_servil::throughput::Hasher>()), "b3.h's B3_HASHER_SIZE");
+        assert!(align_of::<blake3_servil::throughput::Hasher>() <= 64);
         // The stream's own check prints its verdict last.
         let got: Vec<&str> = out.lines().skip(1).filter(|l| *l != "stream ok").map(|l| l.split(' ').nth(1).unwrap()).collect();
         assert_eq!(got.len(), expected.len(), "{out}");

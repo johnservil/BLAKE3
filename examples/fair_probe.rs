@@ -5,7 +5,7 @@
 //! a second, call after call: how many calls each completed (fair sharing
 //! completes about as many each). `fair_probe LEN ROUNDS`.
 use blake3_servil::Mode;
-use blake3_servil::performance::{Block, hash_multithreaded};
+use blake3_servil::throughput::{Block, hash_multithreaded};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier};
 use std::time::Instant;

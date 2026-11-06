@@ -16,7 +16,7 @@
 #![cfg(feature = "std")]
 
 use blake3_servil::Mode;
-use blake3_servil::performance::{Block, hash_each_multithreaded, hash_multithreaded};
+use blake3_servil::throughput::{Block, hash_each_multithreaded, hash_multithreaded};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier};
 use std::time::{Duration, Instant};

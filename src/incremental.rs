@@ -1,5 +1,5 @@
 //! The Hasher: a message fed in pieces (a power user's call; see
-//! crate::performance, which exports it).
+//! crate::throughput, which exports it).
 
 use super::*;
 
@@ -16,7 +16,7 @@ use super::*;
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// # blake3_servil::initialize();
 /// // Hash an input incrementally.
-/// let mut hasher = blake3_servil::performance::Hasher::new(blake3_servil::Mode::Plain);
+/// let mut hasher = blake3_servil::throughput::Hasher::new(blake3_servil::Mode::Plain);
 /// hasher.update(b"foo");
 /// hasher.update(b"bar");
 /// hasher.update(b"baz");
@@ -264,16 +264,16 @@ impl Hasher {
 
     /// [`update`](Hasher::update), using other CPU cores where that is
     /// faster: the same result, never slower. Pieces of 512 KiB and more
-    /// use them, as [`hash_multithreaded`](performance::hash_multithreaded) does; shorter ones hash on the
+    /// use them, as [`hash_multithreaded`](throughput::hash_multithreaded) does; shorter ones hash on the
     /// calling thread. One `Hasher` may mix the two calls. When reading
-    /// the pieces keeps your thread busy, a [`stream`](performance::stream) is faster
-    /// ([`Stream::submit_reader`](performance::Stream::submit_reader), or [`Stream::submit_with`](performance::Stream::submit_with)): it hashes
+    /// the pieces keeps your thread busy, a [`stream`](throughput::stream) is faster
+    /// ([`Stream::submit_reader`](throughput::Stream::submit_reader), or [`Stream::submit_with`](throughput::Stream::submit_with)): it hashes
     /// each piece while your thread reads the next.
     ///
     /// ```
     /// # blake3_servil::initialize_multithreaded(None);
     /// let input = vec![7u8; 3 << 20];
-    /// let mut hasher = blake3_servil::performance::Hasher::new(blake3_servil::Mode::Plain);
+    /// let mut hasher = blake3_servil::throughput::Hasher::new(blake3_servil::Mode::Plain);
     /// for piece in input.chunks(64 * 1024) {
     ///     hasher.update_multithreaded(piece);
     /// }
@@ -342,7 +342,7 @@ impl Hasher {
     /// # fn main() -> io::Result<()> {
     /// # blake3_servil::initialize();
     /// // Hash standard input.
-    /// let mut hasher = blake3_servil::performance::Hasher::new(blake3_servil::Mode::Plain);
+    /// let mut hasher = blake3_servil::throughput::Hasher::new(blake3_servil::Mode::Plain);
     /// hasher.update_reader(std::io::stdin().lock())?;
     /// println!("{}", hasher.finalize());
     /// # Ok(())

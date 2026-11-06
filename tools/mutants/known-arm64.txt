@@ -7,7 +7,7 @@
 # mutants have a list of their own. Rows come from its runs (the runner's
 # mutants job), --since the GPU's change first (job 1909).
 # A line: file <TAB> mutant (function and change) <TAB> places <TAB> reason.
-files: src/block.rs src/convenience.rs src/each.rs src/ffi_neon_hybrid.rs src/ffi_sme2.rs src/finish.rs src/hasher.rs src/incremental.rs src/io.rs src/lanes.rs src/lib.rs src/many.rs src/park.rs src/performance.rs src/platform.rs src/self_test.rs src/tree.rs src/pair.rs src/stream.rs src/gpu.rs
+files: src/block.rs src/convenience.rs src/each.rs src/ffi_neon_hybrid.rs src/ffi_sme2.rs src/finish.rs src/hasher.rs src/incremental.rs src/io.rs src/lanes.rs src/lib.rs src/many.rs src/park.rs src/throughput.rs src/platform.rs src/self_test.rs src/tree.rs src/pair.rs src/stream.rs src/gpu.rs
 model files: src/finish.rs src/park.rs
 src/gpu.rs	replace % with + in start	1	the start's check of the GPU against the CPU, its input's bytes, counters or compared lengths changed: a GPU that hashes right passes it on any input, and only a faulty GPU tells the two apart
 src/gpu.rs	replace % with / in start	1	the start's check of the GPU against the CPU, its input's bytes, counters or compared lengths changed: a GPU that hashes right passes it on any input, and only a faulty GPU tells the two apart

@@ -2,7 +2,7 @@
 //! plain hash, the keyed hash, key derivation, extended output), any
 //! slice, the result returned. It does without what makes hashing fast:
 //! other cores, batches, streams, a message fed in pieces. Those are the
-//! [`performance`](crate::performance) calls, for power users.
+//! [`throughput`](crate::throughput) calls, for power users.
 
 use crate::{Hash, IV, Mode, OutputReader};
 
@@ -13,14 +13,14 @@ use crate::{Hash, IV, Mode, OutputReader};
 /// let hash = blake3_servil::convenience::hash(b"foo");
 /// # let hash1 = hash;
 ///
-/// let hash = blake3_servil::performance::Hasher::new(blake3_servil::Mode::Plain).update(b"foo").finalize();
+/// let hash = blake3_servil::throughput::Hasher::new(blake3_servil::Mode::Plain).update(b"foo").finalize();
 /// # let hash2 = hash;
 /// # assert_eq!(hash1, hash2);
 /// ```
 ///
 /// For a keyed hash or key derivation, see [`hash_with`]; for output sizes
 /// other than 32 bytes, [`hash_xof`]. For speed (other cores, batches,
-/// streams, a message fed in pieces), the [`performance`](crate::performance)
+/// streams, a message fed in pieces), the [`throughput`](crate::throughput)
 /// calls.
 ///
 /// **Speed**, nonstop on an Apple M4 Max: about 55 ns for 64 bytes, 0.8 µs
@@ -49,7 +49,7 @@ pub fn hash(input: &[u8]) -> Hash {
 /// use blake3_servil::{Mode, convenience};
 /// let key = [7u8; 32];
 /// let mac = convenience::hash_with(Mode::Keyed(&key), b"foo");
-/// assert_eq!(mac, blake3_servil::performance::Hasher::new(Mode::Keyed(&key)).update(b"foo").finalize());
+/// assert_eq!(mac, blake3_servil::throughput::Hasher::new(Mode::Keyed(&key)).update(b"foo").finalize());
 /// ```
 #[inline]
 pub fn hash_with(mode: Mode, input: &[u8]) -> Hash {

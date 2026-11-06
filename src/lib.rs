@@ -13,7 +13,7 @@
 //! let hash1 = blake3_servil::convenience::hash(b"foobarbaz");
 //!
 //! // Hash an input incrementally.
-//! let mut hasher = blake3_servil::performance::Hasher::new(blake3_servil::Mode::Plain);
+//! let mut hasher = blake3_servil::throughput::Hasher::new(blake3_servil::Mode::Plain);
 //! hasher.update(b"foo");
 //! hasher.update(b"bar");
 //! hasher.update(b"baz");
@@ -33,13 +33,13 @@
 //!
 //! // Many short messages in one call: a Batch lays them out in Blocks.
 //! # #[cfg(feature = "std")] {
-//! use blake3_servil::{performance::{self, Batch}, Mode};
+//! use blake3_servil::{throughput::{self, Batch}, Mode};
 //! let mut batch = Batch::new(64, 3);
 //! for i in 0..3 {
 //!     batch.set(i, &[i as u8; 64]);
 //! }
 //! let mut hashes = [[0u8; 32]; 3];
-//! performance::hash_many(Mode::Plain, &batch, &mut hashes);
+//! throughput::hash_many(Mode::Plain, &batch, &mut hashes);
 //! assert_eq!(hashes[2], *blake3_servil::convenience::hash(&[2u8; 64]).as_bytes());
 //! # }
 //! # Ok(())
@@ -53,12 +53,12 @@
 //!   slice, the result returned. Tuned for a hash now and then, amid other
 //!   work: where it helps, a call fetches its code back into the caches
 //!   before it starts.
-//! - **[`performance`]**, for power users: every way this crate makes
+//! - **[`throughput`]**, for power users: every way this crate makes
 //!   hashing fast (other cores, batches, collections, streams), tuned for
 //!   call after call: an occasional call amid other work may run slower
 //!   than a convenience call would. The
 //!   program takes on more of the work: inputs come as
-//!   [`Block`](performance::Block)s (64 bytes on a 64-byte boundary, so
+//!   [`Block`](throughput::Block)s (64 bytes on a 64-byte boundary, so
 //!   alignment is the type's), digests go into the program's places, and
 //!   every call takes a [`Mode`].
 //!
@@ -67,20 +67,20 @@
 //! helps), and its later updates as call after call.
 //!
 //! Start with the convenience calls; when a program needs more speed, it
-//! moves to the performance ones.
+//! moves to the throughput ones.
 //!
 //! | Your data | Call |
 //! |---|---|
-//! | One message in memory | [`convenience::hash`], or for speed [`performance::hash_multithreaded`] |
-//! | One message arriving in pieces | [`performance::Hasher`] |
-//! | Many messages of one length, in one buffer | [`performance::hash_many_multithreaded`] |
-//! | Many messages of different lengths, in memory | [`performance::hash_each_multithreaded`] |
-//! | Many messages arriving at once (a server's uploads) | [`performance::update_each`] |
-//! | A stream of messages read, made, or arriving | [`performance::stream`] |
+//! | One message in memory | [`convenience::hash`], or for speed [`throughput::hash_multithreaded`] |
+//! | One message arriving in pieces | [`throughput::Hasher`] |
+//! | Many messages of one length, in one buffer | [`throughput::hash_many_multithreaded`] |
+//! | Many messages of different lengths, in memory | [`throughput::hash_each_multithreaded`] |
+//! | Many messages arriving at once (a server's uploads) | [`throughput::update_each`] |
+//! | A stream of messages read, made, or arriving | [`throughput::stream`] |
 //!
 //! Each call returns once its hash is done, and uses other CPU cores
 //! where that is faster (the forms without `multithreaded` stay on the
-//! calling thread). A [stream](performance::stream) is different: your program submits
+//! calling thread). A [stream](throughput::stream) is different: your program submits
 //! messages and goes on to read or make the next ones while other threads
 //! hash them; each digest arrives in the place your program named, a
 //! little later. Choose it when reading or making the data keeps your
@@ -88,11 +88,11 @@
 //! the most bytes per second.
 //!
 //! Short messages hash fastest together: 1024 messages of 64 bytes in one
-//! [`performance::hash_many`] call take about a fifth of the time of 1024
+//! [`throughput::hash_many`] call take about a fifth of the time of 1024
 //! [`convenience::hash`] calls.
 //!
 //! **Keyed hashing and key derivation** run at the plain hash's speed
-//! through a [`Mode`], which every performance call takes, the
+//! through a [`Mode`], which every throughput call takes, the
 //! [`Hasher`]'s constructor among them.
 //!
 //! **Hashing now and then** (rather than nonstop) is slower per byte on
@@ -109,8 +109,8 @@
 //! them.
 //!
 //! **The GPU of an Apple silicon Mac** joins the CPU's threads on a
-//! [stream](performance::stream)'s long messages, 4 MiB or more written in
-//! with [`Stream::submit_with`](performance::Stream::submit_with), once the
+//! [stream](throughput::stream)'s long messages, 4 MiB or more written in
+//! with [`Stream::submit_with`](throughput::Stream::submit_with), once the
 //! stream has kept sending them for 10 ms: it takes 8 MiB of the stream's
 //! waiting work at a time. On an Apple M4 Max, streams of 16 or more such
 //! messages ran in 0.79-0.85 of the time on the CPU alone, at 0.77-0.92 of
@@ -122,16 +122,16 @@
 //!
 //! - **A [`Hasher`] is about 18 KiB**; box it where that matters.
 //! - **Single-threaded calls allocate nothing**: [`convenience::hash`],
-//!   [`performance::hash`], [`performance::hash_many`], [`Hasher::update`]
+//!   [`throughput::hash`], [`throughput::hash_many`], [`Hasher::update`]
 //!   and [`Hasher::finalize`], and [`OutputReader`].
 //!   [`Hasher::update_reader`] uses a 1 MiB buffer while it reads past
-//!   64 KiB, and [`performance::hash_each`] 32 bytes for each chunk of its messages
+//!   64 KiB, and [`throughput::hash_each`] 32 bytes for each chunk of its messages
 //!   of 2 to 15 chunks, each freed when it returns.
 //! - **Multithreaded calls** allocate nothing below 512 KiB, where they
 //!   hash on the calling thread. Above it they keep a list of the pieces
 //!   they hand out, freed when they return: 48 bytes for each 128 KiB of
 //!   input, and at most 200 bytes for each CPU (1 GiB on 16 CPUs: 390 KiB).
-//! - **A [stream](performance::stream)** takes its storage (its 2 MiB ring, 8 MiB more for
+//! - **A [stream](throughput::stream)** takes its storage (its 2 MiB ring, 8 MiB more for
 //!   messages of 4 MiB or more, of which only the pages used are faulted in, and its entries)
 //!   from a pool the process keeps: a thread's first stream allocates it
 //!   and later streams reuse it, never freed. On an Apple silicon Mac, a
@@ -145,13 +145,13 @@
 //!
 //! # Panics
 //!
-//! **A panic inside a [stream](performance::stream) ends the process**,
+//! **A panic inside a [stream](throughput::stream) ends the process**,
 //! wherever it starts: in your body, handler, `fill` or reader, or in the
 //! stream's own checks. Its message and backtrace print first; then the
 //! process aborts, since this crate's threads may still be reading your
 //! messages and writing your digests. So `catch_unwind` cannot recover a
 //! stream: a program that must go on past a failing read uses
-//! [`Stream::submit_reader`](performance::Stream::submit_reader), which
+//! [`Stream::submit_reader`](throughput::Stream::submit_reader), which
 //! returns the read's error. A broken precondition of any other call panics
 //! on the calling thread, and unwinds as usual.
 //!
@@ -215,7 +215,7 @@ pub mod convenience;
 mod each;
 #[cfg(blake3_gpu)]
 mod gpu;
-pub mod performance;
+pub mod throughput;
 
 mod platform;
 
@@ -977,7 +977,7 @@ fn hash_all_at_once(input: &[u8], key: &CVWords, chunk_counter: u64, flags: u8, 
 /// ```
 /// blake3_servil::initialize();
 /// let hash = blake3_servil::convenience::hash(b"foo");
-/// # assert_eq!(hash, blake3_servil::performance::Hasher::new(blake3_servil::Mode::Plain).update(b"foo").finalize());
+/// # assert_eq!(hash, blake3_servil::throughput::Hasher::new(blake3_servil::Mode::Plain).update(b"foo").finalize());
 /// ```
 pub fn initialize() {
     self_test::ensure();
@@ -985,7 +985,7 @@ pub fn initialize() {
 }
 
 /// [`initialize`], and start the threads that the multithreaded calls and
-/// [`stream`](performance::stream) use: every program that makes such calls calls this once,
+/// [`stream`](throughput::stream) use: every program that makes such calls calls this once,
 /// before them, in place of `initialize`. It starts `threads - 1` workers,
 /// and each multithreaded call hashes on its calling thread and the
 /// workers (calls made at once share the workers), and on CPUs with SME2
@@ -1034,8 +1034,8 @@ pub fn initialize() {
 ///
 /// ```
 /// blake3_servil::initialize_multithreaded(None);
-/// let message = vec![blake3_servil::performance::Block::ZERO; (1 << 20) / 64];
-/// let hash = blake3_servil::performance::hash_multithreaded(blake3_servil::Mode::Plain, &message, 1 << 20);
+/// let message = vec![blake3_servil::throughput::Block::ZERO; (1 << 20) / 64];
+/// let hash = blake3_servil::throughput::hash_multithreaded(blake3_servil::Mode::Plain, &message, 1 << 20);
 /// assert_eq!(hash, blake3_servil::convenience::hash(&[0u8; 1 << 20]));
 /// ```
 #[cfg(feature = "std")]
@@ -1067,7 +1067,7 @@ pub fn __all_workers_parked() -> bool {
     lanes::all_workers_parked()
 }
 
-/// An alias to distinguish [`context_key`](performance::context_key) outputs from other keys.
+/// An alias to distinguish [`context_key`](throughput::context_key) outputs from other keys.
 pub type ContextKey = [u8; KEY_LEN];
 
 /// The most bytes a subtree starting at byte `input_offset` of a message
@@ -1100,7 +1100,7 @@ pub enum Mode<'a> {
     /// is the key material.
     DeriveKey(&'a str),
     /// The key derivation function with its context string already hashed
-    /// ([`context_key`](performance::context_key)); the input is the key material.
+    /// ([`context_key`](throughput::context_key)); the input is the key material.
     DeriveKeyWith(&'a ContextKey),
 }
 
@@ -1127,7 +1127,7 @@ impl Mode<'_> {
         match self {
             Mode::Plain => (*IV, 0),
             Mode::Keyed(key) => (platform::words_from_le_bytes_32(key), KEYED_HASH),
-            Mode::DeriveKey(context) => (platform::words_from_le_bytes_32(&performance::context_key(context)), DERIVE_KEY_MATERIAL),
+            Mode::DeriveKey(context) => (platform::words_from_le_bytes_32(&throughput::context_key(context)), DERIVE_KEY_MATERIAL),
             Mode::DeriveKeyWith(context_key) => (platform::words_from_le_bytes_32(context_key), DERIVE_KEY_MATERIAL),
         }
     }
@@ -1178,7 +1178,7 @@ fn hash_serial_from(platform: Platform, input: &[u8], key: &CVWords, flags: u8, 
 /// (M4 Max, after other work: 4 KiB x0.61, 8 KiB x0.51, 16 KiB x0.66;
 /// 32 KiB and up level, the hashing's own time dwarfing it; jobs
 /// 971-975). It costs a call whose code is near 2-4%, which is why the
-/// performance calls, for call after call, take no prefetch.
+/// throughput calls, for call after call, take no prefetch.
 /// A cold call of 2-8 KiB spends about a third of its time on its code
 /// (10-24 KB of kernels and glue); from 3 KiB what remains is the kernels
 /// starting before their lines arrive. Tried and set aside: prefetching

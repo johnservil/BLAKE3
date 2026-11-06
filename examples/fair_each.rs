@@ -3,7 +3,7 @@
 //! mixed) with `hash_each_multithreaded`, free-running for two seconds:
 //! how many collections each completed, and each call's time.
 use blake3_servil::Mode;
-use blake3_servil::performance::{Block, hash_each_multithreaded};
+use blake3_servil::throughput::{Block, hash_each_multithreaded};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier};
 use std::time::{Duration, Instant};

@@ -65,18 +65,18 @@ impl core::fmt::Debug for Block {
 /// ```
 /// # blake3_servil::initialize();
 /// # #[cfg(feature = "std")] {
-/// use blake3_servil::{Mode, convenience, performance::{self, Batch}};
+/// use blake3_servil::{Mode, convenience, throughput::{self, Batch}};
 /// let mut batch = Batch::new(100, 3);
 /// for i in 0..3 {
 ///     batch.set(i, &[i as u8; 100]);
 /// }
 /// let mut out = [[0u8; 32]; 3];
-/// performance::hash_many(Mode::Plain, &batch, &mut out);
+/// throughput::hash_many(Mode::Plain, &batch, &mut out);
 /// assert_eq!(out[2], *convenience::hash(&[2u8; 100]).as_bytes());
 ///
 /// // Read straight into a message's own bytes.
 /// batch.message_mut(1).copy_from_slice(&[9u8; 100]);
-/// performance::hash_many(Mode::Plain, &batch, &mut out);
+/// throughput::hash_many(Mode::Plain, &batch, &mut out);
 /// assert_eq!(out[1], *convenience::hash(&[9u8; 100]).as_bytes());
 /// # }
 /// ```
@@ -204,7 +204,7 @@ impl Batch<'_> {
 mod test {
     use super::*;
     use crate::Mode;
-    use crate::performance::hash_many;
+    use crate::throughput::hash_many;
 
     /// Every byte a Batch lets the program write, written nonzero: every
     /// byte past each message's end stays zero, and each digest is the

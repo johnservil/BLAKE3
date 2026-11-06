@@ -35,8 +35,8 @@ algorithm:
   messages on upstream's kernels (`src/many.rs`);
 - a pool of worker threads for multithreaded hashing (`src/lanes.rs`);
 - batches of many messages in one call (`hash_many`, `src/many.rs`),
-  collections of messages and many hashers at once (`performance::hash_each`,
-  `performance::update_each`, `src/each.rs`);
+  collections of messages and many hashers at once (`throughput::hash_each`,
+  `throughput::update_each`, `src/each.rs`);
 - the stream, which hashes the program's messages behind it, each digest
   into the place the program names (`stream`, `src/stream.rs`).
 - the startup self-test (`src/self_test.rs`);
@@ -230,18 +230,18 @@ unrolled kernel code.
   at every length to 2 KiB + 70 and around chunk counts up to 1025,
   `hash_many` at 15 message lengths and 20 counts, every input of a batch
   against a guard page of its own on every kernel the build and CPU have
-  (1 to 17 inputs), the collection calls (`performance::hash_each`, its
-  multithreaded form, `performance::update_each`) with each
+  (1 to 17 inputs), the collection calls (`throughput::hash_each`, its
+  multithreaded form, `throughput::update_each`) with each
   item in its own pages, and extended output at 10 lengths from three
   positions. `test_every_call_inside_guard_pages` takes every other
   public call that reads a caller's bytes or writes into a caller's
   places, in each mode, from 0 bytes to 1 MiB + 5: `hash_with`,
-  `hash_xof`, `performance::hash` and `hash_multithreaded`,
+  `hash_xof`, `throughput::hash` and `hash_multithreaded`,
   `update_multithreaded`, `finalize_each`, and the stream's `submit`,
   `submit_with` and `submit_batch` with their digests; the key and the
   context string sit against pages too. The C API has its own
   (`capi/tests/guard_pages.rs`), with the hasher's state in guarded
-  memory as well. A byte planted past an input (in `performance::hash`)
+  memory as well. A byte planted past an input (in `throughput::hash`)
   or past an output (in `b3_hasher_finalize_xof`) crashes them. They found
   bug 8 below as a crash.
 - **On the Mac**: every suite in debug builds (overflow checks and

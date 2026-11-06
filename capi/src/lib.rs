@@ -12,7 +12,7 @@
 //! after the callback and the library call invoking it have returned.
 // Output-storage initialization remains a separate BLAKE3 #155 review item.
 
-use blake3_servil::performance::{Block, Hasher, Stream};
+use blake3_servil::throughput::{Block, Hasher, Stream};
 use blake3_servil::{Hash, Mode, OUT_LEN};
 use core::ffi::{CStr, c_char, c_void};
 
@@ -131,7 +131,7 @@ pub unsafe extern "C" fn b3_mode_derive_key(context: *const c_char) -> B3Mode {
     blake3_servil::initialize();
     assert!(!context.is_null(), "b3: the context is NULL");
     let context = unsafe { CStr::from_ptr(context) }.to_str().expect("b3: the context is UTF-8");
-    B3Mode { kind: 2, key: blake3_servil::performance::context_key(context) }
+    B3Mode { kind: 2, key: blake3_servil::throughput::context_key(context) }
 }
 
 /// # Safety

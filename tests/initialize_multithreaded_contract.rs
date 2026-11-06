@@ -8,5 +8,5 @@
 fn a_multithreaded_call_before_initialize_multithreaded_panics() {
     blake3_servil::initialize();
     // Deliberately without initialize_multithreaded(None): this test is the contract's check.
-    blake3_servil::performance::hash_multithreaded(blake3_servil::Mode::Plain, &[], 0);
+    blake3_servil::throughput::hash_multithreaded(blake3_servil::Mode::Plain, &[], 0);
 }
