@@ -73,7 +73,7 @@ pub(crate) fn hash_many_on(input: &[u8], len: usize, key: &CVWords, flags: u8, o
         return;
     }
     #[cfg(all(target_arch = "x86_64", blake3_sse41_ffi, feature = "std"))]
-    if len % BLOCK_LEN != 0 && outputs.len() >= 8 && len <= CHUNK_LEN {
+    if outputs.len() >= 8 && len <= CHUNK_LEN && len % BLOCK_LEN != 0 {
         let width = crate::ffi_last::lanes(platform);
         if width >= 8 && outputs.len() >= width {
             return hash_partial_native_groups(input, len, key, flags, outputs, platform, width);
