@@ -1141,9 +1141,8 @@ mod test {
         }
     }
 
-    /// Batches of 1 to 17 messages of up to a block after a pause (the pair
-    /// kernel's path for 2 to 8, prefetched plans beyond), every mode: each
-    /// digest is hash_with's.
+    /// Batches of 1 to 17 messages of up to a block after a pause, every
+    /// mode: each digest is hash_with's.
     #[cfg(feature = "std")]
     #[test]
     fn test_small_batches_after_a_pause() {

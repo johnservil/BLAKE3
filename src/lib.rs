@@ -90,9 +90,13 @@
 //!
 //! **Hashing now and then** (rather than nonstop) is slower per byte on
 //! every hash function, since its code and data must come back into the
-//! CPU's caches and a resting core runs slower at first: hashing 64 KiB
-//! after a pause takes about three times as long as nonstop on an Apple M4
-//! Max.
+//! CPU's caches and a resting core runs slower at first. This crate's
+//! kernels are tuned for calls in quick succession, so an occasional call
+//! amid other work may run up to about twice as slow as it could. To hash
+//! amid other work, hand the messages over together, and the code stays in
+//! the caches: a [stream](performance::stream) for messages one after
+//! another, [`performance::hash_many`] for a batch, a [`Hasher`] for a
+//! message in pieces.
 //!
 //! **Apple M4 and later** have one matrix unit that this crate uses for
 //! inputs of 16 KiB and more; when several threads of a program hash such
@@ -1136,169 +1140,7 @@ fn hash_serial(input: &[u8], key: &CVWords, flags: u8) -> Hash {
 #[inline]
 fn hash_serial_from(platform: Platform, input: &[u8], key: &CVWords, flags: u8) -> Hash {
     let turn = platform::Sme2Turn::take(platform, input.len() >= SME2_SIZED_LEN);
-    // One comparison on the path of a chunk or less: everything else is
-    // out of line, so that path's code stays as small as it was (a call
-    // after other work fetches every line of it from DRAM).
-    #[cfg(all(blake3_neon, feature = "std"))]
-    if (CHUNK_LEN + 1..PREFETCH_BELOW).contains(&input.len()) {
-        prefetch_after_pause(input.len(), turn.platform(), false);
-    }
     hash_serial_on(input, key, flags, turn.platform())
-}
-
-/// Below this length a one-shot call that follows a pause prefetches its
-/// kernels' code: after other work the call then fetches it from DRAM in
-/// parallel, not one miss at a time (M4 Max, after other work: 4 KiB
-/// x0.61, 8 KiB x0.51, 16 KiB x0.66; 32 KiB and up level, the hashing's
-/// own time dwarfing it; jobs 971-975). The streaming paths (Hasher,
-/// batches, the streams' tasks) run back to back with their code near.
-/// A cold call of 2-8 KiB spends about a third of its time on its code
-/// (10-24 KB of kernels and glue); from 3 KiB what remains is the kernels
-/// starting before their lines arrive. Tried and set aside: prefetching
-/// for a chunk or less (2-10% gained, less than the pause check costs);
-/// prefetching the 16 KiB of Rust around the kernels too (every call
-/// 400-500 ns slower: prefetches beyond some number in flight are
-/// dropped); a rolled four-lane NEON path for calls after a pause (1.3 KB,
-/// 1.2-1.5x slower: a four-lane NEON BLAKE3 is bound by its chains'
-/// latency, where the hybrids' integer lanes fill the idle issue slots).
-#[cfg(all(blake3_neon, feature = "std"))]
-const PREFETCH_BELOW: usize = 64 * 1024;
-
-/// After a pause (code_may_be_cold), prefetch the kernels hashing `len`
-/// bytes runs: a one-shot call's (prefetch_kernels), or with `fresh_hasher`
-/// a fresh Hasher's first update's (prefetch_update_kernels).
-#[cfg(all(blake3_neon, feature = "std"))]
-// Cold for layout: the path of a chunk or less falls through past its
-// call, on the lines it had before the call existed.
-#[cold]
-#[inline(never)]
-fn prefetch_after_pause(len: usize, platform: Platform, fresh_hasher: bool) {
-    if code_may_be_cold() {
-        if fresh_hasher {
-            prefetch_update_kernels(len, platform);
-        } else {
-            prefetch_kernels(len, platform);
-        }
-    }
-}
-
-/// Whether this thread's last call in the prefetching range was over
-/// 100 us ago (or never). Calls back to back find their code near, where
-/// the prefetch would cost them 2-4% (jobs 972-975); one that follows a
-/// pause is the one other work may have taken the code from.
-#[cfg(all(blake3_neon, feature = "std"))]
-#[inline]
-fn code_may_be_cold() -> bool {
-    std::thread_local! {
-        static LAST_CALL: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
-    }
-    let now = platform::counter();
-    let last = LAST_CALL.with(|last| last.replace(now));
-    now.wrapping_sub(last) > platform::ticks_in_100_us()
-}
-
-/// Batches of one-block messages up to this many prefetch their code after
-/// a pause: past it the hashing's own time dwarfs a cold kernel's.
-#[cfg(all(blake3_neon, feature = "std"))]
-const PREFETCH_BATCH_BELOW: usize = 64;
-
-/// Batches of 1 to this many one-block messages run on the pair kernel
-/// alone after a pause (neon_hybrid::hash_pairs): its code (2.9 KB) is a
-/// fraction of the plans' for 3 to 16 (up to 17 KB) and less than the one
-/// message's kernel (3.9 KB), and after a pause the code comes from memory
-/// (Mac jobs 1320-1337: 12 and 16 run faster after idling and slower after
-/// other work this way).
-#[cfg(all(blake3_neon, feature = "std"))]
-const PAIRS_AFTER_PAUSE_UPTO: usize = 8;
-
-/// After a pause (code_may_be_cold), a batch of `count` one-block
-/// messages: 1 to PAIRS_AFTER_PAUSE_UPTO hashed here on the pair kernel
-/// (true: done); otherwise its kernels' code prefetched (false: hash it as
-/// usual), SME2's message kernel where it takes the batch, else the
-/// hybrids' parent plans.
-#[cfg(all(blake3_neon, feature = "std"))]
-#[cold]
-#[inline(never)]
-fn batch_after_pause(input: &[u8], message_len: usize, key: &CVWords, flags: u8, out: &mut [[u8; OUT_LEN]], platform: Platform) -> bool {
-    if !code_may_be_cold() {
-        return false;
-    }
-    let count = out.len();
-    #[cfg(blake3_sme2)]
-    if matches!(platform, Platform::SME2) && count >= many::ONE_BLOCK_PAD_MIN {
-        sme2::prefetch_code();
-        return false;
-    }
-    let _ = platform;
-    if !neon_hybrid::sha3_detected() {
-        return false;
-    }
-    if message_len == 0 || !(1..=PAIRS_AFTER_PAUSE_UPTO).contains(&count) {
-        neon_hybrid::prefetch_message_code(count);
-        return false;
-    }
-    many::assert_slots(input, message_len, count);
-    neon_hybrid::prefetch_pair_code();
-    let mut table: [&[u8; BLOCK_LEN]; PAIRS_AFTER_PAUSE_UPTO] = [&[0; BLOCK_LEN]; PAIRS_AFTER_PAUSE_UPTO];
-    for (slot, message) in table.iter_mut().zip(input.chunks_exact(BLOCK_LEN)) {
-        *slot = message.try_into().unwrap();
-    }
-    // Sound: the SHA-3 extension is here (above).
-    unsafe { neon_hybrid::hash_pairs(&table[..count], key, flags, CHUNK_START, CHUNK_END | ROOT, message_len, out.as_flattened_mut()) };
-    true
-}
-
-/// Prefetch the code of the kernels hashing `len` bytes on `platform`
-/// runs: SME2's from 16 chunks, else the hybrids', chunks to root.
-#[cfg(all(blake3_neon, feature = "std"))]
-fn prefetch_kernels(len: usize, platform: Platform) {
-    #[cfg(blake3_sme2)]
-    if matches!(platform, Platform::SME2) && len >= SME2_SIZED_LEN {
-        sme2::prefetch_code();
-        // Below the flat walk, sixteen chunks' values merge on the hybrids.
-        if !sme2::flat_takes(len) {
-            neon_hybrid::prefetch_parent_code(16);
-        }
-        return;
-    }
-    // Below 16 chunks the SME2 platform runs the hybrids too.
-    #[cfg(blake3_sme2)]
-    let hybrids = matches!(platform, Platform::NEON | Platform::SME2);
-    #[cfg(not(blake3_sme2))]
-    let hybrids = matches!(platform, Platform::NEON);
-    if hybrids && neon_hybrid::sha3_detected() {
-        let whole = (len / CHUNK_LEN).min(16);
-        neon_hybrid::prefetch_tree_code(whole, if whole == 16 { 0 } else { len % CHUNK_LEN });
-    }
-}
-
-/// Prefetch the code a fresh Hasher's update of `len` bytes runs: the
-/// subtrees its loop cuts (hasher::subtree_len from counter 0, up to the last
-/// chunk, which waits in the chunk state), each one's kernels.
-#[cfg(all(blake3_neon, feature = "std"))]
-fn prefetch_update_kernels(len: usize, platform: Platform) {
-    if !neon_hybrid::sha3_detected() {
-        return;
-    }
-    let (mut counter, mut left) = (0u64, len);
-    while left > CHUNK_LEN {
-        let subtree = hasher::subtree_len(counter, left);
-        let chunks = subtree / CHUNK_LEN;
-        #[cfg(blake3_sme2)]
-        if matches!(platform, Platform::SME2) && chunks >= 16 {
-            sme2::prefetch_code();
-            if !sme2::flat_takes(subtree) {
-                neon_hybrid::prefetch_parent_code(16);
-            }
-            counter += chunks as u64;
-            left -= subtree;
-            continue;
-        }
-        neon_hybrid::prefetch_tree_code(chunks.min(16), 0);
-        counter += chunks as u64;
-        left -= subtree;
-    }
-    let _ = platform;
 }
 
 /// The smallest input the SME2 kernels take part in: one group of sixteen
@@ -1328,12 +1170,6 @@ pub(crate) fn hash_many_serial(input: &[u8], message_len: usize, key: &CVWords, 
 #[inline]
 fn hash_many_serial_from(platform: Platform, input: &[u8], message_len: usize, key: &CVWords, flags: u8, out: &mut [[u8; OUT_LEN]]) {
     let turn = platform::Sme2Turn::take(platform, many::sme2_sized(message_len, out.len()));
-    // A small batch of one-block messages after a pause fetches its kernels'
-    // code in parallel (as hash_serial does): its time is mostly that code.
-    #[cfg(all(blake3_neon, feature = "std"))]
-    if message_len <= BLOCK_LEN && (1..=PREFETCH_BATCH_BELOW).contains(&out.len()) && batch_after_pause(input, message_len, key, flags, out, turn.platform()) {
-        return;
-    }
     many::hash_many_on(input, message_len, key, flags, out, turn.platform());
 }
 
