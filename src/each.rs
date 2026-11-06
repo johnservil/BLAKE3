@@ -284,7 +284,31 @@ fn by_blocks_at_once(items: &[&[u8]], key: &CVWords, flags: u8, out: &mut [[u8; 
     }
     let whole = |item: &[u8]| item.len().saturating_sub(1) / crate::BLOCK_LEN;
     let mut order: arrayvec::ArrayVec<usize, BY_BLOCKS_AT_ONCE> = (0..items.len()).collect();
-    order.sort_unstable_by_key(|&i| whole(items[i]));
+    // Sixteen possible prefix lengths need only a counting pass, not a
+    // general comparison sort. All-one-bin batches retain input order.
+    // Counts/positions fit a byte: this window has at most 64 items.
+    let mut positions = [0u8; 16];
+    let mut present = 0u16;
+    for item in items {
+        let k = whole(item);
+        positions[k] += 1;
+        present |= 1 << k;
+    }
+    if !present.is_power_of_two() {
+        let mut offset = 0u8;
+        while present != 0 {
+            let k = present.trailing_zeros() as usize;
+            let count = positions[k];
+            positions[k] = offset;
+            offset += count;
+            present &= present - 1;
+        }
+        for (i, item) in items.iter().enumerate() {
+            let position = &mut positions[whole(item)];
+            order[*position as usize] = i;
+            *position += 1;
+        }
+    }
     #[cfg(target_arch = "x86_64")]
     if crate::ffi_last::lanes(platform) >= 8 {
         let width = crate::ffi_last::lanes(platform);
