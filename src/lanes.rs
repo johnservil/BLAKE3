@@ -1312,6 +1312,12 @@ pub(crate) mod sources {
         /// test states it so a change to it is a decision.
         #[test]
         fn test_a_worker_serves_the_lowest_source_until_it_is_empty() {
+            // A pool of one, so no worker starts: the sources below hold
+            // made-up items (no job, no ring), and take() asks the pool its
+            // size, which in a test starts the whole pool when there is none.
+            // A worker that won one of them dereferenced its null job:
+            // SIGSEGV, once, under the mutation check's load (November 6).
+            crate::initialize_multithreaded(core::num::NonZeroUsize::new(1));
             let sources: Vec<&'static Source> = (0..2).map(|_| &*Box::leak(Box::new(Source::new(0)))).collect();
             let slots: Vec<usize> = sources.iter().map(|s| s.register().expect("a free slot")).collect();
             for s in &sources {
