@@ -325,9 +325,9 @@ def imm(op):
 
 def strip_mask(op):
     """An operand and its EVEX mask: ('zmm0', 1, zeroing)."""
-    m = re.match(r"^(\S+)\s*\{k(\d)\}(\s*\{z\})?$", op)
+    m = re.match(r"^(.+?)\s*\{k(\d)\}(\s*\{z\})?$", op)
     if m:
-        return m.group(1), int(m.group(2)), bool(m.group(3))
+        return m.group(1).rstrip(), int(m.group(2)), bool(m.group(3))
     return op, None, False
 
 
@@ -698,7 +698,7 @@ def vector(m, mnem, base, vex, ops, nxt):
     for operand in ops:
         if "[" not in operand:
             continue
-        size, addr, _ = address(m, operand)
+        size, addr, _ = address(m, strip_mask(operand)[0])
         if mask is not None and not aarch64.lengths_only(m, m.k[mask]):
             raise Unproved(f"data-dependent memory mask in {mnem}")
         # Legacy SSE's full-width memory operands require alignment,

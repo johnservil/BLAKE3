@@ -10,9 +10,9 @@ System V callee-saved registers are checked by the existing x86 executor.
     python3 tools/verify/prove_last.py --workers N --mixed
 
 Widths are 4 (SSE4.1), 8 (AVX2), 16 (AVX-512F); k is 0..15. Mixed cases
-16:K:PHASE give lane j (j+PHASE) mod (K+1) whole blocks. The 256 mixed
-cases vary the longest lane from zero to fifteen blocks and rotate the
-ending pattern through all sixteen lane positions. This is finite pattern
+WIDTH:K:PHASE give lane j (j+PHASE) mod (K+1) whole blocks, with K+1
+steps in the kernel. The 384 mixed cases vary the step count from one to
+sixteen and rotate the ending pattern through every lane position. This is finite pattern
 coverage, not a proof of every combination of lane lengths. Within each
 case all keys, bytes, last lengths and mode flags remain symbolic. The
 Rust wrapper's padding and selection remain the Rust tests' responsibility.
@@ -88,13 +88,18 @@ def prove(case):
                 base = 4*(j%4)
                 put(off[name]+4*j, BitVecVal(sum((base+(i+rot)%4) << (8*i) for i in range(4)),32))
             for b in range(16):
-                put(off["LENS"]+v*b+4*j, ZeroExt(24,lengths[j]) if b==k else BitVecVal(64,32))
-                bf = f | (1 if b==0 else 0) | (10 if b==k else 0)
+                put(off["LENS"]+v*b+4*j, ZeroExt(24,lengths[j]) if b==ks[j] else BitVecVal(64,32))
+                bf = f | (1 if b==0 else 0) | (10 if b==ks[j] else 0)
                 put(off["FLAGS"]+v*b+4*j, bf)
         put(off["END"],BitVecVal(64*(k+1),32))
         put(off["SWITCH"],BitVecVal(64*k,32))
         size = off["SIZE"]
-        entry = f"blake3_servil_last_{'sse41' if w==4 else 'avx2'}"
+        if mixed:
+            end_offset = (size+63)//64*64
+            for j in range(w):
+                put(end_offset+4*j, BitVecVal(ks[j]*64,32))
+            size = end_offset+4*w
+        entry = "blake3_servil_mixed_avx2" if mixed else f"blake3_servil_last_{'sse41' if w==4 else 'avx2'}"
 
     # Explicit initialization avoids inventing symbolic input for padding.
     params = Region("params", size, w!=16, None, alignment=64)
@@ -123,7 +128,8 @@ def prove(case):
                    else spec.words([out[32*j+b] for b in range(32)]))
         else:
             out = m.regions["params"].bytes
-            got = [spec.words([out[off["H"]+v*i+4*j+b] for b in range(4)])[0] for i in range(8)]
+            field = "SNAP" if mixed else "H"
+            got = [spec.words([out[off[field]+v*i+4*j+b] for b in range(4)])[0] for i in range(8)]
         for i in range(8):
             if not same(got[i],want[i]):
                 raise Unproved(f"{w} lanes, k={k}, lane {j}, word {i} differs")
@@ -135,8 +141,8 @@ if __name__ == "__main__":
     count = 4
     if args[:1] == ["--workers"]:
         count = int(args[1]); args = args[2:]
-    cases = ([(16,k,p) for k in range(16) for p in range(16)] if args == ["--mixed"] else
+    cases = ([(w,k,p) for w in (8,16) for k in range(16) for p in range(w)] if args == ["--mixed"] else
              [tuple(map(int,a.split(":"))) for a in args] if args else [(w,k) for w in (4,8,16) for k in range(16)])
-    assert count >= 1 and all(c[0] in (4,8,16) and 0<=c[1]<16 and (len(c)==2 or len(c)==3 and c[0]==16 and 0<=c[2]<16) for c in cases)
+    assert count >= 1 and all(c[0] in (4,8,16) and 0<=c[1]<16 and (len(c)==2 or len(c)==3 and c[0] in (8,16) and 0<=c[2]<c[0]) for c in cases)
     for result in workers.each(prove,cases,count):
         print(result,flush=True)
