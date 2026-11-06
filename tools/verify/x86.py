@@ -725,7 +725,15 @@ def vector(m, mnem, base, vex, ops, nxt):
         else:
             val = m.lanes(src)[:size // 4]
         if mask is not None:
-            raise Unproved("a masked store")
+            # EVEX dword stores access only enabled lanes. Masks must be
+            # public (checked above); a public bit whose value is not
+            # settled by this path stops the proof through decide().
+            if base not in ("movdqu32", "movdqa32"):
+                raise Unproved("an unmodelled masked store")
+            for j, word in enumerate(val):
+                if decide(m, kbit(m, mask, j)):
+                    m.store(addr + 4*j, word, 4)
+            return nxt
         m.store(addr, Concat(*reversed(val)) if len(val) > 1 else val[0], 4 * len(val))
         return nxt
     if dst in SUB:
@@ -745,9 +753,9 @@ def vector(m, mnem, base, vex, ops, nxt):
         return nxt
     if dst.startswith("k"):
         k = int(dst[1])
-        if base == "pcmpltud":
+        if base in ("pcmpltud", "pcmpeqd"):
             a, b = m.lanes(ops[1])[:width(ops[1])], src_lanes(m, ops[2], width(ops[1]))
-            bits = [If(ULT(x, y), BitVecVal(1, 1), BitVecVal(0, 1)) for x, y in zip(a, b)]
+            bits = [If(ULT(x, y) if base == "pcmpltud" else x == y, BitVecVal(1, 1), BitVecVal(0, 1)) for x, y in zip(a, b)]
             m.k[k] = simplify(ZeroExt(16 - len(bits), Concat(*reversed(bits))))
             return nxt
         raise Unproved(f"{mnem} to a mask register")
@@ -794,10 +802,10 @@ def vector(m, mnem, base, vex, ops, nxt):
         # lanes above it; the VEX forms zero those too.
         m.vwrite(dst, new, vex)
         return nxt
-    elif base in ("paddd", "psubd", "pxor", "pxord", "por", "pand"):
+    elif base in ("paddd", "psubd", "pxor", "pxord", "por", "pord", "pand"):
         a, b = A(), B()
         op = {"paddd": lambda x, y: x + y, "psubd": lambda x, y: x - y, "pxor": lambda x, y: x ^ y,
-              "pxord": lambda x, y: x ^ y, "por": orr, "pand": lambda x, y: x & y}[base]
+              "pxord": lambda x, y: x ^ y, "por": orr, "pord": orr, "pand": lambda x, y: x & y}[base]
         new = [op(x, y) for x, y in zip(a, b)]
     elif base in ("pslld", "psrld", "prord"):
         a, k = A(), imm(rest[-1])

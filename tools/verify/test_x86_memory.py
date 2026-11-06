@@ -91,6 +91,38 @@ class X86Memory(unittest.TestCase):
         m.lengths = {"public_mask"}
         x86.step(m, 0, "vmovdqu32", ops, 0)
 
+    def test_masked_dword_store_writes_enabled_lanes_only(self):
+        for mask in [0, 1, 0x8000, 0x5555, 0xffff]:
+            m = machine()
+            m.v[0] = [BitVecVal(100+j, 32) for j in range(16)]
+            m.k[1] = BitVecVal(mask, 16)
+            x86.step(m, 0, "vmovdqu32", ["zmmword ptr [rdi] {k1}", "zmm0"], 0)
+            self.assertEqual(set(m.regions["data"].bytes), {4*j+b for j in range(16) if (mask >> j) & 1 for b in range(4)})
+            for j in range(16):
+                if (mask >> j) & 1:
+                    self.assertEqual(arm.concrete(m.load(Ptr("data",4*j),4)), 100+j)
+        m = machine()
+        m.k[1] = BitVec("secret_store_mask",16)
+        with self.assertRaisesRegex(Unproved,"data-dependent memory mask"):
+            x86.step(m,0,"vmovdqu32",["zmmword ptr [rdi] {k1}","zmm0"],0)
+
+    def test_masked_store_keeps_bounds_for_each_active_lane(self):
+        m = machine()
+        m.regions["data"] = Region("data",4,True,None)
+        m.k[1] = BitVecVal(1,16)
+        x86.step(m,0,"vmovdqu32",["zmmword ptr [rdi] {k1}","zmm0"],0)
+        m.k[1] = BitVecVal(2,16)
+        with self.assertRaises(Unproved):
+            x86.step(m,0,"vmovdqu32",["zmmword ptr [rdi] {k1}","zmm0"],0)
+
+    def test_dword_equality_mask_has_one_bit_per_lane(self):
+        for mask in [0, 1, 0x8000, 0x5555, 0xffff]:
+            m = machine()
+            m.v[0] = [BitVecVal(j,32) for j in range(16)]
+            m.v[1] = [BitVecVal(j if (mask >> j) & 1 else j+1,32) for j in range(16)]
+            x86.step(m,0,"vpcmpeqd",["k1","zmm0","zmm1"],0)
+            self.assertEqual(arm.concrete(m.k[1]),mask)
+
     def test_unmodelled_store_stops(self):
         with self.assertRaisesRegex(Unproved, "unmodelled vector store"):
             x86.step(machine(), 0, "vpmaskmovd", ["ymmword ptr [rdi]", "ymm1", "ymm0"], 0)

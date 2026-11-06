@@ -28,7 +28,7 @@ from z3 import BitVecVal
 import x86
 import aarch64
 
-FILES = ("sse41", "avx2", "avx512", "wide")  # "wide": c/blake3_avx512_32.S
+FILES = ("sse41", "avx2", "avx512", "wide", "last")  # generated wide and last-block families too
 
 
 def forms(code):
@@ -81,8 +81,9 @@ def build(form_list, avx512):
                  else ["vmovdqu [rsi + %d], ymm%d" % (64 * j, j) for j in range(4)])
         src += [f".global f{i}", f"f{i}:", "  mov r8, [rdi]", "  mov r9, [rdi + 8]", "  mov r10, [rdi + 16]",
                 "  mov r11, [rdi + 24]"] + ["  " + x for x in load] + [f"  {mnem} {text}"] + ["  " + x for x in store] + [
-                "  mov [rdi], r8", "  mov [rdi + 8], r9", "  mov [rdi + 16], r10", "  mov [rdi + 24], r11",
-                "  vzeroupper", "  ret"]
+                "  mov [rdi], r8", "  mov [rdi + 8], r9", "  mov [rdi + 16], r10", "  mov [rdi + 24], r11"] + (
+                ["  kmovw eax, k1", "  mov [rdi + 32], rax", "  kmovw eax, k2", "  mov [rdi + 40], rax"] if avx512 else []
+                ) + ["  vzeroupper", "  ret"]
     path = os.path.join(d, "forms.S")
     with open(path, "w") as f:
         f.write("\n".join(src) + '\n.section .note.GNU-stack,"",@progbits\n')
@@ -99,7 +100,7 @@ def model(mnem, text, xs, vs, avx512, memory, offset):
         m.x[r] = BitVecVal(0, 64)
     m.x["rsp"] = aarch64.Ptr("stack", 0)
     m.x["rdx"] = aarch64.Ptr("data", offset)
-    for i, x in enumerate(xs):
+    for i, x in enumerate(xs[:4]):
         m.x[f"r{8 + i}"] = BitVecVal(x, 64)
     for i in range(32):
         m.v[i] = [BitVecVal(0, 32)] * 16
@@ -113,7 +114,8 @@ def model(mnem, text, xs, vs, avx512, memory, offset):
     written = m.regions["data"].bytes if memory is not None else {}
     want_memory = None if memory is None else [aarch64.concrete(written[i]) if i in written else b
                                               for i, b in enumerate(memory)]
-    return ([aarch64.concrete(m.x[f"r{8 + i}"]) for i in range(4)],
+    return ([aarch64.concrete(m.x[f"r{8 + i}"]) for i in range(4)] +
+            ([aarch64.concrete(m.k[i]) for i in (1, 2)] if avx512 else []),
             [aarch64.concrete(m.v[i][l]) if l < lanes else vs[16 * i + l] for i in range(4) for l in range(16)],
             want_memory)
 
@@ -152,7 +154,7 @@ def fault_child(path, index):
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     lib = ctypes.CDLL(path)
     # All mask lanes active: the access cannot be suppressed by a zero mask.
-    xs = (ctypes.c_uint64 * 4)(*[0xffffffffffffffff] * 4)
+    xs = (ctypes.c_uint64 * 6)(*[0xffffffffffffffff] * 6)
     vs = (ctypes.c_uint32 * 64)()
     owner, data = memory_buffer([0] * 128)
     getattr(lib, f"f{index}")(xs, vs, ctypes.c_void_p(ctypes.addressof(data) + 1))
@@ -187,14 +189,23 @@ def main():
                     faults += 1
             for trial in range(rounds):
                 xs = [random.getrandbits(64) for _ in range(4)]
+                if avx512 and trial < 4:
+                    xs[0] = [0, 0xffff, 1, 0x8000][trial]
                 vs = [random.getrandbits(32) for _ in range(64)]
                 if mnem in ("vpermt2d", "vpermi2d"):
                     # Index lanes in range, as the kernels' tables are.
                     k = 1 if mnem == "vpermt2d" else 0
                     vs[16 * k:16 * k + 16] = [random.getrandbits(5) for _ in range(16)]
-                cx, cv = (ctypes.c_uint64 * 4)(*xs), (ctypes.c_uint32 * 64)(*vs)
+                cx, cv = (ctypes.c_uint64 * (6 if avx512 else 4))(*xs), (ctypes.c_uint32 * 64)(*vs)
                 data = [random.getrandbits(8) for _ in range(128)] if memory else None
                 offset = offsets[trial % len(offsets)]
+                if mnem == "vpcmpeqd" and memory:
+                    # Random 32-bit words almost never compare equal: give
+                    # the equality-mask form both equal and unequal lanes.
+                    equal = [0, 0xffff, 1, 0x8000][trial] if trial < 4 else random.getrandbits(16)
+                    for j in range(16):
+                        word = vs[j] if (equal >> j) & 1 else vs[j] ^ 1
+                        data[offset+4*j:offset+4*j+4] = word.to_bytes(4, "little")
                 mx, mv, md = model(mnem, text, xs, vs, avx512, data, offset)
                 owner, view = memory_buffer(data) if memory else (None, None)
                 f(cx, cv, ctypes.c_void_p(ctypes.addressof(view) + offset) if memory else None)
