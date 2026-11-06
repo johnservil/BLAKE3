@@ -11,10 +11,9 @@ fn run(bench: &std::path::Path, args: &[&str]) {
 
 fn main() {
     assert!(cfg!(target_os = "macos"), "this diagnostic is for the native Mac runner");
-    let args: Vec<String> = std::env::args().collect();
-    assert_eq!(args.len(), 2, "host_lab BENCH_COMMIT");
-    let rev = &args[1];
-    assert!(rev.len() == 40 && rev.bytes().all(|c| c.is_ascii_hexdigit()), "a full commit hash");
+    assert_eq!(std::env::args_os().len(), 1, "this pinned diagnostic takes no arguments");
+    let rev = "235ee5eb701ce64845b705d2b7cb0240d68eb9e7";
+    assert!(include_str!("../Cargo.toml").contains(rev), "the diagnostic and its clocks dependency name the same benchmark");
     let bench = PathBuf::from(std::env::var_os("HOME").expect("runner HOME")).join("checkouts/bench");
     assert!(bench.join(".git").exists(), "the runner's benchmark checkout");
     run(&bench, &["git", "fetch", "--quiet", "origin", rev]);
