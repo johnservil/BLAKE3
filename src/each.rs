@@ -270,7 +270,29 @@ fn by_blocks_at_once(items: &[&[u8]], key: &CVWords, flags: u8, out: &mut [[u8; 
     const GROUP: usize = 16;
     let whole = |item: &[u8]| item.len().saturating_sub(1) / crate::BLOCK_LEN;
     let mut order: arrayvec::ArrayVec<usize, BY_BLOCKS_AT_ONCE> = (0..items.len()).collect();
-    order.sort_unstable_by_key(|&i| whole(items[i]));
+    // Sam's bounded-key counting pass (the x86 finishing-kernel draft):
+    // sixteen possible block counts, at most 64 items. Scan all sixteen
+    // buckets rather than keeping a second bitset and mutable bit loop.
+    const {
+        assert!(BY_BLOCKS_AT_ONCE <= u8::MAX as usize);
+    }
+    if items[1..].iter().any(|item| whole(item) != whole(items[0])) {
+        let mut positions = [0u8; 16];
+        for item in items {
+            positions[whole(item)] += 1;
+        }
+        let mut offset = 0u8;
+        for position in &mut positions {
+            let count = *position;
+            *position = offset;
+            offset += count;
+        }
+        for (i, item) in items.iter().enumerate() {
+            let position = &mut positions[whole(item)];
+            order[*position as usize] = i;
+            *position += 1;
+        }
+    }
     // With SHA-3 the last block stays in the lanes too; other AArch64
     // CPUs keep the prefix kernels followed by scalar last blocks.
     #[cfg(blake3_neon)]
