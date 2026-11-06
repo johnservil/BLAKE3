@@ -2356,12 +2356,12 @@ mod test {
             // last blocks included (ffi_last): the two of none too.
             #[cfg(not(target_arch = "x86_64"))]
             let calls = 5;
-            // On AVX-512, a count past last_kernel_takes goes as on NEON.
+            // On AVX-512, a group last_kernel_takes refuses goes as on NEON.
             #[cfg(target_arch = "x86_64")]
             let calls = {
-                let (l, limit) = (crate::ffi_last::lanes(), crate::each::last_kernel_takes(platform));
+                let l = crate::ffi_last::lanes();
                 let per = |k: usize, n: usize| {
-                    if k <= limit {
+                    if crate::each::last_kernel_takes(platform, k, n) {
                         n.div_ceil(l)
                     } else if k > 0 {
                         n.div_ceil(16)

@@ -286,13 +286,12 @@ fn by_blocks_at_once(items: &[&[u8]], key: &CVWords, flags: u8, out: &mut [[u8; 
     #[cfg(target_arch = "x86_64")]
     {
         let lanes = crate::ffi_last::lanes();
-        let limit = last_kernel_takes(platform);
         let mut wide: arrayvec::ArrayVec<usize, BY_BLOCKS_AT_ONCE> = arrayvec::ArrayVec::new();
         let mut at = 0;
         while at < order.len() {
             let k = whole(items[order[at]]);
             let end = at + order[at..].iter().take_while(|&&i| whole(items[i]) == k).count();
-            if k > limit {
+            if !last_kernel_takes(platform, k, end - at) {
                 // Past the kernel's 8 lanes' worth: AVX-512's 16 for the
                 // whole blocks, the last ones after them.
                 wide.try_extend_from_slice(&order[at..end]).unwrap();
@@ -318,21 +317,26 @@ fn by_blocks_at_once(items: &[&[u8]], key: &CVWords, flags: u8, out: &mut [[u8; 
     by_blocks_then_last(items, &order, key, flags, out, platform);
 }
 
-/// The most whole blocks before the last that x86-64's last-blocks kernel
-/// takes on `platform` (ffi_last, 8 lanes on AVX2): every count on AVX2,
-/// where the whole blocks' kernel has 8 lanes too; on AVX-512, up to where
-/// its 16 lanes for the whole blocks, the last ones after them, cost less
-/// (warm hash_each of 1024 items, ns a byte against #249: EPYC 9255 and
-/// Ryzen 7 9700X, 64 B -71%, 512 B -6%, 768 B +15%; Xeon Gold 6330, 256 B
-/// -5%, 512 B +20%). An AVX-512 kernel of 16 lanes would take them all.
+/// Whether x86-64's last-blocks kernel (ffi_last, 8 lanes on AVX2) takes a
+/// group of `n` items with `k` whole blocks before their last on
+/// `platform`: on AVX2 always, the whole blocks' kernel having 8 lanes too;
+/// on AVX-512, unless its 16 lanes for the whole blocks, the last ones after
+/// them, cost less. Warm hash_each of 1024 items, ns a byte against #249:
+/// on Zen 5 (EPYC 9255, Ryzen 7 9700X) equal lengths of 64 B -71%, 512 B
+/// -6%, 768 B +15% with the kernel, so past 7 whole blocks a group of more
+/// than 8 keeps the 16 lanes (mixed lengths of 100-1000 B, about four
+/// items to each count among the 64 sorted at once, -26% with the kernel
+/// against -8% without); on the Xeon Gold 6330, 256 B -5%,
+/// 512 B +20%, mixed lengths +16%: up to 3. An AVX-512 kernel of 16 lanes
+/// would take them all.
 #[cfg(target_arch = "x86_64")]
-pub(crate) fn last_kernel_takes(platform: Platform) -> usize {
+pub(crate) fn last_kernel_takes(platform: Platform, k: usize, n: usize) -> bool {
     match platform {
         #[cfg(blake3_avx512_ffi)]
-        Platform::AVX512 if crate::platform::wide_avx512() => 7,
+        Platform::AVX512 if crate::platform::wide_avx512() => k <= 7 || n <= crate::ffi_last::lanes(),
         #[cfg(blake3_avx512_ffi)]
-        Platform::AVX512 => 3,
-        _ => 15,
+        Platform::AVX512 => k <= 3,
+        _ => true,
     }
 }
 
