@@ -42,4 +42,5 @@ step sh -c 'python3 tools/gen_neon_hybrid.py | cmp - c/blake3_neon_hybrid_aarch6
 step sh -c 'python3 tools/gen_x86.py | cmp - c/blake3_partial_x86-64_unix.S'
 step sh -c 'python3 tools/gen_x86_chunk_root.py | cmp - c/blake3_chunk_root_x86-64_unix.S'
 step sh -c 'python3 tools/gen_avx512_32.py | cmp - c/blake3_avx512_32.S'
+step sh -c 'python3 tools/gen_output16.py | cmp - c/blake3_output16.S'
 echo "check-builds: every build passes"
