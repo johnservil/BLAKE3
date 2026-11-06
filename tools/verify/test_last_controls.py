@@ -17,15 +17,18 @@ import workers
 
 ROOT = Path(__file__).resolve().parents[2]
 CONTROLS = [
-    ("root bit removed", (16,3,5),
+    ("root bit removed", (16,3,-1),
      ".Lmixed16_endflags:\n    .long " + ", ".join(["10"]*16),
      ".Lmixed16_endflags:\n    .long " + ", ".join(["2"]*16), "differs"),
-    ("completed lanes overwritten", (16,3,5),
+    ("completed lanes overwritten", (16,3,-1),
      "    vmovdqu32 ZMMWORD PTR [r15 + 0]{k1}, zmm0",
      "    vmovdqu32 ZMMWORD PTR [r15 + 0], zmm0", "differs"),
-    ("AVX2 snapshot selection reversed", (8,3,5),
+    ("AVX2 snapshot selection reversed", (8,3,-1),
      "        vpblendvb ymm8, ymm8, ymm0, ymm15",
      "        vpblendvb ymm8, ymm0, ymm8, ymm15", "differs"),
+    ("prefix selected at or after a lane's end", (16,3,-1),
+     "    cmp r14d, DWORD PTR [r12 + 384]\n    cmovae rax, rdx",
+     "    cmp r14d, DWORD PTR [r12 + 384]\n    cmovb rax, rdx", "outside"),
 ]
 
 

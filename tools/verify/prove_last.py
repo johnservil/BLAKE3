@@ -7,15 +7,25 @@ whole-block region or its separate 64-byte last block. The result and
 System V callee-saved registers are checked by the existing x86 executor.
 
     python3 tools/verify/prove_last.py [--workers N] [WIDTH:K ...]
+    python3 tools/verify/prove_last.py --workers N --symbolic
     python3 tools/verify/prove_last.py --workers N --mixed
 
-Widths are 8 (AVX2) and 16 (AVX-512F); k is 0..15. Mixed cases
-WIDTH:K:PHASE give lane j (j+PHASE) mod (K+1) whole blocks, with K+1
-steps in the kernel. The 384 mixed cases vary the step count from one to
-sixteen and rotate the ending pattern through every lane position. This is finite pattern
-coverage, not a proof of every combination of lane lengths. Within each
-case all keys, bytes, last lengths and mode flags remain symbolic. The
-Rust wrapper's padding and selection remain the Rust tests' responsibility.
+Widths are 8 (AVX2) and 16 (AVX-512F); K is 0..15. Symbolic mixed cases
+WIDTH:K:-1 give each lane an independent public ending in 0..K, with K+1
+steps in the kernel. For each output lane the proof checks each of its
+possible ends, leaving every other lane's ending arbitrary. Thus the 32
+symbolic runs cover all combinations, not just equal or rotated patterns.
+Prefix regions end at that lane's symbolic ending; guarded pointer loads
+must prove bounds for both feasible alternatives. Arbitrary old output
+bytes ensure an omitted conditional store cannot count as a valid answer.
+Keys, bytes, last lengths and mode flags are symbolic throughout. Last
+lengths use arbitrary bytes (a superset of the wrapper's valid 0..64).
+
+The older WIDTH:K:PHASE cases are retained as finite pattern controls:
+lane j has (j+PHASE) mod (K+1) full blocks. --mixed runs those 384 cases.
+Rust's actual builders are checked against the initialized ABI rows before
+native test calls enter assembly; padding and dispatch also have independent
+reference, occupancy and guard-page tests.
 """
 import os
 import sys
