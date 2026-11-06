@@ -220,9 +220,6 @@ impl Hasher {
 
     /// The root's output: the core's, after the stage's bytes.
     pub(crate) fn final_output(&self) -> Output {
-        if self.staged == 0 {
-            return self.core.final_output();
-        }
         let mut core = self.core.clone();
         core.update(self.staged_bytes());
         core.final_output()
@@ -472,9 +469,6 @@ impl HasherCore {
         // last chunk (hasher::feed), as src/hasher.rs describes.
         let fill_kernels = kernels_on(&self.key, &self.chunk_state, self.chunk_state.platform, pooled);
         let rest = hasher::fill(&fill_kernels, &mut self.chunk_state, &mut self.cv_stack, self.initial_chunk_counter, input);
-        if rest.is_empty() {
-            return self;
-        }
         // Pooled, the subtrees take the lock one at a time (children).
         let turn = platform::Sme2Turn::take(self.chunk_state.platform, !pooled && rest.len() >= SME2_SIZED_LEN);
         let kernels = kernels_on(&self.key, &self.chunk_state, turn.platform(), pooled);
