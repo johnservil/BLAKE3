@@ -215,6 +215,7 @@ pub mod convenience;
 mod each;
 #[cfg(blake3_gpu)]
 mod gpu;
+#[path = "performance.rs"]
 pub mod throughput;
 
 mod platform;
