@@ -9,8 +9,8 @@
 //! longer message's last partial chunk hashes on its own. Each message's
 //! chunk chaining values then merge into its root as BLAKE3's tree places them.
 
-use crate::throughput::Block;
 use crate::platform::Platform;
+use crate::throughput::Block;
 use crate::{CHUNK_END, CHUNK_LEN, CHUNK_START, CVBytes, CVWords, ChunkState, Hash, Hasher, IncrementCounter, Mode, OUT_LEN};
 
 /// [`hash_each`], using other CPU cores where that is faster: the
@@ -317,8 +317,17 @@ fn by_blocks_at_once(items: &[&[u8]], key: &CVWords, flags: u8, out: &mut [[u8; 
                 // Sound: SHA-3 is present; these items share k whole blocks
                 // before their separately padded last block, 0 to 64 bytes.
                 unsafe {
-                    crate::neon_hybrid::hash_last_lanes(&inputs, &lasts, &lengths[..group.len()], k + 1,
-                        key, flags, CHUNK_START, CHUNK_END | crate::ROOT, &mut digests[..group.len() * OUT_LEN]);
+                    crate::neon_hybrid::hash_last_lanes(
+                        &inputs,
+                        &lasts,
+                        &lengths[..group.len()],
+                        k + 1,
+                        key,
+                        flags,
+                        CHUNK_START,
+                        CHUNK_END | crate::ROOT,
+                        &mut digests[..group.len() * OUT_LEN],
+                    );
                 }
                 for (&i, digest) in group.iter().zip(digests.chunks_exact(OUT_LEN)) {
                     out[i].copy_from_slice(digest);

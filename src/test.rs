@@ -1160,10 +1160,7 @@ mod guard_pages {
                     let outputs: &mut [[u8; OUT_LEN]] = unsafe { core::slice::from_raw_parts_mut(out.bytes().as_mut_ptr() as *mut [u8; OUT_LEN], count) };
                     crate::throughput::hash_many(
                         Mode::Plain,
-                        &crate::throughput::Batch::in_place(
-                            crate::throughput::Block::from_bytes(input.bytes()).expect("a page-end batch starts aligned"),
-                            len,
-                        ),
+                        &crate::throughput::Batch::in_place(crate::throughput::Block::from_bytes(input.bytes()).expect("a page-end batch starts aligned"), len),
                         outputs,
                     );
                     let data = input.bytes().to_vec();

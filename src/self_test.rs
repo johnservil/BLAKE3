@@ -439,8 +439,17 @@ fn last_lanes(platform: Platform, input: &[u8], previous: &[u8; 32], count: usiz
             // Sound: SHA-3 is present; every prefix lies in its 192-byte
             // input, and each last block is zero-padded in 64 bytes.
             unsafe {
-                crate::neon_hybrid::hash_last_lanes(&inputs[..count], &lasts[..count], &lengths[..count], blocks,
-                    &key, crate::KEYED_HASH, crate::CHUNK_START, crate::CHUNK_END | crate::ROOT, out);
+                crate::neon_hybrid::hash_last_lanes(
+                    &inputs[..count],
+                    &lasts[..count],
+                    &lengths[..count],
+                    blocks,
+                    &key,
+                    crate::KEYED_HASH,
+                    crate::CHUNK_START,
+                    crate::CHUNK_END | crate::ROOT,
+                    out,
+                );
             }
         }
     }
@@ -729,12 +738,15 @@ mod test {
             Hash { offset, len } => official::hash(Mode::Plain, &input[offset..][..len]).to_vec(),
             Many { len, count, .. } => (0..count).flat_map(|i| official::hash(Mode::Plain, &input[i * len..][..len])).collect(),
             #[cfg(blake3_neon)]
-            LastLanes { count } => [1usize, 3].into_iter().flat_map(|blocks| {
-                (0..count).flat_map(move |i| {
-                    let last = if blocks == 1 { i * 17 % 65 } else { 1 + i * 17 % 64 };
-                    official::hash(Mode::Keyed(previous), &input[i * 192..][..(blocks - 1) * 64 + last])
+            LastLanes { count } => [1usize, 3]
+                .into_iter()
+                .flat_map(|blocks| {
+                    (0..count).flat_map(move |i| {
+                        let last = if blocks == 1 { i * 17 % 65 } else { 1 + i * 17 % 64 };
+                        official::hash(Mode::Keyed(previous), &input[i * 192..][..(blocks - 1) * 64 + last])
+                    })
                 })
-            }).collect(),
+                .collect(),
             ChunkValues { chunks } => {
                 let key = crate::platform::words_from_le_bytes_32(previous);
                 let table: std::vec::Vec<&[u8; crate::CHUNK_LEN]> =

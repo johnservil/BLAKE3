@@ -50,10 +50,28 @@ fn single_threaded_calls_allocate_as_the_memory_section_says() {
     let bytes = Block::bytes(&input);
     let mut out = [0u8; 100];
     for len in [0, 1, 64, 1024, 1025, 16 * 1024, 64 * 1024] {
-        assert_eq!(allocated(|| drop(convenience::hash(&bytes[..len]))), 0, "convenience::hash of {len} B");
-        assert_eq!(allocated(|| drop(throughput::hash(Mode::Plain, &input, len))), 0, "throughput::hash of {len} B");
+        assert_eq!(
+            allocated(|| {
+                std::hint::black_box(convenience::hash(&bytes[..len]));
+            }),
+            0,
+            "convenience::hash of {len} B"
+        );
+        assert_eq!(
+            allocated(|| {
+                std::hint::black_box(throughput::hash(Mode::Plain, &input, len));
+            }),
+            0,
+            "throughput::hash of {len} B"
+        );
         let mut hasher = Hasher::new(Mode::Plain);
-        assert_eq!(allocated(|| drop(hasher.update(&bytes[..len]).finalize())), 0, "Hasher of {len} B");
+        assert_eq!(
+            allocated(|| {
+                std::hint::black_box(hasher.update(&bytes[..len]).finalize());
+            }),
+            0,
+            "Hasher of {len} B"
+        );
         assert_eq!(allocated(|| hasher.finalize_xof().fill(&mut out)), 0, "OutputReader after {len} B");
     }
     let batch = Batch::from_blocks(&input[..64], 64);
