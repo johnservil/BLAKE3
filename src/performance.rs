@@ -51,7 +51,7 @@ use crate::{ContextKey, DERIVE_KEY_CONTEXT, Hash, IV, Mode, OUT_LEN};
 pub fn hash(mode: Mode, input: &[Block], len: usize) -> Hash {
     let mut room = core::mem::MaybeUninit::uninit();
     let (key, flags) = mode.key(&mut room);
-    crate::hash_serial(&Block::bytes(input)[..len], key, flags)
+    crate::hash_hot(&Block::bytes(input)[..len], key, flags)
 }
 
 /// The hashes of a [`Batch`]'s messages, in `mode`, on the calling thread:

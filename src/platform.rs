@@ -464,6 +464,8 @@ mod x86_bits {
     pub const AVX512: u8 = 8;
     /// AVX-512 on a CPU where the 32-input kernels pay ([`super::wide_cpu`]).
     pub const WIDE: u8 = 16;
+    /// A CPU where the integer-register chunk root pays ([`super::gpr_cpu`]).
+    pub const GPR_ROOT: u8 = 32;
     pub const READ: u8 = 128;
 }
 
@@ -500,6 +502,12 @@ fn read_x86_features() -> u8 {
     let mut features = READ;
     if leaf1.ecx & (1 << 19) != 0 {
         features |= SSE41;
+    }
+    // Sound: leaf 0 exists on every x86-64 CPU; it names the vendor.
+    #[allow(unused_unsafe)]
+    let vendor = unsafe { arch::__cpuid(0) };
+    if gpr_cpu((vendor.ebx, vendor.edx, vendor.ecx) == (0x6874_7541, 0x6974_6e65, 0x444d_4163), family(leaf1.eax)) {
+        features |= GPR_ROOT;
     }
     let avx = (1 << 26) | (1 << 27) | (1 << 28);
     if leaf1.ecx & avx == avx {
@@ -546,6 +554,24 @@ fn family(eax: u32) -> u32 {
 #[cfg_attr(not(blake3_sse41_ffi), allow(dead_code))]
 fn wide_cpu(amd: bool, family: u32) -> bool {
     amd && family >= 0x1A
+}
+
+/// Whether performance::hash of one chunk or less goes to the
+/// integer-register kernel (chunk_root::Root::Gpr, crate::hash_hot): AMD
+/// from family 0x1A (Zen 5), where it was measured faster warm (EPYC 9255,
+/// Ryzen 7 9700X); Intel's P cores ran it slower (i7-12700K), so every
+/// other CPU keeps the SIMD kernel.
+#[cfg(target_arch = "x86_64")]
+#[cfg_attr(not(blake3_sse41_ffi), allow(dead_code))]
+fn gpr_cpu(amd: bool, family: u32) -> bool {
+    amd && family >= 0x1A
+}
+
+/// Whether this CPU takes the integer-register chunk root ([`gpr_cpu`]).
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+pub fn gpr_chunk_root() -> bool {
+    x86_features() & x86_bits::GPR_ROOT != 0
 }
 
 /// Whether `hash_many` dispatches to the 32-input AVX-512 kernels
@@ -791,6 +817,52 @@ mod x86_features_test {
         // What the dispatch reads, against the same independent reading.
         #[cfg(blake3_avx512_ffi)]
         assert_eq!(super::wide_avx512(), want, "wide_avx512 on vendor {amd}, family {family:#x}");
+    }
+
+    /// The integer-register chunk root's CPUs: AMD from family 0x1A; its bit
+    /// agrees with /proc/cpuinfo's vendor and family whether or not the CPU
+    /// has AVX-512; and performance::hash and hash_multithreaded of one
+    /// chunk or less take that kernel exactly on such a CPU,
+    /// convenience::hash never (the entries that ran, from the tests' record).
+    #[test]
+    #[cfg(all(target_os = "linux", feature = "std", blake3_sse41_ffi))]
+    fn test_gpr_chunk_root_on_amd_from_zen5_alone() {
+        for (amd, family, gpr) in [(true, 0x1A, true), (true, 0x1B, true), (true, 0x19, false), (false, 0x1A, false), (false, 0x6, false)] {
+            assert_eq!(super::gpr_cpu(amd, family), gpr, "amd {amd}, family {family:#x}");
+        }
+        let info = std::fs::read_to_string("/proc/cpuinfo").expect("/proc/cpuinfo");
+        let field = |name: &str| info.lines().find(|l| l.starts_with(name)).and_then(|l| l.split(':').nth(1)).map(|v| v.trim().to_string()).expect(name);
+        let want = field("vendor_id") == "AuthenticAMD" && field("cpu family").parse::<u32>().expect("cpu family") >= 0x1A;
+        assert_eq!(super::gpr_chunk_root(), want, "gpr_chunk_root");
+        let gpr = crate::chunk_root::ffi::blake3_servil_gpr_chunk_root as *const () as usize;
+        let ran = |call: &mut dyn FnMut() -> crate::Hash| {
+            crate::RAN_ENTRIES.with(|r| r.borrow_mut().clear());
+            let hash = call();
+            (hash, crate::RAN_ENTRIES.with(|r| r.borrow().contains(&gpr)))
+        };
+        let key = [7u8; 32];
+        for len in [0usize, 64, 1000, crate::CHUNK_LEN, crate::CHUNK_LEN + 1] {
+            let mut batch = crate::performance::Batch::new(len, 1);
+            let input = std::vec![9u8; len];
+            batch.set(0, &input);
+            for mode in [crate::Mode::Plain, crate::Mode::Keyed(&key)] {
+                let official = crate::test::official::hash(mode, &input);
+                let (hot, hot_gpr) = ran(&mut || crate::performance::hash(mode, batch.blocks(), len));
+                assert_eq!(*hot.as_bytes(), official, "{len} B: performance::hash");
+                assert_eq!(hot_gpr, want && len <= crate::CHUNK_LEN, "{len} B: performance::hash takes the GPR kernel exactly where it pays");
+                let (mt, mt_gpr) = ran(&mut || crate::performance::hash_multithreaded(mode, batch.blocks(), len));
+                assert_eq!(*mt.as_bytes(), official, "{len} B: performance::hash_multithreaded");
+                assert_eq!(
+                    mt_gpr,
+                    want && len <= crate::CHUNK_LEN,
+                    "{len} B: performance::hash_multithreaded takes the GPR kernel exactly where performance::hash does"
+                );
+                let (cold, cold_gpr) = ran(&mut || crate::convenience::hash_with(mode, &input));
+                assert_eq!(*cold.as_bytes(), official, "{len} B: convenience::hash_with");
+                assert!(!cold_gpr, "{len} B: convenience::hash_with keeps the compact kernels");
+            }
+            assert!(!ran(&mut || crate::convenience::hash(&input)).1, "{len} B: convenience::hash keeps the compact kernels");
+        }
     }
 
     /// The detection functions answer as the standard library does, each
