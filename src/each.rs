@@ -281,69 +281,34 @@ fn by_blocks_at_once(items: &[&[u8]], key: &CVWords, flags: u8, out: &mut [[u8; 
     let whole = |item: &[u8]| item.len().saturating_sub(1) / crate::BLOCK_LEN;
     let mut order: arrayvec::ArrayVec<usize, BY_BLOCKS_AT_ONCE> = (0..items.len()).collect();
     order.sort_unstable_by_key(|&i| whole(items[i]));
-    // x86-64: each group of equal block count in one call, last blocks
-    // included, straight to its digests (ffi_last: BLAKE3-Servil #247).
+    // Every x86 group includes its last blocks; the selected platform
+    // determines its width (4, 8, or 16), with no block-count thresholds.
     #[cfg(target_arch = "x86_64")]
     {
-        let lanes = crate::ffi_last::lanes();
-        let mut wide: arrayvec::ArrayVec<usize, BY_BLOCKS_AT_ONCE> = arrayvec::ArrayVec::new();
+        let lanes = crate::ffi_last::lanes(platform);
         let mut at = 0;
         while at < order.len() {
             let k = whole(items[order[at]]);
             let end = at + order[at..].iter().take_while(|&&i| whole(items[i]) == k).count();
-            if !last_kernel_takes(platform, k, end - at) {
-                // Past the kernel's 8 lanes' worth: AVX-512's 16 for the
-                // whole blocks, the last ones after them.
-                wide.try_extend_from_slice(&order[at..end]).unwrap();
-                at = end;
-                continue;
-            }
             for group in order[at..end].chunks(lanes) {
-                let members: arrayvec::ArrayVec<&[u8], 8> = group.iter().map(|&i| items[i]).collect();
-                let mut digests = [[0u8; OUT_LEN]; 8];
+                let members: arrayvec::ArrayVec<&[u8], 16> = group.iter().map(|&i| items[i]).collect();
+                let mut digests = [[0u8; OUT_LEN]; 16];
                 crate::counted(crate::Counted::ByBlocksCall);
-                crate::ffi_last::hash_group(&members, k, key, flags, &mut digests[..members.len()]);
+                crate::ffi_last::hash_group(platform, &members, k, key, flags, &mut digests[..members.len()]);
                 for (n, &i) in group.iter().enumerate() {
                     out[i] = digests[n];
                 }
             }
             at = end;
         }
-        if !wide.is_empty() {
-            by_blocks_then_last(items, &wide, key, flags, out, platform);
-        }
     }
     #[cfg(not(target_arch = "x86_64"))]
     by_blocks_then_last(items, &order, key, flags, out, platform);
 }
 
-/// Whether x86-64's last-blocks kernel (ffi_last, 8 lanes on AVX2) takes a
-/// group of `n` items with `k` whole blocks before their last on
-/// `platform`: on AVX2 always, the whole blocks' kernel having 8 lanes too;
-/// on AVX-512, unless its 16 lanes for the whole blocks, the last ones after
-/// them, cost less. Warm hash_each of 1024 items, ns a byte against #249:
-/// on Zen 5 (EPYC 9255, Ryzen 7 9700X) equal lengths of 64 B -71%, 512 B
-/// -6%, 768 B +15% with the kernel, so past 7 whole blocks a group of more
-/// than 8 keeps the 16 lanes (mixed lengths of 100-1000 B, about four
-/// items to each count among the 64 sorted at once, -26% with the kernel
-/// against -8% without); on the Xeon Gold 6330, 256 B -5%,
-/// 512 B +20%, mixed lengths +16%: up to 3. An AVX-512 kernel of 16 lanes
-/// would take them all.
-#[cfg(target_arch = "x86_64")]
-pub(crate) fn last_kernel_takes(platform: Platform, k: usize, n: usize) -> bool {
-    match platform {
-        #[cfg(blake3_avx512_ffi)]
-        Platform::AVX512 if crate::platform::wide_avx512() => k <= 7 || n <= crate::ffi_last::lanes(),
-        #[cfg(blake3_avx512_ffi)]
-        Platform::AVX512 => k <= 3,
-        _ => true,
-    }
-}
-
-/// [`by_blocks_at_once`] for the items `order` names, where no kernel
-/// takes the last blocks too (AArch64; on AVX-512 the items past
-/// last_kernel_takes): the whole blocks side by side, then each item's last
-/// block on its own.
+/// AArch64's path until its last-blocks kernel arrives: whole blocks
+/// side by side, then each last block on its own.
+#[cfg(not(target_arch = "x86_64"))]
 fn by_blocks_then_last(items: &[&[u8]], order: &[usize], key: &CVWords, flags: u8, out: &mut [[u8; OUT_LEN]], platform: Platform) {
     const GROUP: usize = 16;
     let whole = |item: &[u8]| item.len().saturating_sub(1) / crate::BLOCK_LEN;

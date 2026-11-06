@@ -2356,20 +2356,10 @@ mod test {
             // last blocks included (ffi_last): the two of none too.
             #[cfg(not(target_arch = "x86_64"))]
             let calls = 5;
-            // On AVX-512, a group last_kernel_takes refuses goes as on NEON.
             #[cfg(target_arch = "x86_64")]
             let calls = {
-                let l = crate::ffi_last::lanes();
-                let per = |k: usize, n: usize| {
-                    if crate::each::last_kernel_takes(platform, k, n) {
-                        n.div_ceil(l)
-                    } else if k > 0 {
-                        n.div_ceil(16)
-                    } else {
-                        0
-                    }
-                };
-                per(2, 20) + per(5, 17) + per(0, 2) + per(9, 1)
+                let l = crate::ffi_last::lanes(platform);
+                20usize.div_ceil(l) + 17usize.div_ceil(l) + 1 + 1
             };
             assert_eq!(crate::COUNTED.with(|c| c[crate::Counted::ByBlocksCall as usize].get()), calls as u64, "{platform:?}");
             assert!(out.iter().zip(&inputs).all(|(o, i)| o == crate::convenience::hash(i).as_bytes()), "{platform:?}");

@@ -35,17 +35,70 @@ unsafe extern "C" {
     fn blake3_servil_last_avx2(params: *mut Params<8>);
 }
 
-/// The lanes the widest kernel this CPU has takes: 8 with AVX2, else 4
-/// (every x86-64 CPU this crate runs on has SSE4.1).
-pub(crate) fn lanes() -> usize {
-    if crate::platform::avx2_detected() { 8 } else { 4 }
+/// AVX-512's compact parameter block (gen_x86.py's last16): common
+/// counter 0 and flags, per-lane last length, input and last-block pointer.
+#[repr(C, align(64))]
+struct Params16 {
+    msg: [*const u8; 16],
+    lastmsg: [*const u8; 16],
+    lens: [u32; 16],
+    key: CVWords,
+    k: u32,
+    flags: u32,
+    out: *mut [u8; OUT_LEN],
+}
+
+unsafe extern "C" {
+    fn blake3_servil_last_avx512(params: *const Params16);
+}
+
+/// AVX-512F's sixteen-lane kernel: `items` have `k` full blocks before
+/// their last, and `out` holds one digest each. Unsafe: the CPU has AVX-512F.
+unsafe fn hash_group16(items: &[&[u8]], k: usize, key: &CVWords, flags: u8, out: &mut [[u8; OUT_LEN]]) {
+    let n = items.len();
+    assert!((1..=16).contains(&n) && out.len() == n && k < 16, "1 to 16 items of up to a chunk");
+    assert!(items.iter().all(|i| i.len().saturating_sub(1) / BLOCK_LEN == k), "items of {k} whole blocks before their last");
+    let mut last = [[0u8; BLOCK_LEN]; 16];
+    let lens = core::array::from_fn(|j| {
+        let tail = &items[if j < n { j } else { 0 }][k * BLOCK_LEN..];
+        last[j][..tail.len()].copy_from_slice(tail);
+        tail.len() as u32
+    });
+    let mut digests = [[0u8; OUT_LEN]; 16];
+    let p = Params16 {
+        msg: core::array::from_fn(|j| items[if j < n { j } else { 0 }].as_ptr()),
+        lastmsg: core::array::from_fn(|j| last[j].as_ptr()),
+        lens,
+        key: *key,
+        k: k as u32,
+        flags: flags as u32,
+        out: digests.as_mut_ptr(),
+    };
+    // Sound: every input reaches its k whole blocks and every LASTMSG a
+    // padded 64-byte block. The kernel stores 16 digests, including the
+    // unread duplicate lanes, into distinct caller-owned scratch (no
+    // sharing with workers). The caller checked AVX-512F.
+    unsafe { blake3_servil_last_avx512(&p) };
+    out.copy_from_slice(&digests[..n]);
+}
+
+/// The widest last-block kernel the selected platform takes.
+pub(crate) fn lanes(platform: crate::platform::Platform) -> usize {
+    match platform {
+        crate::platform::Platform::AVX512 => 16,
+        crate::platform::Platform::AVX2 => 8,
+        crate::platform::Platform::SSE41 => 4,
+    }
 }
 
 /// The digest of each of `items` into `out` (one each), in the mode of
 /// `key` and `flags`: 1 to lanes() items, each with `k` whole blocks
 /// before its last (1 to 64 bytes; none for an empty item, k = 0).
-pub(crate) fn hash_group(items: &[&[u8]], k: usize, key: &CVWords, flags: u8, out: &mut [[u8; OUT_LEN]]) {
-    if crate::platform::avx2_detected() {
+pub(crate) fn hash_group(platform: crate::platform::Platform, items: &[&[u8]], k: usize, key: &CVWords, flags: u8, out: &mut [[u8; OUT_LEN]]) {
+    if matches!(platform, crate::platform::Platform::AVX512) && items.len() > 8 {
+        // Sound: the selected platform guarantees AVX-512F.
+        unsafe { hash_group16(items, k, key, flags, out) }
+    } else if !matches!(platform, crate::platform::Platform::SSE41) {
         // Sound: the CPU has AVX2.
         unsafe { hash_group_on::<8>(blake3_servil_last_avx2, items, k, key, flags, out) }
     } else {
@@ -136,6 +189,12 @@ mod test {
         }
         check::<4>();
         check::<8>();
+        assert_eq!(core::mem::offset_of!(Params16, lastmsg), 128);
+        assert_eq!(core::mem::offset_of!(Params16, lens), 256);
+        assert_eq!(core::mem::offset_of!(Params16, key), 320);
+        assert_eq!(core::mem::offset_of!(Params16, k), 352);
+        assert_eq!(core::mem::offset_of!(Params16, flags), 356);
+        assert_eq!(core::mem::offset_of!(Params16, out), 360);
     }
 
     /// Every block count (k of 0 to 15), last blocks of every length (0,
@@ -147,11 +206,11 @@ mod test {
         let mut input = std::vec![0u8; 16 * crate::CHUNK_LEN];
         crate::test::paint_test_input(&mut input);
         let key = [9u8; 32];
-        let kernels: [(usize, unsafe fn(&[&[u8]], usize, &CVWords, u8, &mut [[u8; OUT_LEN]]), bool); 2] = [
+        let kernels: [(usize, unsafe fn(&[&[u8]], usize, &CVWords, u8, &mut [[u8; OUT_LEN]]), bool); 3] = [
             (4, |i, k, key, f, o| unsafe { hash_group_on::<4>(blake3_servil_last_sse41, i, k, key, f, o) }, crate::platform::sse41_detected()),
             (8, |i, k, key, f, o| unsafe { hash_group_on::<8>(blake3_servil_last_avx2, i, k, key, f, o) }, crate::platform::avx2_detected()),
+            (16, |i, k, key, f, o| unsafe { hash_group16(i, k, key, f, o) }, crate::platform::avx512_detected()),
         ];
-        let mut golden = crate::test::Golden::new("last_blocks_group");
         for mode in [crate::Mode::Plain, crate::Mode::Keyed(&key), crate::Mode::DeriveKey("last blocks")] {
             let mut room = core::mem::MaybeUninit::uninit();
             let (words, flags) = mode.key(&mut room);
@@ -180,11 +239,12 @@ mod test {
                                 item.len()
                             );
                         }
-                        golden.add(out.as_flattened(), || items.iter().flat_map(|i| crate::test::official::hash(mode, i)).collect());
+                        for (digest, item) in out.iter().zip(&items) {
+                            assert_eq!(*digest, crate::test::official::hash(mode, item), "independent reference, {w} lanes, k {k}, {n} items");
+                        }
                     }
                 }
             }
         }
-        let _ = golden;
     }
 }
