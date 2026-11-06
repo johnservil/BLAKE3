@@ -187,6 +187,55 @@ pub(crate) unsafe fn hash_mixed8(items: &[&[u8]], key: &CVWords, flags: u8, out:
     unsafe { hash8(items, key, flags, out, true) };
 }
 
+/// A full native group already held in validated padded batch slots.
+/// This borrows each final block instead of copying payload padding again;
+/// AVX-512 also writes directly to the caller's full-width output slice.
+/// The platform must be one selected from this CPU, as for hash_group.
+pub(crate) fn hash_padded_group(platform: crate::platform::Platform, input: &[u8], len: usize, key: &CVWords, flags: u8, out: &mut [[u8; OUT_LEN]]) {
+    assert_eq!(flags & CHUNK_START, 0, "the finishing kernel supplies CHUNK_START");
+    assert!((1..=crate::CHUNK_LEN).contains(&len), "nonempty messages up to one chunk");
+    let width = lanes(platform);
+    assert!(width >= 8 && out.len() == width, "a full native group");
+    crate::many::assert_slots(input, len, width);
+    let slot = crate::many::slot_len(len);
+    let end = slot - BLOCK_LEN;
+    let last = (len - end) as u32;
+    if width == 16 {
+        let p = Params16 {
+            msg: core::array::from_fn(|j| input[j * slot..].as_ptr()),
+            lastmsg: core::array::from_fn(|j| input[j * slot + end..].as_ptr()),
+            lens: [last; 16],
+            key: *key,
+            k: (end / BLOCK_LEN) as u32,
+            flags: flags as u32,
+            out: out.as_mut_ptr(),
+        };
+        // Each prefix and full padded last block lies in its own slot;
+        // output is sixteen uniquely borrowed digests, with no spare lane.
+        crate::ran_kernel(blake3_servil_last_avx512 as *const ());
+        unsafe { blake3_servil_last_avx512(&p) };
+    } else {
+        let mut p = Params8 {
+            h: [[0; 8]; 8],
+            snap: [[0; 8]; 8],
+            msg: core::array::from_fn(|j| input[j * slot..].as_ptr()),
+            lastmsg: core::array::from_fn(|j| input[j * slot + end..].as_ptr()),
+            key: *key,
+            lens: [last; 8],
+            ends: [end as u32; 8],
+            flags: flags as u32,
+            end: slot as u32,
+        };
+        crate::ran_kernel(blake3_servil_last_avx2 as *const ());
+        unsafe { blake3_servil_last_avx2(&mut p) };
+        for (j, digest) in out.iter_mut().enumerate() {
+            for (i, row) in p.h.iter().enumerate() {
+                digest[4 * i..][..4].copy_from_slice(&row[j].to_le_bytes());
+            }
+        }
+    }
+}
+
 /// Finishing width for this platform, or zero for SSE4.1's serial path.
 pub(crate) fn lanes(platform: crate::platform::Platform) -> usize {
     match platform {

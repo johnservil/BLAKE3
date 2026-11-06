@@ -134,8 +134,7 @@ fn hash_partial_native_groups(input: &[u8], len: usize, key: &CVWords, flags: u8
     let slot = slot_len(len);
     let full = outputs.len() / width * width;
     for (messages, digests) in input[..full * slot].chunks_exact(width * slot).zip(outputs[..full].chunks_exact_mut(width)) {
-        let items: arrayvec::ArrayVec<&[u8], 16> = messages.chunks_exact(slot).map(|m| &m[..len]).collect();
-        crate::ffi_last::hash_group(platform, &items, (len - 1) / BLOCK_LEN, key, flags, digests);
+        crate::ffi_last::hash_padded_group(platform, messages, len, key, flags, digests);
     }
     if full != outputs.len() {
         hash_many_on(&input[full * slot..], len, key, flags, &mut outputs[full..], platform);
