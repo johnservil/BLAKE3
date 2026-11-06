@@ -73,21 +73,10 @@ pub(crate) fn hash_many_on(input: &[u8], len: usize, key: &CVWords, flags: u8, o
         return;
     }
     #[cfg(all(target_arch = "x86_64", blake3_sse41_ffi, feature = "std"))]
-    if len <= CHUNK_LEN && len % BLOCK_LEN != 0 {
+    if outputs.len() >= 8 && len <= CHUNK_LEN && len % BLOCK_LEN != 0 {
         let width = crate::ffi_last::lanes(platform);
         if width >= 8 && outputs.len() >= width {
-            crate::ran(crate::Ran::ShortRun);
-            let full = outputs.len() / width * width;
-            for (messages, digests) in input[..full * slot].chunks_exact(width * slot).zip(outputs[..full].chunks_exact_mut(width)) {
-                let items: arrayvec::ArrayVec<&[u8], 16> = messages.chunks_exact(slot).map(|m| &m[..len]).collect();
-                crate::ffi_last::hash_group(platform, &items, (len - 1) / BLOCK_LEN, key, flags, digests);
-            }
-            // Keep the existing path for a remainder below native width;
-            // it cannot enter this full-group branch recursively.
-            if full != outputs.len() {
-                hash_many_on(&input[full * slot..], len, key, flags, &mut outputs[full..], platform);
-            }
-            return;
+            return hash_partial_native_groups(input, len, key, flags, outputs, platform, width);
         }
     }
     #[cfg(blake3_sme2)]
@@ -132,6 +121,24 @@ pub(crate) fn hash_many_on(input: &[u8], len: usize, key: &CVWords, flags: u8, o
             16 => hash_blocks::<{ 16 * BLOCK_LEN }>(messages, key, flags, digests, platform, plans, last_len),
             _ => unreachable!("messages of up to a chunk"),
         }
+    }
+}
+
+/// Keep the finishing wrapper's stack frame off the established batch
+/// paths, including short inputs below native width. Full groups use the
+/// proved finishing ABI; the smaller remainder retains its existing route.
+#[cfg(all(target_arch = "x86_64", blake3_sse41_ffi, feature = "std"))]
+#[inline(never)]
+fn hash_partial_native_groups(input: &[u8], len: usize, key: &CVWords, flags: u8, outputs: &mut [[u8; OUT_LEN]], platform: Platform, width: usize) {
+    crate::ran(crate::Ran::ShortRun);
+    let slot = slot_len(len);
+    let full = outputs.len() / width * width;
+    for (messages, digests) in input[..full * slot].chunks_exact(width * slot).zip(outputs[..full].chunks_exact_mut(width)) {
+        let items: arrayvec::ArrayVec<&[u8], 16> = messages.chunks_exact(slot).map(|m| &m[..len]).collect();
+        crate::ffi_last::hash_group(platform, &items, (len - 1) / BLOCK_LEN, key, flags, digests);
+    }
+    if full != outputs.len() {
+        hash_many_on(&input[full * slot..], len, key, flags, &mut outputs[full..], platform);
     }
 }
 
