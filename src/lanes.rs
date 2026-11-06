@@ -1504,7 +1504,8 @@ impl Task {
         }
         // Sound: the stream keeps every member's bytes and `out` in place
         // until the task's `left` is zero.
-        if members.len() >= 2 && members.iter().all(|m| m.len == members[0].len) {
+        let equal = members.len() >= 2 && members.iter().all(|m| m.len == members[0].len);
+        if equal {
             match members[0].len {
                 crate::BLOCK_LEN => return self.run_equal_members::<{ crate::BLOCK_LEN }>(platform),
                 128 => return self.run_equal_members::<128>(platform),
@@ -1542,14 +1543,17 @@ impl Task {
         // collection's (each::hash_each_on): those of 2 to 15 chunks their
         // whole chunks side by side, chunk by chunk, longer ones alone.
         let small = members.iter().filter(|m| m.len <= CHUNK_LEN).count();
-        let middle = members.iter().filter(|m| m.len > CHUNK_LEN).count();
+        // Uniform middle-sized messages share whole chunks efficiently.
+        // Mixed lengths retain the serial path: their sparse rounds and
+        // per-task collection allocations are a separate policy trial.
+        let middle_together = equal && members[0].len > CHUNK_LEN;
         let by_blocks = by_blocks_takes(platform) && small >= BY_BLOCKS_LEAST;
-        if by_blocks || middle >= 2 {
+        if by_blocks || middle_together {
             if by_blocks {
                 crate::ran(crate::Ran::MembersByBlocks);
                 self.run_by_blocks(platform);
             }
-            if middle >= 2 {
+            if middle_together {
                 crate::ran(crate::Ran::MembersEach);
                 // Sound: the members' bytes are in place until the task's `left` is zero.
                 let items: arrayvec::ArrayVec<&[u8], MEMBERS> =
@@ -1563,7 +1567,7 @@ impl Task {
                     unsafe { core::ptr::copy_nonoverlapping(digest.as_ptr(), m.out, crate::OUT_LEN) };
                 }
             }
-            for m in members.iter().filter(|m| if m.len <= CHUNK_LEN { !by_blocks } else { middle < 2 }) {
+            for m in members.iter().filter(|m| if m.len <= CHUNK_LEN { !by_blocks } else { !middle_together }) {
                 let bytes = unsafe { core::slice::from_raw_parts(m.input, m.len) };
                 let hash = crate::hash_serial_on(bytes, &self.key, self.flags, platform);
                 unsafe { core::ptr::copy_nonoverlapping(hash.as_bytes().as_ptr(), m.out, crate::OUT_LEN) };
@@ -2344,7 +2348,7 @@ mod test {
                             let small = inputs.iter().filter(|i| i.len() <= CHUNK_LEN).count();
                             let by_blocks = !across && by_blocks_takes(platform) && small >= 2;
                             let middle = inputs.iter().filter(|i| i.len() > CHUNK_LEN).count();
-                            let each = !across && middle >= 2;
+                            let each = !across && !mixed && middle >= 2;
                             let ran = crate::RAN.with(|r| r.get());
                             assert_eq!(ran & crate::Ran::MembersAcross as u32 != 0, across, "{platform:?}, {count} x {len}, mixed {mixed}: across");
                             assert_eq!(ran & crate::Ran::MembersByBlocks as u32 != 0, by_blocks, "{platform:?}, {count} x {len}, mixed {mixed}: by blocks");
@@ -2402,13 +2406,12 @@ mod test {
                     let equal = lens.iter().all(|&n| n == lens[0]);
                     if !equal {
                         let small = lens.iter().filter(|&&n| n <= CHUNK_LEN).count();
-                        let middle = lens.iter().filter(|&&n| n > CHUNK_LEN).count();
                         assert_eq!(
                             ran & crate::Ran::MembersByBlocks as u32 != 0,
                             by_blocks_takes(platform) && small >= 2,
                             "{platform:?}, {count} members under {spread} B: by blocks"
                         );
-                        assert_eq!(ran & crate::Ran::MembersEach as u32 != 0, middle >= 2, "{platform:?}, {count} members under {spread} B: chunk by chunk");
+                        assert_eq!(ran & crate::Ran::MembersEach as u32, 0, "{platform:?}, {count} mixed members under {spread} B: middle messages run alone");
                     }
                     assert_eq!(&out[1..count + 1], &expected[..], "{platform:?}, {count} members under {spread} B: {lens:?}");
                     assert_eq!((out[0], out[count + 1]), ([0xAA; crate::OUT_LEN], [0xAA; crate::OUT_LEN]), "nothing written outside");
