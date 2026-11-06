@@ -69,16 +69,18 @@
 //! | Many messages of one length, in one buffer | [`performance::hash_many_multithreaded`] |
 //! | Many messages of different lengths, in memory | [`performance::hash_each_multithreaded`] |
 //! | Many messages arriving at once (a server's uploads) | [`performance::update_each`] |
-//! | A stream of messages read, made, or arriving | [`performance::stream`] |
+//! | A stream of messages read, made, or arriving | [`performance::stream_multithreaded`], or on the calling thread alone [`performance::stream`] |
 //!
 //! Each call returns once its hash is done, and uses other CPU cores
 //! where that is faster (the forms without `multithreaded` stay on the
-//! calling thread). A [stream](performance::stream) is different: your program submits
+//! calling thread). A [stream](performance::stream_multithreaded) is different: your program submits
 //! messages and goes on to read or make the next ones while other threads
 //! hash them; each digest arrives in the place your program named, a
 //! little later. Choose it when reading or making the data keeps your
 //! thread busy, such as files read from memory or a fast disk: it hashes
-//! the most bytes per second.
+//! the most bytes per second. On the calling thread alone,
+//! [`performance::stream`] hashes a run of messages side by side, faster
+//! than a call for each.
 //!
 //! Short messages hash fastest together: 1024 messages of 64 bytes in one
 //! [`performance::hash_many`] call take about a fifth of the time of 1024
@@ -102,7 +104,7 @@
 //! them.
 //!
 //! **The GPU of an Apple silicon Mac** joins the CPU's threads on a
-//! [stream](performance::stream)'s long messages, 4 MiB or more written in
+//! [stream](performance::stream_multithreaded)'s long messages, 4 MiB or more written in
 //! with [`Stream::submit_with`](performance::Stream::submit_with), once the
 //! stream has kept sending them for 10 ms: it takes 8 MiB of the stream's
 //! waiting work at a time. On an Apple M4 Max, streams of 16 or more such
@@ -124,7 +126,7 @@
 //!   hash on the calling thread. Above it they keep a list of the pieces
 //!   they hand out, freed when they return: 48 bytes for each 128 KiB of
 //!   input, and at most 200 bytes for each CPU (1 GiB on 16 CPUs: 390 KiB).
-//! - **A [stream](performance::stream)** takes its storage (its 2 MiB ring, 8 MiB more for
+//! - **A [stream](performance::stream_multithreaded)** takes its storage (its 2 MiB ring, 8 MiB more for
 //!   messages of 4 MiB or more, of which only the pages used are faulted in, and its entries)
 //!   from a pool the process keeps: a thread's first stream allocates it
 //!   and later streams reuse it, never freed. On an Apple silicon Mac, a
@@ -138,7 +140,7 @@
 //!
 //! # Panics
 //!
-//! **A panic inside a [stream](performance::stream) ends the process**,
+//! **A panic inside a [stream](performance::stream_multithreaded) ends the process**,
 //! wherever it starts: in your body, handler, `fill` or reader, or in the
 //! stream's own checks. Its message and backtrace print first; then the
 //! process aborts, since this crate's threads may still be reading your
@@ -987,7 +989,7 @@ pub fn initialize() {
 }
 
 /// [`initialize`], and start the threads that the multithreaded calls and
-/// [`stream`](performance::stream) use: every program that makes such calls calls this once,
+/// [`stream`](performance::stream_multithreaded) use: every program that makes such calls calls this once,
 /// before them, in place of `initialize`. It starts `threads - 1` workers,
 /// and each multithreaded call hashes on its calling thread and the
 /// workers (calls made at once share the workers), and on CPUs with SME2

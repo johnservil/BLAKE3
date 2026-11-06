@@ -269,7 +269,7 @@ impl Hasher {
     /// faster: the same result, never slower. Pieces of 512 KiB and more
     /// use them, as [`hash_multithreaded`](performance::hash_multithreaded) does; shorter ones hash on the
     /// calling thread. One `Hasher` may mix the two calls. When reading
-    /// the pieces keeps your thread busy, a [`stream`](performance::stream) is faster
+    /// the pieces keeps your thread busy, a [`stream`](performance::stream_multithreaded) is faster
     /// ([`Stream::submit_reader`](performance::Stream::submit_reader), or [`Stream::submit_with`](performance::Stream::submit_with)): it hashes
     /// each piece while your thread reads the next.
     ///

@@ -269,7 +269,7 @@ fn a_stream_puts_every_digest_in_its_place_and_hands_the_places_back_in_order() 
         let mut places = zeros(messages.len());
         let want_order: Vec<usize> = places.iter().map(|p| p as *const Hash as usize).collect();
         let mut order = Vec::new();
-        blake3_servil::performance::stream(
+        blake3_servil::performance::stream_multithreaded(
             mode,
             |done: &mut [Hash]| order.extend(done.iter().map(|p| p as *const Hash as usize)),
             |s| {
@@ -309,7 +309,7 @@ fn a_streams_batches_fill_the_callers_places() {
     for (m, mode) in modes().into_iter().enumerate() {
         let mut places: Vec<Vec<Hash>> = cases.iter().map(|&(_, count)| zeros(count)).collect();
         let mut handed = Vec::new();
-        blake3_servil::performance::stream(
+        blake3_servil::performance::stream_multithreaded(
             mode,
             |done: &mut [Hash]| handed.push(done.len()),
             |s| {
@@ -350,7 +350,7 @@ fn bursts_of_large_batches_after_pauses_complete() {
     let expected: Vec<[u8; 32]> = messages.iter().map(|message| fixed.want(0, message)).collect();
     let mut places = vec![zeros(4096); 4];
     for burst in 0..400 {
-        blake3_servil::performance::stream(
+        blake3_servil::performance::stream_multithreaded(
             Mode::Plain,
             |_: &mut [Hash]| {},
             |s| {
@@ -380,7 +380,7 @@ fn a_stream_cycles_a_fixed_set_of_places() {
     let mut places = zeros(4);
     let free = std::cell::RefCell::new(places.iter_mut().collect::<Vec<_>>());
     let got = std::cell::RefCell::new(Vec::new());
-    blake3_servil::performance::stream(
+    blake3_servil::performance::stream_multithreaded(
         Mode::Plain,
         |done: &mut [Hash]| {
             got.borrow_mut().push(*done[0].as_bytes());
@@ -422,7 +422,7 @@ fn streams_on_several_threads_keep_their_own_order() {
                 let in_blocks: Vec<Batch> = messages.iter().map(|m| message(m)).collect();
                 let m = t % 3;
                 let mut places = zeros(messages.len());
-                blake3_servil::performance::stream(
+                blake3_servil::performance::stream_multithreaded(
                     modes()[m],
                     |_: &mut [Hash]| {},
                     |s| {

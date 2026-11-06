@@ -159,16 +159,6 @@ struct Out<const N: usize>(UnsafeCell<[u8; N]>);
 /// `body` share goes in a [`Cell`](core::cell::Cell) or
 /// [`RefCell`](core::cell::RefCell).
 ///
-/// **Speed, even on one thread.** A program hashing many messages one
-/// after another hashes them faster through a stream than through
-/// [`hash`](crate::convenience::hash) on each, even with no other thread
-/// (`initialize_multithreaded(Some(1))`): the stream gathers messages into
-/// tasks and hashes a task's messages side by side, where one call hashes
-/// one message's blocks one after another. On a Ryzen 7 9700X, one thread,
-/// ns a byte: 1 KiB messages 0.13 against hash()'s 0.95, 4 KiB 0.12
-/// against 0.28, mixed lengths around 300 B 0.51 against 1.02; SHA-256
-/// there (the sha2 crate, with the CPU's SHA extensions) 0.40, 0.38 and
-/// 0.45 (BLAKE3-Servil #246).
 /// Each message's place comes back alone, about 1-2 ns a message: for
 /// many short messages of one length, [`Stream::submit_batch`] hands back
 /// one place per batch and hashes them side by side (64-byte messages one
@@ -194,6 +184,45 @@ struct Out<const N: usize>(UnsafeCell<[u8; N]>);
 /// let messages: Vec<Block> = (0..1000u32).map(|i| Block(i.to_le_bytes().repeat(16).try_into().unwrap())).collect();
 /// let mut digests = vec![Hash::from_bytes([0; 32]); messages.len()];
 /// let mut handed_back = 0;
+/// blake3_servil::performance::stream_multithreaded(Mode::Plain, |done: &mut [Hash]| handed_back += done.len(), |s| {
+///     for (message, digest) in messages.iter().zip(&mut digests) {
+///         s.submit(core::slice::from_ref(message), 64, digest);
+///     }
+///     s.finish();
+/// });
+/// assert_eq!(handed_back, 1000);
+/// assert_eq!(digests[7], blake3_servil::convenience::hash(&messages[7].0));
+/// ```
+pub fn stream_multithreaded<'env, D: FnMut(&'env mut [Hash]), T>(mode: Mode, done: D, body: impl for<'s> FnOnce(&'s mut Stream<'env, D>) -> T) -> T {
+    scoped(Stream::open(mode, done), body)
+}
+
+/// Hash a stream of messages on the calling thread alone, in place: the
+/// contract of [`stream_multithreaded`] (each message borrowed with the
+/// place its digest goes, `done` receiving each place back in submission
+/// order, `finish` last, a panic ending the process), with every task
+/// hashed on this thread as it is handed over. No other thread reads the
+/// messages, so a program that streams only this way needs no
+/// [`initialize_multithreaded`](crate::initialize_multithreaded), and an
+/// open stream keeps no thread of this crate's looking for work. Its pool
+/// twin, [`stream_multithreaded`], hashes on this crate's threads (until
+/// 0.8, that was this name's).
+///
+/// **Faster than a call per message, on one thread.** The stream gathers
+/// messages into tasks and hashes a task's messages side by side, where
+/// [`hash`](crate::convenience::hash) hashes one message's blocks one
+/// after another. On a Ryzen 7 9700X, one thread, ns a byte: 1 KiB
+/// messages 0.13 against `hash()`'s 0.95, 4 KiB 0.12 against 0.28, mixed
+/// lengths around 300 B 0.51 against 1.02; SHA-256 there (the sha2 crate,
+/// with the CPU's SHA extensions) 0.40, 0.38 and 0.45 (BLAKE3-Servil #246,
+/// measured on a pool of one, which hashes as this does).
+///
+/// ```
+/// # blake3_servil::initialize();
+/// use blake3_servil::{Hash, Mode, performance::Block};
+/// let messages: Vec<Block> = (0..1000u32).map(|i| Block(i.to_le_bytes().repeat(16).try_into().unwrap())).collect();
+/// let mut digests = vec![Hash::from_bytes([0; 32]); messages.len()];
+/// let mut handed_back = 0;
 /// blake3_servil::performance::stream(Mode::Plain, |done: &mut [Hash]| handed_back += done.len(), |s| {
 ///     for (message, digest) in messages.iter().zip(&mut digests) {
 ///         s.submit(core::slice::from_ref(message), 64, digest);
@@ -204,7 +233,11 @@ struct Out<const N: usize>(UnsafeCell<[u8; N]>);
 /// assert_eq!(digests[7], blake3_servil::convenience::hash(&messages[7].0));
 /// ```
 pub fn stream<'env, D: FnMut(&'env mut [Hash]), T>(mode: Mode, done: D, body: impl for<'s> FnOnce(&'s mut Stream<'env, D>) -> T) -> T {
-    let mut stream = Stream::open(mode, done);
+    scoped(Stream::open_on(mode, done, false), body)
+}
+
+/// `body` over `stream`, which it finishes: the two stream calls' scope.
+fn scoped<'env, D: FnMut(&'env mut [Hash]), T>(mut stream: Stream<'env, D>, body: impl for<'s> FnOnce(&'s mut Stream<'env, D>) -> T) -> T {
     // Dropped first if anything below unwinds: the process ends there, while
     // the threads may still read the messages and write the places.
     let unwinding = crate::lanes::AbortOnUnwind;
@@ -215,25 +248,38 @@ pub fn stream<'env, D: FnMut(&'env mut [Hash]), T>(mode: Mode, done: D, body: im
 }
 
 impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
-    /// A stream outside [`stream`]'s scope, for the C API (`capi/`): the
-    /// same contract, with the program holding the stream and ending it
-    /// (`finish`, then drop). Dropping a stream waits for its tasks. Rust
-    /// programs call [`stream`], whose scope holds the contract for them.
+    /// A stream outside [`stream_multithreaded`]'s scope, for the C API
+    /// (`capi/`): the same contract, with the program holding the stream and
+    /// ending it (`finish`, then drop). Dropping a stream waits for its
+    /// tasks. Rust programs call [`stream_multithreaded`], whose scope holds
+    /// the contract for them.
     #[doc(hidden)]
     pub fn open(mode: Mode, done: D) -> Self {
-        crate::lanes::require();
+        Self::open_on(mode, done, true)
+    }
+
+    /// A stream on the pool (`pooled`: [`stream_multithreaded`]) or on the
+    /// calling thread alone ([`stream`]): no pool asked for, no slot, and
+    /// not counted among the open streams the workers keep looking at.
+    fn open_on(mode: Mode, done: D, pooled: bool) -> Self {
+        if pooled {
+            crate::lanes::require();
+        }
         let (key, flags) = mode.key_and_flags();
         let s = Storage::take();
         // A slot, where some thread beside this one can take tasks (with one
         // CPU none can: then every task is hashed here as it is handed over,
         // as when every slot is taken).
-        let slot = if crate::lanes::splits() { s.source.register() } else { None };
-        crate::lanes::sources::opened();
+        let slot = if pooled && crate::lanes::splits() { s.source.register() } else { None };
+        if pooled {
+            crate::lanes::sources::opened();
+        }
         Stream {
             key,
             flags,
             s,
             slot,
+            pooled,
             done,
             open_first: 0,
             next: 0,
@@ -422,6 +468,9 @@ pub struct Stream<'env, D> {
     s: &'static mut Storage,
     /// The source's registration, or None (this thread hashes every task).
     slot: Option<usize>,
+    /// Whether the stream is the pool's (stream_multithreaded): counted
+    /// among the open streams (lanes::sources::opened) until it drops.
+    pooled: bool,
     /// The handler that takes each place back.
     done: D,
     /// The open task's first entry.
@@ -1047,7 +1096,9 @@ impl<D> Drop for Stream<'_, D> {
         if let Some(slot) = self.slot {
             crate::lanes::sources::Source::unregister(slot);
         }
-        crate::lanes::sources::closed();
+        if self.pooled {
+            crate::lanes::sources::closed();
+        }
         // Sound: `s` is not used again; the next stream takes it whole.
         let s: &'static mut Storage = unsafe { &mut *(self.s as *mut Storage) };
         FREE.lock().unwrap().push(FreeStorage(s));
@@ -1079,7 +1130,7 @@ mod test {
         let mut got = places(lens.len());
         let want_handed: std::vec::Vec<(usize, usize)> = got.iter().map(|h| (h as *const Hash as usize, 1)).collect();
         let mut handed = std::vec::Vec::new();
-        stream(mode, record(&mut handed), |s| {
+        stream_multithreaded(mode, record(&mut handed), |s| {
             for (i, out) in got.iter_mut().enumerate() {
                 s.submit_with(
                     lens[i],
@@ -1191,7 +1242,7 @@ mod test {
         gpu_ready(&input);
         let message = &input[..4 << 20];
         let mut got = places(crate::gpu::RING_BYTES / message.len());
-        stream(
+        stream_multithreaded(
             Mode::Plain,
             |_| {},
             |s| {
@@ -1273,6 +1324,52 @@ mod test {
         |d: &mut [Hash]| handed.push((d.as_ptr() as usize, d.len()))
     }
 
+    /// `stream`, on the calling thread alone (bench-hashes #131), beside a
+    /// full pool it must not use: no slot, not among the open streams the
+    /// workers look at, every task run on this thread (Task::run's record),
+    /// and every kind of message hashed as hash_with does, each place handed
+    /// back once, in order. The pool's stream, for contrast, counts as open.
+    #[test]
+    fn test_stream_alone_runs_every_task_on_the_caller() {
+        crate::initialize_multithreaded(None);
+        let mut input = std::vec![0u8; (1 << 20) + 200];
+        crate::test::paint_test_input(&mut input);
+        let key = [5u8; 32];
+        let lens: std::vec::Vec<usize> = (0..3000).map(|i| [0, 1, 63, 64, 64, 100, 1024, 1500, 4096, PIECE + 1, 200_000, (1 << 20) + 7][i % 12]).collect();
+        let blocks = crate::test::message(&input);
+        for mode in [Mode::Plain, Mode::Keyed(&key)] {
+            let mut got = places(lens.len());
+            let want_handed: std::vec::Vec<(usize, usize)> = got.iter().map(|h| (h as *const Hash as usize, 1)).collect();
+            let mut handed = std::vec::Vec::new();
+            crate::lanes::TASK_THREADS.lock().unwrap().clear();
+            stream(mode, record(&mut handed), |s| {
+                assert!(s.slot.is_none() && !s.pooled, "no slot, not the pool's");
+                assert!(!crate::lanes::sources::open(), "not among the open streams");
+                for (i, out) in got.iter_mut().enumerate() {
+                    s.submit(&blocks[i % 3..], lens[i], out);
+                    if i % 500 == 499 {
+                        s.collect();
+                    }
+                }
+                s.finish();
+            });
+            assert_eq!(*crate::lanes::TASK_THREADS.lock().unwrap(), [std::thread::current().id()], "every task on the calling thread");
+            assert!(handed == want_handed, "every place handed back once, in order");
+            for i in 0..lens.len() {
+                assert_eq!(got[i], crate::convenience::hash_with(mode, &input[64 * (i % 3)..][..lens[i]]), "message {i}, {} bytes", lens[i]);
+            }
+        }
+        stream_multithreaded(
+            Mode::Plain,
+            |_: &mut [Hash]| {},
+            |s| {
+                assert!(s.pooled && crate::lanes::sources::open(), "the pool's stream counts as open");
+                s.finish();
+            },
+        );
+        assert!(!crate::lanes::sources::open(), "and is not once it ends");
+    }
+
     /// Messages of every kind the stream handles (empty, short, one length
     /// many times over, a whole piece, a piece and a byte, several pieces
     /// and a partial one), borrowed and written in place, in each mode,
@@ -1294,7 +1391,7 @@ mod test {
             let mut got = places(lens.len());
             let want_handed: std::vec::Vec<(usize, usize)> = got.iter().map(|h| (h as *const Hash as usize, 1)).collect();
             let mut handed = std::vec::Vec::new();
-            stream(mode, record(&mut handed), |s| {
+            stream_multithreaded(mode, record(&mut handed), |s| {
                 // With workers to hand tasks to, the stream has its slot
                 // among the pool's sources (a stream without one hashes
                 // every task on the caller: right, and slower).
@@ -1336,7 +1433,7 @@ mod test {
         for len in [0, 1, 63, 100, 1000] {
             let count = 5;
             let mut got = places(count);
-            stream(
+            stream_multithreaded(
                 Mode::Plain,
                 |_| {},
                 |s| {
@@ -1365,7 +1462,7 @@ mod test {
         let input: std::vec::Vec<u8> = (0..3 * PIECE + 77).map(|i| (i % 251) as u8).collect();
         let mut got = places(1);
         let mut batch = places(40);
-        stream(
+        stream_multithreaded(
             Mode::Plain,
             |_| {},
             |s| {
@@ -1412,7 +1509,7 @@ mod test {
         if let Ok(case) = std::env::var(CHILD) {
             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let mut got = places(4);
-                stream(
+                stream_multithreaded(
                     Mode::Plain,
                     |_: &mut [Hash]| assert!(case != "handler", "the handler panics"),
                     |s| match case.as_str() {
@@ -1537,7 +1634,7 @@ mod test {
         let mut got = places(want.len());
         let mut handed = std::vec::Vec::new();
         let mut rest: &mut [Hash] = &mut got;
-        stream(Mode::Plain, record(&mut handed), |s| {
+        stream_multithreaded(Mode::Plain, record(&mut handed), |s| {
             for len in lens {
                 assert_eq!(s.submit_reader(reader(len, None), None, &mut take(&mut rest, 1)[0]).unwrap(), len as u64, "{len} bytes");
             }
@@ -1576,7 +1673,7 @@ mod test {
             let mut got = places(2 * lens.len());
             let want_handed: std::vec::Vec<(usize, usize)> = got.iter().map(|h| (h as *const Hash as usize, 1)).collect();
             let mut handed = std::vec::Vec::new();
-            stream(mode, record(&mut handed), |s| {
+            stream_multithreaded(mode, record(&mut handed), |s| {
                 for (i, out) in got.iter_mut().enumerate() {
                     s.submit_with(
                         lens[i % lens.len()],
@@ -1609,7 +1706,7 @@ mod test {
     fn test_long_messages_fill_the_long_ring_to_its_end() {
         let input = std::vec![5u8; LONG];
         let mut got = places(LONG_RING_BYTES / LONG);
-        stream(
+        stream_multithreaded(
             Mode::Plain,
             |_| {},
             |s| {
@@ -1647,7 +1744,7 @@ mod test {
         let mut got = places(RING_BYTES / 704 + 40);
         let mut handed = std::vec::Vec::new();
         let mut rest: &mut [Hash] = &mut got;
-        stream(Mode::Plain, record(&mut handed), |s| {
+        stream_multithreaded(Mode::Plain, record(&mut handed), |s| {
             while s.head % RING_BYTES <= RING_BYTES - PIECE {
                 lens.push(700);
                 s.submit_with(
@@ -1702,7 +1799,7 @@ mod test {
     fn test_a_reservation_that_fits_to_the_ring_s_end_takes_no_lap_and_no_wait() {
         let input = std::vec![5u8; PIECE];
         let mut got = places(RING_BYTES / PIECE);
-        stream(
+        stream_multithreaded(
             Mode::Plain,
             |_| {},
             |s| {
@@ -1748,7 +1845,7 @@ mod test {
                 })
                 .collect();
             let (mut lent, mut written) = (places(count), places(count));
-            stream(
+            stream_multithreaded(
                 Mode::Plain,
                 |_| {},
                 |s| {
@@ -1788,7 +1885,7 @@ mod test {
         let zeroed = |message_len: usize, got: &mut [Hash]| {
             let zeroed = || crate::COUNTED.with(|c| c[crate::Counted::BatchZeroed as usize].get());
             let before = zeroed();
-            stream(
+            stream_multithreaded(
                 Mode::Plain,
                 |_| {},
                 |s| {
@@ -1829,7 +1926,7 @@ mod test {
         let mut rest: &mut [Hash] = &mut got;
         let empty = crate::performance::Batch::new(64, 0);
         let mut none: [Hash; 0] = [];
-        stream(
+        stream_multithreaded(
             Mode::Plain,
             |_| {},
             |s| {
@@ -1865,7 +1962,7 @@ mod test {
         let blocks = crate::test::message(&input);
         for round in 0..70 {
             let mut got = places(1);
-            stream(
+            stream_multithreaded(
                 Mode::Plain,
                 |_| {},
                 |s| {
@@ -1894,7 +1991,7 @@ mod test {
         let mut got = places(2 * lens.len() + 2 + 7);
         let mut handed = std::vec::Vec::new();
         let mut rest: &mut [Hash] = &mut got;
-        stream(Mode::Plain, record(&mut handed), |s| {
+        stream_multithreaded(Mode::Plain, record(&mut handed), |s| {
             for len in lens {
                 s.submit(&blocks, len, &mut take(&mut rest, 1)[0]);
                 s.submit_with(

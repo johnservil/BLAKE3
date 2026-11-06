@@ -26,7 +26,7 @@ pub use crate::block::{Batch, Block};
 pub use crate::each::{finalize_each, hash_each, hash_each_multithreaded, update_each, update_each_multithreaded};
 pub use crate::incremental::Hasher;
 #[cfg(feature = "std")]
-pub use crate::stream::{Stream, stream};
+pub use crate::stream::{Stream, stream, stream_multithreaded};
 
 use crate::{ContextKey, DERIVE_KEY_CONTEXT, Hash, IV, Mode, OUT_LEN};
 

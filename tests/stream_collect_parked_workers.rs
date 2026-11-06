@@ -25,7 +25,7 @@ fn a_caller_looping_on_collect_wakes_a_parked_worker() {
             }
             let mut place = Hash::from([0; 32]);
             let got = std::cell::Cell::new(false);
-            blake3_servil::performance::stream(
+            blake3_servil::performance::stream_multithreaded(
                 Mode::Plain,
                 |_: &mut [Hash]| got.set(true),
                 |s| {

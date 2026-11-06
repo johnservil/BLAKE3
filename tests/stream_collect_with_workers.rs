@@ -32,7 +32,7 @@ fn a_caller_looping_on_collect_makes_progress_with_sleeping_workers() {
         let mut places = vec![Hash::from([0; 32]); 1];
         let free = std::cell::RefCell::new(places.iter_mut().collect::<Vec<_>>());
         let got = std::cell::RefCell::new(Vec::new());
-        blake3_servil::performance::stream(
+        blake3_servil::performance::stream_multithreaded(
             Mode::Plain,
             |place: &mut [Hash]| {
                 got.borrow_mut().push(place[0]);

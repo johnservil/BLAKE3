@@ -30,7 +30,7 @@ fn a_finishing_caller_hashes_its_lone_task_with_every_worker_parked() {
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
         let mut place = Hash::from([0; 32]);
-        blake3_servil::performance::stream(
+        blake3_servil::performance::stream_multithreaded(
             Mode::Plain,
             |_: &mut [Hash]| {},
             |s| {

@@ -55,7 +55,7 @@ fn every_stream_completes_on_one_cpu() {
     let (singles, batches) = got.split_at_mut(3 * messages.len());
     let (small, large) = batches.split_at_mut(16);
     let mut singles = singles.iter_mut();
-    blake3_servil::performance::stream(
+    blake3_servil::performance::stream_multithreaded(
         Mode::Plain,
         |d: &mut [Hash]| handed.set(handed.get() + d.len()),
         |s| {
@@ -88,7 +88,7 @@ fn every_stream_completes_on_one_cpu() {
     let mut places = vec![Hash::from_bytes([0; 32]); 4];
     let free = std::cell::RefCell::new(places.iter_mut().collect::<Vec<_>>());
     let cycled = std::cell::RefCell::new(Vec::new());
-    blake3_servil::performance::stream(
+    blake3_servil::performance::stream_multithreaded(
         Mode::Plain,
         |d: &mut [Hash]| {
             cycled.borrow_mut().push(d[0]);

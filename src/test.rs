@@ -1320,7 +1320,7 @@ mod guard_pages {
                     let (_page_with, with) = places(1, at_end);
                     let (_page_batch, batched) = places(count, !at_end);
                     let input: &[u8] = unsafe { core::slice::from_raw_parts(flush.base.add(flush.start), flush.len) };
-                    crate::performance::stream(
+                    crate::performance::stream_multithreaded(
                         mode,
                         |_| {},
                         |s| {

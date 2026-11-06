@@ -1393,6 +1393,11 @@ const NO_MEMBER: Member = Member { input: core::ptr::null(), len: 0, out: core::
 // Sound: a task's pointers stay valid until its `left` reaches zero (above).
 unsafe impl Send for Task {}
 
+/// The threads that ran a task since a test last cleared this (Task::run),
+/// each once: a stream on the calling thread alone runs every task there.
+#[cfg(all(test, feature = "std"))]
+pub(crate) static TASK_THREADS: std::sync::Mutex<std::vec::Vec<std::thread::ThreadId>> = std::sync::Mutex::new(std::vec::Vec::new());
+
 impl Task {
     /// A task over `input` at chunk `counter`, its mode, kind, and
     /// destinations still to fill in.
@@ -1422,6 +1427,14 @@ impl Task {
     /// values; for any other, its chaining value (first 32 bytes). Then
     /// count down.
     pub(crate) fn run(self, platform: Platform) {
+        #[cfg(all(test, feature = "std"))]
+        {
+            let id = std::thread::current().id();
+            let mut threads = TASK_THREADS.lock().unwrap();
+            if !threads.contains(&id) {
+                threads.push(id);
+            }
+        }
         if self.members > 0 {
             self.run_members(platform);
             // Sound: the stream keeps `left` in place until it is zero.
@@ -2182,7 +2195,7 @@ mod test {
         let _ = pool();
         assert!(!sources::open(), "at rest, nothing is open");
         let mut digest = Hash::from([0u8; 32]);
-        crate::performance::stream(
+        crate::performance::stream_multithreaded(
             crate::Mode::Plain,
             |_: &mut [Hash]| {},
             |s| {
@@ -2642,7 +2655,7 @@ mod test {
         let pool = pool();
         let workers = pool.threads - 1;
         let all_parked = || pool.park.parked_count() == workers;
-        crate::performance::stream(
+        crate::performance::stream_multithreaded(
             crate::Mode::Plain,
             |_: &mut [Hash]| {},
             |s| {
