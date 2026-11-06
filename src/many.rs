@@ -55,7 +55,23 @@ pub(crate) fn assert_slots(input: &[u8], len: usize, count: usize) {
 /// through the one-message path. Requires `input.len() == slot *
 /// outputs.len()` and every slot's bytes past `len` zero (a Batch's, or
 /// the crate's own).
+#[inline(always)]
 pub(crate) fn hash_many_on(input: &[u8], len: usize, key: &CVWords, flags: u8, outputs: &mut [[u8; OUT_LEN]], platform: Platform) {
+    #[cfg(all(target_arch = "x86_64", blake3_sse41_ffi, feature = "std"))]
+    if len % BLOCK_LEN != 0 && outputs.len() >= 8 && len <= CHUNK_LEN {
+        let width = crate::ffi_last::lanes(platform);
+        if width >= 8 && outputs.len() >= width {
+            assert_slots(input, len, outputs.len());
+            return hash_partial_native_groups(input, len, key, flags, outputs, platform, width);
+        }
+    }
+    hash_many_existing(input, len, key, flags, outputs, platform);
+}
+
+// Preserve the established whole-block/short-tail path's own frame and
+// control flow; new partial-group packing must not enlarge that hot path.
+#[inline(never)]
+fn hash_many_existing(input: &[u8], len: usize, key: &CVWords, flags: u8, outputs: &mut [[u8; OUT_LEN]], platform: Platform) {
     // One-block messages first, on the path they took before slots (a
     // shared entry cost 64 B x 3 7% in the regression check).
     if len == BLOCK_LEN && outputs.len() >= 2 {
@@ -71,13 +87,6 @@ pub(crate) fn hash_many_on(input: &[u8], len: usize, key: &CVWords, flags: u8, o
     if len == 0 {
         outputs.fill(*crate::hash_serial_on(&[], key, flags, platform).as_bytes());
         return;
-    }
-    #[cfg(all(target_arch = "x86_64", blake3_sse41_ffi, feature = "std"))]
-    if len % BLOCK_LEN != 0 && outputs.len() >= 8 && len <= CHUNK_LEN {
-        let width = crate::ffi_last::lanes(platform);
-        if width >= 8 && outputs.len() >= width {
-            return hash_partial_native_groups(input, len, key, flags, outputs, platform, width);
-        }
     }
     #[cfg(blake3_sme2)]
     if chunked(len) && platform_is_sme2(platform) && (outputs.len() >= 16 || outputs.len() >= sme2_chunked_min(len)) {
