@@ -3,8 +3,8 @@
     python3 tools/mutants/check.py [--since REV | --whole] [--write] [--map] [--whole-suite] [--all-hangs]
 
 By default the check covers the change since the branch left origin/servil
-(git merge-base; a minute for a day's change). --since REV names another
-base; --whole runs every mutant in the lists (an hour or more: a release's
+(git merge-base). --since REV names another base; --whole runs every
+mutant in the lists (an hour or more: a release's
 check, or a list rewritten with --write). A run started by mistake was
 the most expensive mistake this tool allowed (November 5, 2026).
 
@@ -54,7 +54,8 @@ rows stand as listed; --since runs them on the lines a change touches, and
 --write (which must confirm every row it keeps) and --all-hangs run them.
 Before anything runs, every row of every architecture's lists must name a
 mutant the source holds now (cargo mutants --list, which any machine reads
-for every target): a row a run on older code left stops the check, named.
+for every target): a whole run stops at a stale row, naming it; a change's
+check removes rows whose mutants no longer exist.
 Exit status: 0 both lists match; 1 a survivor differs from its list (or a
 reason is missing, or a row is stale); 2 only the time-outs differ (no
 verdict on those).
@@ -70,16 +71,16 @@ of tests that still catches every caught mutant, the tests outside it
 (each a big test whose catches cheaper ones make), and the mutants only an
 expensive test catches (each a small test worth writing).
 
-With --since REV, a change's check: the mutants in the lines the change
-makes (git diff REV...HEAD, cargo-mutants --in-diff), and it fails on a new
-survivor among them; a listed one now caught waits for a whole run. Either
-way it fails while the list names a missing test ("OPEN: a missing test"):
-that is work to do, not a survivor to keep. A change that alters a test (a
-line taken away inside a #[test] function, comments aside) can lose the
-catches of code it leaves alone: the mutants the latest map (a --map run of
-an ancestor) records that test catching, the startup self-test's aside, run
-again too. A change to other test code (a helper, a test module's or
-tests/'s own items), or one with no such map, runs the whole check.
+A change's check runs every mutant of each function its changed lines
+reach, then updates those names' list rows: counts change in place, caught
+rows go, new survivors get UNCLASSIFIED until their reason is supplied.
+It fails while the list names a missing test ("OPEN: a missing test").
+Altered tests and the tests using altered helpers also cause their sole
+catches to run again, from an ancestor's record (shared by commit across
+checkouts). With no such record, the functions named in those tests and
+their helpers run instead. That name-based dependency selection is a
+heuristic; indirect calls and macros may escape it. A change's check never
+silently becomes a whole run. Its plan names the scope before execution.
 """
 
 import collections
@@ -1104,16 +1105,18 @@ def main():
     commit = subprocess.run(["git", "-C", ROOT, "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
     changed = subprocess.run(["git", "-C", ROOT, "status", "--porcelain", "--untracked-files=no"], capture_output=True, text=True, check=True).stdout.strip()
     print(f"mutants: BLAKE3-Servil at {commit}{', with uncommitted changes' if changed else ''}", flush=True)
-    remove_leftovers()
+    if "--since" in sys.argv and ("--whole" in sys.argv or "--write" in sys.argv):
+        sys.exit("mutants: choose --since REV or --whole/--write, not both")
     since = sys.argv[sys.argv.index("--since") + 1] if "--since" in sys.argv else None
     if since is None and "--whole" not in sys.argv and "--write" not in sys.argv:
         base = subprocess.run(["git", "-C", ROOT, "merge-base", "HEAD", "origin/servil"], capture_output=True, text=True)
         if base.returncode == 0:
             since = base.stdout.strip()
         else:
-            print("mutants: no origin/servil to take a base from")
+            sys.exit("mutants: no origin/servil to take a base from; fetch it or name --since REV (--whole explicitly requests every mutant)")
     # Preserve #250's scope label for the release gate, before work starts.
     print(f"mutants: the change since {since}" if since is not None else "mutants: the whole run")
+    remove_leftovers()
     all_listed = check_rows_exist(remove=since is not None)
     files, known = read_known()
     _, tknown = read_known(TIMEOUTS, INACTIVE_TIMEOUTS)
