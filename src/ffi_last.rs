@@ -95,7 +95,7 @@ pub(crate) fn lanes(platform: crate::platform::Platform) -> usize {
 /// `key` and `flags`: 1 to lanes() items, each with `k` whole blocks
 /// before its last (1 to 64 bytes; none for an empty item, k = 0).
 pub(crate) fn hash_group(platform: crate::platform::Platform, items: &[&[u8]], k: usize, key: &CVWords, flags: u8, out: &mut [[u8; OUT_LEN]]) {
-    if matches!(platform, crate::platform::Platform::AVX512) && items.len() > 8 {
+    if matches!(platform, crate::platform::Platform::AVX512) {
         // Sound: the selected platform guarantees AVX-512F.
         unsafe { hash_group16(items, k, key, flags, out) }
     } else if !matches!(platform, crate::platform::Platform::SSE41) {
