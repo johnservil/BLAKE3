@@ -60,6 +60,8 @@ pub fn hash_each_multithreaded(mode: Mode, items: &[(&[Block], usize)], out: &mu
 /// (one turn of its event loop): never slower than one
 /// [`update`](Hasher::update) each: many messages arriving at once, such
 /// as a server's uploads, each with its own [`Hasher`]. Requires each `i < hashers.len()`.
+/// Finish ready messages together with [`finalize_each`]: bulk updates can
+/// retain short messages' prefix work for SIMD finishing.
 ///
 /// ```
 /// # blake3_servil::initialize();
@@ -88,6 +90,8 @@ pub fn update_each_multithreaded(hashers: &mut [Hasher], pieces: &[(usize, &[u8]
 /// The hash of each message `which` names: `out[k]` is
 /// `hashers[which[k]].finalize()`. Requires `out.len() == which.len()`
 /// and each index `< hashers.len()`.
+/// First-chunk messages gathered by [`update_each`] finish their remaining
+/// prefix blocks together before their final root compression.
 pub fn finalize_each(hashers: &[Hasher], which: &[usize], out: &mut [[u8; OUT_LEN]]) {
     assert_eq!(which.len(), out.len(), "one digest per message named");
     #[cfg(all(blake3_avx512_ffi, target_os = "linux"))]

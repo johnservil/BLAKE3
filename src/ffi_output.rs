@@ -40,7 +40,7 @@ pub(crate) fn input(hasher: &Hasher) -> Option<Input<'_>> {
 /// block and CV; its block length is 0..64. Output holds sixteen CVs or root
 /// digests, according to each descriptor's flags. All counters are zero.
 pub(crate) unsafe fn hash_group(inputs: &[Input<'_>; 16], out: &mut [[u8; OUT_LEN]]) {
-    assert_eq!(out.len(), 16, "sixteen root outputs");
+    assert_eq!(out.len(), 16, "sixteen compression outputs");
     crate::ran_kernel(blake3_servil_output16 as *const ());
     // Sound: caller supplies the ISA; references and fixed descriptor count
     // provide the readable data, and the checked output holds all stores.
@@ -129,7 +129,7 @@ pub(crate) unsafe fn staged_group(hashers: &[Hasher], which: &[usize; 16], out: 
     true
 }
 
-const SELF_TEST_EXPECTED: u64 = 0x54e3da46af4eb775;
+const SELF_TEST_EXPECTED: u64 = 0x153e0dfbeac2bb44;
 fn self_test_shape(mut hash: impl FnMut(&[Input<'_>; 16], &mut [[u8; OUT_LEN]])) -> u64 {
     let mut lens: [u8; 16] = [0, 1, 31, 63, 64, 7, 32, 55, 3, 15, 48, 60, 2, 33, 62, 64];
     let flags: [u8; 16] = core::array::from_fn(|i| {
@@ -143,7 +143,7 @@ fn self_test_shape(mut hash: impl FnMut(&[Input<'_>; 16], &mut [[u8; OUT_LEN]]))
         core::array::from_fn(|w| (0x1234abcdu32.wrapping_add(i as u32 * 0x9e37).wrapping_add(w as u32 * 0x1020304)).wrapping_mul(0x85ebca6b))
     });
     let blocks: [[u8; 64]; 16] = core::array::from_fn(|i| core::array::from_fn(|j| if j < lens[i] as usize { ((i * 37 + j * 17) ^ 0x5a) as u8 } else { 0 }));
-    let inputs = core::array::from_fn(|i| Input { block: &blocks[i], cv: &cvs[i], len: lens[i], flags: flags[i] | ROOT });
+    let inputs = core::array::from_fn(|i| Input { block: &blocks[i], cv: &cvs[i], len: lens[i], flags: flags[i] | if (i / 4) % 2 == 0 { ROOT } else { 0 } });
     let mut out = [[0u8; OUT_LEN]; 16];
     hash(&inputs, &mut out);
     crate::self_test::fold(out.as_flattened())
@@ -176,7 +176,7 @@ mod tests {
         let answer = self_test_shape(|inputs, out| {
             for (input, digest) in inputs.iter().zip(out) {
                 let mut cv = *input.cv;
-                unsafe { crate::sse41::compress_in_place(&mut cv, input.block, input.len, 0, input.flags | ROOT) };
+                unsafe { crate::sse41::compress_in_place(&mut cv, input.block, input.len, 0, input.flags) };
                 *digest = hasher::le_bytes(&cv);
             }
         });
@@ -307,6 +307,32 @@ mod tests {
                 let mut whole = data[i].clone();
                 whole.extend_from_slice(&suffix);
                 assert_eq!(out[slot], crate::test::official::hash(mode(i), &whole));
+            }
+        }
+    }
+
+    #[test]
+    fn independently_ending_staged_prefixes_at_every_position() {
+        crate::initialize();
+        for rotation in 0..16 {
+            for phase in [0usize, 1, 7, 31, 62, 63] {
+                let mut hashers: Vec<_> = (0..16).map(|_| Hasher::new(crate::Mode::Plain)).collect();
+                let data: Vec<Vec<u8>> = (0..16)
+                    .map(|i| {
+                        let len = if i == 0 && phase == 0 { 0 } else { 64 * ((i + rotation) % 16) + 1 + (i + phase) % 64 };
+                        (0..len).map(|j| (i * 73 + j * 11) as u8).collect()
+                    })
+                    .collect();
+                for start in (0..1024).step_by(17) {
+                    let pieces: Vec<_> = data.iter().enumerate().map(|(i, bytes)| (i, &bytes[start.min(bytes.len())..(start + 17).min(bytes.len())])).collect();
+                    crate::each::update_each(&mut hashers, &pieces);
+                }
+                let which: Vec<_> = (0..16).rev().collect();
+                let mut out = [[0u8; OUT_LEN]; 16];
+                crate::each::finalize_each(&hashers, &which, &mut out);
+                for (slot, &i) in which.iter().enumerate() {
+                    assert_eq!(out[slot], crate::test::official::hash(crate::Mode::Plain, &data[i]), "rotation={rotation} phase={phase} lane={i}");
+                }
             }
         }
     }
