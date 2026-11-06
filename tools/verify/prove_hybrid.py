@@ -94,9 +94,11 @@ def check_abi(m):
             and aarch64.holds(m, aarch64.as_bv(m.x["sp"].offset)
                              == aarch64.as_bv(m.regions["stack"].size))):
         raise Unproved(f"sp not restored: {m.x['sp']}")
-    for i in range(19, 30):
+    # x18 is reserved by macOS; the generated kernels leave it untouched
+    # on every platform, beside the ABI's x19-x29.
+    for i in range(18, 30):
         if isinstance(m.x[i], Ptr) or not same(m.x[i], BitVec(f"x{i}_in", 64)):
-            raise Unproved(f"callee-saved x{i} changed")
+            raise Unproved(f"preserved x{i} changed")
     for i in range(8, 16):
         if not all(same(m.v[i][l], BitVec(f"v{i}_{l}_in", 32)) for l in (0, 1)):
             raise Unproved(f"callee-saved d{i} changed")

@@ -172,11 +172,13 @@ def last_mutant_jobs():
         last = first(lambda m, o: m == "ldr" and o == ["x8", "[x7, #8]"])
         end = first(lambda m, o: m == "orr" and o == ["w2", "w2", "w3"])
         switch = first(lambda m, o: m == "csel" and o == ["x4", "x3", "x4", "eq"])
+        constant = first(lambda m, o: m == "mov" and o[0] == "w8" and aarch64.imm(o[1]) == 64)
         for label, at, instruction, reason in (
             ("another lane's last length", length, ("ldr", ["w8", "[x6]"]), "differs from the specification"),
             ("another lane's last block", last, ("ldr", ["x8", "[x7]"]), "differs from the specification"),
             ("the end flags omitted", end, ("nop", []), "differs from the specification"),
             ("the prefix read instead of the last block", switch, ("csel", ["x4", "x3", "x4", "ne"]), "outside"),
+            ("macOS's reserved register clobbered", constant, ("mov", ["x18", "xzr"]), "preserved x18 changed"),
         ):
             code = {**base, at: instruction}
             def prove(n=n, reason=reason):
