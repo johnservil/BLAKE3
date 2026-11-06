@@ -405,3 +405,10 @@ src/stream.rs	replace Stream<'env, D>::reserve_gpu -> usize with 1	1	same code: 
 src/tree.rs	replace + with * in wide	1	speed: how far past its input a subtree prefetches (a prefetch never faults)
 src/tree.rs	replace + with - in wide	1	speed: how far past its input a subtree prefetches (a prefetch never faults)
 src/tree.rs	replace <impl Kernels for PlatformKernels<'_>>::subtree -> Option<usize> with None	1	speed: subtrees then hash on the walk's one-chunk path, the same digests
+src/each.rs	replace | with ^ in by_blocks_at_once	4	equivalent: the mode flags have none of CHUNK_START, CHUNK_END or ROOT, so OR and XOR join disjoint bits
+src/self_test.rs	delete ! in last_lanes	1	[cpu has sha3] speed: also computes scalar answers before the last-lane kernels overwrite them; on a CPU without SHA-3 it omits the answers and the startup tests fail
+src/self_test.rs	replace * with + in last_lanes	2	[cpu has sha3] equivalent here: changes only the scalar startup path that this CPU leaves uncalled; the SHA-3-free startup tests check those answers
+src/self_test.rs	replace * with / in last_lanes	2	[cpu has sha3] equivalent here: changes only the scalar startup path that this CPU leaves uncalled; the SHA-3-free startup tests check those answers
+src/self_test.rs	replace + with * in last_lanes	1	[cpu has sha3] equivalent here: changes only the scalar startup path that this CPU leaves uncalled; the SHA-3-free startup tests check those answers
+src/self_test.rs	replace + with - in last_lanes	1	[cpu has sha3] equivalent here: changes only the scalar startup path that this CPU leaves uncalled; the SHA-3-free startup tests check those answers
+src/self_test.rs	replace | with ^ in last_lanes	1	equivalent: CHUNK_END and ROOT are disjoint bits
