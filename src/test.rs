@@ -260,8 +260,10 @@ fn test_whole_chunks_round_up_to_the_lanes() {
         assert_eq!(ran(7 * CHUNK_LEN), (true, 8 | 4), "7 whole chunks on AVX2: 8 lanes, one pass; their 3 parents on 4");
         assert_eq!(ran(5 * CHUNK_LEN), (true, 8), "5 whole chunks on AVX2: 8 lanes, one pass");
     }
-    // 3 chunks and a partial take the spare lane, not the rounding.
-    assert_eq!(ran(3 * CHUNK_LEN + 500), (false, 0), "3 whole and a partial: the spare lane's pass");
+    // 3 chunks and a partial take the spare lane where spare_lane admits it
+    // (SSE4.1, AVX2), not the rounding; AVX-512 rounds the 3 to 4 lanes.
+    let spare = crate::spare_lane(crate::platform::Platform::detect(), 3, 500).is_some();
+    assert_eq!(ran(3 * CHUNK_LEN + 500), if spare { (false, 0) } else { (true, 4) }, "3 whole and a partial: the spare lane's pass, or 4 lanes");
     // AVX-512: 9 to 15 on 16 lanes; past 16, the whole group of 16 and the
     // rest rounded (19 = 16 + 3 on 4), or 32 lanes where that kernel runs.
     #[cfg(blake3_avx512_ffi)]
