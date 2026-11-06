@@ -286,7 +286,8 @@ unsafe fn hash_group_on<const W: usize>(
 /// two shapes (equal block counts and mixed) at widths eight and sixteen.
 /// A fixed seed keeps these checks independent of the other startup
 /// chain's case count; each kernel is still checked before user hashing.
-const SELF_TEST_EXPECTED: [[u64; 2]; 2] = [[0xe6de371e283614b0, 0xc71703fb6867df93], [0x34f55f7db4fe3ec7, 0x5ab41fa45d9a0936]];
+const SELF_TEST_EXPECTED: [[u64; 2]; 2] = [[0x9c9bccc8becc1867, 0xece70b823c776e95], [0xfb48780a8346cae2, 0x153fbf85d61a34f8]];
+const SELF_TEST_KEY: [u8; 32] = *b"whats the Elvish word for friend";
 
 fn self_test_shape(width: usize, mixed: bool, mut hash: impl FnMut(&[&[u8]], &CVWords, u8, &mut [[u8; OUT_LEN]])) -> u64 {
     let mut bytes = [0u8; 2048];
@@ -296,7 +297,8 @@ fn self_test_shape(width: usize, mixed: bool, mut hash: impl FnMut(&[&[u8]], &CV
         &bytes[j * 13..][..len]
     });
     let mut out = [[0u8; OUT_LEN]; 16];
-    hash(&refs[..width], &[0x2a2a2a2a; 8], crate::KEYED_HASH, &mut out[..width]);
+    let key = crate::platform::words_from_le_bytes_32(&SELF_TEST_KEY);
+    hash(&refs[..width], &key, crate::KEYED_HASH, &mut out[..width]);
     crate::self_test::fold(out[..width].as_flattened())
 }
 
@@ -346,10 +348,10 @@ mod test {
         for (row, width) in [8, 16].into_iter().enumerate() {
             for (column, mixed) in [false, true].into_iter().enumerate() {
                 answers[row][column] = self_test_shape(width, mixed, |items, key, flags, out| {
-                    assert_eq!(*key, [0x2a2a2a2a; 8]);
+                    assert_eq!(*key, crate::platform::words_from_le_bytes_32(&SELF_TEST_KEY));
                     assert_eq!(flags, crate::KEYED_HASH);
                     for (item, digest) in items.iter().zip(out) {
-                        *digest = crate::test::official::hash(crate::Mode::Keyed(&[42; 32]), item);
+                        *digest = crate::test::official::hash(crate::Mode::Keyed(&SELF_TEST_KEY), item);
                     }
                 });
             }
@@ -367,6 +369,14 @@ mod test {
                 );
             }
         }
+    }
+
+    #[test]
+    fn test_lane_widths_are_the_platforms() {
+        use crate::platform::Platform;
+        assert_eq!(lanes(Platform::SSE41), 4);
+        assert_eq!(lanes(Platform::AVX2), 8);
+        assert_eq!(lanes(Platform::AVX512), 16);
     }
 
     /// The parameter block's offsets are the generator's (gen_x86.py's
@@ -413,7 +423,7 @@ mod test {
         type Kernel = unsafe fn(&[&[u8]], &CVWords, u8, &mut [[u8; OUT_LEN]]);
         let kernels: [(usize, Kernel, bool); 2] = [(8, hash_mixed8, crate::platform::avx2_detected()), (16, hash_mixed16, crate::platform::avx512_detected())];
         let input: std::vec::Vec<u8> = (0..32768usize).map(|i| (i * 37 + i / 991) as u8).collect();
-        let key = [9u8; 32];
+        let key: [u8; 32] = core::array::from_fn(|j| (j * 13 + 7) as u8);
         for mode in [crate::Mode::Plain, crate::Mode::Keyed(&key), crate::Mode::DeriveKey("mixed last blocks")] {
             let mut room = core::mem::MaybeUninit::uninit();
             let (words, flags) = mode.key(&mut room);
@@ -456,7 +466,7 @@ mod test {
     fn test_hash_group_against_hash_with() {
         let mut input = std::vec![0u8; 16 * crate::CHUNK_LEN];
         crate::test::paint_test_input(&mut input);
-        let key = [9u8; 32];
+        let key: [u8; 32] = core::array::from_fn(|j| (j * 13 + 7) as u8);
         let kernels: [(usize, unsafe fn(&[&[u8]], usize, &CVWords, u8, &mut [[u8; OUT_LEN]]), bool); 3] = [
             (4, |i, k, key, f, o| unsafe { hash_group_on::<4>(blake3_servil_last_sse41, i, k, key, f, o) }, crate::platform::sse41_detected()),
             (8, |i, k, key, f, o| unsafe { hash_group_on::<8>(blake3_servil_last_avx2, i, k, key, f, o) }, crate::platform::avx2_detected()),
