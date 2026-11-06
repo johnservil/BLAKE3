@@ -7,9 +7,15 @@ whole-block region or its separate 64-byte last block. The result and
 System V callee-saved registers are checked by the existing x86 executor.
 
     python3 tools/verify/prove_last.py [--workers N] [WIDTH:K ...]
+    python3 tools/verify/prove_last.py --workers N --mixed
 
-Widths are 4 (SSE4.1), 8 (AVX2), 16 (AVX-512F); k is 0..15. The Rust
-wrapper's padding and selection remain the Rust tests' responsibility.
+Widths are 4 (SSE4.1), 8 (AVX2), 16 (AVX-512F); k is 0..15. Mixed cases
+16:K:PHASE give lane j (j+PHASE) mod (K+1) whole blocks. The 256 mixed
+cases vary the longest lane from zero to fifteen blocks and rotate the
+ending pattern through all sixteen lane positions. This is finite pattern
+coverage, not a proof of every combination of lane lengths. Within each
+case all keys, bytes, last lengths and mode flags remain symbolic. The
+Rust wrapper's padding and selection remain the Rust tests' responsibility.
 """
 import os
 import sys
@@ -28,8 +34,10 @@ import gen_x86
 
 
 def prove(case):
-    w, k = case
-    inputs = [byte_symbols(f"input{j}_", k * 64) for j in range(w)]
+    w, k = case[:2]
+    mixed = len(case) == 3
+    ks = [(j + case[2]) % (k+1) for j in range(w)] if mixed else [k] * w
+    inputs = [byte_symbols(f"input{j}_", ks[j] * 64) for j in range(w)]
     lasts = [byte_symbols(f"last{j}_", 64) for j in range(w)]
     key = byte_symbols("key", 32)
     lengths = [u8(f"len_last{j}") for j in range(w)]
@@ -47,7 +55,7 @@ def prove(case):
 
     regions = {}
     for j in range(w):
-        regions[f"input{j}"] = Region(f"input{j}", k*64, False, lambda o, j=j: inputs[j][o])
+        regions[f"input{j}"] = Region(f"input{j}", ks[j]*64, False, lambda o, j=j: inputs[j][o])
         regions[f"last{j}"] = Region(f"last{j}", 64, False, lambda o, j=j: lasts[j][o])
 
     if w == 16:
@@ -60,9 +68,12 @@ def prove(case):
         put(352, BitVecVal(k, 32))
         put(356, f)
         pointer(360, "out")
-        size = 368
+        size = 448 if mixed else 368
+        if mixed:
+            for j in range(w):
+                put(384+j*4, BitVecVal(ks[j]*64, 32))
         regions["out"] = Region("out", 32*w, True, None)
-        entry = "blake3_servil_last_avx512"
+        entry = "blake3_servil_mixed_avx512" if mixed else "blake3_servil_last_avx512"
     else:
         off, v = gen_x86.layout(w, True), 4*w
         words = spec.words(key)
@@ -103,19 +114,20 @@ def prove(case):
         raise Unproved("output not exactly written")
     for j in range(w):
         cv = spec.words(key)
-        for b in range(k):
+        for b in range(ks[j]):
             cv = spec.compress(cv,spec.words(inputs[j][64*b:64*(b+1)]),BitVecVal(0,64),BitVecVal(64,32),f|(1 if b==0 else 0))[:8]
-        want = spec.compress(cv,spec.words(lasts[j]),BitVecVal(0,64),ZeroExt(24,lengths[j]),f|10|(1 if k==0 else 0))[:8]
+        want = spec.compress(cv,spec.words(lasts[j]),BitVecVal(0,64),ZeroExt(24,lengths[j]),f|10|(1 if ks[j]==0 else 0))[:8]
         if w == 16:
             out = m.regions["out"].bytes
-            got = spec.words([out[32*j+b] for b in range(32)])
+            got = ([spec.words([out[64*i+4*j+b] for b in range(4)])[0] for i in range(8)] if mixed
+                   else spec.words([out[32*j+b] for b in range(32)]))
         else:
             out = m.regions["params"].bytes
             got = [spec.words([out[off["H"]+v*i+4*j+b] for b in range(4)])[0] for i in range(8)]
         for i in range(8):
             if not same(got[i],want[i]):
                 raise Unproved(f"{w} lanes, k={k}, lane {j}, word {i} differs")
-    return f"proved {w}:{k}, {m.steps} instructions"
+    return f"proved {':'.join(map(str,case))}, {m.steps} instructions"
 
 
 if __name__ == "__main__":
@@ -123,7 +135,8 @@ if __name__ == "__main__":
     count = 4
     if args[:1] == ["--workers"]:
         count = int(args[1]); args = args[2:]
-    cases = [tuple(map(int,a.split(":"))) for a in args] if args else [(w,k) for w in (4,8,16) for k in range(16)]
-    assert count >= 1 and all(w in (4,8,16) and 0<=k<16 for w,k in cases)
+    cases = ([(16,k,p) for k in range(16) for p in range(16)] if args == ["--mixed"] else
+             [tuple(map(int,a.split(":"))) for a in args] if args else [(w,k) for w in (4,8,16) for k in range(16)])
+    assert count >= 1 and all(c[0] in (4,8,16) and 0<=c[1]<16 and (len(c)==2 or len(c)==3 and c[0]==16 and 0<=c[2]<16) for c in cases)
     for result in workers.each(prove,cases,count):
         print(result,flush=True)
