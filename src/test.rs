@@ -239,6 +239,10 @@ pub(crate) fn every_platform() -> Vec<crate::platform::Platform> {
 #[cfg(all(target_arch = "x86_64", blake3_sse41_ffi, feature = "std"))]
 fn test_whole_chunks_round_up_to_the_lanes() {
     use crate::{CHUNK_LEN, Ran};
+    // The self-test first: run by the first hash, inside the window the
+    // counters are read in, its own rounded calls would count (the Zen 5
+    // CI runner: 3 chunks read as 8 | 4).
+    crate::initialize();
     let input = std::vec![0x5au8; 8 * CHUNK_LEN];
     let ran = |len: usize| {
         crate::RAN.with(|r| r.set(0));
