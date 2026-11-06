@@ -5,8 +5,9 @@
 //! How it runs:
 //! - Each message of up to [`PIECE`] bytes is one entry in a ring of
 //!   entries; entries gather into tasks of up to [`MEMBERS`] messages (or
-//!   TASK_LEN / 4 bytes), hashed as members of a task: messages of
-//!   one length side by side, the rest one at a time.
+//!   TASK_LEN bytes), hashed as members of a task: messages of one length
+//!   side by side (up to a chunk) or across (2 to 15 chunks), the rest one
+//!   at a time.
 //! - A longer message is split into pieces of PIECE bytes, each a whole
 //!   subtree at its offset and a task of its own; the program's thread
 //!   merges the pieces' chaining values in order as it hands back the
@@ -158,6 +159,16 @@ struct Out<const N: usize>(UnsafeCell<[u8; N]>);
 /// `body` share goes in a [`Cell`](core::cell::Cell) or
 /// [`RefCell`](core::cell::RefCell).
 ///
+/// **Speed, even on one thread.** A program hashing many messages one
+/// after another hashes them faster through a stream than through
+/// [`hash`](crate::convenience::hash) on each, even with no other thread
+/// (`initialize_multithreaded(Some(1))`): the stream gathers messages into
+/// tasks and hashes a task's messages side by side, where one call hashes
+/// one message's blocks one after another. On a Ryzen 7 9700X, one thread,
+/// ns a byte: 1 KiB messages 0.13 against hash()'s 0.95, 4 KiB 0.12
+/// against 0.28, mixed lengths around 300 B 0.51 against 1.02; SHA-256
+/// there (the sha2 crate, with the CPU's SHA extensions) 0.40, 0.38 and
+/// 0.45 (BLAKE3-Servil #246).
 /// Each message's place comes back alone, about 1-2 ns a message: for
 /// many short messages of one length, [`Stream::submit_batch`] hands back
 /// one place per batch and hashes them side by side (64-byte messages one
@@ -755,10 +766,14 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
         open.member[open.members] = Member { input, len, out };
         open.members += 1;
         open.len += len;
-        // Messages longer than a block hash one at a time: a task of them
-        // stops at a quarter of a task's bytes, to spread over more threads
-        // (spread over more threads); batches fill a task's bytes.
-        if open.members == MEMBERS || open.len >= if batch.is_some() { TASK_LEN } else { TASK_LEN / 4 } {
+        // A task fills TASK_LEN bytes or MEMBERS messages. (Tasks of messages
+        // once stopped at a quarter, to spread over more threads while their
+        // members ran one at a time; members of one length now run side by
+        // side or across, and the fuller task takes more of them at once: 16
+        // messages of 4 KiB fill the widest lanes, at about 30% less CPU time
+        // a byte with the pool's workers, and on one thread 4 KiB messages
+        // ran x1.3 faster.)
+        if open.members == MEMBERS || open.len >= TASK_LEN {
             self.publish();
         }
     }
@@ -1799,17 +1814,18 @@ mod test {
         assert!(got.iter().all(|h| *h == crate::convenience::hash(b"")), "empty messages hash as empty");
     }
 
-    /// How short messages gather into tasks, exact (the caller's own state):
-    /// an empty batch joins no task; 64-byte messages close a task at its
-    /// 64 members; 1000-byte ones at a quarter of a task's bytes (the
-    /// 17th), to spread over more threads; a batch part closes its own.
-    /// BLAKE3 #218: the closing condition's mutants each regrouped work.
+    /// How messages gather into tasks, exact (the caller's own state): an
+    /// empty batch joins no task; 64-byte and 1000-byte messages close a
+    /// task at its 64 members (MEMBERS); 4096-byte ones at TASK_LEN bytes
+    /// (the 16th); a batch part closes its own. BLAKE3 #218: the closing
+    /// condition's mutants each regrouped work. (Until tasks filled whole,
+    /// messages longer than a block closed one at a quarter of TASK_LEN.)
     #[test]
     fn test_short_messages_gather_into_tasks_as_designed() {
-        let input = std::vec![7u8; 1000];
+        let input = std::vec![7u8; 4096];
         let blocks = crate::test::message(&input);
         let members = |s: &Stream<'_, _>| s.open.as_ref().map(|t| (t.members, t.len));
-        let mut got = places(64 + 17 + 1);
+        let mut got = places(64 + 64 + 16 + 1);
         let mut rest: &mut [Hash] = &mut got;
         let empty = crate::performance::Batch::new(64, 0);
         let mut none: [Hash; 0] = [];
@@ -1819,21 +1835,21 @@ mod test {
             |s| {
                 s.submit_batch(&empty, &mut none);
                 assert_eq!(members(s), None, "an empty batch joins no task");
-                for k in 1..=64 {
-                    s.submit(&blocks, 64, &mut take(&mut rest, 1)[0]);
-                    assert_eq!(members(s), (k < 64).then_some((k, 64 * k)), "64-byte message {k}");
-                }
-                for k in 1..=17 {
-                    s.submit(&blocks, 1000, &mut take(&mut rest, 1)[0]);
-                    assert_eq!(members(s), (k < 17).then_some((k, 1000 * k)), "1000-byte message {k}");
+                for (len, closing) in [(64, MEMBERS), (1000, MEMBERS), (4096, TASK_LEN / 4096)] {
+                    for k in 1..=closing {
+                        s.submit(&blocks, len, &mut take(&mut rest, 1)[0]);
+                        assert_eq!(members(s), (k < closing).then_some((k, len * k)), "{len}-byte message {k}");
+                    }
                 }
                 s.submit(&blocks, 64, &mut take(&mut rest, 1)[0]);
                 assert_eq!(members(s), Some((1, 64)));
                 s.finish();
             },
         );
-        assert!(got[..64].iter().chain(&got[81..]).all(|h| *h == crate::convenience::hash(&input[..64])));
-        assert!(got[64..81].iter().all(|h| *h == crate::convenience::hash(&input)));
+        let digest = |len: usize| crate::convenience::hash(&input[..len]);
+        assert!(got[..64].iter().chain(&got[144..]).all(|h| *h == digest(64)));
+        assert!(got[64..128].iter().all(|h| *h == digest(1000)));
+        assert!(got[128..144].iter().all(|h| *h == digest(4096)));
     }
 
     /// A finished stream gives back what it held: its source's slot (with

@@ -298,6 +298,16 @@ pub(crate) enum Ran {
     /// A batch of messages of up to a chunk, two or more, ran on the
     /// kernels' table a run at a time (many::hash_many_on's short path).
     ShortRun = 128,
+    /// A task's members, all of one length of 2 to 15 chunks, ran across
+    /// the members (lanes::Task::run_members, many::hash_group_across).
+    MembersAcross = 256,
+    /// A task's members of up to a chunk, of any lengths, ran by their
+    /// whole blocks side by side, each last block alone
+    /// (lanes::Task::run_by_blocks).
+    MembersByBlocks = 512,
+    /// A task's members of 2 to 15 chunks, of any lengths, ran chunk by
+    /// chunk side by side, as a collection's (each::hash_each_on).
+    MembersEach = 1024,
 }
 
 #[cfg(all(test, feature = "std"))]
@@ -328,12 +338,15 @@ pub(crate) enum Counted {
     /// A message whose bytes past it a stream's batch fill zeroed
     /// (Stream::submit_batch_with).
     BatchZeroed = 1,
+    /// A hash_many call of Task::run_by_blocks: up to sixteen members with
+    /// as many whole blocks before their last.
+    ByBlocksCall = 2,
 }
 
 #[cfg(all(test, feature = "std"))]
 std::thread_local! {
     /// This thread's counts since the test last cleared them, by Counted.
-    pub(crate) static COUNTED: [core::cell::Cell<u64>; 2] = const { [core::cell::Cell::new(0), core::cell::Cell::new(0)] };
+    pub(crate) static COUNTED: [core::cell::Cell<u64>; 3] = const { [core::cell::Cell::new(0), core::cell::Cell::new(0), core::cell::Cell::new(0)] };
 }
 
 /// Count one of `what`: in the tests' record, and nothing in any other
