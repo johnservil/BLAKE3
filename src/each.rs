@@ -131,7 +131,7 @@ fn update_turn(hashers: &mut [Hasher], pieces: &[(usize, &[u8])], pooled: bool) 
     let mut held: Vec<usize> = Vec::new();
     while !turn.is_empty() {
         #[cfg(all(blake3_avx512_ffi, target_os = "linux"))]
-        let batch_first = turn.len() >= 16 && matches!(Platform::detect(), Platform::AVX512);
+        let batch_first = hashers.len() >= 16 && matches!(Platform::detect(), Platform::AVX512);
         for &(i, bytes) in &turn {
             // A hasher holding a group takes no more until the turn's
             // groups are hashed: its pieces wait, in order.
