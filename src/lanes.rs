@@ -2352,14 +2352,16 @@ mod test {
             task.run(platform);
             // NEON, a call per sixteen of each count with whole blocks:
             // 20 of two, two calls (16 and 4); 17 of five, two (16 and 1);
-            // one of nine, one. x86-64, a call per lanes() of each count,
-            // last blocks included (ffi_last): the two of none too.
+            // one of nine, one. x86-64 splits the initial short pair at
+            // the gap to the 3-block items, then fills native groups or
+            // uses sparse prefixes (each::finishing_kernel_takes).
             #[cfg(not(target_arch = "x86_64"))]
             let calls = 5;
             #[cfg(target_arch = "x86_64")]
-            let calls = {
-                let l = crate::ffi_last::lanes(platform);
-                if l >= 8 { lens.len().div_ceil(l) } else { 20usize.div_ceil(l) + 17usize.div_ceil(l) + 1 + 1 }
+            let calls = match crate::ffi_last::lanes(platform) {
+                16 => 4,
+                8 => 6,
+                _ => unreachable!("SSE4.1 does not take by-block groups"),
             };
             assert_eq!(crate::COUNTED.with(|c| c[crate::Counted::ByBlocksCall as usize].get()), calls as u64, "{platform:?}");
             assert!(out.iter().zip(&inputs).all(|(o, i)| o == crate::convenience::hash(i).as_bytes()), "{platform:?}");

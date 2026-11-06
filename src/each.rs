@@ -283,11 +283,35 @@ fn by_blocks_at_once(items: &[&[u8]], key: &CVWords, flags: u8, out: &mut [[u8; 
     order.sort_unstable_by_key(|&i| whole(items[i]));
     #[cfg(target_arch = "x86_64")]
     if crate::ffi_last::lanes(platform) >= 8 {
-        // Adjacent lengths fill the lanes even when their block counts
-        // differ. Each lane's last step records its digest; sorting bounds
-        // the shorter lanes' unused steps within each group.
         let width = crate::ffi_last::lanes(platform);
-        for group in order.chunks(width) {
+        let fast512 = width == 16 && crate::platform::wide_avx512();
+        let mut sparse: arrayvec::ArrayVec<usize, BY_BLOCKS_AT_ONCE> = arrayvec::ArrayVec::new();
+        let mut at = 0;
+        while at < order.len() {
+            let limit = (at + width).min(order.len());
+            let mut end = at + 1;
+            // A large gap would make short lanes run mostly dummy blocks.
+            // Split there; the sparse side uses the lower-width path below.
+            while end < limit {
+                let before = whole(items[order[end - 1]]) + 1;
+                let after = whole(items[order[end]]) + 1;
+                if after > 2 * before {
+                    break;
+                }
+                end += 1;
+            }
+            let group = &order[at..end];
+            if group.len() == 1 {
+                let i = group[0];
+                out[i] = *crate::hash_serial_on(items[i], key, flags, platform).as_bytes();
+                at = end;
+                continue;
+            }
+            if !finishing_kernel_takes(width, group.len(), whole(items[order[end - 1]]), fast512) {
+                sparse.try_extend_from_slice(group).unwrap();
+                at = end;
+                continue;
+            }
             let members: arrayvec::ArrayVec<&[u8], 16> = group.iter().map(|&i| items[i]).collect();
             let mut digests = [[0u8; OUT_LEN]; 16];
             let k = whole(members[0]);
@@ -304,37 +328,34 @@ fn by_blocks_at_once(items: &[&[u8]], key: &CVWords, flags: u8, out: &mut [[u8; 
             for (n, &i) in group.iter().enumerate() {
                 out[i] = digests[n];
             }
+            at = end;
+        }
+        if !sparse.is_empty() {
+            by_blocks_then_last(items, &sparse, key, flags, out, platform);
         }
         return;
     }
-    // Every x86 group includes its last blocks; the selected platform
-    // determines its width (4, 8, or 16), with no block-count thresholds.
-    #[cfg(target_arch = "x86_64")]
-    {
-        let lanes = crate::ffi_last::lanes(platform);
-        let mut at = 0;
-        while at < order.len() {
-            let k = whole(items[order[at]]);
-            let end = at + order[at..].iter().take_while(|&&i| whole(items[i]) == k).count();
-            for group in order[at..end].chunks(lanes) {
-                let members: arrayvec::ArrayVec<&[u8], 16> = group.iter().map(|&i| items[i]).collect();
-                let mut digests = [[0u8; OUT_LEN]; 16];
-                crate::counted(crate::Counted::ByBlocksCall);
-                crate::ffi_last::hash_group(platform, &members, k, key, flags, &mut digests[..members.len()]);
-                for (n, &i) in group.iter().enumerate() {
-                    out[i] = digests[n];
-                }
-            }
-            at = end;
-        }
-    }
-    #[cfg(not(target_arch = "x86_64"))]
     by_blocks_then_last(items, &order, key, flags, out, platform);
 }
 
-/// AArch64's path until its last-blocks kernel arrives: whole blocks
-/// side by side, then each last block on its own.
-#[cfg(not(target_arch = "x86_64"))]
+/// Full groups take the finishing kernel. Sparse groups keep the prefix
+/// kernel where its smaller widths pay: the paired matrix found groups
+/// of two long items 8-150% slower on the finishing kernel, and underfilled
+/// AVX-512 groups on Ice Lake slower from four whole blocks onward. Zen 5
+/// executes full 512-bit operations efficiently and wins at lower occupancy.
+#[cfg(target_arch = "x86_64")]
+fn finishing_kernel_takes(width: usize, count: usize, whole: usize, fast512: bool) -> bool {
+    if count == width {
+        return true;
+    }
+    if width == 16 && !fast512 {
+        return count >= 8 && whole <= 3;
+    }
+    count >= 2 && (count >= 4 || whole <= 3)
+}
+
+/// Sparse groups' whole blocks side by side, then each last block on its
+/// own; AArch64's path for all groups until its finishing kernel arrives.
 fn by_blocks_then_last(items: &[&[u8]], order: &[usize], key: &CVWords, flags: u8, out: &mut [[u8; OUT_LEN]], platform: Platform) {
     const GROUP: usize = 16;
     let whole = |item: &[u8]| item.len().saturating_sub(1) / crate::BLOCK_LEN;
@@ -505,6 +526,30 @@ fn left_len(n: usize) -> usize {
 #[cfg(test)]
 mod test {
     use super::*;
+
+    /// Sparse-prefix decisions affect speed, not digests, so hold their
+    /// boundaries directly, independently of the end-to-end call counts.
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn test_finishing_kernel_occupancy_policy() {
+        for (w, n, k, fast, want) in [
+            (16, 16, 15, false, true),
+            (16, 16, 15, true, true),
+            (16, 7, 0, false, false),
+            (16, 8, 3, false, true),
+            (16, 8, 4, false, false),
+            (16, 2, 3, true, true),
+            (16, 2, 4, true, false),
+            (16, 4, 15, true, true),
+            (8, 1, 0, false, false),
+            (8, 2, 3, false, true),
+            (8, 2, 4, false, false),
+            (8, 4, 15, false, true),
+            (8, 8, 15, false, true),
+        ] {
+            assert_eq!(finishing_kernel_takes(w, n, k, fast), want, "width {w}, count {n}, whole {k}, fast512 {fast}");
+        }
+    }
 
     /// hash_each_multithreaded takes the pool from MIN_SPLIT_LEN bytes of
     /// items on, exactly, and the calling thread below them. Both give the
