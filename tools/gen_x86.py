@@ -6,11 +6,12 @@ pass, side by side, as the Arm q kernels do (c/blake3_partial_x86-64_unix.S).
     python3 tools/gen_x86.py --last > c/blake3_last_x86-64_unix.S
 
 The last-blocks family (--last, blake3_servil_last_*: BLAKE3-Servil #247)
-is the same kernel for W items of equal block count, each one chunk's
-root, last blocks included: it hashes END/64 blocks, not 16, and reads
-block SWITCH/64 of each lane through LASTMSG (each item's last block,
-copied zero-padded), so no lane reads past its item; its FLAGS carry
-CHUNK_END and ROOT at that block, and H is then each lane's digest.
+shares the rounds for equal or independently ending one-chunk roots.
+AVX2 uses last8_layout(): common key/mode, zero counter, per-lane last
+length and ending offset. Static IV/rotation constants and each step's
+length/flags are supplied by the kernel, not sixteen caller-built tables.
+LASTMSG points to each padded last block. Equal groups return H; mixed
+ones retain each digest in SNAP. AVX-512 has its own compact ABI below.
 
 Two kernels, one per width W: blake3_servil_partial_sse41 (W = 4, xmm, legacy SSE
 encodings, for any CPU with SSE4.1) and blake3_servil_partial_avx2 (W = 8, ymm,
@@ -88,8 +89,8 @@ class Kernel:
         self.isa = isa
         self.mixed = mixed
         assert not mixed or last and isa == "avx2"
-        # The last-blocks family (blake3_servil_last_*): END blocks, not 16,
-        # and block SWITCH/64 read through LASTMSG; no snapshot.
+        # The last-blocks family hashes END/64 steps, not sixteen. Equal
+        # groups switch at ENDS[0]; mixed groups snapshot at each lane's end.
         self.last = last
         self.w = W_OF[isa]
         self.v = 4 * self.w

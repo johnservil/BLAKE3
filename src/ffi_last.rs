@@ -2,16 +2,14 @@
 //! root of one chunk at counter 0: the generated kernels of
 //! `c/blake3_last_x86-64_unix.S` (tools/gen_x86.py --last, BLAKE3-Servil
 //! #247), eight lanes on AVX2, sixteen on AVX-512. They share the partial
-//! kernels' rounds with two changes: they hash END/64 blocks, not 16, and
-//! read block SWITCH/64 of each lane through its own pointer (LASTMSG),
-//! to a zero-padded copy of the item's last block, so no lane reads past
-//! its item. The last block's flags carry CHUNK_END and ROOT, so each
-//! lane's chaining value after it is its digest.
+//! kernels' rounds, hash only the required steps, and read each last block
+//! through LASTMSG, a zero-padded owned copy. Each lane's final flags carry
+//! CHUNK_END and ROOT; mixed kernels retain its digest after that step.
 
 use crate::{BLOCK_LEN, CHUNK_START, CVWords, OUT_LEN};
 
-/// The kernels' parameter block for `W` lanes, laid out as gen_x86.py's
-/// `layout(w, last=True)` says (the test below checks the offsets).
+/// AVX2's last-only parameter block: gen_x86.py's last8_layout().
+/// H/SNAP lead the block so their vector rows stay naturally aligned.
 #[repr(C, align(64))]
 struct Params8 {
     h: [[u32; 8]; 8],
@@ -423,7 +421,7 @@ mod test {
     }
 
     /// The parameter block's offsets are the generator's (gen_x86.py's
-    /// `layout(w, last=True)`).
+    /// `last8_layout()` and last16).
     #[test]
     fn test_params_layout_is_the_generators() {
         assert_eq!(
