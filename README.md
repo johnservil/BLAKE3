@@ -51,8 +51,32 @@ blake3_servil::initialize(); // once, before any other call
 let hash = blake3_servil::convenience::hash(b"foobarbaz");
 ```
 
-The [crate documentation](https://servil-software-factory.github.io/BLAKE3/blake3_servil/) covers the
-calls for programs that hash a lot, and the C library in [`capi/`](capi/).
+### API combinations
+
+Convenience calls are tuned for occasional hashing amid other work. Throughput
+calls are tuned for repeated hashing. Threading is a separate choice.
+
+| Call family | Tuning | Caller-thread entry | Multithread-capable entry |
+|---|---|---|---|
+| Convenience, one message | Cold / occasional | `convenience::hash`, `hash_with`, `hash_xof` | — |
+| Throughput, one message | Warm / repeated | `throughput::hash` | `hash_multithreaded` |
+| Throughput, batches and collections | Warm / repeated | `hash_many`, `hash_each` | Their `_multithreaded` variants |
+| Incremental `Hasher` | Hybrid* | `update` | `update_multithreaded` |
+| Stream | Warm, pipelined | — | `stream` |
+
+- **Convenience batching and convenience multithreading are deliberately absent.**
+- **MT-capable describes the entry point.** Initialize these entry points with
+  `initialize_multithreaded`. The hashing and update methods can keep small inputs
+  on the calling thread.
+- **`Hasher` is the special case:** one shared type, exported as
+  `throughput::Hasher`. Ordinary `update` treats its first update as occasional/cold
+  and later updates as repeated/warm. `update_multithreaded` takes the
+  parallel/throughput path; the same object can mix those methods. Grouped
+  incremental operations, `update_each`, also have caller-thread and MT-capable
+  forms.
+
+The [crate documentation](https://servil-software-factory.github.io/BLAKE3/blake3_servil/) covers each
+call, and the C library in [`capi/`](capi/).
 [`b3sum/README.md`](b3sum/README.md) covers the command-line tool.
 
 It runs on 64-bit Arm (Linux, macOS) and x86-64 (Linux, a CPU with SSE4.1: Intel since
