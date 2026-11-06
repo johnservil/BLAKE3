@@ -32,7 +32,7 @@ import aarch64
 import canon
 import random
 import terms
-from aarch64 import Ptr, Region, Unproved, decide, as_bv, concrete
+from aarch64 import Ptr, Region, Unproved, Undecided, decide, as_bv, concrete
 
 def tool(name):
     """LLVM's `name`, the newest version installed (17 or later)."""
@@ -162,6 +162,31 @@ def image(so):
     return data
 
 
+class SelectedPtr(Ptr):
+    """A branchless selection between addresses, never a new allocation.
+
+    Each load checks its selected region under the selecting condition.
+    Unsupported pointer uses fail rather than treating the alternatives
+    as one, larger region or granting access to both unconditionally.
+    """
+    def __init__(self, condition, yes, no):
+        self.condition, self.yes, self.no = condition, yes, no
+
+    def __add__(self, n):
+        return SelectedPtr(self.condition, self.yes + n, self.no + n)
+
+    @property
+    def region(self):
+        raise Unproved("conditional pointer used as one region")
+
+    @property
+    def offset(self):
+        raise Unproved("conditional pointer used as one offset")
+
+    def __repr__(self):
+        return f"If({self.condition}, {self.yes}, {self.no})"
+
+
 class Machine(aarch64.Machine):
     def __init__(self, code, regions):
         super().__init__(code, regions)
@@ -182,6 +207,35 @@ class Machine(aarch64.Machine):
             return super().access(addr, n, write)
         finally:
             del self.x["sp"]
+
+    def selected_load(self, addr, load):
+        try:
+            chosen = decide(self, addr.condition)
+        except Undecided:
+            values = []
+            for condition, pointer in ((addr.condition, addr.yes), (Not(addr.condition), addr.no)):
+                self.assumptions.append(condition)
+                try:
+                    values.append(load(pointer))
+                finally:
+                    self.assumptions.pop()
+            yes, no = values
+            if isinstance(yes, list):
+                return [If(addr.condition, a, b) for a, b in zip(yes, no)]
+            if isinstance(yes, Ptr) or isinstance(no, Ptr):
+                raise Unproved("loading a pointer through a conditional pointer")
+            return If(addr.condition, yes, no)
+        return load(addr.yes if chosen else addr.no)
+
+    def load(self, addr, n):
+        if isinstance(addr, SelectedPtr):
+            return self.selected_load(addr, lambda p: self.load(p, n))
+        return super().load(addr, n)
+
+    def load_words(self, addr, words):
+        if isinstance(addr, SelectedPtr):
+            return self.selected_load(addr, lambda p: self.load_words(p, words))
+        return super().load_words(addr, words)
 
     def step_at(self, pc):
         """One instruction at `pc` (induction.py's hook): the next pc, or
@@ -368,7 +422,11 @@ def address(m, op):
     if not isinstance(base, Ptr):
         raise Unproved(f"an address that is no pointer: {op}")
     addr = base + disp
-    if not isinstance(addr.offset, int) and not aarch64.lengths_only(m, as_bv(addr.offset)):
+    def public_pointer(p):
+        if isinstance(p, SelectedPtr):
+            return aarch64.lengths_only(m, p.condition) and public_pointer(p.yes) and public_pointer(p.no)
+        return isinstance(p.offset, int) or aarch64.lengths_only(m, as_bv(p.offset))
+    if not public_pointer(addr):
         raise Unproved(f"data-dependent memory address: {op}")
     return size, addr, mt.group(3)
 
@@ -664,8 +722,26 @@ def step(m, pc, mnem, ops, nxt):
         m.gwrite(ops[0], r)
         return nxt
     if mnem.startswith("cmov"):
-        if decide(m, cond(m, mnem[4:])):
-            m.gwrite(ops[0], gval(m, ops[1], SUB[ops[0]][1]))
+        # A memory source is read even when the condition is false (Intel's
+        # temporary := SRC precedes the conditional assignment).
+        value = gval(m, ops[1], SUB[ops[0]][1])
+        condition = cond(m, mnem[4:])
+        try:
+            take = decide(m, condition)
+        except Undecided:
+            old = m.gread(ops[0])
+            if isinstance(old, Ptr) and isinstance(value, Ptr):
+                value = SelectedPtr(condition, value, old)
+            elif isinstance(old, Ptr) or isinstance(value, Ptr):
+                raise Unproved("conditional selection of pointer and integer")
+            else:
+                value = If(condition, value, old)
+            take = True
+        if take:
+            m.gwrite(ops[0], value)
+        elif SUB[ops[0]][1] == 32:
+            # The 32-bit form clears the upper half even when not taken.
+            m.gwrite(ops[0], m.gread(ops[0]))
         return nxt
     # Mask registers.
     if mnem == "kmovw":
@@ -706,6 +782,8 @@ def vector(m, mnem, base, vex, ops, nxt):
         # permits unaligned memory; the aligned moves retain their rule.
         alignment = memory_alignment(base, vex, size)
         if alignment > 1:
+            if isinstance(addr, SelectedPtr):
+                raise Unproved("alignment of conditional pointer not modelled")
             region = m.regions[addr.region]
             if region.alignment < alignment or not aarch64.holds(m, as_bv(addr.offset) & (alignment - 1) == 0):
                 raise Unproved(f"{mnem} needs {alignment}-byte alignment at {addr}")
@@ -725,14 +803,22 @@ def vector(m, mnem, base, vex, ops, nxt):
         else:
             val = m.lanes(src)[:size // 4]
         if mask is not None:
-            # EVEX dword stores access only enabled lanes. Masks must be
-            # public (checked above); a public bit whose value is not
-            # settled by this path stops the proof through decide().
+            # EVEX dword stores access only enabled lanes. A symbolic
+            # public bit retains the old destination in its false branch;
+            # this conservative case requires a valid initialized word
+            # for either outcome. Concrete disabled lanes access nothing.
             if base not in ("movdqu32", "movdqa32"):
                 raise Unproved("an unmodelled masked store")
             for j, word in enumerate(val):
-                if decide(m, kbit(m, mask, j)):
-                    m.store(addr + 4*j, word, 4)
+                active = kbit(m, mask, j)
+                to = addr + 4*j
+                try:
+                    enabled = decide(m, active)
+                except Undecided:
+                    word = If(active, word, m.load(to, 4))
+                    enabled = True
+                if enabled:
+                    m.store(to, word, 4)
             return nxt
         m.store(addr, Concat(*reversed(val)) if len(val) > 1 else val[0], 4 * len(val))
         return nxt

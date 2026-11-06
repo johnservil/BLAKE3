@@ -54,6 +54,7 @@ unsafe extern "C" {
 /// AVX-512F's sixteen-lane kernel: `items` have `k` full blocks before
 /// their last, and `out` holds one digest each. Unsafe: the CPU has AVX-512F.
 unsafe fn hash_group16(items: &[&[u8]], k: usize, key: &CVWords, flags: u8, out: &mut [[u8; OUT_LEN]]) {
+    assert_eq!(flags & CHUNK_START, 0, "the finishing kernel supplies CHUNK_START");
     let n = items.len();
     assert!((1..=16).contains(&n) && out.len() == n && k < 16, "1 to 16 items of up to a chunk");
     assert!(items.iter().all(|i| i.len().saturating_sub(1) / BLOCK_LEN == k), "items of {k} whole blocks before their last");
@@ -100,6 +101,7 @@ unsafe extern "C" {
 /// the padded block as a dummy input and leave that digest untouched.
 /// Unsafe: the CPU supports AVX-512F.
 pub(crate) unsafe fn hash_mixed16(items: &[&[u8]], key: &CVWords, flags: u8, out: &mut [[u8; OUT_LEN]]) {
+    assert_eq!(flags & CHUNK_START, 0, "the finishing kernel supplies CHUNK_START");
     let n = items.len();
     assert!((1..=16).contains(&n) && out.len() == n, "1 to 16 items, one digest each");
     assert!(items.iter().all(|i| i.len() <= crate::CHUNK_LEN), "items up to one chunk");
@@ -152,6 +154,7 @@ unsafe extern "C" {
 /// AVX2 version of hash_mixed16: up to eight lanes, a per-lane snapshot at
 /// its last block. Unsafe: the CPU supports AVX2.
 pub(crate) unsafe fn hash_mixed8(items: &[&[u8]], key: &CVWords, flags: u8, out: &mut [[u8; OUT_LEN]]) {
+    assert_eq!(flags & CHUNK_START, 0, "the finishing kernel supplies CHUNK_START");
     let n = items.len();
     assert!((1..=8).contains(&n) && out.len() == n, "1 to 8 items, one digest each");
     assert!(items.iter().all(|i| i.len() <= crate::CHUNK_LEN), "items up to one chunk");
@@ -236,6 +239,7 @@ unsafe fn hash_group_on<const W: usize>(
     out: &mut [[u8; OUT_LEN]],
 ) {
     let n = items.len();
+    assert_eq!(flags & CHUNK_START, 0, "the finishing kernel supplies CHUNK_START");
     assert!((1..=W).contains(&n) && out.len() == n && k < 16, "1 to {W} items of up to a chunk");
     assert!(items.iter().all(|i| i.len().saturating_sub(1) / BLOCK_LEN == k), "items of {k} whole blocks before their last");
     // Each lane's last block, zero-padded; the lanes past `n` hash item 0
