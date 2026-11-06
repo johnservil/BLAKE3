@@ -850,8 +850,15 @@ def vector(m, mnem, base, vex, ops, nxt):
     elif base == "pblendvb":
         a, b = A(), B()
         sel = m.lanes("xmm0")[:4] if two else src_lanes(m, rest[1], w)
-        new = [Concat(*reversed([If(Extract(8*j+7,8*j+7,s) == 1, Extract(8*j+7,8*j,y), Extract(8*j+7,8*j,x)) for j in range(4)]))
-               for x,y,s in zip(a,b,sel)]
+        new = []
+        for x, y, s in zip(a, b, sel):
+            s = simplify(s)
+            if is_bv_value(s) and s.as_long() in (0, 0xffffffff):
+                # Preserve a whole selected word as one term, so the
+                # compression normal form sees the original round graph.
+                new.append(y if s.as_long() else x)
+            else:
+                new.append(Concat(*reversed([If(Extract(8*j+7,8*j+7,s) == 1, Extract(8*j+7,8*j,y), Extract(8*j+7,8*j,x)) for j in range(4)])))
     elif base == "pblendmd":
         a, b = A(), B()
         new = [If(kbit(m, mask, j), y, x) for j, (x, y) in enumerate(zip(a, b))]
