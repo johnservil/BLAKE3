@@ -99,7 +99,7 @@ def prove(case):
                 bf = f | (1 if b==0 else 0) | If(at_end, BitVecVal(10,32), BitVecVal(0,32))
                 put(off["FLAGS"]+v*b+4*j, bf)
         put(off["END"],BitVecVal(64*(k+1),32))
-        put(off["SWITCH"],BitVecVal(64*k,32))
+        put(off["SWITCH"],BitVecVal(0 if mixed else 64*k,32))
         size = off["SIZE"]
         if mixed:
             end_offset = (size+63)//64*64
@@ -147,7 +147,7 @@ def prove(case):
                 cv = spec.compress(cv,spec.words(inputs[j][64*b:64*(b+1)]),BitVecVal(0,64),BitVecVal(64,32),f|(1 if b==0 else 0))[:8]
             want = spec.compress(cv,spec.words(lasts[j]),BitVecVal(0,64),ZeroExt(24,lengths[j]),f|10|(1 if end==0 else 0))[:8]
             for i in range(8):
-                actual = simplify(substitute(got[i], (ends[j],BitVecVal(end,4)))) if symbolic else got[i]
+                actual = substitute(got[i], (ends[j],BitVecVal(end,4))) if symbolic else got[i]
                 if not same(actual,want[i]):
                     raise Unproved(f"{w} lanes, k={k}, lane {j}, end {end}, word {i} differs")
     return f"proved {':'.join(map(str,case))}, {m.steps} instructions"

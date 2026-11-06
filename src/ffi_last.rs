@@ -78,6 +78,8 @@ unsafe fn hash_group16(items: &[&[u8]], k: usize, key: &CVWords, flags: u8, out:
     // padded 64-byte block. The kernel stores 16 digests, including the
     // unread duplicate lanes, into distinct caller-owned scratch (no
     // sharing with workers). The caller checked AVX-512F.
+    #[cfg(test)]
+    test::check_compact_params(&p, items, key, flags, &last, digests.as_mut_ptr(), None);
     crate::ran_kernel(blake3_servil_last_avx512 as *const ());
     unsafe { blake3_servil_last_avx512(&p) };
     out.copy_from_slice(&digests[..n]);
@@ -130,6 +132,8 @@ pub(crate) unsafe fn hash_mixed16(items: &[&[u8]], key: &CVWords, flags: u8, out
     // the padded last block; output is a caller-owned word-major array of
     // 8 * 16 words, with each lane written once at its ending step. No
     // shared mutable state, and the caller checked AVX-512F.
+    #[cfg(test)]
+    test::check_compact_params(&p.common, items, key, flags, &last, words.as_mut_ptr().cast(), Some(&p.ends));
     crate::ran_kernel(blake3_servil_mixed_avx512 as *const ());
     unsafe { blake3_servil_mixed_avx512(&p) };
     for (j, digest) in out.iter_mut().enumerate() {
@@ -195,6 +199,8 @@ pub(crate) unsafe fn hash_mixed8(items: &[&[u8]], key: &CVWords, flags: u8, out:
     // Sound: each lane reads only its whole blocks before ends[j], then
     // a padded last block. The snapshot retains its digest thereafter;
     // all parameter storage is initialized and owned by this caller.
+    #[cfg(test)]
+    test::check_vector_params(&p.common, items, key, flags, &last, Some(&p.ends));
     crate::ran_kernel(blake3_servil_mixed_avx2 as *const ());
     unsafe { blake3_servil_mixed_avx2(&mut p) };
     for (j, digest) in out.iter_mut().enumerate() {
@@ -275,6 +281,8 @@ unsafe fn hash_group_on<const W: usize>(
     // Sound: each lane's pointer reaches its k whole blocks (an item of
     // more than k of them, or item 0 again), LASTMSG a whole block each,
     // and the caller's CPU has the kernel's instructions.
+    #[cfg(test)]
+    test::check_vector_params(&p, items, key, flags as u8, &last, None);
     crate::ran_kernel(kernel as *const ());
     unsafe { kernel(&mut p) };
     for (lane, digest) in out.iter_mut().enumerate() {
@@ -343,6 +351,130 @@ pub(crate) fn entries(platform: crate::platform::Platform) -> [usize; 2] {
 #[cfg(test)]
 mod test {
     use super::*;
+
+    // Inspect the actual block before assembly overwrites its H/SNAP fields.
+    // These rows independently express prove_last.py's byte-level contract;
+    // no extra production builder or callback is needed for the inspection.
+    pub(super) fn check_vector_params<const W: usize>(p: &Params<W>, items: &[&[u8]], key: &CVWords, flags: u8, last: &[[u8; 64]; W], ends: Option<&[u32]>) {
+        let mut longest = 0;
+        for lane in 0..W {
+            let item = items[if lane < items.len() { lane } else { 0 }];
+            let k = item.len().saturating_sub(1) / 64;
+            let len = item.len() - 64 * k;
+            longest = longest.max(k);
+            assert_eq!(p.msg[lane], item.as_ptr());
+            assert_eq!(p.lastmsg[lane], last[lane].as_ptr());
+            for b in 0..64 {
+                assert_eq!(last[lane][b], if b < len { item[64 * k + b] } else { 0 });
+            }
+            if let Some(ends) = ends {
+                assert_eq!(ends[lane] as usize, k * 64);
+            }
+            for step in 0..16 {
+                assert_eq!(p.lens[step][lane] as usize, if step == k { len } else { 64 });
+                let expected = flags | if step == 0 { 1 } else { 0 } | if step == k { 10 } else { 0 };
+                assert_eq!(p.flags[step][lane], expected as u32);
+            }
+            for w in 0..8 {
+                assert_eq!(p.key[w][lane], key[w]);
+                assert_eq!(p.h[w][lane], 0);
+                assert_eq!(p.snap[w][lane], 0);
+            }
+            for (w, value) in [0x6A09E667, 0xBB67AE85, 0x3C6EF372, 0xA54FF53A].iter().enumerate() {
+                assert_eq!(p.iv[w][lane], *value);
+            }
+            let base = (lane % 4 * 4) as u8;
+            assert_eq!(p.rot16[lane].to_le_bytes(), [base + 2, base + 3, base, base + 1]);
+            assert_eq!(p.rot8[lane].to_le_bytes(), [base + 1, base + 2, base + 3, base]);
+            assert_eq!([p.ctr[0][lane], p.ctr[1][lane]], [0, 0]);
+        }
+        assert_eq!(p.last, [0; 16]);
+        assert_eq!(p.end as usize, 64 * (longest + 1));
+        assert_eq!(p.switch as usize, if ends.is_some() { 0 } else { 64 * longest });
+    }
+
+    pub(super) fn check_compact_params(
+        p: &Params16,
+        items: &[&[u8]],
+        key: &CVWords,
+        flags: u8,
+        last: &[[u8; 64]; 16],
+        output: *mut [u8; OUT_LEN],
+        ends: Option<&[u32; 16]>,
+    ) {
+        let mut longest = 0;
+        for lane in 0..16 {
+            let item = items[if lane < items.len() { lane } else { 0 }];
+            let k = item.len().saturating_sub(1) / 64;
+            let len = item.len() - 64 * k;
+            longest = longest.max(k);
+            assert_eq!(p.msg[lane], item.as_ptr());
+            assert_eq!(p.lastmsg[lane], last[lane].as_ptr());
+            assert_eq!(p.lens[lane] as usize, len);
+            for b in 0..64 {
+                assert_eq!(last[lane][b], if b < len { item[64 * k + b] } else { 0 });
+            }
+            if let Some(ends) = ends {
+                assert_eq!(ends[lane] as usize, k * 64);
+            }
+        }
+        assert_eq!(p.key, *key);
+        assert_eq!(p.flags, flags as u32);
+        assert_eq!(p.k as usize, longest);
+        assert_eq!(p.out, output);
+    }
+
+    #[test]
+    fn test_parameter_contract_at_every_k_and_ending_phase() {
+        for (width, platform) in [(8, crate::platform::Platform::avx2()), (16, crate::platform::Platform::avx512())] {
+            let Some(platform) = platform else { continue };
+            for k in 0..16 {
+                for phase in 0..=k {
+                    let n = width - phase % width;
+                    let key_bytes: [u8; 32] = core::array::from_fn(|j| (j * 29 + phase * 13 + k) as u8);
+                    let key = crate::platform::words_from_le_bytes_32(&key_bytes);
+                    for mixed in [false, true] {
+                        let bytes: Vec<Vec<u8>> = (0..n)
+                            .map(|lane| {
+                                let whole = if mixed { (lane + phase) % (k + 1) } else { k };
+                                let tail = (lane * 17 + phase * 23) % 65;
+                                let tail = if whole == 0 { tail } else { tail.max(1) };
+                                (0..whole * 64 + tail).map(|b| (lane * 37 + b * 13) as u8).collect()
+                            })
+                            .collect();
+                        let items: Vec<&[u8]> = bytes.iter().map(Vec::as_slice).collect();
+                        let mut out = vec![[0u8; 32]; n];
+                        if !mixed {
+                            hash_group(platform, &items, k, &key, crate::KEYED_HASH, &mut out);
+                        } else if width == 16 {
+                            unsafe { hash_mixed16(&items, &key, crate::KEYED_HASH, &mut out) };
+                        } else {
+                            unsafe { hash_mixed8(&items, &key, crate::KEYED_HASH, &mut out) };
+                        }
+                        for (input, digest) in items.iter().zip(&out) {
+                            assert_eq!(*digest, crate::test::official::hash(crate::Mode::Keyed(&key_bytes), input));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_finishing_boundaries_reject_chunk_start_from_the_caller() {
+        use std::panic::{AssertUnwindSafe, catch_unwind};
+        let input = [7u8; 1];
+        let items = [&input[..]];
+        let mut out = [[0u8; 32]; 1];
+        if crate::platform::Platform::avx2().is_some() {
+            assert!(catch_unwind(AssertUnwindSafe(|| hash_group(crate::platform::Platform::AVX2, &items, 0, IV, CHUNK_START, &mut out))).is_err());
+            assert!(catch_unwind(AssertUnwindSafe(|| unsafe { hash_mixed8(&items, IV, CHUNK_START, &mut out) })).is_err());
+        }
+        if crate::platform::Platform::avx512().is_some() {
+            assert!(catch_unwind(AssertUnwindSafe(|| hash_group(crate::platform::Platform::AVX512, &items, 0, IV, CHUNK_START, &mut out))).is_err());
+            assert!(catch_unwind(AssertUnwindSafe(|| unsafe { hash_mixed16(&items, IV, CHUNK_START, &mut out) })).is_err());
+        }
+    }
 
     #[test]
     fn test_startup_answers_against_official() {
