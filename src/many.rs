@@ -746,6 +746,39 @@ unsafe fn hash_many_blocks(
 #[cfg(test)]
 mod test {
     use super::*;
+
+    /// Ask which entry ran, not how long a loaded machine took. Native
+    /// groups finish in lanes; a smaller tail keeps its established path.
+    #[test]
+    #[cfg(all(target_arch = "x86_64", blake3_sse41_ffi, feature = "std"))]
+    fn test_partial_batches_reach_finishing_only_for_full_native_groups() {
+        for platform in crate::test::every_platform() {
+            let width = crate::ffi_last::lanes(platform);
+            if width < 8 {
+                continue;
+            }
+            let entry = crate::ffi_last::entries(platform)[0];
+            for len in [1usize, 63, 65, 129, 1023] {
+                for n in [0, 1, width - 1, width, width + 1, 2 * width + 1] {
+                    let slot = slot_len(len);
+                    let mut input = vec![0u8; slot * n];
+                    for i in 0..n {
+                        for (j, b) in input[i * slot..][..len].iter_mut().enumerate() {
+                            *b = (i * 37 + j * 13) as u8;
+                        }
+                    }
+                    let mut out = vec![[0u8; 32]; n];
+                    crate::RAN_ENTRIES.with(|r| r.borrow_mut().clear());
+                    hash_many_on(&input, len, crate::IV, 0, &mut out, platform);
+                    let reached = crate::RAN_ENTRIES.with(|r| r.borrow().contains(&entry));
+                    assert_eq!(reached, n >= width, "{platform:?} len={len} n={n}");
+                    for (i, digest) in out.iter().enumerate() {
+                        assert_eq!(*digest, crate::test::official::hash(crate::Mode::Plain, &input[i * slot..][..len]));
+                    }
+                }
+            }
+        }
+    }
     use std::vec::Vec;
 
     /// `count` deterministic messages of `len` bytes, each in its slot
