@@ -285,16 +285,17 @@ fn by_blocks_at_once(items: &[&[u8]], key: &CVWords, flags: u8, out: &mut [[u8; 
     let whole = |item: &[u8]| item.len().saturating_sub(1) / crate::BLOCK_LEN;
     let mut order: arrayvec::ArrayVec<usize, BY_BLOCKS_AT_ONCE> = (0..items.len()).collect();
     // Sixteen possible prefix lengths need only a counting pass, not a
-    // general comparison sort. All-one-bin batches retain input order.
+    // general comparison sort. A uniform window needs no histogram at all.
     // Counts/positions fit a byte: this window has at most 64 items.
-    let mut positions = [0u8; 16];
-    let mut present = 0u16;
-    for item in items {
-        let k = whole(item);
-        positions[k] += 1;
-        present |= 1 << k;
-    }
-    if !present.is_power_of_two() {
+    let first = whole(items[0]);
+    if items[1..].iter().any(|item| whole(item) != first) {
+        let mut positions = [0u8; 16];
+        let mut present = 0u16;
+        for item in items {
+            let k = whole(item);
+            positions[k] += 1;
+            present |= 1 << k;
+        }
         let mut offset = 0u8;
         while present != 0 {
             let k = present.trailing_zeros() as usize;
