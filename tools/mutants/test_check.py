@@ -321,3 +321,34 @@ class HelperChanges(unittest.TestCase):
         lines = ["mod t {", "    const SIZES: [usize; 2] = [", "        1,", "    ];", "    fn helper() {", "        let x = 1;", "    }", "}"]
         self.assertEqual(check.item_name(lines, 2), "SIZES")
         self.assertEqual(check.item_name(lines, 5), "helper")
+
+
+class NoRecord(unittest.TestCase):
+    """With no record of an ancestor, a change's check runs whole the
+    functions its altered tests name, never the whole run (words_of,
+    functions_named); records are found by the nearest ancestor
+    (nearest_record)."""
+
+    INDEX = [
+        ("test", "test_prefetch", "    check(hash_cold_from(Platform::NEON, &input));\n    let h = Hasher::new(mode);", "src/test.rs"),
+        ("helper", "check", "    prefetch_kernels(len, platform);", "src/test.rs"),
+        ("helper", "unrelated", "    finalize_each(&h);", "src/test.rs"),
+        ("test", "test_other", "    stream(x);", "src/test.rs"),
+    ]
+
+    def test_words_follow_the_helpers_a_test_reaches(self):
+        words = check.words_of(self.INDEX, {"test_prefetch"})
+        self.assertTrue({"hash_cold_from", "Platform", "NEON", "check", "prefetch_kernels", "Hasher", "new"} <= words)
+        self.assertFalse({"finalize_each", "stream"} & words)
+
+    def test_functions_named_by_last_segment_and_common_names_with_their_type(self):
+        functions = [("src/lib.rs", "hash_cold_from"), ("src/lib.rs", "prefetch_kernels"), ("src/incremental.rs", "Hasher::new"),
+                     ("src/hasher.rs", "ChunkState<P>::new"), ("src/stream.rs", "Stream<'env, D>::finish"), ("src/each.rs", "finalize_each")]
+        named = check.functions_named(functions, check.words_of(self.INDEX, {"test_prefetch"}))
+        self.assertEqual(named, [("src/incremental.rs", "Hasher::new"), ("src/lib.rs", "hash_cold_from"), ("src/lib.rs", "prefetch_kernels")])
+
+    def test_the_nearest_ancestors_record(self):
+        distance = {"a": 5, "b": 2, "c": None}.get
+        self.assertEqual(check.nearest_record([("ra", "a"), ("rb", "b"), ("rc", "c")], distance), "rb")
+        self.assertIsNone(check.nearest_record([("rc", "c")], distance))
+        self.assertIsNone(check.nearest_record([], distance))

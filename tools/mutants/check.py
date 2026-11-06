@@ -507,9 +507,14 @@ def run(files, extra=(), shards=SHARDS, label="run", loom=False):
         if label == "run" and not extra:
             # A whole run's record names each caught place's catchers (the
             # tests that failed first): a later change's check reruns the
-            # places whose every catcher it alters (caught_by).
+            # places whose every catcher it alters (caught_by), from any
+            # checkout on this machine (RECORDS).
             head = subprocess.run(["git", "-C", ROOT, "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout
             open(os.path.join(kept, "commit"), "w").write(head)
+            shared = os.path.join(RECORDS, head.strip())
+            os.makedirs(shared, exist_ok=True)
+            shutil.copy(os.path.join(kept, "tests.tsv"), os.path.join(shared, "tests.tsv"))
+            open(os.path.join(shared, "commit"), "w").write(head)
     return names, functions, timed
 
 
@@ -819,14 +824,15 @@ def confirm(found, known, timed, tknown, differ=None):
 
 
 def changed_tests(since, head="HEAD"):
-    """The tests a change alters, from the code before it: (names, sure).
+    """The tests a change alters, from the code before it: (names, sure,
+    the test files it changes).
     A line the change takes away (a changed line is one taken away and one
     added) inside a #[test] function names that test; one in other test code
     (a helper, a test module's or tests/'s own items) can weaken any test,
     so `sure` is False. Lines of the library's code are the change's own
     mutants' business."""
     diff = subprocess.run(["git", "-C", ROOT, "diff", "-U0", f"{since}...{head}", "--", "src", "tests"], capture_output=True, text=True, check=True).stdout
-    names, helpers, sure, file, old = set(), set(), True, None, []
+    names, helpers, sure, file, old, files = set(), set(), True, None, [], set()
     for line in diff.splitlines():
         if line.startswith("--- "):
             file = line[6:] if line.startswith("--- a/") else None
@@ -838,6 +844,8 @@ def changed_tests(since, head="HEAD"):
                     continue  # a comment, a blank line or an import weakens no test
                 # src/test.rs is the library's test module (lib.rs: #[cfg(test)] mod test).
                 kind, name = enclosing(old, n - 1, file.startswith("tests/") or file == "src/test.rs")
+                if kind != "code":
+                    files.add(file)
                 if kind == "test":
                     names.add(name)
                 elif kind == "helper":
@@ -850,7 +858,7 @@ def changed_tests(since, head="HEAD"):
         # A helper's change can weaken every test that uses it, directly
         # or through other helpers: those tests count as altered.
         names |= users(test_code_index(since), helpers)
-    return names, sure
+    return names, sure, files
 
 
 ITEM = re.compile(r"\s*(?:pub(?:\([a-z]+\))? )?(?:const|static|struct|enum|type|trait|fn) (\w+)|\s*macro_rules! (\w+)")
@@ -876,7 +884,8 @@ def item_name(lines, i):
 
 def test_code_index(rev):
     """Every function, test and helper, in the test code at `rev` (the
-    library's #[cfg(test)] modules, src/test.rs, tests/): (kind, name, body)."""
+    library's #[cfg(test)] modules, src/test.rs, tests/): (kind, name, body,
+    path)."""
     paths = subprocess.run(["git", "-C", ROOT, "ls-tree", "-r", "--name-only", rev, "--", "src", "tests"],
                            capture_output=True, text=True, check=True).stdout.split()
     index = []
@@ -893,7 +902,7 @@ def test_code_index(rev):
             end = next((k for k in range(i + 1, len(lines)) if lines[k] == m.group(1) + "}"), len(lines))
             # The body's code alone: a word in a comment uses nothing.
             code = [re.sub(r"\s//.*$", "", l) for l in lines[i + 1:end] if not l.lstrip().startswith("//")]
-            index.append((kind, m.group(2), "\n".join(code)))
+            index.append((kind, m.group(2), "\n".join(code), path))
     return index
 
 
@@ -904,7 +913,7 @@ def users(index, helpers):
     while frontier:
         pattern = re.compile(r"\b(?:" + "|".join(map(re.escape, sorted(frontier))) + r")\b")
         frontier = set()
-        for kind, name, body in index:
+        for kind, name, body, *_ in index:
             if pattern.search(body):
                 if kind == "test":
                     tests.add(name)
@@ -912,6 +921,63 @@ def users(index, helpers):
                     reached.add(name)
                     frontier.add(name)
     return tests
+
+
+def words_of(index, tests):
+    """Every identifier in the bodies of `tests` and of the helpers they
+    reach (a helper named in a body reached), from `index`."""
+    word = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*\b")
+    bodies = {}
+    for kind, name, body, *_ in index:
+        bodies.setdefault((kind, name), []).append(body)
+    words, frontier, reached = set(), [b for t in tests for b in bodies.get(("test", t), [])], set()
+    while frontier:
+        found = set(word.findall(frontier.pop()))
+        words |= found
+        for name in found - reached:
+            reached.add(name)
+            frontier += bodies.get(("helper", name), [])
+    return words
+
+
+# Method names too common to say which function a test is about: such a
+# function counts as named only with its type named too.
+COMMON_NAMES = {"new", "default", "clone", "fmt", "from", "len", "is_empty", "get", "set", "update", "finalize", "run",
+                "take", "push", "drop", "next", "write", "read", "eq", "hash", "as_bytes", "into", "map", "with",
+                "open", "finish", "collect", "submit", "key", "flags", "detect", "bytes", "start", "wait"}
+
+
+def functions_named(functions, words):
+    """The library's functions (`functions`: (file, function) pairs) whose
+    names `words` holds: a function's last path segment, its generics
+    aside, and for a common name (COMMON_NAMES) its type's too."""
+    def parts(function):
+        plain = function
+        while "<" in plain:
+            shorter = re.sub(r"<[^<>]*>", "", plain)
+            if shorter == plain:
+                break
+            plain = shorter
+        return plain.split("::")
+    named = []
+    for file, function in functions:
+        p = parts(function)
+        if p[-1] in words and (p[-1] not in COMMON_NAMES or (len(p) > 1 and p[-2] in words)):
+            named.append((file, function))
+    return sorted(named)
+
+
+def library_functions(files):
+    """Every (file, function) of `files` with a mutant, test code aside
+    (cargo mutants --list --json)."""
+    listed = json.loads(subprocess.run(["cargo", "mutants", "--list", "--json", *BUILD, *[a for f in files for a in ("--file", f)]],
+                                       cwd=ROOT, capture_output=True, text=True, check=True).stdout)
+    out = set()
+    for m in listed:
+        function = (m.get("function") or {}).get("function_name") or ""
+        if function and m["file"] != "src/test.rs" and not function.startswith("test::") and "::test::" not in function:
+            out.add((m["file"], function))
+    return sorted(out)
 
 
 def enclosing(lines, i, test_file):
@@ -947,6 +1013,30 @@ def enclosing(lines, i, test_file):
 
 MAP_DIR = os.path.join(ROOT, "tmp", "mutants-last", "map")
 RUN_DIR = os.path.join(ROOT, "tmp", "mutants-last", "run")
+# Every whole run's record, by its commit, for every checkout on this
+# machine (a change's check in a new worktree finds its ancestor's; one
+# record per checkout made a worktree without one run everything, 68
+# minutes, November 6).
+RECORDS = os.environ.get("BLAKE3_SERVIL_MUTANTS_RECORDS", os.path.join(os.path.expanduser("~"), ".cache", "blake3-servil-mutants", "records"))
+
+
+def nearest_record(candidates, distance):
+    """Of `candidates` ((record path, commit)), the one whose commit is the
+    nearest ancestor of HEAD (`distance(commit)`: commits from it to HEAD,
+    None when not an ancestor); None when none is."""
+    best = None
+    for path, commit in candidates:
+        d = distance(commit)
+        if d is not None and (best is None or d < best[0]):
+            best = (d, path)
+    return best and best[1]
+
+
+def ancestor_distance(commit):
+    """The commits from `commit` to HEAD, or None when it is no ancestor."""
+    if subprocess.run(["git", "-C", ROOT, "merge-base", "--is-ancestor", commit, "HEAD"], capture_output=True).returncode != 0:
+        return None
+    return int(subprocess.run(["git", "-C", ROOT, "rev-list", "--count", f"{commit}..HEAD"], capture_output=True, text=True, check=True).stdout)
 
 
 def caught_by(tests):
@@ -955,12 +1045,16 @@ def caught_by(tests):
     caught only by `tests` (by function name) at some place the startup
     self-test does not catch, by name (rerun at all its places): where any
     other test catches it, it is caught still. None with no such record."""
-    for kept in (MAP_DIR, RUN_DIR):
+    candidates = []
+    for kept in [MAP_DIR, RUN_DIR] + sorted(glob.glob(os.path.join(RECORDS, "*"))):
         record, commit = os.path.join(kept, "tests.tsv"), os.path.join(kept, "commit")
-        if os.path.exists(record) and os.path.exists(commit) and subprocess.run(
-                ["git", "-C", ROOT, "merge-base", "--is-ancestor", open(commit).read().strip(), "HEAD"]).returncode == 0:
-            return catches_only_by(open(record), tests)
-    return None
+        if os.path.exists(record) and os.path.exists(commit):
+            candidates.append((record, open(commit).read().strip()))
+    record = nearest_record(candidates, ancestor_distance)
+    if record is None:
+        return None
+    print(f"mutants: the record of {os.path.dirname(record)} for the altered tests' catches")
+    return catches_only_by(open(record), tests)
 
 
 def catches_only_by(lines, tests):
@@ -999,6 +1093,9 @@ def figure(functions, known):
 
 
 def main():
+    # Each line as it is printed: a run stopped midway still says why it
+    # took what it took (a buffered line was lost to a kill, November 6).
+    sys.stdout.reconfigure(line_buffering=True)
     if "--help" in sys.argv or "-h" in sys.argv:
         print(__doc__.strip())
         return
@@ -1030,20 +1127,25 @@ def main():
     extra = []  # the mutants the change's altered tests caught (the map's)
     if since is not None:
         diff = subprocess.run(["git", "-C", ROOT, "diff", f"{since}...HEAD", "--", *files, *LOOM_FILES], capture_output=True, text=True, check=True).stdout
-        tests, sure = changed_tests(since)
+        tests, sure, test_files = changed_tests(since)
         caught = caught_by(tests) if tests and sure else []
-        if not sure:
-            print(f"mutants: the change since {since} alters test code outside a test (a helper); the whole run")
-            since = None
-        elif caught is None:
-            print(f"mutants: the change since {since} alters {len(tests)} test{'s' if len(tests) > 1 else ''} and no map of an ancestor holds their catches (check.py --map); the whole run")
-            since = None
-        else:
-            extra = caught
-            if tests:
-                print(f"mutants: the change alters {len(tests)} test{'s' if len(tests) > 1 else ''}; the map's {len(extra)} mutant names they catch run again")
+        named = []  # the functions the altered tests name, each run whole, where no record holds their catches
+        if not sure or caught is None:
+            # Never the whole run from a change's check (Sam, the project's
+            # owner, November 6): the functions the altered tests name, each
+            # with every mutant, stand for the record's catches.
+            index = test_code_index(since)
+            if not sure:
+                tests = tests | {name for kind, name, _, path in index if kind == "test" and path in test_files}
+            named = functions_named(library_functions(files), words_of(index, tests))
+            why = "alters test code outside a test with no name, so every test of its files counts" if not sure else "finds no record of an ancestor's catches"
+            print(f"mutants: the change {why}: {len(tests)} tests altered, the {len(named)} functions they name run whole")
+            caught = []
+        extra = caught
+        if tests and extra:
+            print(f"mutants: the change alters {len(tests)} test{'s' if len(tests) > 1 else ''}; the {len(extra)} mutant names they alone catch (the record's) run again")
     if since is not None:
-        if not diff and not extra:
+        if not diff and not extra and not named:
             print(f"mutants: the change since {since} touches no mutated file and alters no test")
             return
         path = os.path.join(tempfile.mkdtemp(prefix="mutants-diff-", dir=scratch_dir()), "change.diff")
@@ -1056,11 +1158,16 @@ def main():
         # November 6, 2026).
         listed = json.loads(subprocess.run(["cargo", "mutants", "--list", "--json", *BUILD, "--in-diff", path, *[a for f in files for a in ("--file", f)]],
                                            cwd=ROOT, capture_output=True, text=True, check=True).stdout) if diff else []
-        touched = touched_functions(listed)
+        touched = sorted(set(touched_functions(listed)) | set(named))
         if touched or listed:
             print(f"mutants: the change touches {len(touched)} function{'s' if len(touched) > 1 else ''}: every mutant of each runs, and their rows are written")
-        found, functions, timed = (run(sorted({f for f, _ in touched}), [a for p in function_patterns(touched, listed) for a in ("--re", p)],
-                                       shards=min(SHARDS, max(1, len(touched)))) if listed else (collections.Counter(), {}, collections.Counter()))
+        patterns = [a for p in function_patterns(touched, listed) for a in ("--re", p)]
+        planned = len(json.loads(subprocess.run(["cargo", "mutants", "--list", "--json", *BUILD, *patterns], cwd=ROOT, capture_output=True,
+                                                text=True, check=True).stdout)) if touched or listed else 0
+        print(f"mutants: the plan: {planned} mutants of {len(touched)} functions ({len(named)} of them the altered tests'), "
+              f"and {len(extra)} names the altered tests alone catch")
+        found, functions, timed = (run(sorted({f for f, _ in touched}), patterns, shards=min(SHARDS, max(1, len(touched))))
+                                   if touched or listed else (collections.Counter(), {}, collections.Counter()))
         if any(f in diff for f in LOOM_FILES):
             found, timed, functions = with_loom(found, timed, functions, run(LOOM_FILES, ["--in-diff", path], shards=1, label="loom", loom=True)[1])
         written = {name for key in touched for _, name in functions.get(key, [])}
