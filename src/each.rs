@@ -90,6 +90,24 @@ pub fn update_each_multithreaded(hashers: &mut [Hasher], pieces: &[(usize, &[u8]
 /// and each index `< hashers.len()`.
 pub fn finalize_each(hashers: &[Hasher], which: &[usize], out: &mut [[u8; OUT_LEN]]) {
     assert_eq!(which.len(), out.len(), "one digest per message named");
+    #[cfg(all(blake3_avx512_ffi, target_os = "linux"))]
+    if which.len() >= 16 && matches!(Platform::detect(), Platform::AVX512) {
+        for (which, out) in which.chunks(16).zip(out.chunks_mut(16)) {
+            if which.len() == 16 {
+                let inputs: Option<arrayvec::ArrayVec<_, 16>> = which.iter().map(|&i| crate::ffi_output::input(&hashers[i])).collect();
+                if let Some(inputs) = inputs {
+                    // Sound: the detected platform supplies AVX-512F+VL;
+                    // borrowed descriptors keep every block/CV readable.
+                    unsafe { crate::ffi_output::hash_group(inputs.as_slice().try_into().unwrap(), out) };
+                    continue;
+                }
+            }
+            for (&i, digest) in which.iter().zip(out) {
+                *digest = *hashers[i].finalize().as_bytes();
+            }
+        }
+        return;
+    }
     for (&i, out) in which.iter().zip(out) {
         *out = *hashers[i].finalize().as_bytes();
     }
