@@ -210,6 +210,8 @@ pub(crate) fn hash_padded_group(platform: crate::platform::Platform, input: &[u8
             flags: flags as u32,
             out: out.as_mut_ptr(),
         };
+        #[cfg(test)]
+        test::check_padded_params16(&p, input, len, key, flags, out.as_mut_ptr());
         // Each prefix and full padded last block lies in its own slot;
         // output is sixteen uniquely borrowed digests, with no spare lane.
         crate::ran_kernel(blake3_servil_last_avx512 as *const ());
@@ -226,6 +228,8 @@ pub(crate) fn hash_padded_group(platform: crate::platform::Platform, input: &[u8
             flags: flags as u32,
             end: slot as u32,
         };
+        #[cfg(test)]
+        test::check_padded_params8(&p, input, len, key, flags);
         crate::ran_kernel(blake3_servil_last_avx2 as *const ());
         unsafe { blake3_servil_last_avx2(&mut p) };
         for (j, digest) in out.iter_mut().enumerate() {
@@ -321,6 +325,40 @@ pub(crate) fn entries(platform: crate::platform::Platform) -> [usize; 2] {
 mod test {
     use super::*;
     use crate::IV;
+
+    pub(super) fn check_padded_params16(p: &Params16, input: &[u8], len: usize, key: &CVWords, flags: u8, out: *mut [u8; 32]) {
+        let prefix = len.saturating_sub(1) / 64 * 64;
+        let stride = (len + 63) / 64 * 64;
+        assert_eq!(input.len(), 16 * stride);
+        assert_eq!(p.key, *key);
+        assert_eq!(p.flags, flags as u32);
+        assert_eq!(p.k as usize, prefix / 64);
+        assert_eq!(p.out, out);
+        for lane in 0..16 {
+            assert_eq!(p.msg[lane], input[lane * stride..].as_ptr());
+            assert_eq!(p.lastmsg[lane], input[lane * stride + prefix..].as_ptr());
+            assert_eq!(p.lens[lane] as usize, len - prefix);
+            assert!(input[lane * stride + len..(lane + 1) * stride].iter().all(|&b| b == 0));
+        }
+    }
+
+    pub(super) fn check_padded_params8(p: &Params8, input: &[u8], len: usize, key: &CVWords, flags: u8) {
+        let prefix = len.saturating_sub(1) / 64 * 64;
+        let stride = (len + 63) / 64 * 64;
+        assert_eq!(input.len(), 8 * stride);
+        assert_eq!(p.key, *key);
+        assert_eq!(p.flags, flags as u32);
+        assert_eq!(p.end as usize, stride);
+        assert_eq!(p.h, [[0; 8]; 8]);
+        assert_eq!(p.snap, [[0; 8]; 8]);
+        for lane in 0..8 {
+            assert_eq!(p.msg[lane], input[lane * stride..].as_ptr());
+            assert_eq!(p.lastmsg[lane], input[lane * stride + prefix..].as_ptr());
+            assert_eq!(p.lens[lane] as usize, len - prefix);
+            assert_eq!(p.ends[lane] as usize, prefix);
+            assert!(input[lane * stride + len..(lane + 1) * stride].iter().all(|&b| b == 0));
+        }
+    }
 
     // Inspect the actual block before assembly overwrites its H/SNAP fields.
     // These rows independently express prove_last.py's byte-level contract;
