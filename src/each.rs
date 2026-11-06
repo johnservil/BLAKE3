@@ -245,11 +245,15 @@ pub fn hash_each(mode: Mode, items: &[(&[Block], usize)], out: &mut [[u8; OUT_LE
 }
 
 /// Whether [`hash_by_blocks`] runs on `platform`: x86-64's AVX2 and
-/// AVX-512 (pair::takes_platform), and NEON (its hybrids, from a table).
+/// AVX-512 (pair::takes_platform), and NEON (its hybrids, from a table),
+/// SME2 machines included: their NEON units run the hybrids, so a
+/// one-thread collection there takes them too.
 pub(crate) fn by_blocks_takes(platform: Platform) -> bool {
     #[cfg(target_arch = "x86_64")]
     return crate::pair::takes_platform(platform);
-    #[cfg(blake3_neon)]
+    #[cfg(blake3_sme2)]
+    return matches!(platform, Platform::NEON | Platform::SME2);
+    #[cfg(all(blake3_neon, not(blake3_sme2)))]
     return matches!(platform, Platform::NEON);
     #[allow(unreachable_code)]
     {
@@ -366,8 +370,11 @@ pub(crate) fn hash_each_on<I: Item>(key: &CVWords, flags: u8, items: &[I], out: 
     // Items of up to a chunk, two or more, by their blocks (hash_by_blocks).
     let by_blocks = by_blocks_takes(platform) && items.iter().filter(|i| i.bytes().len() <= CHUNK_LEN).nth(1).is_some();
     if by_blocks {
-        let small: Vec<usize> = (0..items.len()).filter(|&i| items[i].bytes().len() <= CHUNK_LEN).collect();
-        for part in small.chunks(BY_BLOCKS_AT_ONCE) {
+        // BY_BLOCKS_AT_ONCE of them at a time, their indices on the stack:
+        // a collection of small items allocates nothing.
+        let mut small = (0..items.len()).filter(|&i| items[i].bytes().len() <= CHUNK_LEN).peekable();
+        while small.peek().is_some() {
+            let part: arrayvec::ArrayVec<usize, BY_BLOCKS_AT_ONCE> = small.by_ref().take(BY_BLOCKS_AT_ONCE).collect();
             let bytes: arrayvec::ArrayVec<&[u8], BY_BLOCKS_AT_ONCE> = part.iter().map(|&i| items[i].bytes()).collect();
             let mut digests = [[0u8; OUT_LEN]; BY_BLOCKS_AT_ONCE];
             hash_by_blocks(&bytes, &key, flags, &mut digests[..part.len()], platform);
