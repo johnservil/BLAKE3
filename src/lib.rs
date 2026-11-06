@@ -790,6 +790,7 @@ fn spare_lane(platform: Platform, whole: usize, partial: usize) -> Option<usize>
 /// eight, four), and thirty-two where the 32-input kernel runs
 /// (wide_avx512, Zen 5 on Linux). Below the smallest, one and two lanes
 /// have passes of their own as cheap as one.
+#[cfg_attr(all(blake3_sse41_ffi, blake3_avx2_ffi, blake3_avx512_ffi), allow(unreachable_patterns))]
 fn lane_widths(platform: Platform) -> &'static [usize] {
     match platform {
         #[cfg(blake3_sse41_ffi)]
