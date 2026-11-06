@@ -275,12 +275,19 @@ fn test_whole_chunks_round_up_to_the_lanes() {
             std::hint::black_box(crate::convenience::hash(&input[..len]));
             (crate::RAN.with(|r| r.get()) & Ran::RoundedUp as u32 != 0, crate::ROUNDED_WIDTH.with(|w| w.get()))
         };
-        // 11 chunks on 16 lanes; their 11 chaining values as 5 parent blocks and one left over: 5 parents on 8.
-        assert_eq!(ran(11 * CHUNK_LEN), (true, 16 | 8), "11 whole chunks on AVX-512: 16 lanes, their 5 parents on 8");
+        // The chunks' pass among the widths rounded to: the parent levels
+        // above round as well, as the tree splits them (11 chunks: 5 parents
+        // on 8, then 3 on 4), which test_counts_past_the_widest_kernel_
+        // split_into_groups_and_a_rounded_rest counts exactly.
+        let has = |len: usize, widths: usize| {
+            let (rounded, got) = ran(len);
+            assert!(rounded && got & widths == widths, "{} whole chunks on AVX-512: widths {widths:#b} among {got:#b}", len / CHUNK_LEN);
+        };
+        has(11 * CHUNK_LEN, 16 | 8);
         assert_eq!(ran(16 * CHUNK_LEN), (false, 0), "16 whole chunks: 16 lanes already; 8 parents on 8");
+        // 19 chunks: 32 lanes where that kernel runs, else 16 and 3 on 4.
         let wide = cfg!(target_os = "linux") && crate::platform::wide_avx512();
-        // 19 chunks: 32 lanes where that kernel runs, else 16 and 3 on 4; their 9 parents (4 blocks + 1 over) on... 4 blocks: no rounding.
-        assert_eq!(ran(19 * CHUNK_LEN), (true, if wide { 32 } else { 4 }), "19 whole chunks on AVX-512");
+        has(19 * CHUNK_LEN, if wide { 32 } else { 4 });
     }
 }
 
