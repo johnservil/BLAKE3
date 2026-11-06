@@ -113,6 +113,8 @@ src/lib.rs	replace | with ^ in hash_all_at_once	1	equivalent: | and ^ agree on f
 src/lib.rs	replace | with ^ in hash_one_chunk_root	1	same code: every test binary hashes as the unmutated build's here (tools/mutants/code_hash.py)
 src/lib.rs	replace | with ^ in ran	1	test-only record of which kernels ran; on x86 nothing reads it (AArch64's kernel-coverage test does)
 src/lib.rs	replace || with && in compress_chunks_parallel	1	same code: every test binary hashes as the unmutated build's here (tools/mutants/code_hash.py)
+src/lib.rs	replace && with || in hash_many_rounded	1	equivalent: with `||` a count at or under the widest kernel enters the groups' loop, whose own condition (len > widest) is false at once, so nothing changes
+src/lib.rs	replace > with >= in hash_many_rounded	2	equivalent: a count equal to the widest kernel has no rest to round (rounded_lanes(0) is None), so neither the `if` nor the loop runs one more time with a result that differs
 src/many.rs	replace % with + in hash_blocks	1	same code: every test binary hashes as the unmutated build's here (tools/mutants/code_hash.py)
 src/many.rs	replace % with + in hash_chunked	1	same code: every test binary hashes as the unmutated build's here (tools/mutants/code_hash.py)
 src/many.rs	replace % with + in hash_run	1	same code: every test binary hashes as the unmutated build's here (tools/mutants/code_hash.py)

@@ -231,6 +231,91 @@ pub(crate) fn every_platform() -> Vec<crate::platform::Platform> {
     all
 }
 
+/// A message of 3 whole chunks (and of 5 and 7, on 8 lanes) runs its chunks
+/// on the rounded width in one pass (Ran::RoundedUp, and the widths used);
+/// 2, 4 and 8 chunks take the kernel at their own width. The digests are the test vectors' either
+/// way, so the decision alone can catch a mutant that drops the rounding.
+#[test]
+#[cfg(all(target_arch = "x86_64", blake3_sse41_ffi, feature = "std"))]
+fn test_whole_chunks_round_up_to_the_lanes() {
+    use crate::{CHUNK_LEN, Ran};
+    let input = std::vec![0x5au8; 8 * CHUNK_LEN];
+    let ran = |len: usize| {
+        crate::RAN.with(|r| r.set(0));
+        crate::ROUNDED_WIDTH.with(|w| w.set(0));
+        std::hint::black_box(crate::convenience::hash(&input[..len]));
+        (crate::RAN.with(|r| r.get()) & Ran::RoundedUp as u32 != 0, crate::ROUNDED_WIDTH.with(|w| w.get()))
+    };
+    assert_eq!(ran(3 * CHUNK_LEN), (true, 4), "3 whole chunks: 4 lanes, one pass");
+    assert_eq!(ran(2 * CHUNK_LEN), (false, 0), "2 whole chunks: the pair");
+    assert_eq!(ran(4 * CHUNK_LEN), (false, 0), "4 whole chunks: 4 lanes already");
+    assert_eq!(ran(8 * CHUNK_LEN), (false, 0), "8 whole chunks: 8 lanes already");
+    if crate::platform::Platform::avx2().is_some() {
+        // 7 chunks on 8 lanes, then their 7 chaining values as 3 parent
+        // blocks and one left over: the 3 parents on 4 lanes.
+        assert_eq!(ran(7 * CHUNK_LEN), (true, 8 | 4), "7 whole chunks on AVX2: 8 lanes, one pass; their 3 parents on 4");
+        assert_eq!(ran(5 * CHUNK_LEN), (true, 8), "5 whole chunks on AVX2: 8 lanes, one pass");
+    }
+    // 3 chunks and a partial take the spare lane, not the rounding.
+    assert_eq!(ran(3 * CHUNK_LEN + 500), (false, 0), "3 whole and a partial: the spare lane's pass");
+    // AVX-512: 9 to 15 on 16 lanes; past 16, the whole group of 16 and the
+    // rest rounded (19 = 16 + 3 on 4), or 32 lanes where that kernel runs.
+    #[cfg(blake3_avx512_ffi)]
+    if crate::platform::Platform::avx512().is_some() {
+        let input = std::vec![0x5au8; 19 * CHUNK_LEN];
+        let ran = |len: usize| {
+            crate::RAN.with(|r| r.set(0));
+            crate::ROUNDED_WIDTH.with(|w| w.set(0));
+            std::hint::black_box(crate::convenience::hash(&input[..len]));
+            (crate::RAN.with(|r| r.get()) & Ran::RoundedUp as u32 != 0, crate::ROUNDED_WIDTH.with(|w| w.get()))
+        };
+        // 11 chunks on 16 lanes; their 11 chaining values as 5 parent blocks and one left over: 5 parents on 8.
+        assert_eq!(ran(11 * CHUNK_LEN), (true, 16 | 8), "11 whole chunks on AVX-512: 16 lanes, their 5 parents on 8");
+        assert_eq!(ran(16 * CHUNK_LEN), (false, 0), "16 whole chunks: 16 lanes already; 8 parents on 8");
+        let wide = cfg!(target_os = "linux") && crate::platform::wide_avx512();
+        // 19 chunks: 32 lanes where that kernel runs, else 16 and 3 on 4; their 9 parents (4 blocks + 1 over) on... 4 blocks: no rounding.
+        assert_eq!(ran(19 * CHUNK_LEN), (true, if wide { 32 } else { 4 }), "19 whole chunks on AVX-512");
+    }
+}
+
+/// Past the widest kernel, hash_many_rounded takes the whole groups of
+/// its width and rounds the rest: 11 one-block inputs on AVX2 (widths 4
+/// and 8) run as 8 and then 3 on 4 lanes, 13 as 8 and 5 on 8, 16 as two
+/// groups of 8 with nothing rounded, 10 as 8 and 2 alone; every digest
+/// the plain kernel's. Driven here with the platform given, so the split
+/// is tested on a machine whose chunks never reach it (an i7's AVX2 gets
+/// at most 8 chunks a call; AVX-512's 16 and 32 reach it in real calls).
+#[test]
+#[cfg(all(target_arch = "x86_64", blake3_avx2_ffi, feature = "std"))]
+fn test_counts_past_the_widest_kernel_split_into_groups_and_a_rounded_rest() {
+    use crate::platform::Platform;
+    use crate::{BLOCK_LEN, CHUNK_LEN, IV, IncrementCounter, OUT_LEN, PARENT, Ran};
+    let Some(avx2) = Platform::avx2() else { return };
+    let bytes: std::vec::Vec<u8> = (0..16 * BLOCK_LEN).map(|i| (i * 7 % 251) as u8).collect();
+    let blocks: std::vec::Vec<&[u8; BLOCK_LEN]> = bytes.chunks_exact(BLOCK_LEN).map(|b| b.try_into().unwrap()).collect();
+    for (count, widths) in [(11, 4), (13, 8), (16, 0), (10, 0), (12, 0), (9, 0), (7, 8), (3, 4)] {
+        crate::RAN.with(|r| r.set(0));
+        crate::ROUNDED_WIDTH.with(|w| w.set(0));
+        let mut rounded = std::vec![0u8; count * OUT_LEN];
+        crate::hash_many_rounded(avx2, &blocks[..count], IV, 0, IncrementCounter::No, PARENT, 0, 0, &mut rounded);
+        let mut plain = std::vec![0u8; count * OUT_LEN];
+        avx2.hash_many(&blocks[..count], IV, 0, IncrementCounter::No, PARENT, 0, 0, &mut plain);
+        assert_eq!(rounded, plain, "{count} parents: the digests the kernel's");
+        assert_eq!(crate::ROUNDED_WIDTH.with(|w| w.get()), widths, "{count} parents on AVX2: the widths rounded to");
+        assert_eq!(crate::RAN.with(|r| r.get()) & Ran::RoundedUp as u32 != 0, widths != 0);
+    }
+    // Chunks at counters counting up split the same way, the rest's
+    // counter after the groups': 11 chunks as 8 then 3 on 4.
+    let input = std::vec![0x5au8; 11 * CHUNK_LEN];
+    let chunks: std::vec::Vec<&[u8; CHUNK_LEN]> = input.chunks_exact(CHUNK_LEN).map(|c| c.try_into().unwrap()).collect();
+    let (mut rounded, mut plain) = (std::vec![0u8; 11 * OUT_LEN], std::vec![0u8; 11 * OUT_LEN]);
+    crate::ROUNDED_WIDTH.with(|w| w.set(0));
+    crate::hash_many_rounded(avx2, &chunks, IV, 7, IncrementCounter::Yes, 0, crate::CHUNK_START, crate::CHUNK_END, &mut rounded);
+    avx2.hash_many(&chunks, IV, 7, IncrementCounter::Yes, 0, crate::CHUNK_START, crate::CHUNK_END, &mut plain);
+    assert_eq!(rounded, plain, "11 chunks from counter 7: the digests the kernel's, the rest's counter 15");
+    assert_eq!(crate::ROUNDED_WIDTH.with(|w| w.get()), 4);
+}
+
 /// The decisions between equally correct paths, exactly as their rules
 /// say (BLAKE3 #219: a mutant that moves one takes the other path, whose
 /// digest is the same, so only the decision itself can catch it). The
@@ -263,6 +348,43 @@ fn test_the_paths_chosen_exactly() {
         assert_eq!(crate::spare_lane(Platform::AVX512, 1, BLOCK_LEN), None);
         assert_eq!(crate::spare_lane(Platform::AVX512, 3, 0), None);
     }
+    // rounded_lanes(platform, whole inputs): the width that takes the count
+    // in one pass where the kernels' cascade would take two or three. 3
+    // on 4 lanes everywhere; 5, 6 and 7 on 8 lanes where there are 8; a
+    // count the cascade already takes in one pass, or that no width
+    // pays for (SSE4.1's 5 to 7, 9 and up), none.
+    for (platform, count, lanes) in [
+        (Platform::SSE41, 3, Some(4)),
+        (Platform::AVX2, 3, Some(4)),
+        (Platform::AVX2, 5, Some(8)),
+        (Platform::AVX2, 6, Some(8)),
+        (Platform::AVX2, 7, Some(8)),
+        (Platform::SSE41, 5, None),
+        (Platform::SSE41, 7, None),
+        (Platform::AVX2, 1, None),
+        (Platform::AVX2, 2, None),
+        (Platform::AVX2, 4, None),
+        (Platform::AVX2, 8, None),
+        (Platform::AVX2, 9, None),
+    ] {
+        assert_eq!(crate::rounded_lanes(platform, count), lanes, "{platform:?}, {count} inputs");
+    }
+    #[cfg(blake3_avx512_ffi)]
+    {
+        assert_eq!(crate::rounded_lanes(Platform::AVX512, 3), Some(4));
+        assert_eq!(crate::rounded_lanes(Platform::AVX512, 7), Some(8));
+        assert_eq!(crate::rounded_lanes(Platform::AVX512, 9), Some(16), "9 to 15 on 16 lanes (Sam's EPYC, 9700X and Xeon)");
+        assert_eq!(crate::rounded_lanes(Platform::AVX512, 15), Some(16));
+        assert_eq!(crate::rounded_lanes(Platform::AVX512, 16), None);
+        // 17 to 31: 32 lanes where the 32-input kernel runs, else the
+        // groups of 16 and the rest (hash_many_rounded's split).
+        let wide = cfg!(target_os = "linux") && crate::platform::wide_avx512();
+        assert_eq!(crate::rounded_lanes(Platform::AVX512, 19), if wide { Some(32) } else { None });
+    }
+    // Counts past the widest kernel split: the whole groups of its width
+    // first, then the rest by the same rule (AVX2: 11 = 8 + 3 on 4).
+    assert_eq!(crate::lane_widths(Platform::AVX2), &[4, 8]);
+    assert_eq!(crate::lane_widths(Platform::SSE41), &[4]);
     // pair::takes(platform, len): a whole chunk and a partial one of two
     // blocks or more, on AVX2 or AVX-512.
     for (len, takes) in
