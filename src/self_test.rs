@@ -439,6 +439,10 @@ fn run() -> usize {
         // wrapper checks its bounds, and builds all arguments on the stack.
         checked += unsafe { crate::avx512_32::self_test(&previous) };
     }
+    #[cfg(all(blake3_sse41_ffi, feature = "std"))]
+    {
+        checked += crate::ffi_last::self_test(platform);
+    }
     let _ = previous;
     checked
 }
@@ -601,6 +605,18 @@ mod test {
             expected + crate::avx512_32::entries().len()
         } else {
             expected
+        };
+        #[cfg(blake3_sse41_ffi)]
+        let expected = {
+            let platform = Platform::detect_unchecked();
+            if crate::ffi_last::lanes(platform) >= 8 {
+                for entry in crate::ffi_last::entries(platform) {
+                    assert!(crate::RAN_ENTRIES.with(|r| r.borrow().contains(&entry)), "startup left out a last-block entry {entry:#x}");
+                }
+                expected + 2
+            } else {
+                expected
+            }
         };
         assert_eq!(checked, expected);
     }

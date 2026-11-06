@@ -78,6 +78,7 @@ unsafe fn hash_group16(items: &[&[u8]], k: usize, key: &CVWords, flags: u8, out:
     // padded 64-byte block. The kernel stores 16 digests, including the
     // unread duplicate lanes, into distinct caller-owned scratch (no
     // sharing with workers). The caller checked AVX-512F.
+    crate::ran_kernel(blake3_servil_last_avx512 as *const ());
     unsafe { blake3_servil_last_avx512(&p) };
     out.copy_from_slice(&digests[..n]);
 }
@@ -128,6 +129,7 @@ pub(crate) unsafe fn hash_mixed16(items: &[&[u8]], key: &CVWords, flags: u8, out
     // the padded last block; output is a caller-owned word-major array of
     // 8 * 16 words, with each lane written once at its ending step. No
     // shared mutable state, and the caller checked AVX-512F.
+    crate::ran_kernel(blake3_servil_mixed_avx512 as *const ());
     unsafe { blake3_servil_mixed_avx512(&p) };
     for (j, digest) in out.iter_mut().enumerate() {
         for (i, word) in words.iter().enumerate() {
@@ -191,6 +193,7 @@ pub(crate) unsafe fn hash_mixed8(items: &[&[u8]], key: &CVWords, flags: u8, out:
     // Sound: each lane reads only its whole blocks before ends[j], then
     // a padded last block. The snapshot retains its digest thereafter;
     // all parameter storage is initialized and owned by this caller.
+    crate::ran_kernel(blake3_servil_mixed_avx2 as *const ());
     unsafe { blake3_servil_mixed_avx2(&mut p) };
     for (j, digest) in out.iter_mut().enumerate() {
         for (i, word) in p.common.snap.iter().enumerate() {
@@ -270,6 +273,7 @@ unsafe fn hash_group_on<const W: usize>(
     // Sound: each lane's pointer reaches its k whole blocks (an item of
     // more than k of them, or item 0 again), LASTMSG a whole block each,
     // and the caller's CPU has the kernel's instructions.
+    crate::ran_kernel(kernel as *const ());
     unsafe { kernel(&mut p) };
     for (lane, digest) in out.iter_mut().enumerate() {
         for (i, word) in p.h.iter().enumerate() {
@@ -278,9 +282,92 @@ unsafe fn hash_group_on<const W: usize>(
     }
 }
 
+/// Fixed-key startup answers, from the independent reference test below:
+/// two shapes (equal block counts and mixed) at widths eight and sixteen.
+/// A fixed seed keeps these checks independent of the other startup
+/// chain's case count; each kernel is still checked before user hashing.
+const SELF_TEST_EXPECTED: [[u64; 2]; 2] = [[0xe6de371e283614b0, 0xc71703fb6867df93], [0x34f55f7db4fe3ec7, 0x5ab41fa45d9a0936]];
+
+fn self_test_shape(width: usize, mixed: bool, mut hash: impl FnMut(&[&[u8]], &CVWords, u8, &mut [[u8; OUT_LEN]])) -> u64 {
+    let mut bytes = [0u8; 2048];
+    crate::self_test::fill(&mut bytes);
+    let refs: [&[u8]; 16] = core::array::from_fn(|j| {
+        let len = if mixed { [0, 1024, 1, 63, 64, 129, 511, 700, 128, 192, 256, 512, 768, 1023, 600, 255][j] } else { 193 + j * 3 };
+        &bytes[j * 13..][..len]
+    });
+    let mut out = [[0u8; OUT_LEN]; 16];
+    hash(&refs[..width], &[0x2a2a2a2a; 8], crate::KEYED_HASH, &mut out[..width]);
+    crate::self_test::fold(out[..width].as_flattened())
+}
+
+fn check_self_test(width: usize, mixed: bool, folded: u64) {
+    let row = if width == 16 { 1 } else { 0 };
+    assert_eq!(folded, SELF_TEST_EXPECTED[row][mixed as usize], "blake3-servil startup self-test failed: {width}-lane last blocks, mixed={mixed}");
+}
+
+pub(crate) fn self_test(platform: crate::platform::Platform) -> usize {
+    let width = lanes(platform);
+    if width < 8 {
+        return 0;
+    }
+    for mixed in [false, true] {
+        let folded = self_test_shape(width, mixed, |items, key, flags, out| {
+            if !mixed {
+                hash_group(platform, items, 3, key, flags, out);
+            } else if width == 16 {
+                // Sound: the platform is AVX-512.
+                unsafe { hash_mixed16(items, key, flags, out) };
+            } else {
+                // Sound: the platform is AVX2.
+                unsafe { hash_mixed8(items, key, flags, out) };
+            }
+        });
+        check_self_test(width, mixed, folded);
+    }
+    2
+}
+
+#[cfg(test)]
+pub(crate) fn entries(platform: crate::platform::Platform) -> [usize; 2] {
+    if lanes(platform) == 16 {
+        [blake3_servil_last_avx512 as *const () as usize, blake3_servil_mixed_avx512 as *const () as usize]
+    } else {
+        [blake3_servil_last_avx2 as *const () as usize, blake3_servil_mixed_avx2 as *const () as usize]
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[test]
+    fn test_startup_answers_against_official() {
+        let mut answers = [[0u64; 2]; 2];
+        for (row, width) in [8, 16].into_iter().enumerate() {
+            for (column, mixed) in [false, true].into_iter().enumerate() {
+                answers[row][column] = self_test_shape(width, mixed, |items, key, flags, out| {
+                    assert_eq!(*key, [0x2a2a2a2a; 8]);
+                    assert_eq!(flags, crate::KEYED_HASH);
+                    for (item, digest) in items.iter().zip(out) {
+                        *digest = crate::test::official::hash(crate::Mode::Keyed(&[42; 32]), item);
+                    }
+                });
+            }
+        }
+        assert_eq!(answers, SELF_TEST_EXPECTED, "official startup table: {answers:016x?}");
+    }
+
+    #[test]
+    fn test_startup_check_rejects_corruption() {
+        for (row, width) in [8, 16].into_iter().enumerate() {
+            for mixed in [false, true] {
+                assert!(
+                    std::panic::catch_unwind(|| check_self_test(width, mixed, SELF_TEST_EXPECTED[row][mixed as usize] ^ 1)).is_err(),
+                    "a corrupt {width}-lane answer was accepted"
+                );
+            }
+        }
+    }
 
     /// The parameter block's offsets are the generator's (gen_x86.py's
     /// `layout(w, last=True)`).
