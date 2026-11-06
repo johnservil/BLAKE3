@@ -91,32 +91,17 @@ def prove(case):
         regions["out"] = Region("out", 32*w, True, (lambda o: previous[o]) if symbolic else None)
         entry = "blake3_servil_mixed_avx512" if mixed else "blake3_servil_last_avx512"
     else:
-        off, v = gen_x86.layout(w, True), 4*w
-        words = spec.words(key)
+        off, v = gen_x86.last8_layout(), 4*w
         for j in range(w):
-            pointer(off["MSG"]+8*j, f"input{j}")
-            pointer(off["LASTMSG"]+8*j, f"last{j}")
-            for i in range(8):
-                put(off["KEY"]+v*i+4*j, words[i])
-            for i, value in enumerate((0x6A09E667, 0xBB67AE85, 0x3C6EF372, 0xA54FF53A)):
-                put(off["IV"]+v*i+4*j, BitVecVal(value, 32))
-            for name, rot in (("ROT16",2),("ROT8",1)):
-                base = 4*(j%4)
-                put(off[name]+4*j, BitVecVal(sum((base+(i+rot)%4) << (8*i) for i in range(4)),32))
-            for b in range(16):
-                at_end = ends[j] == b
-                put(off["LENS"]+v*b+4*j, If(at_end, ZeroExt(24,lengths[j]), BitVecVal(64,32)))
-                bf = f | (1 if b==0 else 0) | If(at_end, BitVecVal(10,32), BitVecVal(0,32))
-                put(off["FLAGS"]+v*b+4*j, bf)
-        put(off["END"],BitVecVal(64*(k+1),32))
-        put(off["SWITCH"],BitVecVal(0 if mixed else 64*k,32))
-        size = off["SIZE"]
-        if mixed:
-            end_offset = (size+63)//64*64
-            for j in range(w):
-                put(end_offset+4*j, ZeroExt(28, ends[j]) * 64)
-            size = end_offset+4*w
-        entry = "blake3_servil_mixed_avx2" if mixed else "blake3_servil_last_avx2"
+            pointer(off['MSG']+8*j,f'input{j}')
+            pointer(off['LASTMSG']+8*j,f'last{j}')
+            put(off['LENS']+4*j,ZeroExt(24,lengths[j]))
+            put(off['ENDS']+4*j,ZeroExt(28,ends[j])*64)
+        for b,value in enumerate(key):init[off['KEY']+b]=value
+        put(off['FLAGS'],f)
+        put(off['END'],BitVecVal(64*(k+1),32))
+        size=off['SIZE']
+        entry='blake3_servil_mixed_avx2' if mixed else 'blake3_servil_last_avx2'
 
     # Explicit initialization avoids inventing symbolic input for padding.
     params = Region("params", size, w!=16, None, alignment=64)
@@ -125,7 +110,7 @@ def prove(case):
         # Initialize the Rust fields, not the struct's padding: an accidental
         # read from alignment padding must stop rather than receive invented
         # zeros. The mixed kernel reads its old snapshot before updating it.
-        for name, length in (("CTR",2*v),("LAST",64),("H",8*v),("SNAP",8*v)):
+        for name, length in (("H",8*v),("SNAP",8*v)):
             for b in range(off[name],off[name]+length):
                 params.bytes.setdefault(b,BitVecVal(0,8))
     regions["params"] = params
