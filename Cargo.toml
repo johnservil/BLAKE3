@@ -129,3 +129,13 @@ required-features = ["std"]
 [[example]]
 name = "fair_probe"
 required-features = ["std"]
+
+# Diagnostic-only runner for the benchmark's quiet-host checks.
+[dev-dependencies.clocks]
+git = "https://github.com/servil-software-factory/bench-hashes"
+rev = "235ee5eb701ce64845b705d2b7cb0240d68eb9e7"
+
+[[example]]
+name = "host_lab"
+path = "examples/host_lab.rs"
+required-features = ["std"]
