@@ -497,6 +497,52 @@ mod test {
         }
     }
 
+    /// Hooks that record which subtrees feed asks for flat (subtree_cv) and
+    /// answer none, so every subtree then takes the children path.
+    struct Asking {
+        platform: Platform,
+        asked: core::cell::RefCell<std::vec::Vec<u64>>,
+        seen: core::cell::RefCell<std::vec::Vec<u64>>,
+    }
+
+    impl Hooks for &Asking {
+        fn subtree_cv(&self, _input: &[u8], _ahead: usize, counter: u64) -> Option<Cv> {
+            self.asked.borrow_mut().push(counter);
+            None
+        }
+        fn children(&self, input: &[u8], ahead: usize, counter: u64) -> [Cv; 2] {
+            self.seen.borrow_mut().push(counter);
+            let node = crate::compress_subtree_to_parent_node(input, ahead, crate::IV, counter, 0, self.platform);
+            [node[..32].try_into().unwrap(), node[32..].try_into().unwrap()]
+        }
+    }
+
+    /// feed asks the kernels for a flat subtree (subtree_cv) for every
+    /// subtree but a fresh hasher's first, whose counter is the initial one:
+    /// that one takes the children path whatever the kernels offer. The
+    /// digest is the same either way (flat or children), so the asks are
+    /// counted (BLAKE3 #219, #238).
+    #[test]
+    fn test_feed_asks_for_a_flat_subtree_after_the_first() {
+        let platform = Platform::detect();
+        // Nine chunks and a part: from chunk 0 the subtrees are 8, then the last chunk waits.
+        let input: std::vec::Vec<u8> = (0..(9 * crate::CHUNK_LEN + 100) as u32).map(|i| (i % 251) as u8).collect();
+        for initial in [0u64, 3, 6] {
+            let hooks = Asking { platform, asked: Default::default(), seen: Default::default() };
+            let k = Kernels { key: crate::IV, flags: 0, platform, hooks: &hooks };
+            let mut chunk = k.new_chunk(initial);
+            let mut stack = CvStack::new();
+            feed(&k, &mut chunk, &mut stack, initial, &input);
+            let asked = hooks.asked.borrow().clone();
+            assert!(!asked.is_empty() && asked.iter().all(|&c| c > initial), "from chunk {initial}: asked for every subtree after the first, {asked:?}");
+            assert!(!asked.contains(&initial), "from chunk {initial}: the first subtree is never asked for flat");
+            // Every subtree of more than one chunk after the first went to children too (none was flat).
+            for c in hooks.seen.borrow().iter().filter(|&&c| c != initial) {
+                assert!(asked.contains(c), "from chunk {initial}: subtree {c} asked before its children");
+            }
+        }
+    }
+
     /// ChunkState::absorb compresses whole blocks straight from the input
     /// when its buffer is empty, keeps a last whole block waiting, and
     /// calls the multi-block kernel only for one block or more. A first
