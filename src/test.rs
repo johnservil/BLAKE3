@@ -999,22 +999,24 @@ mod guard_pages {
     #[test]
     #[cfg(all(target_arch = "x86_64", blake3_sse41_ffi))]
     fn test_chunk_root_against_a_guard_page() {
+        use crate::chunk_root::Root;
         let mut variants = Vec::new();
         if platform::Platform::sse41().is_some() {
-            variants.push(false);
+            variants.push(Root::Sse41);
         }
         #[cfg(blake3_avx512_ffi)]
         if platform::Platform::avx512().is_some() {
-            variants.push(true);
+            variants.push(Root::Avx512);
         }
+        variants.push(Root::Gpr);
         let mut golden = crate::test::Golden::new("chunk_root_against_a_guard_page");
         for at_end in [true, false] {
             for len in [0, 1, 63, 64, 65, 127, 128, 960, 1023, 1024] {
                 let mut g = filled(len, at_end);
                 let input = g.bytes();
                 let first = unsafe { crate::chunk_root::chunk_root(variants[0], input, IV, 0) };
-                for &avx512 in &variants[1..] {
-                    assert_eq!(unsafe { crate::chunk_root::chunk_root(avx512, input, IV, 0) }, first, "avx512={avx512} len={len} at_end={at_end}");
+                for &kernel in &variants[1..] {
+                    assert_eq!(unsafe { crate::chunk_root::chunk_root(kernel, input, IV, 0) }, first, "{kernel:?} len={len} at_end={at_end}");
                 }
                 golden.add(&first, || crate::test::official::hash(crate::Mode::Plain, input).to_vec());
             }

@@ -34,6 +34,10 @@ use crate::{ContextKey, DERIVE_KEY_CONTEXT, Hash, IV, Mode, OUT_LEN};
 /// a batch of one. The message starts a block, so on a cache line; the
 /// bytes past its end, in its last block and any after, are ignored.
 ///
+/// For call after call: where a kernel is faster with its code in the
+/// caches and slower without, this takes it (for a hash now and then,
+/// [`convenience::hash`](crate::convenience::hash)).
+///
 /// ```
 /// # blake3_servil::initialize();
 /// # #[cfg(feature = "std")] {
@@ -49,7 +53,7 @@ use crate::{ContextKey, DERIVE_KEY_CONTEXT, Hash, IV, Mode, OUT_LEN};
 pub fn hash(mode: Mode, input: &[Block], len: usize) -> Hash {
     let mut room = core::mem::MaybeUninit::uninit();
     let (key, flags) = mode.key(&mut room);
-    crate::hash_serial(&Block::bytes(input)[..len], key, flags)
+    crate::hash_hot(&Block::bytes(input)[..len], key, flags)
 }
 
 /// The hashes of a [`Batch`]'s messages, in `mode`, on the calling thread:

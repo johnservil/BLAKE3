@@ -60,7 +60,8 @@
 //!   every call takes a [`Mode`].
 //!
 //! Start with the convenience calls; when a program needs more speed, it
-//! moves to the performance ones.
+//! moves to the performance ones. Convenience is for a hash now and then,
+//! after other work; performance is for call after call.
 //!
 //! | Your data | Call |
 //! |---|---|
@@ -1308,6 +1309,28 @@ pub(crate) const SME2_SIZED_LEN: usize = 16 * CHUNK_LEN;
 /// The fewest messages a batch has when the SME2 kernels take part: one
 /// group of sixteen messages.
 pub(crate) const SME2_SIZED_BATCH: usize = 16;
+
+/// performance::hash's body: [`hash_serial`], but one chunk or less goes
+/// to the integer-register kernel where it pays when warm
+/// (platform::gpr_chunk_root). The convenience calls keep the compact
+/// kernels, faster after a pause or other work: the performance calls are
+/// for programs that hash again and again, so their code stays near.
+#[inline]
+pub(crate) fn hash_hot(input: &[u8], key: &CVWords, flags: u8) -> Hash {
+    hash_hot_from(Platform::detect(), input, key, flags)
+}
+
+/// [`hash_hot`] from `platform` (the self-test's way in, as
+/// [`hash_serial_from`]).
+#[inline]
+fn hash_hot_from(platform: Platform, input: &[u8], key: &CVWords, flags: u8) -> Hash {
+    #[cfg(blake3_sse41_ffi)]
+    if input.len() <= CHUNK_LEN && platform::gpr_chunk_root() {
+        // Sound: the GPR kernel needs SSE2 alone, which every x86-64 CPU has.
+        return Hash(unsafe { chunk_root::chunk_root(chunk_root::Root::Gpr, input, key, flags) });
+    }
+    hash_serial_from(platform, input, key, flags)
+}
 
 /// [`hash_serial`] with the tree's kernels chosen by the caller (a pool
 /// piece runs the NEON hybrids); one chunk or less runs the scalar kernel
