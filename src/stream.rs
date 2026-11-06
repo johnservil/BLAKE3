@@ -249,6 +249,7 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
             #[cfg(blake3_gpu)]
             gpu_run: 0..0,
             open: None,
+            open_uniform: true,
             stack: arrayvec::ArrayVec::new(),
             pieces: 0,
             env: PhantomData,
@@ -447,6 +448,9 @@ pub struct Stream<'env, D> {
     gpu_run: core::ops::Range<usize>,
     /// Short messages gathered, not yet handed to the pool.
     open: Option<Task>,
+    /// Whether the open task's members all have the first member's length.
+    /// Cached on insertion so choosing its byte budget takes constant work.
+    open_uniform: bool,
     /// A long message being handed back: its pieces' chaining values so
     /// far (merged as the Hasher's stack merges), and how many.
     stack: arrayvec::ArrayVec<CVBytes, { crate::MAX_DEPTH + 1 }>,
@@ -761,19 +765,18 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
         if open.members == 0 {
             self.open_first = entry;
             open.left = &*self.s.lefts[entry];
+            self.open_uniform = true;
         }
         self.s.entries[entry].first = self.open_first;
         open.member[open.members] = Member { input, len, out };
         open.members += 1;
         open.len += len;
-        // A task fills TASK_LEN bytes or MEMBERS messages. (Tasks of messages
-        // once stopped at a quarter, to spread over more threads while their
-        // members ran one at a time; members of one length now run side by
-        // side or across, and the fuller task takes more of them at once: 16
-        // messages of 4 KiB fill the widest lanes, at about 30% less CPU time
-        // a byte with the pool's workers, and on one thread 4 KiB messages
-        // ran x1.3 faster.)
-        if open.members == MEMBERS || open.len >= TASK_LEN {
+        self.open_uniform &= open.member[0].len == len;
+        // Uniform messages fill the widest lanes; mixed lengths keep
+        // smaller tasks so workers can share their uneven work. Batches
+        // retain their full byte budget.
+        let budget = if batch.is_some() || self.open_uniform { TASK_LEN } else { TASK_LEN / 4 };
+        if open.members == MEMBERS || open.len >= budget {
             self.publish();
         }
     }
@@ -1812,6 +1815,42 @@ mod test {
         assert!(got.iter().all(|h| *h == crate::convenience::hash(&[0xEE; 100])));
         assert_eq!(zeroed(0, &mut got), 100, "each empty message's whole block");
         assert!(got.iter().all(|h| *h == crate::convenience::hash(b"")), "empty messages hash as empty");
+    }
+
+    /// Uniform messages keep full tasks; mixed messages close at the
+    /// smaller budget. Both choices give the same digests, so the open
+    /// task and each entry's first-member link hold the grouping policy.
+    #[test]
+    fn test_uniform_tasks_fill_and_mixed_tasks_spread_their_work() {
+        crate::initialize_multithreaded(core::num::NonZeroUsize::new(1));
+        let input = crate::test::message(&vec![7u8; 16 * CHUNK_LEN]);
+        let mut got = places(64 + 4 + 2);
+        let mut rest: &mut [Hash] = &mut got;
+        stream(
+            Mode::Plain,
+            |_| {},
+            |s| {
+                for (len, count) in [(CHUNK_LEN, 64), (16 * CHUNK_LEN, 4)] {
+                    for n in 1..=count {
+                        s.submit(&input, len, &mut take(&mut rest, 1)[0]);
+                        assert_eq!(s.open.as_ref().map(|t| (t.members, t.len)), (n < count).then_some((n, len * n)), "{n} uniform messages of {len} bytes");
+                    }
+                }
+                s.submit(&input, 64, &mut take(&mut rest, 1)[0]);
+                s.submit(&input, 16 * CHUNK_LEN, &mut take(&mut rest, 1)[0]);
+                assert!(s.open.is_none(), "a mixed task closes at 16 KiB");
+                assert_eq!((s.s.entries[68].first, s.s.entries[69].first), (68, 68));
+                s.finish();
+            },
+        );
+        for (i, digest) in got.iter().enumerate() {
+            let len = match i {
+                0..64 => CHUNK_LEN,
+                64..68 | 69 => 16 * CHUNK_LEN,
+                _ => 64,
+            };
+            assert_eq!(*digest, crate::convenience::hash(&crate::throughput::Block::bytes(&input)[..len]));
+        }
     }
 
     /// How messages gather into tasks, exact (the caller's own state): an
