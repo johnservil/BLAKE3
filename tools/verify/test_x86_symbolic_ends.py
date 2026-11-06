@@ -1,6 +1,6 @@
 """Public conditional addresses and stores retain their actual alternatives."""
 import unittest
-from z3 import BitVec, BitVecVal, Extract, ZeroExt, ULE, simplify, substitute, Solver, unsat
+from z3 import BitVec, BitVecVal, Bool, If, Extract, Concat, ZeroExt, ULE, simplify, substitute, Solver, unsat
 import x86
 from aarch64 import Ptr, Region, Unproved, concrete
 
@@ -80,6 +80,14 @@ class SymbolicEnds(unittest.TestCase):
             for j in range(16):
                 got=substitute(m.load(Ptr('out',4*j),4),(mask,BitVecVal(bits,16)))
                 self.assertTrue(equal(got,BitVecVal(100+j,32) if (bits>>j)&1 else previous[j]))
+
+    def test_symbolic_uniform_blend_agrees_with_the_byte_definition(self):
+        m=machine();condition=Bool('select');x=BitVec('x',32);y=BitVec('y',32)
+        m.v[0]=[x]*16;m.v[1]=[y]*16;m.v[2]=[If(condition,BitVecVal(0xffffffff,32),BitVecVal(0,32))]*16
+        x86.step(m,0,'vpblendvb',['ymm3','ymm0','ymm1','ymm2'],1)
+        for got in m.v[3][:8]:
+            bytewise=Concat(*reversed([If(Extract(8*j+7,8*j+7,m.v[2][0])==1,Extract(8*j+7,8*j,y),Extract(8*j+7,8*j,x)) for j in range(4)]))
+            self.assertTrue(equal(got,bytewise))
 
     def test_symbolic_mask_never_grants_unbounded_output(self):
         m=machine();mask=BitVec('mask',16);m.lengths={'mask'}

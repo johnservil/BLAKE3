@@ -26,7 +26,7 @@ import re
 import subprocess
 
 from z3 import (BitVec, BitVecVal, Concat, Extract, LShR, RotateLeft, RotateRight, ZeroExt, If, ULT, UGT, ULE,
-                UGE, Not, Solver, simplify, substitute, is_bv_value, unsat, Z3_OP_EXTRACT)
+                UGE, Not, Solver, simplify, substitute, is_bv_value, unsat, Z3_OP_EXTRACT, Z3_OP_ITE)
 
 import aarch64
 import canon
@@ -943,6 +943,11 @@ def vector(m, mnem, base, vex, ops, nxt):
                 # Preserve a whole selected word as one term, so the
                 # compression normal form sees the original round graph.
                 new.append(y if s.as_long() else x)
+            elif s.decl().kind() == Z3_OP_ITE and all(is_bv_value(s.arg(i)) and s.arg(i).as_long() in (0,0xffffffff) for i in (1,2)):
+                # A comparison's symbolic 0/-1 mask is uniform too. Keep
+                # its word selection whole instead of splitting the round
+                # graph into four byte selections before the end is fixed.
+                new.append(If(Extract(31,31,s)==1,y,x))
             else:
                 new.append(Concat(*reversed([If(Extract(8*j+7,8*j+7,s) == 1, Extract(8*j+7,8*j,y), Extract(8*j+7,8*j,x)) for j in range(4)])))
     elif base == "pblendmd":
