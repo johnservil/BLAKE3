@@ -219,7 +219,7 @@ fn hash_held(_: &mut [Hasher], held: &[usize]) {
 }
 
 /// Messages of this many chunks or more fill the lanes alone.
-const ALONE_CHUNKS: usize = 16;
+pub(crate) const ALONE_CHUNKS: usize = 16;
 
 /// The hash of each message, of any lengths, on the calling thread:
 /// `out[i]` is [`hash`](crate::throughput::hash)`(mode, items[i].0,

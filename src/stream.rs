@@ -751,7 +751,10 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
                 return;
             }
         };
-        if self.open.as_ref().is_some_and(|open| open.batch != batch) {
+        // A message that fills the lanes alone gets its own task too:
+        // grouping several of them serializes work that workers can share.
+        let alone = batch.is_none() && len >= crate::each::ALONE_CHUNKS * CHUNK_LEN;
+        if self.open.as_ref().is_some_and(|open| open.batch != batch || alone) {
             self.publish();
         }
         let (key, flags) = (self.key, self.flags);
@@ -773,7 +776,7 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
         // messages of 4 KiB fill the widest lanes, at about 30% less CPU time
         // a byte with the pool's workers, and on one thread 4 KiB messages
         // ran x1.3 faster.)
-        if open.members == MEMBERS || open.len >= TASK_LEN {
+        if alone || open.members == MEMBERS || open.len >= TASK_LEN {
             self.publish();
         }
     }
@@ -1812,6 +1815,34 @@ mod test {
         assert!(got.iter().all(|h| *h == crate::convenience::hash(&[0xEE; 100])));
         assert_eq!(zeroed(0, &mut got), 100, "each empty message's whole block");
         assert!(got.iter().all(|h| *h == crate::convenience::hash(b"")), "empty messages hash as empty");
+    }
+
+    /// Large messages that fill the lanes alone also occupy separate
+    /// tasks. The entries' first-member links show both boundaries: the
+    /// preceding small group closes before the large message, and the
+    /// following group starts after it.
+    #[test]
+    fn test_messages_that_fill_the_lanes_alone_keep_their_own_tasks() {
+        crate::initialize_multithreaded(core::num::NonZeroUsize::new(1));
+        let input = crate::test::message(&vec![7u8; 48 * CHUNK_LEN]);
+        let lens = [64, 128, 16 * CHUNK_LEN, 64, CHUNK_LEN, 32 * CHUNK_LEN, 48 * CHUNK_LEN, 64];
+        let firsts = [0, 0, 2, 3, 3, 5, 6, 7];
+        let mut got = places(lens.len());
+        let mut rest: &mut [Hash] = &mut got;
+        stream(
+            Mode::Plain,
+            |_| {},
+            |s| {
+                for (i, (&len, &first)) in lens.iter().zip(&firsts).enumerate() {
+                    s.submit(&input, len, &mut take(&mut rest, 1)[0]);
+                    assert_eq!(s.s.entries[i].first, first, "entry {i} ({len} bytes): its task's first member");
+                }
+                s.finish();
+            },
+        );
+        for (&len, digest) in lens.iter().zip(&got) {
+            assert_eq!(*digest, crate::convenience::hash(&crate::throughput::Block::bytes(&input)[..len]));
+        }
     }
 
     /// How messages gather into tasks, exact (the caller's own state): an
