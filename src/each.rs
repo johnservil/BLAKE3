@@ -278,6 +278,10 @@ pub(crate) fn hash_by_blocks(items: &[&[u8]], key: &CVWords, flags: u8, out: &mu
 }
 
 fn by_blocks_at_once(items: &[&[u8]], key: &CVWords, flags: u8, out: &mut [[u8; OUT_LEN]], platform: Platform) {
+    if items.len() == 1 {
+        out[0] = *crate::hash_serial_on(items[0], key, flags, platform).as_bytes();
+        return;
+    }
     let whole = |item: &[u8]| item.len().saturating_sub(1) / crate::BLOCK_LEN;
     let mut order: arrayvec::ArrayVec<usize, BY_BLOCKS_AT_ONCE> = (0..items.len()).collect();
     order.sort_unstable_by_key(|&i| whole(items[i]));
@@ -285,6 +289,13 @@ fn by_blocks_at_once(items: &[&[u8]], key: &CVWords, flags: u8, out: &mut [[u8; 
     if crate::ffi_last::lanes(platform) >= 8 {
         let width = crate::ffi_last::lanes(platform);
         let fast512 = width == 16 && crate::platform::wide_avx512();
+        // If even the shortest item cannot use the finishing kernel at
+        // this count, no smaller subgroup will. Keep the original path
+        // without constructing a plan that would defer every item.
+        if order.len() < width && order.first().is_some_and(|&i| !finishing_kernel_takes(width, order.len(), whole(items[i]), fast512)) {
+            by_blocks_then_last(items, &order, key, flags, out, platform);
+            return;
+        }
         let mut sparse: arrayvec::ArrayVec<usize, BY_BLOCKS_AT_ONCE> = arrayvec::ArrayVec::new();
         let mut at = 0;
         while at < order.len() {
@@ -350,6 +361,9 @@ fn finishing_kernel_takes(width: usize, count: usize, whole: usize, fast512: boo
     }
     if width == 16 && !fast512 {
         return count >= 8 && whole <= 3;
+    }
+    if width == 8 {
+        return count >= 4 && whole <= 3;
     }
     count >= 2 && (count >= 4 || whole <= 3)
 }
@@ -542,9 +556,11 @@ mod test {
             (16, 2, 4, true, false),
             (16, 4, 15, true, true),
             (8, 1, 0, false, false),
-            (8, 2, 3, false, true),
+            (8, 2, 3, false, false),
             (8, 2, 4, false, false),
-            (8, 4, 15, false, true),
+            (8, 4, 3, false, true),
+            (8, 4, 4, false, false),
+            (8, 4, 15, false, false),
             (8, 8, 15, false, true),
         ] {
             assert_eq!(finishing_kernel_takes(w, n, k, fast), want, "width {w}, count {n}, whole {k}, fast512 {fast}");

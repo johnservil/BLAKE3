@@ -105,10 +105,12 @@ def prove(case):
     params = Region("params", size, w!=16, None, alignment=64)
     params.bytes.update(init)
     if w != 16:
-        # The unused fields can be read by the kernel only if initialized;
-        # zero them as the Rust wrapper does. Pointer bytes above stay pairs.
-        for b in range(size):
-            params.bytes.setdefault(b, BitVecVal(0,8))
+        # Initialize the Rust fields, not the struct's padding: an accidental
+        # read from alignment padding must stop rather than receive invented
+        # zeros. The mixed kernel reads its old snapshot before updating it.
+        for name, length in (("CTR",2*v),("LAST",64),("H",8*v),("SNAP",8*v)):
+            for b in range(off[name],off[name]+length):
+                params.bytes.setdefault(b,BitVecVal(0,8))
     regions["params"] = params
     s = Setup(assemble("last"), entry, regions, [Ptr("params",0)])
     s.m.lengths |= {"flags"} | {f"len_last{j}" for j in range(w)}
