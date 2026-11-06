@@ -278,10 +278,42 @@ pub(crate) fn hash_by_blocks(items: &[&[u8]], key: &CVWords, flags: u8, out: &mu
 }
 
 fn by_blocks_at_once(items: &[&[u8]], key: &CVWords, flags: u8, out: &mut [[u8; OUT_LEN]], platform: Platform) {
-    const GROUP: usize = 16;
     let whole = |item: &[u8]| item.len().saturating_sub(1) / crate::BLOCK_LEN;
     let mut order: arrayvec::ArrayVec<usize, BY_BLOCKS_AT_ONCE> = (0..items.len()).collect();
     order.sort_unstable_by_key(|&i| whole(items[i]));
+    // x86-64: each group of equal block count in one call, last blocks
+    // included, straight to its digests (ffi_last: BLAKE3-Servil #247).
+    #[cfg(target_arch = "x86_64")]
+    {
+        let _ = platform;
+        let lanes = crate::ffi_last::lanes();
+        let mut at = 0;
+        while at < order.len() {
+            let k = whole(items[order[at]]);
+            let end = at + order[at..].iter().take_while(|&&i| whole(items[i]) == k).count();
+            for group in order[at..end].chunks(lanes) {
+                let members: arrayvec::ArrayVec<&[u8], 8> = group.iter().map(|&i| items[i]).collect();
+                let mut digests = [[0u8; OUT_LEN]; 8];
+                crate::counted(crate::Counted::ByBlocksCall);
+                crate::ffi_last::hash_group(&members, k, key, flags, &mut digests[..members.len()]);
+                for (n, &i) in group.iter().enumerate() {
+                    out[i] = digests[n];
+                }
+            }
+            at = end;
+        }
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    by_blocks_then_last(items, &order, key, flags, out, platform);
+}
+
+/// [`by_blocks_at_once`] where no kernel takes the last blocks too
+/// (AArch64): the whole blocks side by side, then each item's last block
+/// on its own.
+#[cfg(not(target_arch = "x86_64"))]
+fn by_blocks_then_last(items: &[&[u8]], order: &[usize], key: &CVWords, flags: u8, out: &mut [[u8; OUT_LEN]], platform: Platform) {
+    const GROUP: usize = 16;
+    let whole = |item: &[u8]| item.len().saturating_sub(1) / crate::BLOCK_LEN;
     let mut cvs = [*key; BY_BLOCKS_AT_ONCE];
     let mut at = 0;
     while at < order.len() {
@@ -294,10 +326,6 @@ fn by_blocks_at_once(items: &[&[u8]], key: &CVWords, flags: u8, out: &mut [[u8; 
                 crate::counted(crate::Counted::ByBlocksCall);
                 // Sound: each item holds more than k whole blocks; the
                 // platform takes the assembly (by_blocks_takes).
-                #[cfg(target_arch = "x86_64")]
-                unsafe {
-                    crate::pair::hash_many_blocks(platform, &inputs, k, key, 0, false, flags, CHUNK_START, 0, &mut lanes[..group.len() * OUT_LEN])
-                };
                 #[cfg(blake3_neon)]
                 unsafe {
                     crate::neon_hybrid::hash_messages_raw(
@@ -320,7 +348,7 @@ fn by_blocks_at_once(items: &[&[u8]], key: &CVWords, flags: u8, out: &mut [[u8; 
         }
         at = end;
     }
-    for &i in &order {
+    for &i in order {
         let item = items[i];
         let k = whole(item);
         let mut cv = cvs[i];
@@ -501,7 +529,10 @@ mod test {
             // A call where two or more items are of up to a chunk and one of
             // them has a whole block before its last.
             let small: Vec<usize> = lens.iter().copied().filter(|&n| n <= CHUNK_LEN).collect();
-            let calls_expected = by_blocks_takes(Platform::detect()) && small.len() >= 2 && small.iter().any(|&n| n > crate::BLOCK_LEN);
+            // NEON: a hash_many call where one has a whole block before its
+            // last; x86-64: a call for any (ffi_last takes last blocks too).
+            let calls_expected =
+                by_blocks_takes(Platform::detect()) && small.len() >= 2 && (cfg!(target_arch = "x86_64") || small.iter().any(|&n| n > crate::BLOCK_LEN));
             assert_eq!(calls > 0, calls_expected, "{count} items: by their blocks");
             let expected: Vec<[u8; OUT_LEN]> = items.iter().map(|i| *crate::convenience::hash(i).as_bytes()).collect();
             assert_eq!(out, expected, "{count} items");

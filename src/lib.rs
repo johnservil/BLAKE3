@@ -236,6 +236,10 @@ mod sme2;
 // tools/gen_x86.py, built with the SSE4.1 and AVX2 assembly).
 #[cfg(blake3_sse41_ffi)]
 mod ffi_partial;
+// Items of equal block count side by side, last blocks included, each one
+// chunk's root, on x86-64 (gen_x86.py --last: BLAKE3-Servil #247).
+#[cfg(blake3_sse41_ffi)]
+mod ffi_last;
 #[cfg(blake3_sse41_ffi)]
 #[path = "ffi_sse41.rs"]
 mod sse41;

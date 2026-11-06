@@ -2317,10 +2317,11 @@ mod test {
         golden.check(0xcee9a3e8ea54f9b2);
     }
 
-    /// run_by_blocks's work, counted (BLAKE3 #219): one hash_many call for
-    /// each count of whole blocks before the last that two or more members
-    /// share, or one, a call per sixteen; none for members with no whole
-    /// block before their last (up to a block, or empty). 40 members,
+    /// run_by_blocks's work, counted (BLAKE3 #219): on NEON one hash_many
+    /// call for each count of whole blocks before the last that members
+    /// share, a call per sixteen, none for members with no whole block
+    /// before their last (up to a block, or empty); on x86-64 a call per
+    /// lanes() of each count, those with none among them (ffi_last). 40 members,
     /// interleaved (so the calls count only once they are sorted): 20 of
     /// 2 whole blocks before the last, 17 of 5, 2 of none, 1 of 9.
     #[test]
@@ -2349,8 +2350,18 @@ mod test {
             }
             crate::COUNTED.with(|c| c[crate::Counted::ByBlocksCall as usize].set(0));
             task.run(platform);
-            // 20 of two: two calls (16 and 4); 17 of five: two (16 and 1); one of nine: one.
-            assert_eq!(crate::COUNTED.with(|c| c[crate::Counted::ByBlocksCall as usize].get()), 5, "{platform:?}");
+            // NEON, a call per sixteen of each count with whole blocks:
+            // 20 of two, two calls (16 and 4); 17 of five, two (16 and 1);
+            // one of nine, one. x86-64, a call per lanes() of each count,
+            // last blocks included (ffi_last): the two of none too.
+            #[cfg(not(target_arch = "x86_64"))]
+            let calls = 5;
+            #[cfg(target_arch = "x86_64")]
+            let calls = {
+                let l = crate::ffi_last::lanes();
+                20usize.div_ceil(l) + 17usize.div_ceil(l) + 1 + 1
+            };
+            assert_eq!(crate::COUNTED.with(|c| c[crate::Counted::ByBlocksCall as usize].get()), calls as u64, "{platform:?}");
             assert!(out.iter().zip(&inputs).all(|(o, i)| o == crate::convenience::hash(i).as_bytes()), "{platform:?}");
         }
     }

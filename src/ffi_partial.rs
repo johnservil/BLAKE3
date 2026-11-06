@@ -34,7 +34,7 @@ unsafe extern "C" {
 /// The byte shuffle (pshufb) that rotates each 32-bit word right by `r`
 /// bytes, as `W` little-endian words; each 16-byte lane of a ymm register
 /// shuffles within itself, so the pattern repeats every four words.
-fn rotation<const W: usize>(r: u32) -> [u32; W] {
+pub(crate) fn rotation<const W: usize>(r: u32) -> [u32; W] {
     core::array::from_fn(|k| {
         let base = 4 * (k as u32 % 4);
         (0..4).map(|i| (base + (i + r) % 4) << (8 * i)).fold(0, |a, b| a | b)
