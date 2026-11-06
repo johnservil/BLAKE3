@@ -6,7 +6,7 @@ input, key, counter, and flags value under its harness's contract.
 
 Commands:
 
-    python3 tools/verify/prove_hybrid.py [KERNEL...]   # c/blake3_neon_hybrid_aarch64.S: c1, k2-k10, p2-p9, q1-q9, kn, pn, x1, x4, x8 (415 cases, about 6 minutes on 16 CPUs)
+    python3 tools/verify/prove_hybrid.py [KERNEL...]   # c/blake3_neon_hybrid_aarch64.S: c1, k2-k10, p2-p9, q1-q9, l2-l9, kn, pn, x1, x4, x8 (527 cases, about 6 minutes on 16 CPUs)
     python3 tools/verify/prove_sme2.py [KERNEL...]     # c/blake3_sme2_aarch64.S: chunks, chunks_at, messages, parents, xof, and the chunk and parent kernels at every group count (36 cases, minutes); c/blake3_sme2_hybrid_aarch64.S: chunks_x2 (2 cases, 2 min)
     python3 tools/verify/prove_sme2.py xof_every messages_every x2_every  # the other kernels at every group count (x2_every about 12 minutes)
     python3 tools/verify/lean/emit.py                   # the definition, from the Lean specification (needs Lean)
@@ -30,7 +30,12 @@ proofs run on any machine with Python 3, `python3-z3`, Clang and LLVM's
 **Coverage.** The hybrid kernels at every block count they take (1 to
 16; the q kernels' partial chunk at every block count), those without
 SHA-3 (kn, pn) among them, and the extended-output kernels (x1, x4, x8: each
-lane's whole 64-byte output). The SME2 kernels
+lane's whole 64-byte output). The seven last-block kernels (l2, l3, l4,
+l5, l7, l8, l9) at every block count 1 to 16: each lane has independent
+prefix bytes, last-block bytes and a 32-bit last length. Its prefix region
+ends before the separate last block; at one block it has size zero. These
+112 cases also prove the unused packed-length byte affects no output.
+The SME2 kernels
 at the 512-bit streaming vector length (`cntw` = 16, which they check
 themselves), for one and two groups, the last group storing 1, 15, or
 all 16 values; the SME2 kernel with an integer lane
@@ -87,8 +92,9 @@ inputs, pointers are (region, offset) pairs. The run checks:
   public parameters stops the proof. Input bytes and keys stay secret in
   these checks. Some induction harnesses also declare counters and counter
   steps public, so their trace claim includes that assumption.
-- **The calling convention**: callee-saved registers (x19-x29, d8-d15)
-  and sp come back unchanged, and the kernel returns through x30.
+- **The calling convention**: callee-saved registers (x19-x29, d8-d15),
+  macOS's reserved x18 and sp come back unchanged, and the kernel returns
+  through x30.
 
 ## What it rests on
 
@@ -253,6 +259,10 @@ Lessons the tools were built on:
   into the caller's stack, an aligned load of an unaligned buffer, a
   prefetch address derived from a secret, a masked store); and four
   chunk-root controls (a wrong input stride, CHUNK_START never set,
-  CHUNK_END dropped, half the output unwritten). Only
+  CHUNK_END dropped, half the output unwritten). The last-block kernels
+  have ten controls, in vector-only and scalar/vector kernels: another
+  lane's length or last pointer, omitted end flags, a reversed prefix/last
+  switch and x18 overwritten. Their unmodified domains run beside them.
+  Only
   `Unproved` counts as a rejection; an exception inside the checker stops
   the run.

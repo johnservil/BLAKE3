@@ -3,10 +3,11 @@
 //!
 //! Chunk k of every message has chunk counter k, so the full chunks k of
 //! different messages hash in one call of the many-inputs kernel, at counter
-//! k for every lane. Messages of one chunk or less, and messages of 16 chunks
-//! or more (which fill the lanes alone), go through `hash_with`; a message's
-//! last partial chunk hashes on its own. Each message's chunk chaining values
-//! then merge into its root as BLAKE3's tree places them.
+//! k for every lane. Messages of up to a chunk share lanes by their block
+//! counts (`hash_by_blocks`); NEON with SHA-3 includes their last blocks in
+//! the same pass. Messages of 16 chunks or more fill the lanes alone; a
+//! longer message's last partial chunk hashes on its own. Each message's
+//! chunk chaining values then merge into its root as BLAKE3's tree places them.
 
 use crate::platform::Platform;
 use crate::throughput::Block;
@@ -244,6 +245,146 @@ pub fn hash_each(mode: Mode, items: &[(&[Block], usize)], out: &mut [[u8; OUT_LE
     hash_each_on(key, flags, items, out, Platform::detect(), |item| crate::hash_serial(item, key, flags));
 }
 
+/// Whether [`hash_by_blocks`] runs on `platform`: x86-64's AVX2 and
+/// AVX-512 (pair::takes_platform), and NEON (its hybrids, from a table),
+/// SME2 machines included: their NEON units run the hybrids, so a
+/// one-thread collection there takes them too.
+fn by_blocks_takes(platform: Platform) -> bool {
+    #[cfg(target_arch = "x86_64")]
+    return crate::pair::takes_platform(platform);
+    #[cfg(blake3_sme2)]
+    return matches!(platform, Platform::NEON | Platform::SME2);
+    #[cfg(all(blake3_neon, not(blake3_sme2)))]
+    return matches!(platform, Platform::NEON);
+    #[allow(unreachable_code)]
+    {
+        let _ = platform;
+        false
+    }
+}
+
+/// The most items [`hash_by_blocks`] sorts at once: a stream task's members.
+const BY_BLOCKS_AT_ONCE: usize = crate::lanes::MEMBERS;
+
+/// The digest of each of `items`, every one of up to a chunk, of any
+/// lengths, by their blocks: those with as many whole blocks before their
+/// last (k) side by side on the platform's hash_many, up to sixteen at a
+/// time. On NEON with SHA-3 their last blocks run in the same lanes,
+/// each with its own length (the l kernels). Other platforms hash the
+/// prefix with CHUNK_START on the first block and no end, leaving each its
+/// chaining value; then each one's last block (1 to 64 bytes, zero-padded;
+/// an empty message's is empty) compressed on its own with CHUNK_END and
+/// ROOT, CHUNK_START too where k is 0. Up to BY_BLOCKS_AT_ONCE items are
+/// sorted at once, on the stack. Requires a platform by_blocks_takes.
+fn hash_by_blocks(items: &[&[u8]], key: &CVWords, flags: u8, out: &mut [[u8; OUT_LEN]], platform: Platform) {
+    assert_eq!(items.len(), out.len(), "one digest per item");
+    assert!(items.iter().all(|i| i.len() <= CHUNK_LEN), "items of up to a chunk");
+    for (items, out) in items.chunks(BY_BLOCKS_AT_ONCE).zip(out.chunks_mut(BY_BLOCKS_AT_ONCE)) {
+        by_blocks_at_once(items, key, flags, out, platform);
+    }
+}
+
+fn by_blocks_at_once(items: &[&[u8]], key: &CVWords, flags: u8, out: &mut [[u8; OUT_LEN]], platform: Platform) {
+    const GROUP: usize = 16;
+    let whole = |item: &[u8]| item.len().saturating_sub(1) / crate::BLOCK_LEN;
+    let mut order: arrayvec::ArrayVec<usize, BY_BLOCKS_AT_ONCE> = (0..items.len()).collect();
+    order.sort_unstable_by_key(|&i| whole(items[i]));
+    // With SHA-3 the last block stays in the lanes too; other AArch64
+    // CPUs keep the prefix kernels followed by scalar last blocks.
+    #[cfg(blake3_neon)]
+    let last_lanes = crate::neon_hybrid::sha3_detected();
+    #[cfg(not(blake3_neon))]
+    let last_lanes = false;
+    let mut cvs = [*key; BY_BLOCKS_AT_ONCE];
+    let mut at = 0;
+    while at < order.len() {
+        let k = whole(items[order[at]]);
+        let end = at + order[at..].iter().take_while(|&&i| whole(items[i]) == k).count();
+        #[cfg(blake3_neon)]
+        if last_lanes {
+            for group in order[at..end].chunks(GROUP) {
+                let inputs: arrayvec::ArrayVec<*const u8, GROUP> = group.iter().map(|&i| items[i].as_ptr()).collect();
+                let mut last_blocks = [[0u8; crate::BLOCK_LEN]; GROUP];
+                let mut lengths = [0u32; GROUP];
+                for ((&i, block), len) in group.iter().zip(&mut last_blocks).zip(&mut lengths) {
+                    let tail = &items[i][k * crate::BLOCK_LEN..];
+                    block[..tail.len()].copy_from_slice(tail);
+                    *len = tail.len() as u32;
+                }
+                let lasts: arrayvec::ArrayVec<*const u8, GROUP> = last_blocks[..group.len()].iter().map(|b| b.as_ptr()).collect();
+                let mut digests = [0u8; GROUP * OUT_LEN];
+                crate::counted(crate::Counted::ByBlocksCall);
+                // Sound: SHA-3 is present; these items share k whole blocks
+                // before their separately padded last block, 0 to 64 bytes.
+                unsafe {
+                    crate::neon_hybrid::hash_last_lanes(
+                        &inputs,
+                        &lasts,
+                        &lengths[..group.len()],
+                        k + 1,
+                        key,
+                        flags,
+                        CHUNK_START,
+                        CHUNK_END | crate::ROOT,
+                        &mut digests[..group.len() * OUT_LEN],
+                    );
+                }
+                for (&i, digest) in group.iter().zip(digests.chunks_exact(OUT_LEN)) {
+                    out[i].copy_from_slice(digest);
+                }
+            }
+            at = end;
+            continue;
+        }
+        if k > 0 {
+            for group in order[at..end].chunks(GROUP) {
+                let inputs: arrayvec::ArrayVec<*const u8, GROUP> = group.iter().map(|&i| items[i].as_ptr()).collect();
+                let mut lanes = [0u8; GROUP * OUT_LEN];
+                crate::counted(crate::Counted::ByBlocksCall);
+                // Sound: each item holds more than k whole blocks; the
+                // platform takes the assembly (by_blocks_takes).
+                #[cfg(target_arch = "x86_64")]
+                unsafe {
+                    crate::pair::hash_many_blocks(platform, &inputs, k, key, 0, false, flags, CHUNK_START, 0, &mut lanes[..group.len() * OUT_LEN])
+                };
+                #[cfg(blake3_neon)]
+                unsafe {
+                    crate::neon_hybrid::hash_messages_raw(
+                        inputs.as_ptr(),
+                        group.len(),
+                        k,
+                        key,
+                        0,
+                        flags,
+                        CHUNK_START,
+                        0,
+                        crate::BLOCK_LEN,
+                        &mut lanes[..group.len() * OUT_LEN],
+                    )
+                };
+                for (n, &i) in group.iter().enumerate() {
+                    cvs[i] = crate::platform::words_from_le_bytes_32(lanes[n * OUT_LEN..][..OUT_LEN].try_into().unwrap());
+                }
+            }
+        }
+        at = end;
+    }
+    if last_lanes {
+        return;
+    }
+    for &i in &order {
+        let item = items[i];
+        let k = whole(item);
+        let mut cv = cvs[i];
+        let mut block = [0u8; crate::BLOCK_LEN];
+        let last = item.len() - k * crate::BLOCK_LEN;
+        block[..last].copy_from_slice(&item[k * crate::BLOCK_LEN..]);
+        let start = if k == 0 { CHUNK_START } else { 0 };
+        platform.compress_in_place(&mut cv, &block, last as u8, 0, flags | start | CHUNK_END | crate::ROOT);
+        out[i] = crate::hasher::le_bytes(&cv);
+    }
+}
+
 /// An item of a collection, as hash_each_on reads it: its bytes. The
 /// public calls' items are messages in blocks; the pool's ranges, bytes.
 pub(crate) trait Item {
@@ -274,8 +415,27 @@ pub(crate) fn hash_each_on<I: Item>(key: &CVWords, flags: u8, items: &[I], out: 
     let mut shared: Vec<(usize, usize)> = Vec::new();
     let mut slots = 0;
     let mut most_full = 0;
+    // Items of up to a chunk, two or more, by their blocks (hash_by_blocks).
+    let by_blocks = by_blocks_takes(platform) && items.iter().filter(|i| i.bytes().len() <= CHUNK_LEN).nth(1).is_some();
+    if by_blocks {
+        // BY_BLOCKS_AT_ONCE of them at a time, their indices on the stack:
+        // a collection of small items allocates nothing.
+        let mut small = (0..items.len()).filter(|&i| items[i].bytes().len() <= CHUNK_LEN).peekable();
+        while small.peek().is_some() {
+            let part: arrayvec::ArrayVec<usize, BY_BLOCKS_AT_ONCE> = small.by_ref().take(BY_BLOCKS_AT_ONCE).collect();
+            let bytes: arrayvec::ArrayVec<&[u8], BY_BLOCKS_AT_ONCE> = part.iter().map(|&i| items[i].bytes()).collect();
+            let mut digests = [[0u8; OUT_LEN]; BY_BLOCKS_AT_ONCE];
+            hash_by_blocks(&bytes, &key, flags, &mut digests[..part.len()], platform);
+            for (&i, digest) in part.iter().zip(&digests) {
+                out[i] = *digest;
+            }
+        }
+    }
     for (i, item) in items.iter().map(Item::bytes).enumerate() {
         let chunks = item.len().div_ceil(CHUNK_LEN);
+        if chunks <= 1 && by_blocks {
+            continue;
+        }
         if chunks <= 1 || chunks >= ALONE_CHUNKS {
             out[i] = *alone(item).as_bytes();
         } else {
@@ -368,10 +528,53 @@ mod test {
         }
     }
 
-    /// hash_each_on sends a message to `alone` exactly when it has one chunk
-    /// or fewer, or ALONE_CHUNKS or more, and gives the others' lanes as
-    /// many rounds as the longest of them has whole chunks. Every other
-    /// choice gives the same digests, so only the counts tell (BLAKE3 #219).
+    /// A collection of small items of mixed lengths (empty to a chunk, more
+    /// than BY_BLOCKS_AT_ONCE of them, a long one among them): those of up
+    /// to a chunk by their blocks where the platform takes them (a
+    /// hash_many call counted), every digest hash()'s, held to a golden
+    /// fold.
+    #[test]
+    fn test_hash_each_small_items_by_blocks() {
+        let mut golden = crate::test::Golden::new("hash_each_small_items");
+        let mut x = 0x9e37_79b9u64;
+        for count in [2usize, 7, 63, 64, 65, 200] {
+            let mut lens: Vec<usize> = (0..count)
+                .map(|_| {
+                    x ^= x << 13;
+                    x ^= x >> 7;
+                    x ^= x << 17;
+                    (x % (CHUNK_LEN as u64 + 1)) as usize
+                })
+                .collect();
+            lens[count / 2] = 5 * CHUNK_LEN + 77;
+            let data: Vec<Vec<u8>> = lens.iter().enumerate().map(|(m, &n)| (0..n).map(|i| ((m * 37 + i) % 249) as u8).collect()).collect();
+            let items: Vec<&[u8]> = data.iter().map(|d| &d[..]).collect();
+            let mut out = vec![[0u8; OUT_LEN]; count];
+            crate::COUNTED.with(|c| c[crate::Counted::ByBlocksCall as usize].set(0));
+            hash_each_on(crate::IV, 0, &items, &mut out, Platform::detect(), |item| crate::hash_serial(item, crate::IV, 0));
+            let calls = crate::COUNTED.with(|c| c[crate::Counted::ByBlocksCall as usize].get());
+            // A call where two or more items are of up to a chunk and one of
+            // them has a whole block before its last.
+            let small: Vec<usize> = lens.iter().copied().filter(|&n| n <= CHUNK_LEN).collect();
+            #[cfg(blake3_neon)]
+            let last_lanes = crate::neon_hybrid::sha3_detected();
+            #[cfg(not(blake3_neon))]
+            let last_lanes = false;
+            let calls_expected = by_blocks_takes(Platform::detect()) && small.len() >= 2 && (last_lanes || small.iter().any(|&n| n > crate::BLOCK_LEN));
+            assert_eq!(calls > 0, calls_expected, "{count} items: by their blocks");
+            let expected: Vec<[u8; OUT_LEN]> = items.iter().map(|i| *crate::convenience::hash(i).as_bytes()).collect();
+            assert_eq!(out, expected, "{count} items");
+            golden.add(out.as_flattened(), || items.iter().flat_map(|i| crate::test::official::hash(Mode::Plain, i)).collect());
+        }
+        golden.check(0x8fa73f9dac40c559);
+    }
+
+    /// hash_each_on sends a message to `alone` exactly when it has
+    /// ALONE_CHUNKS or more, or one chunk or fewer where the platform takes
+    /// no items by their blocks (by_blocks_takes: there two or more such go
+    /// by their blocks), and gives the others' lanes as many rounds as the
+    /// longest of them has whole chunks. Every other choice gives the same
+    /// digests, so only the counts tell (BLAKE3 #219).
     #[test]
     fn test_hash_each_on_counts_its_alone_messages_and_rounds() {
         let input = vec![5u8; (ALONE_CHUNKS + 1) * CHUNK_LEN];
@@ -395,7 +598,9 @@ mod test {
             crate::hash_serial(item, crate::IV, 0)
         });
         let rounds = crate::COUNTED.with(|c| c[crate::Counted::EachRound as usize].get());
-        assert_eq!(alone.into_inner(), [0, 1, CHUNK_LEN, (ALONE_CHUNKS - 1) * CHUNK_LEN + 1, ALONE_CHUNKS * CHUNK_LEN, ALONE_CHUNKS * CHUNK_LEN + 1]);
+        let long = [(ALONE_CHUNKS - 1) * CHUNK_LEN + 1, ALONE_CHUNKS * CHUNK_LEN, ALONE_CHUNKS * CHUNK_LEN + 1];
+        let expected: Vec<usize> = if by_blocks_takes(Platform::detect()) { long.to_vec() } else { [0, 1, CHUNK_LEN].into_iter().chain(long).collect() };
+        assert_eq!(alone.into_inner(), expected);
         // The shared: 1, 2 and ALONE_CHUNKS - 1 whole chunks.
         assert_eq!(rounds, (ALONE_CHUNKS - 1) as u64);
         for (item, out) in items.iter().zip(&out) {

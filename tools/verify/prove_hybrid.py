@@ -94,9 +94,11 @@ def check_abi(m):
             and aarch64.holds(m, aarch64.as_bv(m.x["sp"].offset)
                              == aarch64.as_bv(m.regions["stack"].size))):
         raise Unproved(f"sp not restored: {m.x['sp']}")
-    for i in range(19, 30):
+    # x18 is reserved by macOS; the generated kernels leave it untouched
+    # on every platform, beside the ABI's x19-x29.
+    for i in range(18, 30):
         if isinstance(m.x[i], Ptr) or not same(m.x[i], BitVec(f"x{i}_in", 64)):
-            raise Unproved(f"callee-saved x{i} changed")
+            raise Unproved(f"preserved x{i} changed")
     for i in range(8, 16):
         if not all(same(m.v[i][l], BitVec(f"v{i}_{l}_in", 32)) for l in (0, 1)):
             raise Unproved(f"callee-saved d{i} changed")
@@ -294,9 +296,60 @@ def prove_partial(obj, n, pblocks):
     return m.steps
 
 
+def prove_last(obj, n, blocks):
+    """l<n>(inputs, blocks, key, counter, packed, out, lens, lasts) (#247):
+    input i's first blocks - 1 blocks from inputs[i], its last block from
+    lasts[i] (64 bytes) with block length lens[i] (32 bits), every block at
+    `counter`, the first with flags | start, the last with flags | end;
+    its chaining value to out[32 i..]. packed's length byte goes unread:
+    each lane's comes from lens, so the proof gives that byte a symbol of
+    its own, which no output may hold."""
+    whole = 64 * (blocks - 1)
+    inputs = [byte_symbols(f"in{i}_", whole) for i in range(n)]
+    lasts = [byte_symbols(f"last{i}_", 64) for i in range(n)]
+    lens = [BitVec(f"len{i}", 32) for i in range(n)]
+    key = byte_symbols("key", 32)
+    regions = {f"input{i}": Region(f"input{i}", whole, False, (lambda b: lambda o: b[o])(inputs[i])) for i in range(n)}
+    regions.update({f"last{i}": Region(f"last{i}", 64, False, (lambda b: lambda o: b[o])(lasts[i])) for i in range(n)})
+    regions["lens"] = Region("lens", 4 * n, False, lambda o: Extract(8 * (o % 4) + 7, 8 * (o % 4), lens[o // 4]))
+    regions["key"] = Region("key", 32, False, lambda o: key[o])
+    regions["out"] = Region("out", 32 * n, True, None)
+    for table, target in (("table", "input"), ("lasts", "last")):
+        regions[table] = Region(table, 8 * n, False, None)
+        for i in range(n):
+            for j in range(8):
+                regions[table].bytes[8 * i + j] = (Ptr(f"{target}{i}", 0), j)
+    s = Setup(obj, f"blake3_servil_hybrid_l{n}", f"blake3_servil_hybrid_l{n}_end", regions)
+    counter = BitVec("counter", 64)
+    flags, start, end, unread = (BitVec(x, 8) for x in ("flags", "start", "end", "unread"))
+    m = s.m
+    m.x[0], m.x[1], m.x[2], m.x[3] = Ptr("table", 0), BitVecVal(blocks, 64), Ptr("key", 0), counter
+    m.x[4] = ZeroExt(32, Concat(unread, end, start, flags))
+    m.x[5], m.x[6], m.x[7] = Ptr("out", 0), Ptr("lens", 0), Ptr("lasts", 0)
+    s.run_and_check_abi()
+    out = m.regions["out"]
+    if any(i not in out.bytes for i in range(32 * n)):
+        raise Unproved("the output is not wholly written")
+    zero = BitVecVal(0, 8)
+    words = [simplify(x) for x in spec.words(key)]
+    for i in range(n):
+        cv = words
+        for b in range(blocks):
+            last = b == blocks - 1
+            block = spec.words(lasts[i] if last else inputs[i][64 * b:64 * b + 64])
+            f = simplify(ZeroExt(24, flags | (start if b == 0 else zero) | (end if last else zero)))
+            cv = spec.compress(cv, block, simplify(counter), lens[i] if last else BitVecVal(64, 32), f)[:8]
+        got = spec.words([out.bytes[32 * i + j] for j in range(32)])
+        for w in range(8):
+            if not same(got[w], cv[w]):
+                raise Unproved(f"input {i}, output word {w} differs from the specification")
+    return m.steps
+
+
 def cases(only):
     """Every (kernel, block count) case: c1 apart from and equal to key,
-    the k and p kernels, and the q kernels at every partial chunk."""
+    the k and p kernels, the q kernels at every partial chunk, and the l
+    kernels at every block count with independent last blocks and lengths."""
     out = []
     for blocks in range(1, 17):
         for alias in (False, True):
@@ -309,6 +362,9 @@ def cases(only):
         for pblocks in range(1, 17):
             out.append((f"q{n}", pblocks, False))
     out += [("x1", 1, False), ("x4", 1, False), ("x8", 1, False)]
+    for n in (2, 3, 4, 5, 7, 8, 9):
+        for blocks in range(1, 17):
+            out.append((f"l{n}", blocks, False))
     return [c for c in out if not only or c[0] in only]
 
 
@@ -328,6 +384,8 @@ def prove_case(case):
             steps = prove_partial(OBJ, int(name[1:]), blocks)
         elif name[0] == "x":
             steps = prove_xof(OBJ, int(name[1:]))
+        elif name[0] == "l":
+            steps = prove_last(OBJ, int(name[1:]), blocks)
         else:
             steps = prove_table(OBJ, f"blake3_servil_hybrid_{name}", int(name.lstrip("kpn")), blocks, name[0] == "k")
     except Unproved as e:
@@ -343,7 +401,7 @@ def main():
     aarch64.symbols(OBJ)
     aarch64.text_bytes(OBJ)
     todo = sorted(cases(set(sys.argv[1:])),
-                  key=lambda c: -(int(c[0].lstrip("ckpqnx") or 1) * (16 if c[0][0] == "q" else c[1])))
+                  key=lambda c: -(int(c[0].lstrip("ckpqnxl") or 1) * (16 if c[0][0] == "q" else c[1])))
     failed = 0
     # Every CPU: a case holds under 400 MB (CPython, October 22).
     for (name, _, _), verdict in workers.each(prove_case, todo, len(todo)):

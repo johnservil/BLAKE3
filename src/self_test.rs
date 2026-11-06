@@ -46,6 +46,10 @@ pub(crate) enum Case {
     /// blocks, zero between messages, the batch's base `offset` bytes past
     /// an allocation's start.
     Many { offset: usize, len: usize, count: usize },
+    /// Keyed short messages with independent final-block lengths, at one
+    /// and three blocks: each NEON l kernel, or the scalar path without SHA-3.
+    #[cfg(blake3_neon)]
+    LastLanes { count: usize },
     /// The chaining values of `chunks` whole chunks at counter 1, keyed by
     /// the previous case's output: on SME2, one call of the kernel with
     /// integer lanes beside the matrix unit (18 chunks a group), which
@@ -74,7 +78,7 @@ const KIB: usize = 1024;
 /// The cases, each with the path it is there for, assembly first (on
 /// Apple M4 and later; other machines take their own paths through the
 /// same entry points). Every assembly entry of the AArch64 kernels runs:
-/// the hybrids' k1-k10, q1-q9, p2-p9, c1, x1, x4 and x8, and SME2's chunk, message,
+/// the hybrids' k1-k10, q1-q9, p2-p9, l2-l9, c1, x1, x4 and x8, and SME2's chunk, message,
 /// parent, counter-per-group, and integer-lane kernels
 /// (test_self_test_runs_every_kernel checks it). The hybrids' k kernels hash whole chunks at
 /// rising counters, so only whole inputs reach them; batches of one-chunk
@@ -123,6 +127,13 @@ pub(crate) const CASES: &[(Case, &str)] = &[
     (Incremental { len: 2 * KIB, piece: 63 }, "a Hasher fed less than a block at a time"),
     (Xof { len: 100, skip: 37, out: 300 }, "extended output of several blocks, from an unaligned position"),
     (Xof { len: 1500, skip: 64, out: 1600 }, "extended output of twenty-five blocks: SME2's sixteen, then x8 and x1"),
+    (LastLanes { count: 2 }, "independent last blocks and lengths: l2"),
+    (LastLanes { count: 3 }, "independent last blocks and lengths: l3"),
+    (LastLanes { count: 4 }, "independent last blocks and lengths: l4"),
+    (LastLanes { count: 5 }, "independent last blocks and lengths: l5"),
+    (LastLanes { count: 7 }, "independent last blocks and lengths: l7"),
+    (LastLanes { count: 8 }, "independent last blocks and lengths: l8"),
+    (LastLanes { count: 9 }, "independent last blocks and lengths: l9"),
 ];
 
 /// The cases elsewhere (x86-64 and portable builds), each kernel
@@ -211,6 +222,8 @@ pub(crate) fn chain(mut outputs: impl FnMut(Case, &[u8], &[u8; 32], &mut [u8]) -
         let (start, len, count) = match case {
             Hash { offset, len } => (offset, len, 1),
             Many { len, count, .. } => (0, len, count),
+            #[cfg(blake3_neon)]
+            LastLanes { count } => (0, 192, count),
             ChunkValues { chunks } => (0, chunks * crate::CHUNK_LEN, 1),
             Keyed { len } | Derive { len } | Incremental { len, .. } | Xof { len, .. } => (0, len, 1),
         };
@@ -230,7 +243,7 @@ pub(crate) fn chain(mut outputs: impl FnMut(Case, &[u8], &[u8; 32], &mut [u8]) -
 /// `self_test_matches_official_blake3` checks them, and prints this table
 /// when it differs).
 #[cfg(target_arch = "aarch64")]
-const EXPECTED: [u64; 42] = [
+const EXPECTED: [u64; 49] = [
     0x90e4e563714f7c48,
     0x80003c83df0cf1a6,
     0xf4ffcff9e99d31ba,
@@ -273,6 +286,13 @@ const EXPECTED: [u64; 42] = [
     0x86659376d6731ca2,
     0xeb7d3b584a6ab00f,
     0x4ec390a6848cb5f5,
+    0x46c85a310dbba783,
+    0xe2825c9040d48d42,
+    0x0cd9fbbfd687f491,
+    0x6576922338e1112b,
+    0x5a0192e635a30d2f,
+    0x27fa79f1ffebddd1,
+    0x56e0c42ae080bd4a,
 ];
 
 #[cfg(not(target_arch = "aarch64"))]
@@ -298,6 +318,8 @@ pub(crate) fn outputs(platform: Platform, case: Case, input: &[u8], previous: &[
     match case {
         Hash { offset, len } => digest(crate::hash_serial_from(platform, &input[offset..][..len], crate::IV, 0, false)),
         Many { offset, len, count } => many(platform, &input[..len * count], offset, len, &mut out[..count * crate::OUT_LEN]),
+        #[cfg(blake3_neon)]
+        LastLanes { count } => last_lanes(platform, input, previous, count, out),
         ChunkValues { chunks } => chunk_values(platform, &input[..chunks * crate::CHUNK_LEN], previous, out),
         Keyed { len } => digest(crate::hash_serial_from(platform, &input[..len], &words(previous), crate::KEYED_HASH, false)),
         Derive { len } => {
@@ -390,6 +412,48 @@ fn chunk_values(platform: Platform, input: &[u8], key: &[u8; 32], out: &mut [u8]
     }
     platform.hash_many(&chunks, &key, 1, crate::IncrementCounter::Yes, crate::KEYED_HASH, crate::CHUNK_START, crate::CHUNK_END, out);
     out.len()
+}
+
+/// Each last-lane entry, one and three blocks, keyed by the preceding
+/// case. A scalar hash supplies the same answers on CPUs without SHA-3.
+#[cfg(blake3_neon)]
+fn last_lanes(platform: Platform, input: &[u8], previous: &[u8; 32], count: usize, out: &mut [u8]) -> usize {
+    let key = crate::platform::words_from_le_bytes_32(previous);
+    let inputs: [*const u8; 9] = core::array::from_fn(|i| input[i * 192..].as_ptr());
+    let mut last_blocks = [[0u8; 64]; 9];
+    let mut lengths = [0u32; 9];
+    for (pass, blocks) in [1usize, 3].into_iter().enumerate() {
+        let out = &mut out[pass * count * 32..][..count * 32];
+        for i in 0..count {
+            let last = if blocks == 1 { i * 17 % 65 } else { 1 + i * 17 % 64 };
+            let prefix = (blocks - 1) * 64;
+            last_blocks[i].fill(0);
+            last_blocks[i][..last].copy_from_slice(&input[i * 192 + prefix..][..last]);
+            lengths[i] = last as u32;
+            if !crate::neon_hybrid::sha3_detected() {
+                out[i * 32..][..32].copy_from_slice(crate::hash_serial_on(&input[i * 192..][..prefix + last], &key, crate::KEYED_HASH, platform).as_bytes());
+            }
+        }
+        if crate::neon_hybrid::sha3_detected() {
+            let lasts: [*const u8; 9] = core::array::from_fn(|i| last_blocks[i].as_ptr());
+            // Sound: SHA-3 is present; every prefix lies in its 192-byte
+            // input, and each last block is zero-padded in 64 bytes.
+            unsafe {
+                crate::neon_hybrid::hash_last_lanes(
+                    &inputs[..count],
+                    &lasts[..count],
+                    &lengths[..count],
+                    blocks,
+                    &key,
+                    crate::KEYED_HASH,
+                    crate::CHUNK_START,
+                    crate::CHUNK_END | crate::ROOT,
+                    out,
+                );
+            }
+        }
+    }
+    2 * count * 32
 }
 
 /// Run every case and panic on the first that differs from the reference;
@@ -673,6 +737,16 @@ mod test {
         match case {
             Hash { offset, len } => official::hash(Mode::Plain, &input[offset..][..len]).to_vec(),
             Many { len, count, .. } => (0..count).flat_map(|i| official::hash(Mode::Plain, &input[i * len..][..len])).collect(),
+            #[cfg(blake3_neon)]
+            LastLanes { count } => [1usize, 3]
+                .into_iter()
+                .flat_map(|blocks| {
+                    (0..count).flat_map(move |i| {
+                        let last = if blocks == 1 { i * 17 % 65 } else { 1 + i * 17 % 64 };
+                        official::hash(Mode::Keyed(previous), &input[i * 192..][..(blocks - 1) * 64 + last])
+                    })
+                })
+                .collect(),
             ChunkValues { chunks } => {
                 let key = crate::platform::words_from_le_bytes_32(previous);
                 let table: std::vec::Vec<&[u8; crate::CHUNK_LEN]> =

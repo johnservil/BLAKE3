@@ -28,3 +28,10 @@ src/gpu.rs	replace - with + in start	1	the start's check of the GPU against the 
 src/gpu.rs	replace - with / in start	1	the start's check of the GPU against the CPU, its input's bytes, counters or compared lengths changed: a GPU that hashes right passes it on any input, and only a faulty GPU tells the two apart
 src/stream.rs	replace && with || in Stream<'env, D>::finish	1	speed: a waiting caller's pause when nothing came back and nothing waits (the SME2 thread takes stream tasks alone, so each pause decides only how soon the caller looks again)
 src/stream.rs	replace == with != in Stream<'env, D>::help	1	speed: a waiting caller hashes a lone task only after handing something back; the SME2 thread takes the task
+src/each.rs	replace | with ^ in by_blocks_at_once	4	equivalent: the mode flags have none of CHUNK_START, CHUNK_END or ROOT, so OR and XOR join disjoint bits
+src/self_test.rs	delete ! in last_lanes	1	[cpu has FEAT_SHA3] speed: also computes scalar answers before the last-lane kernels overwrite them; on a CPU without SHA-3 it omits the answers and the startup tests fail
+src/self_test.rs	replace * with + in last_lanes	2	[cpu has FEAT_SHA3] equivalent here: changes only the scalar startup path that this CPU leaves uncalled; the SHA-3-free startup tests check those answers
+src/self_test.rs	replace * with / in last_lanes	2	[cpu has FEAT_SHA3] equivalent here: changes only the scalar startup path that this CPU leaves uncalled; the SHA-3-free startup tests check those answers
+src/self_test.rs	replace + with * in last_lanes	1	[cpu has FEAT_SHA3] equivalent here: changes only the scalar startup path that this CPU leaves uncalled; the SHA-3-free startup tests check those answers
+src/self_test.rs	replace + with - in last_lanes	1	[cpu has FEAT_SHA3] equivalent here: changes only the scalar startup path that this CPU leaves uncalled; the SHA-3-free startup tests check those answers
+src/self_test.rs	replace | with ^ in last_lanes	1	equivalent: CHUNK_END and ROOT are disjoint bits

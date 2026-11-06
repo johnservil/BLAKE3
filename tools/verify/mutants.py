@@ -151,6 +151,46 @@ def both_stored(sobj):
         raise Unproved(reasons[0])
 
 
+
+def last_positive(case):
+    """The l-kernel controls' unmodified domain, in a fresh process."""
+    return prove_hybrid.prove_last(prove_hybrid.assemble(), *case)
+
+
+def last_mutant_jobs():
+    """The l kernels' new inputs: independent last pointers and lengths,
+    end flags, and the switch from the prefix to the separate last block.
+    Both a vector-only kernel and a scalar/vector kernel use these."""
+    obj = prove_hybrid.assemble()
+    syms = aarch64.symbols(obj)
+    out = []
+    for n in (2, 3):
+        base = aarch64.disassemble(obj, syms[f"blake3_servil_hybrid_l{n}"], syms[f"blake3_servil_hybrid_l{n}_end"])
+        def first(pred):
+            return next(a for a, (m, o) in sorted(base.items()) if pred(m, o))
+        length = first(lambda m, o: m == "ldr" and o == ["w8", "[x6, #4]"])
+        last = first(lambda m, o: m == "ldr" and o == ["x8", "[x7, #8]"])
+        end = first(lambda m, o: m == "orr" and o == ["w2", "w2", "w3"])
+        switch = first(lambda m, o: m == "csel" and o == ["x4", "x3", "x4", "eq"])
+        constant = first(lambda m, o: m == "mov" and o[0] == "w8" and aarch64.imm(o[1]) == 64)
+        for label, at, instruction, reason in (
+            ("another lane's last length", length, ("ldr", ["w8", "[x6]"]), "differs from the specification"),
+            ("another lane's last block", last, ("ldr", ["x8", "[x7]"]), "differs from the specification"),
+            ("the end flags omitted", end, ("nop", []), "differs from the specification"),
+            ("the prefix read instead of the last block", switch, ("csel", ["x4", "x3", "x4", "ne"]), "outside"),
+            ("macOS's reserved register clobbered", constant, ("mov", ["x18", "xzr"]), "preserved x18 changed"),
+        ):
+            code = {**base, at: instruction}
+            def prove(n=n, reason=reason):
+                try:
+                    return prove_hybrid.prove_last(obj, n, 2)
+                except Unproved as error:
+                    assert reason in str(error), str(error)
+                    raise
+            out.append((f"l{n} mutant, {label}", code, prove))
+    return out
+
+
 def jobs():
     """Every mutant, as (label, mutated code, the proof that must reject it)."""
     out = []
@@ -395,6 +435,11 @@ def main():
     fork = multiprocessing.get_context("fork")
     failures = 0
     for line, failed in workers.each(run, jobs(), 16, fork):
+        print(line, flush=True)
+        failures += failed
+    for result in workers.each(last_positive, [(2, 1), (2, 2), (3, 1), (3, 2)], 4, fork):
+        print(f"last-lane positive control: proved {result} instructions", flush=True)
+    for line, failed in workers.each(run, last_mutant_jobs(), 4, fork):
         print(line, flush=True)
         failures += failed
     # Fresh workers release each proof's memo tables. Keep the x86 pool

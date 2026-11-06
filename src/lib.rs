@@ -126,7 +126,8 @@
 //!   and [`Hasher::finalize`], and [`OutputReader`].
 //!   [`Hasher::update_reader`] uses a 1 MiB buffer while it reads past
 //!   64 KiB, and [`throughput::hash_each`] 32 bytes for each chunk of its messages
-//!   of 2 to 15 chunks, each freed when it returns.
+//!   of 2 to 15 chunks and up to 128 for each such message, each freed when
+//!   it returns.
 //! - **Multithreaded calls** allocate nothing below 512 KiB, where they
 //!   hash on the calling thread. Above it they keep a list of the pieces
 //!   they hand out, freed when they return: 48 bytes for each 128 KiB of
@@ -338,12 +339,14 @@ pub(crate) enum Counted {
     /// One root output block computed alone (Output::root_output_block):
     /// OutputReader::fill's tails, where its whole blocks go to xof_many.
     RootBlock = 2,
+    /// One group of short collection items hashed together by blocks.
+    ByBlocksCall = 3,
 }
 
 #[cfg(all(test, feature = "std"))]
 std::thread_local! {
     /// This thread's counts since the test last cleared them, by Counted.
-    pub(crate) static COUNTED: [core::cell::Cell<u64>; 3] = const { [core::cell::Cell::new(0), core::cell::Cell::new(0), core::cell::Cell::new(0)] };
+    pub(crate) static COUNTED: [core::cell::Cell<u64>; 4] = const { [const { core::cell::Cell::new(0) }; 4] };
 }
 
 /// Count one of `what`: in the tests' record, and nothing in any other

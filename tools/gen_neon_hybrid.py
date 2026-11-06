@@ -48,6 +48,12 @@ C ABI, every kernel:
   one-entry table, and a seventh argument in x6: the address of the last
   block, read from there instead of the input. The entry for a single
   chunk's blocks, whose short final block arrives zero-padded elsewhere.
+  l<n> keeps p<n>'s fixed counter and takes two extra arguments: x6 is
+  a table of n u32 final-block lengths, and x7 a table of n last-block
+  pointers. Each input needs only blocks - 1 whole blocks; the final
+  block is read from its separate, zero-padded 64-byte buffer. The
+  packed length byte is ignored. l2/l3/l4/l5/l7/l8/l9 use the parent
+  plans, with l8 using two quads, and c1 handles a single lane.
 
 Tried and set aside (VM unless said; E-core cycles from the Mac):
   - Two scalar chunks in place of the pair for two chunks (k2): 2 KiB 919
@@ -127,6 +133,15 @@ MAX_INPUTS = 10
 F_REMAIN = F_PTR + 8 * MAX_INPUTS     # blocks remaining, for kernels whose x1 carries a pointer
 F_PART = F_REMAIN + 8                 # a partial lane's blocks (byte 0) and final block length (byte 1)
 FRAME = F_REMAIN + 16
+# The l kernels' frame (#247), past the others', so theirs is unchanged:
+# each input's last block pointer, each unit's last lengths (four words, in
+# the unit's layout), four 64s, and each scalar's last length.
+F_LASTPTR = FRAME                         # 8 bytes an input
+F_ULEN = F_LASTPTR + 8 * MAX_INPUTS       # 16 bytes a unit
+F_SIXTYFOUR = F_ULEN + 32                 # 64 in four words
+F_SCLEN = F_SIXTYFOUR + 16                # 4 bytes a scalar
+FRAME_LAST = F_SCLEN + 16
+assert F_ULEN % 16 == 0 and F_SIXTYFOUR % 16 == 0 and FRAME_LAST % 16 == 0, (F_ULEN, F_SIXTYFOUR, FRAME_LAST)
 # `stp q, q, [sp, #imm]` reaches 1008; every paired store must stay below.
 assert F_MSG + 2 * 256 - 32 <= 1008, F_MSG
 assert FRAME % 16 == 0, FRAME
@@ -358,17 +373,27 @@ class Unit:
             out.append(f"eor {self.v(4 + i)}.16b, {self.v(4 + i)}.16b, {self.v(12 + i)}.16b")
         return out
 
-    def start_rows(self, flags, blen):
-        # c row <- IV; d row <- [ctr_lo, ctr_hi, block length, flags].
+    def start_rows(self, flags, blen, rem=None):
+        # c row <- IV; d row <- [ctr_lo, ctr_hi, block length, flags]. With
+        # `rem` (an l kernel), the block length is each lane's own on the
+        # last block (rem is 1), 64 before it, from the frame.
         out = [f"ldr q{self.state[8 + i]}, [sp, #{F_IVDUP + 16 * i}]" for i in range(4)]
         d = [self.v(12 + i) for i in range(4)]
+        if rem:
+            lens = [
+                f"mov x4, #{F_SIXTYFOUR}",
+                f"mov x3, #{F_ULEN + 16 * self.index}",
+                f"cmp {rem}, #1",
+                "csel x3, x3, x4, eq",
+                f"ldr q{d[2][1:]}, [sp, x3]",
+            ]
+        else:
+            lens = [f"dup {d[2]}.4s, {blen}"]
         out += [
             f"ldr q{d[0][1:]}, [sp, #{self.const}]",
         ] + self.d_store(12) + [
             f"ldr q{d[1][1:]}, [sp, #{self.const + 16}]",
-        ] + self.d_store(13) + [
-            f"dup {d[2]}.4s, {blen}",
-        ] + self.d_store(14) + [
+        ] + self.d_store(13) + lens + self.d_store(14) + [
             f"dup {d[3]}.4s, {flags}",
         ] + self.d_store(15)
         return out
@@ -940,7 +965,7 @@ def xof1_kernel(name, sc):
 ROLLED_K1 = True
 
 
-def kernel(name, scalars, units, partial=False, xof=False):
+def kernel(name, scalars, units, partial=False, xof=False, last=False):
     """A kernel over whole chunks. With `partial`, the last scalar hashes a
     partial chunk: its block count and final block length arrive in x6 as
     `blocks | last_len << 8` (blocks in 1..=the others' count, last_len in
@@ -948,8 +973,13 @@ def kernel(name, scalars, units, partial=False, xof=False):
     the others for its own blocks only; a second loop finishes the rest.
     With `xof` (quads alone, one block), each lane's whole 64-byte output
     goes out: the low half the chaining value, the high half the c and d
-    rows with the key, lane j's at out + 64 * slot."""
+    rows with the key, lane j's at out + 64 * slot. With `last` (#247), each
+    lane's last block comes from its own pointer, x7[i], and records its own
+    length, x6[i] (32-bit words, 0..=64), in place of the input's last block
+    and the packed length."""
     assert not partial or not xof
+    assert not last or (not partial and not xof and (units or len(scalars) > 1)), "an l kernel has two lanes or more"
+    frame = FRAME_LAST if last else FRAME
     if xof and scalars:
         assert len(scalars) == 1 and not units
         return xof1_kernel(name, scalars[0])
@@ -962,7 +992,7 @@ def kernel(name, scalars, units, partial=False, xof=False):
     L = []
     e = L.append
     e(f"{name}:")
-    e(f"sub sp, sp, #{FRAME}")
+    e(f"sub sp, sp, #{frame}")
     for lo, hi in x_pairs:
         e(f"stp x{lo}, x{hi}, [sp, #{F_X19 + 8 * (lo - 19)}]")
     for lo, hi in d_pairs:
@@ -970,6 +1000,24 @@ def kernel(name, scalars, units, partial=False, xof=False):
     e(f"str x4, [sp, #{F_PACKED}]")
     e(f"str x1, [sp, #{F_TOTAL}]")
     e(f"str x5, [sp, #{F_OUT}]")
+    if last:
+        # The per-lane tables, into the frame before x6 and x7 serve as
+        # temps (x8 is free until the rounds).
+        for i in range(n_inputs):
+            e(f"ldr x8, [x7, #{8 * i}]")
+            e(f"str x8, [sp, #{F_LASTPTR + 8 * i}]")
+        for sc in scalars:
+            e(f"ldr w8, [x6, #{4 * sc.slot}]")
+            e(f"str w8, [sp, #{F_SCLEN + 4 * sc.index}]")
+        for u in units:
+            # A quad's lane j is slot j; a pair holds each word twice.
+            words = u.slots if isinstance(u, Quad) else [u.slots[0], u.slots[0], u.slots[1], u.slots[1]]
+            for j, slot in enumerate(words):
+                e(f"ldr w8, [x6, #{4 * slot}]")
+                e(f"str w8, [sp, #{F_ULEN + 16 * u.index + 4 * j}]")
+        e("mov w8, #64")
+        for j in range(4):
+            e(f"str w8, [sp, #{F_SIXTYFOUR + 4 * j}]")
     if partial:
         e(f"str x6, [sp, #{F_PART}]")
     if xof:
@@ -1050,6 +1098,18 @@ def kernel(name, scalars, units, partial=False, xof=False):
         e("ubfx w3, w3, #16, #8")
         e("csel w3, w3, wzr, eq")
         e("orr w2, w2, w3")
+        if last:
+            # The last block: each lane reads its own (the running pointers
+            # are dead after it). The flags in w2 survive.
+            e(f"cmp {rem}, #1")
+            for i in range(n_inputs):
+                e(f"ldr x3, [sp, #{F_LASTPTR + 8 * i}]")
+                if i in pregs:
+                    e(f"csel {pregs[i]}, x3, {pregs[i]}, eq")
+                else:
+                    e(f"ldr x4, [sp, #{F_PTR + 8 * i}]")
+                    e("csel x4, x3, x4, eq")
+                    e(f"str x4, [sp, #{F_PTR + 8 * i}]")
         if units:
             # c and d rows of every unit are dead here: use them as transposition
             # temps. A unit with register-resident messages must not have its
@@ -1064,14 +1124,21 @@ def kernel(name, scalars, units, partial=False, xof=False):
         # Block length into w3: the packed final length on the last block, 64
         # before it. The transposes above used x3/x4 as pointer temps, so this
         # comes after them; the flags in w2 survive.
-        e(f"ldr w3, [sp, #{F_PACKED}]")
-        e("lsr w3, w3, #24")
-        e("mov w4, #64")
-        e(f"cmp {rem}, #1")
-        e("csel w3, w3, w4, eq")
+        if not last:
+            e(f"ldr w3, [sp, #{F_PACKED}]")
+            e("lsr w3, w3, #24")
+            e("mov w4, #64")
+            e(f"cmp {rem}, #1")
+            e("csel w3, w3, w4, eq")
         for u in units:
-            L.extend(u.start_rows("w2", "w3"))
+            L.extend(u.start_rows("w2", "w3", rem if last else None))
         for sc in lanes:
+            if last:
+                # This scalar's own length on the last block, 64 before.
+                e(f"ldr w3, [sp, #{F_SCLEN + 4 * sc.index}]")
+                e("mov w4, #64")
+                e(f"cmp {rem}, #1")
+                e("csel w3, w3, w4, eq")
             if sc is part:
                 # The partial lane's own flags and length, into w2 and w3:
                 # start on the first block as for the others, end and the
@@ -1164,7 +1231,7 @@ def kernel(name, scalars, units, partial=False, xof=False):
         e(f"ldp x{lo}, x{hi}, [sp, #{F_X19 + 8 * (lo - 19)}]")
     for lo, hi in d_pairs:
         e(f"ldp d{lo}, d{hi}, [sp, #{F_D8 + 8 * (lo - 8)}]")
-    e(f"add sp, sp, #{FRAME}")
+    e(f"add sp, sp, #{frame}")
     e("ret")
     return L
 
@@ -1206,6 +1273,15 @@ def build():
         "p5": kernel("blake3_servil_hybrid_p5", psc1(0), [ppair(0, (1, 2)), ppair(1, (3, 4))]),
         "p7": kernel("blake3_servil_hybrid_p7", psc1(0), [pquad(0, (1, 2, 3, 4)), ppair(1, (5, 6))]),
         "p9": kernel("blake3_servil_hybrid_p9", psc1(0), [pquad(0, (1, 2, 3, 4)), pquad(1, (5, 6, 7, 8))]),
+        # l<n>: p<n> with each lane's last block and length its own (#247),
+        # for items of up to a chunk grouped by their whole blocks.
+        "l2": kernel("blake3_servil_hybrid_l2", [], [plone((0, 1))], last=True),
+        "l3": kernel("blake3_servil_hybrid_l3", psc1(0), [plone((1, 2))], last=True),
+        "l4": kernel("blake3_servil_hybrid_l4", psc2(0, 1), [plone((2, 3))], last=True),
+        "l5": kernel("blake3_servil_hybrid_l5", psc1(0), [ppair(0, (1, 2)), ppair(1, (3, 4))], last=True),
+        "l7": kernel("blake3_servil_hybrid_l7", psc1(0), [pquad(0, (1, 2, 3, 4)), ppair(1, (5, 6))], last=True),
+        "l8": kernel("blake3_servil_hybrid_l8", [], [pquad(0, (0, 1, 2, 3)), pquad(1, (4, 5, 6, 7))], last=True),
+        "l9": kernel("blake3_servil_hybrid_l9", psc1(0), [pquad(0, (1, 2, 3, 4)), pquad(1, (5, 6, 7, 8))], last=True),
         "k1": kernel("blake3_servil_hybrid_k1", sc1(0), []),
         "k2": kernel("blake3_servil_hybrid_k2", [], [lone_pair((0, 1))]),
         "k3": kernel("blake3_servil_hybrid_k3", sc1(0), [lone_pair((1, 2))]),

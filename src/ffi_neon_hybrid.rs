@@ -99,6 +99,79 @@ mod asm {
         pub fn blake3_servil_hybrid_p5(inputs: *const *const u8, blocks: u64, key: *const u32, counter: u64, packed_flags: u64, out: *mut u8);
         pub fn blake3_servil_hybrid_p7(inputs: *const *const u8, blocks: u64, key: *const u32, counter: u64, packed_flags: u64, out: *mut u8);
         pub fn blake3_servil_hybrid_p9(inputs: *const *const u8, blocks: u64, key: *const u32, counter: u64, packed_flags: u64, out: *mut u8);
+        /// l<n>: p<n> with each lane's last block read from `lasts[i]` and
+        /// recording `lens[i]` bytes (0..=64), in place of its input's last
+        /// block and the packed length (#247).
+        pub fn blake3_servil_hybrid_l2(
+            inputs: *const *const u8,
+            blocks: u64,
+            key: *const u32,
+            counter: u64,
+            packed_flags: u64,
+            out: *mut u8,
+            lens: *const u32,
+            lasts: *const *const u8,
+        );
+        pub fn blake3_servil_hybrid_l3(
+            inputs: *const *const u8,
+            blocks: u64,
+            key: *const u32,
+            counter: u64,
+            packed_flags: u64,
+            out: *mut u8,
+            lens: *const u32,
+            lasts: *const *const u8,
+        );
+        pub fn blake3_servil_hybrid_l4(
+            inputs: *const *const u8,
+            blocks: u64,
+            key: *const u32,
+            counter: u64,
+            packed_flags: u64,
+            out: *mut u8,
+            lens: *const u32,
+            lasts: *const *const u8,
+        );
+        pub fn blake3_servil_hybrid_l5(
+            inputs: *const *const u8,
+            blocks: u64,
+            key: *const u32,
+            counter: u64,
+            packed_flags: u64,
+            out: *mut u8,
+            lens: *const u32,
+            lasts: *const *const u8,
+        );
+        pub fn blake3_servil_hybrid_l7(
+            inputs: *const *const u8,
+            blocks: u64,
+            key: *const u32,
+            counter: u64,
+            packed_flags: u64,
+            out: *mut u8,
+            lens: *const u32,
+            lasts: *const *const u8,
+        );
+        pub fn blake3_servil_hybrid_l8(
+            inputs: *const *const u8,
+            blocks: u64,
+            key: *const u32,
+            counter: u64,
+            packed_flags: u64,
+            out: *mut u8,
+            lens: *const u32,
+            lasts: *const *const u8,
+        );
+        pub fn blake3_servil_hybrid_l9(
+            inputs: *const *const u8,
+            blocks: u64,
+            key: *const u32,
+            counter: u64,
+            packed_flags: u64,
+            out: *mut u8,
+            lens: *const u32,
+            lasts: *const *const u8,
+        );
         pub fn blake3_servil_hybrid_p4(inputs: *const *const u8, blocks: u64, key: *const u32, counter: u64, packed_flags: u64, out: *mut u8);
         pub fn blake3_servil_hybrid_p8(inputs: *const *const u8, blocks: u64, key: *const u32, counter: u64, packed_flags: u64, out: *mut u8);
     }
@@ -214,6 +287,22 @@ const PARENT_KERNELS: [Option<Kernel>; 10] = [
     Some(asm::blake3_servil_hybrid_p7),
     Some(asm::blake3_servil_hybrid_p8),
     Some(asm::blake3_servil_hybrid_p9),
+];
+
+/// The l kernels (#247), per exact input count, beside the parent plans
+/// they share: a lone item runs c1, which takes its last block apart too.
+type LastKernel = unsafe extern "C" fn(*const *const u8, u64, *const u32, u64, u64, *mut u8, *const u32, *const *const u8);
+const LAST_KERNELS: [Option<LastKernel>; 10] = [
+    None,
+    None,
+    Some(asm::blake3_servil_hybrid_l2),
+    Some(asm::blake3_servil_hybrid_l3),
+    Some(asm::blake3_servil_hybrid_l4),
+    Some(asm::blake3_servil_hybrid_l5),
+    None,
+    Some(asm::blake3_servil_hybrid_l7),
+    Some(asm::blake3_servil_hybrid_l8),
+    Some(asm::blake3_servil_hybrid_l9),
 ];
 
 /// Kernel sizes per parent count 1..=16. p3, p5, p7, and p9 hash one
@@ -530,6 +619,11 @@ pub(crate) fn entries() -> std::vec::Vec<(std::string::String, *const ())> {
         for n in 1..=9 {
             out.push((std::format!("q{n}"), partial_kernel(n) as *const ()));
         }
+        for (n, kernel) in LAST_KERNELS.iter().enumerate() {
+            if let Some(kernel) = kernel {
+                out.push((std::format!("l{n}"), *kernel as *const ()));
+            }
+        }
     }
     out.push(("c1".into(), asm::blake3_servil_hybrid_c1 as *const ()));
     out.push(("x1".into(), asm::blake3_servil_hybrid_x1 as *const ()));
@@ -776,9 +870,116 @@ pub unsafe fn hash_messages_raw(
     unsafe { run_plan(family.parent_plans[count], family.parent_kernels, table, blocks, key, counter, 0, packed, out) };
 }
 
+/// Up to GROUP items of `blocks` blocks each (1 to 16) at counter 0, side
+/// by side, each item's last block its own: read from `lasts[i]` (64
+/// bytes, zero past `lens[i]`, which is 0 to 64) in place of its input's,
+/// and recording `lens[i]` bytes. `flags` on every block, `flags_start` on
+/// the first, `flags_end` on the last; each item's 32 bytes to `out` in
+/// order. With ROOT in `flags_end`, those are the items' digests (#247:
+/// items of up to a chunk grouped by their whole blocks).
+///
+/// Unsafe because the CPU must have NEON and SHA-3 (`sha3_detected`), each
+/// input must reach `blocks - 1` whole blocks, and each last block 64 bytes.
+/// The output must be separate from every input prefix and last block.
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn hash_last_lanes(
+    inputs: &[*const u8],
+    lasts: &[*const u8],
+    lens: &[u32],
+    blocks: usize,
+    key: &CVWords,
+    flags: u8,
+    flags_start: u8,
+    flags_end: u8,
+    out: &mut [u8],
+) {
+    let count = inputs.len();
+    assert!(count >= 1 && count <= GROUP && lasts.len() == count && lens.len() == count, "1 to GROUP items, a last block and a length each");
+    assert!((1..=16).contains(&blocks) && lens.iter().all(|&l| l <= BLOCK_LEN as u32), "1 to 16 blocks, the last of 0 to 64 bytes");
+    assert!(out.len() >= count * OUT_LEN, "room for every digest");
+    let packed = flags as u64 | (flags_start as u64) << 8 | (flags_end as u64) << 16;
+    if count == 1 {
+        // Sound: the caller's contract; c1 reads its last block from `last`.
+        unsafe {
+            crate::ran_kernel(asm::blake3_servil_hybrid_c1 as *const ());
+            asm::blake3_servil_hybrid_c1(inputs[0], blocks as u64, key.as_ptr(), 0, packed | (lens[0] as u64) << 24, out.as_mut_ptr(), lasts[0]);
+        }
+        return;
+    }
+    let mut done = 0;
+    for &size in PARENT_PLANS[count] {
+        let kernel = LAST_KERNELS[size].expect("an l kernel for every size a plan of two or more names");
+        // Sound: the caller's contract, for items done..done + size.
+        unsafe {
+            crate::ran_kernel(kernel as *const ());
+            kernel(
+                inputs.as_ptr().add(done),
+                blocks as u64,
+                key.as_ptr(),
+                0,
+                packed,
+                out[done * OUT_LEN..].as_mut_ptr(),
+                lens.as_ptr().add(done),
+                lasts.as_ptr().add(done),
+            )
+        };
+        done += size;
+    }
+}
+
 #[cfg(all(test, feature = "std"))]
 mod test {
     use super::*;
+
+    /// Every group size 1 to 16 and every block count 1 to 16, each item's
+    /// last length its own (empty items too, where there is one block), in
+    /// the plain and keyed modes: each lane's output is hash()'s digest.
+    #[test]
+    fn test_hash_last_lanes_against_hash() {
+        if !sha3_detected() {
+            return;
+        }
+        let key_bytes = [7u8; 32];
+        let mut x = 0x2545_f491_4f6c_dd1du64;
+        let mut next = move || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        for (mode, key) in [(crate::Mode::Plain, *crate::IV), (crate::Mode::Keyed(&key_bytes), crate::platform::words_from_le_bytes_32(&key_bytes))] {
+            let mut room = core::mem::MaybeUninit::uninit();
+            let (_, flags) = mode.key(&mut room);
+            for blocks in 1..=16usize {
+                for count in 1..=GROUP {
+                    let lens: std::vec::Vec<usize> = (0..count)
+                        .map(|_| {
+                            let least = if blocks == 1 { 0 } else { 1 };
+                            (blocks - 1) * BLOCK_LEN + least + (next() as usize % (BLOCK_LEN + 1 - least))
+                        })
+                        .collect();
+                    let items: std::vec::Vec<std::vec::Vec<u8>> = lens.iter().map(|&n| (0..n).map(|_| next() as u8).collect()).collect();
+                    let mut last_blocks = std::vec![[0u8; BLOCK_LEN]; count];
+                    for (b, item) in last_blocks.iter_mut().zip(&items) {
+                        let tail = &item[(blocks - 1) * BLOCK_LEN..];
+                        b[..tail.len()].copy_from_slice(tail);
+                    }
+                    let inputs: std::vec::Vec<*const u8> = items.iter().map(|i| i.as_ptr()).collect();
+                    let lasts: std::vec::Vec<*const u8> = last_blocks.iter().map(|b| b.as_ptr()).collect();
+                    let last_lens: std::vec::Vec<u32> = lens.iter().map(|&n| (n - (blocks - 1) * BLOCK_LEN) as u32).collect();
+                    let mut out = std::vec![0u8; count * OUT_LEN];
+                    let end = crate::CHUNK_END | crate::ROOT;
+                    // Sound: SHA-3 is present; each input holds blocks - 1 whole
+                    // blocks before its last, and each last block 64 bytes.
+                    unsafe { hash_last_lanes(&inputs, &lasts, &last_lens, blocks, &key, flags, crate::CHUNK_START, end, &mut out) };
+                    for (i, item) in items.iter().enumerate() {
+                        let want = crate::convenience::hash_with(mode, item);
+                        assert_eq!(&out[i * OUT_LEN..][..OUT_LEN], want.as_bytes(), "{count} items of {blocks} blocks, item {i} of {} bytes", item.len());
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn test_kernel_code_ranges() {
