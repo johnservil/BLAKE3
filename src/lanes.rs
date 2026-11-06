@@ -1233,6 +1233,9 @@ pub(crate) mod sources {
         /// survivors under the mutation check had stood as scheduling.
         #[test]
         fn test_visible_sees_a_waiting_item_and_its_kind() {
+            // Made-up items (no job, an unwritten ring): safe only because
+            // nothing here starts the pool, so no worker takes one (see
+            // test_a_worker_serves_the_lowest_source_until_it_is_empty).
             let job: &'static Source = &*Box::leak(Box::new(Source::new(0)));
             let stream: &'static Source = &*Box::leak(Box::new(Source::new(4)));
             let slots = [job.register().expect("a free slot"), stream.register().expect("a free slot")];
