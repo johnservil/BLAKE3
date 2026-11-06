@@ -289,8 +289,14 @@ pub(crate) fn across_from(len: usize, platform: Platform) -> Option<usize> {
     if !(2..ACROSS_CHUNKS).contains(&chunks) || !takes_platform(platform) {
         return None;
     }
-    let chain = chunks < platform.simd_degree() && (len % CHUNK_LEN != 0 || chunks == 2);
-    Some(if chain { 4 } else { platform.simd_degree() })
+    // The lanes hash_across fills: the platform's, at most ACROSS_GROUP, its
+    // most messages a group (AVX-512's 32 on Linux is the wide kernel's,
+    // which no group of sixteen reaches: asked for 32, 16 to 31 messages of
+    // 4 KiB ran one at a time, 1708 ns a message on an EPYC 9255 against
+    // 566 for 64 across).
+    let lanes = platform.simd_degree().min(ACROSS_GROUP);
+    let chain = chunks < lanes && (len % CHUNK_LEN != 0 || chunks == 2);
+    Some(if chain { 4 } else { lanes })
 }
 
 /// Messages of one length, over a chunk and under ACROSS_CHUNKS chunks,
@@ -863,10 +869,11 @@ mod test {
         assert_eq!(across_from(3 * CHUNK_LEN, Platform::SSE41), None, "SSE4.1 hashes message by message");
         #[cfg(blake3_avx512_ffi)]
         {
-            // AVX-512's lanes: 32 on Linux (the wide kernel), 16 elsewhere;
-            // every count under 16 chunks is short of them.
-            let lanes = Platform::AVX512.simd_degree();
-            assert!(lanes >= 16);
+            // AVX-512's lanes for hash_across: ACROSS_GROUP (16), whatever
+            // the platform's own (32 on Linux, the wide kernel's); every
+            // count under 16 chunks is short of them.
+            let lanes = ACROSS_GROUP;
+            assert!(Platform::AVX512.simd_degree() >= lanes);
             assert_eq!(across_from(8 * CHUNK_LEN, Platform::AVX512), Some(lanes), "eight whole chunks: the lanes");
             assert_eq!(across_from(8 * CHUNK_LEN + 1, Platform::AVX512), Some(4), "nine chunks, one partial, short of the lanes");
             assert_eq!(across_from(2 * CHUNK_LEN, Platform::AVX512), Some(4), "two whole chunks: a long chain");
