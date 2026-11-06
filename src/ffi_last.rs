@@ -82,6 +82,60 @@ unsafe fn hash_group16(items: &[&[u8]], k: usize, key: &CVWords, flags: u8, out:
     out.copy_from_slice(&digests[..n]);
 }
 
+/// Per-lane ending offsets extend the equal-length kernel's compact
+/// parameter block. Keeping ends on its own line also makes mask loads
+/// independent of the common scalar fields.
+#[repr(C, align(64))]
+struct ParamsMixed {
+    common: Params16,
+    ends: [u32; 16],
+}
+
+unsafe extern "C" {
+    fn blake3_servil_mixed_avx512(params: *const ParamsMixed);
+}
+
+/// Sixteen or fewer messages of arbitrary lengths up to a chunk. The
+/// kernel records a lane's root at its own last block; later steps use
+/// the padded block as a dummy input and leave that digest untouched.
+/// Unsafe: the CPU supports AVX-512F.
+pub(crate) unsafe fn hash_mixed16(items: &[&[u8]], key: &CVWords, flags: u8, out: &mut [[u8; OUT_LEN]]) {
+    let n = items.len();
+    assert!((1..=16).contains(&n) && out.len() == n, "1 to 16 items, one digest each");
+    assert!(items.iter().all(|i| i.len() <= crate::CHUNK_LEN), "items up to one chunk");
+    let ends: [u32; 16] = core::array::from_fn(|j| (items[if j < n { j } else { 0 }].len().saturating_sub(1) / BLOCK_LEN * BLOCK_LEN) as u32);
+    let mut last = [[0u8; BLOCK_LEN]; 16];
+    let lens = core::array::from_fn(|j| {
+        let item = items[if j < n { j } else { 0 }];
+        let tail = &item[ends[j] as usize..];
+        last[j][..tail.len()].copy_from_slice(tail);
+        tail.len() as u32
+    });
+    let mut words = [[0u32; 16]; 8];
+    let p = ParamsMixed {
+        common: Params16 {
+            msg: core::array::from_fn(|j| items[if j < n { j } else { 0 }].as_ptr()),
+            lastmsg: core::array::from_fn(|j| last[j].as_ptr()),
+            lens,
+            key: *key,
+            k: *ends.iter().max().unwrap() / BLOCK_LEN as u32,
+            flags: flags as u32,
+            out: words.as_mut_ptr().cast(),
+        },
+        ends,
+    };
+    // Sound: each lane reads its whole blocks only before ends[j], then
+    // the padded last block; output is a caller-owned word-major array of
+    // 8 * 16 words, with each lane written once at its ending step. No
+    // shared mutable state, and the caller checked AVX-512F.
+    unsafe { blake3_servil_mixed_avx512(&p) };
+    for (j, digest) in out.iter_mut().enumerate() {
+        for (i, word) in words.iter().enumerate() {
+            digest[4 * i..][..4].copy_from_slice(&word[j].to_le_bytes());
+        }
+    }
+}
+
 /// The widest last-block kernel the selected platform takes.
 pub(crate) fn lanes(platform: crate::platform::Platform) -> usize {
     match platform {
@@ -195,6 +249,47 @@ mod test {
         assert_eq!(core::mem::offset_of!(Params16, k), 352);
         assert_eq!(core::mem::offset_of!(Params16, flags), 356);
         assert_eq!(core::mem::offset_of!(Params16, out), 360);
+        assert_eq!(core::mem::offset_of!(ParamsMixed, common), 0);
+        assert_eq!(core::mem::offset_of!(ParamsMixed, ends), 384);
+    }
+
+    /// Every lane can end at a different step. Exercise all block counts,
+    /// every partial-block length, empty lanes beside full chunks, all
+    /// widths 1..16 and three modes, against the independent reference.
+    #[test]
+    fn test_mixed16_against_official() {
+        if !crate::platform::avx512_detected() {
+            return;
+        }
+        let input: std::vec::Vec<u8> = (0..32768usize).map(|i| (i * 37 + i / 991) as u8).collect();
+        let key = [9u8; 32];
+        for mode in [crate::Mode::Plain, crate::Mode::Keyed(&key), crate::Mode::DeriveKey("mixed last blocks")] {
+            let mut room = core::mem::MaybeUninit::uninit();
+            let (words, flags) = mode.key(&mut room);
+            for tail in 0..=64usize {
+                for n in 1..=16usize {
+                    let items: std::vec::Vec<&[u8]> = (0..n)
+                        .map(|j| {
+                            let k = (j * 7 + tail) % 16;
+                            let len = if j == 0 {
+                                0
+                            } else if j == 1 {
+                                1024
+                            } else {
+                                k * 64 + tail.max(1)
+                            };
+                            &input[j * 1027..][..len]
+                        })
+                        .collect();
+                    let mut out = std::vec![[0u8; OUT_LEN]; n];
+                    // Sound: AVX-512F was detected above.
+                    unsafe { hash_mixed16(&items, words, flags, &mut out) };
+                    for (j, item) in items.iter().enumerate() {
+                        assert_eq!(out[j], crate::test::official::hash(mode, item), "tail {tail}, n {n}, lane {j}, {} bytes", item.len());
+                    }
+                }
+            }
+        }
     }
 
     /// Every block count (k of 0 to 15), last blocks of every length (0,

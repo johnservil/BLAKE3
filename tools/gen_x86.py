@@ -271,8 +271,10 @@ class Kernel:
         self.e("ret")
 
 
-def last16():
-    """Sixteen equal-block-count messages, last blocks included. The input
+def last16(mixed=False):
+    """Sixteen messages, last blocks included (equal block counts unless
+    mixed: every lane has its own ending offset at ParamsMixed.ends=384).
+    Mixed results are stored word-major, each lane masked at its end. The input
     and output transposes and G operations are the wide kernel's; message
     words and state live in registers across all seven rounds.
 
@@ -290,7 +292,7 @@ def last16():
     output = io.StringIO()
     with contextlib.redirect_stdout(output):
         e = wide.emit
-        name = 'blake3_servil_last_avx512'
+        name = 'blake3_servil_mixed_avx512' if mixed else 'blake3_servil_last_avx512'
         print(f'.p2align 6\n.global {name}\n.global _{name}\n{name}:\n_{name}:\n.cfi_startproc')
         e('_CET_ENDBR')
         e('push rbp')
@@ -309,16 +311,25 @@ def last16():
         for w in range(8):
             e(f'vpbroadcastd zmm{w}, DWORD PTR [r12 + {320+4*w}]')
         print('.Llast16_block:')
-        e('mov r8, r12')
-        e('mov r9, r14')
-        e('cmp r14, r13')
-        e('jne .Llast16_load')
-        e('lea r8, [r12 + 128]')
-        e('xor r9d, r9d')
-        print('.Llast16_load:')
-        for i in range(16):
-            e(f'mov rax, QWORD PTR [r8 + {8*i}]')
-            e(f'vmovdqu32 zmm{16+i}, ZMMWORD PTR [rax + r9]')
+        if mixed:
+            for i in range(16):
+                e(f'mov rax, QWORD PTR [r12 + {8*i}]')
+                e('add rax, r14')
+                e(f'mov rdx, QWORD PTR [r12 + {128+8*i}]')
+                e(f'cmp r14d, DWORD PTR [r12 + {384+4*i}]')
+                e('cmovae rax, rdx')
+                e(f'vmovdqu32 zmm{16+i}, ZMMWORD PTR [rax]')
+        else:
+            e('mov r8, r12')
+            e('mov r9, r14')
+            e('cmp r14, r13')
+            e('jne .Llast16_load')
+            e('lea r8, [r12 + 128]')
+            e('xor r9d, r9d')
+            print('.Llast16_load:')
+            for i in range(16):
+                e(f'mov rax, QWORD PTR [r8 + {8*i}]')
+                e(f'vmovdqu32 zmm{16+i}, ZMMWORD PTR [rax + r9]')
         rows = wide.transpose(list(range(16, 32)), 8)
         messages = [rows[wide.WORD[w]] for w in range(16)]
         upper = [r for r in range(8, 32) if r not in messages]
@@ -335,12 +346,19 @@ def last16():
         print('.Llast16_flags:')
         e('mov ecx, 64')
         e(f'vpbroadcastd zmm{registers[14]}, ecx')
-        e('cmp r14, r13')
-        e('jne .Llast16_rounds')
-        e('or eax, 10')  # CHUNK_END | ROOT
-        e(f'vmovdqu32 zmm{registers[14]}, ZMMWORD PTR [r12 + 256]')
-        print('.Llast16_rounds:')
-        e(f'vpbroadcastd zmm{registers[15]}, eax')
+        if mixed:
+            e(f'vpbroadcastd zmm{registers[15]}, r14d')
+            e(f'vpcmpeqd k1, zmm{registers[15]}, ZMMWORD PTR [r12 + 384]')
+            e(f'vmovdqu32 zmm{registers[14]}{{k1}}, ZMMWORD PTR [r12 + 256]')
+            e(f'vpbroadcastd zmm{registers[15]}, eax')
+            e(f'vpord zmm{registers[15]}{{k1}}, zmm{registers[15]}, ZMMWORD PTR [rip + .Llast16_endflags]')
+        else:
+            e('cmp r14, r13')
+            e('jne .Llast16_rounds')
+            e('or eax, 10')  # CHUNK_END | ROOT
+            e(f'vmovdqu32 zmm{registers[14]}, ZMMWORD PTR [r12 + 256]')
+            print('.Llast16_rounds:')
+            e(f'vpbroadcastd zmm{registers[15]}, eax')
         for permutation in schedule():
             for half, positions in enumerate((COLS, DIAGS)):
                 chains = [wide.g(*[f'zmm{registers[w]}' for w in pos],
@@ -352,10 +370,14 @@ def last16():
                         e(instruction)
         for w in range(8):
             e(f'vpxord zmm{w}, zmm{w}, zmm{registers[8+w]}')
+        if mixed:
+            for w in range(8):
+                e(f'vmovdqu32 ZMMWORD PTR [r15 + {64*w}]{{k1}}, zmm{w}')
         e('add r14, 64')
         e('cmp r14, r13')
         e('jbe .Llast16_block')
-        wide.output_group(0, 0)
+        if not mixed:
+            wide.output_group(0, 0)
         e('vzeroupper')
         for reg in ('r15', 'r14', 'r13', 'r12', 'rbx'):
             e(f'pop {reg}')
@@ -365,7 +387,12 @@ def last16():
         e('ret')
         print('.cfi_endproc\n.p2align 4\n.Llast16_iv:')
         print('    .long ' + ', '.join(hex(v) for v in wide.IV))
-    return output.getvalue().splitlines()
+        if mixed:
+            print('.p2align 6\n.Llast16_endflags:\n    .long ' + ', '.join(['10'] * 16))
+    text = output.getvalue()
+    if mixed:
+        text = text.replace('.Llast16_', '.Lmixed16_')
+    return text.splitlines()
 
 
 def unix(family="partial"):
@@ -393,7 +420,7 @@ def unix(family="partial"):
         k.body(name)
         out += ["        .p2align 6", f"_{name}:", f"{name}:", "        _CET_ENDBR"] + k.lines
     if last:
-        out += last16()
+        out += last16() + last16(mixed=True)
     return out
 
 
