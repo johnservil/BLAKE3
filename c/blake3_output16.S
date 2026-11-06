@@ -23,112 +23,96 @@ blake3_servil_output16:
     movzx edx, BYTE PTR [rdi + 16]
     mov DWORD PTR [rsp + 256], edx
     movzx edx, BYTE PTR [rdi + 17]
-    or edx, 8
     mov DWORD PTR [rsp + 320], edx
     mov rax, QWORD PTR [rdi + 32]
     vmovdqu32 ymm17, YMMWORD PTR [rax]
     movzx edx, BYTE PTR [rdi + 40]
     mov DWORD PTR [rsp + 260], edx
     movzx edx, BYTE PTR [rdi + 41]
-    or edx, 8
     mov DWORD PTR [rsp + 324], edx
     mov rax, QWORD PTR [rdi + 56]
     vmovdqu32 ymm18, YMMWORD PTR [rax]
     movzx edx, BYTE PTR [rdi + 64]
     mov DWORD PTR [rsp + 264], edx
     movzx edx, BYTE PTR [rdi + 65]
-    or edx, 8
     mov DWORD PTR [rsp + 328], edx
     mov rax, QWORD PTR [rdi + 80]
     vmovdqu32 ymm19, YMMWORD PTR [rax]
     movzx edx, BYTE PTR [rdi + 88]
     mov DWORD PTR [rsp + 268], edx
     movzx edx, BYTE PTR [rdi + 89]
-    or edx, 8
     mov DWORD PTR [rsp + 332], edx
     mov rax, QWORD PTR [rdi + 104]
     vmovdqu32 ymm20, YMMWORD PTR [rax]
     movzx edx, BYTE PTR [rdi + 112]
     mov DWORD PTR [rsp + 272], edx
     movzx edx, BYTE PTR [rdi + 113]
-    or edx, 8
     mov DWORD PTR [rsp + 336], edx
     mov rax, QWORD PTR [rdi + 128]
     vmovdqu32 ymm21, YMMWORD PTR [rax]
     movzx edx, BYTE PTR [rdi + 136]
     mov DWORD PTR [rsp + 276], edx
     movzx edx, BYTE PTR [rdi + 137]
-    or edx, 8
     mov DWORD PTR [rsp + 340], edx
     mov rax, QWORD PTR [rdi + 152]
     vmovdqu32 ymm22, YMMWORD PTR [rax]
     movzx edx, BYTE PTR [rdi + 160]
     mov DWORD PTR [rsp + 280], edx
     movzx edx, BYTE PTR [rdi + 161]
-    or edx, 8
     mov DWORD PTR [rsp + 344], edx
     mov rax, QWORD PTR [rdi + 176]
     vmovdqu32 ymm23, YMMWORD PTR [rax]
     movzx edx, BYTE PTR [rdi + 184]
     mov DWORD PTR [rsp + 284], edx
     movzx edx, BYTE PTR [rdi + 185]
-    or edx, 8
     mov DWORD PTR [rsp + 348], edx
     mov rax, QWORD PTR [rdi + 200]
     vmovdqu32 ymm24, YMMWORD PTR [rax]
     movzx edx, BYTE PTR [rdi + 208]
     mov DWORD PTR [rsp + 288], edx
     movzx edx, BYTE PTR [rdi + 209]
-    or edx, 8
     mov DWORD PTR [rsp + 352], edx
     mov rax, QWORD PTR [rdi + 224]
     vmovdqu32 ymm25, YMMWORD PTR [rax]
     movzx edx, BYTE PTR [rdi + 232]
     mov DWORD PTR [rsp + 292], edx
     movzx edx, BYTE PTR [rdi + 233]
-    or edx, 8
     mov DWORD PTR [rsp + 356], edx
     mov rax, QWORD PTR [rdi + 248]
     vmovdqu32 ymm26, YMMWORD PTR [rax]
     movzx edx, BYTE PTR [rdi + 256]
     mov DWORD PTR [rsp + 296], edx
     movzx edx, BYTE PTR [rdi + 257]
-    or edx, 8
     mov DWORD PTR [rsp + 360], edx
     mov rax, QWORD PTR [rdi + 272]
     vmovdqu32 ymm27, YMMWORD PTR [rax]
     movzx edx, BYTE PTR [rdi + 280]
     mov DWORD PTR [rsp + 300], edx
     movzx edx, BYTE PTR [rdi + 281]
-    or edx, 8
     mov DWORD PTR [rsp + 364], edx
     mov rax, QWORD PTR [rdi + 296]
     vmovdqu32 ymm28, YMMWORD PTR [rax]
     movzx edx, BYTE PTR [rdi + 304]
     mov DWORD PTR [rsp + 304], edx
     movzx edx, BYTE PTR [rdi + 305]
-    or edx, 8
     mov DWORD PTR [rsp + 368], edx
     mov rax, QWORD PTR [rdi + 320]
     vmovdqu32 ymm29, YMMWORD PTR [rax]
     movzx edx, BYTE PTR [rdi + 328]
     mov DWORD PTR [rsp + 308], edx
     movzx edx, BYTE PTR [rdi + 329]
-    or edx, 8
     mov DWORD PTR [rsp + 372], edx
     mov rax, QWORD PTR [rdi + 344]
     vmovdqu32 ymm30, YMMWORD PTR [rax]
     movzx edx, BYTE PTR [rdi + 352]
     mov DWORD PTR [rsp + 312], edx
     movzx edx, BYTE PTR [rdi + 353]
-    or edx, 8
     mov DWORD PTR [rsp + 376], edx
     mov rax, QWORD PTR [rdi + 368]
     vmovdqu32 ymm31, YMMWORD PTR [rax]
     movzx edx, BYTE PTR [rdi + 376]
     mov DWORD PTR [rsp + 316], edx
     movzx edx, BYTE PTR [rdi + 377]
-    or edx, 8
     mov DWORD PTR [rsp + 380], edx
     vpunpckldq zmm8, zmm16, zmm17
     vpunpckhdq zmm16, zmm16, zmm17

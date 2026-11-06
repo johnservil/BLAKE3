@@ -233,10 +233,10 @@ it runs the whole matrix, which `cases()` enumerates in one place.
 
 `prove_output.py` checks the single-block root-output kernel with an independent
 arbitrary CV, block, byte length and flags for each of sixteen lanes. Every lane
-matches `compress(cv, block, 0, length, flags | ROOT)[:8]` from the same Lean
+matches `compress(cv, block, 0, length, flags)[:8]` from the same Lean
 specification. Descriptor, CV and block regions are read-only; output coverage,
 all legal entry-stack residues, bounds and callee-saved registers are checked.
-Fault controls omit ROOT, select another lane's CV, overread a CV and omit the
+Fault controls select another lane's flags or CV, overread a CV and omit the
 last outputs. `cross_check_x86.py` includes the new kernel's vector forms.
 
 ## Extending

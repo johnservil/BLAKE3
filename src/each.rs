@@ -101,6 +101,11 @@ pub fn finalize_each(hashers: &[Hasher], which: &[usize], out: &mut [[u8; OUT_LE
                     unsafe { crate::ffi_output::hash_group(inputs.as_slice().try_into().unwrap(), out) };
                     continue;
                 }
+                // Sound: this branch detected the kernel's ISA. Staged first
+                // chunks retain their digest as independently ending lanes.
+                if unsafe { crate::ffi_output::staged_group(hashers, which.try_into().unwrap(), out) } {
+                    continue;
+                }
             }
             for (&i, digest) in which.iter().zip(out) {
                 *digest = *hashers[i].finalize().as_bytes();
@@ -125,11 +130,17 @@ fn update_turn(hashers: &mut [Hasher], pieces: &[(usize, &[u8])], pooled: bool) 
     let mut waiting: Vec<(usize, &[u8])> = Vec::new();
     let mut held: Vec<usize> = Vec::new();
     while !turn.is_empty() {
+        #[cfg(all(blake3_avx512_ffi, target_os = "linux"))]
+        let batch_first = turn.len() >= 16 && matches!(Platform::detect(), Platform::AVX512);
         for &(i, bytes) in &turn {
             // A hasher holding a group takes no more until the turn's
             // groups are hashed: its pieces wait, in order.
             if hashers[i].held_group().is_some() {
                 waiting.push((i, bytes));
+                continue;
+            }
+            #[cfg(all(blake3_avx512_ffi, target_os = "linux"))]
+            if batch_first && crate::ffi_output::gather_first(&mut hashers[i], bytes) {
                 continue;
             }
             let rest = hashers[i].gather_part(bytes, pooled, true);

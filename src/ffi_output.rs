@@ -1,9 +1,9 @@
-//! Sixteen independent final root compressions, one full-round compression
-//! per lane. Descriptors borrow existing chunk-state blocks and CVs; all keys,
-//! CVs, lengths and mode/structural flags may differ between lanes.
-use crate::{BLOCK_LEN, CHUNK_END, Hasher, OUT_LEN, platform::Platform};
+//! Sixteen independent counter-zero compressions, one full-round compression
+//! per lane. Descriptors borrow blocks and CVs; keys, lengths and flags may
+//! differ between lanes. ROOT selects root digests; other blocks produce CVs.
 #[cfg(test)]
-use crate::{ROOT, hasher};
+use crate::hasher;
+use crate::{BLOCK_LEN, CHUNK_END, CHUNK_LEN, CHUNK_START, Hasher, OUT_LEN, ROOT, platform::Platform};
 
 #[repr(C)]
 pub(crate) struct Input<'a> {
@@ -32,18 +32,101 @@ pub(crate) fn input(hasher: &Hasher) -> Option<Input<'_>> {
         block: &c.buf,
         cv: &c.cv,
         len: c.buf_len,
-        flags: c.flags | c.start_flag() | CHUNK_END,
+        flags: c.flags | c.start_flag() | CHUNK_END | ROOT,
     })
 }
 
 /// Requires AVX-512F+VL on Linux. Each descriptor holds a readable padded
-/// block and CV; its block length is 0..64. The output holds 16 digests.
+/// block and CV; its block length is 0..64. Output holds sixteen CVs or root
+/// digests, according to each descriptor's flags. All counters are zero.
 pub(crate) unsafe fn hash_group(inputs: &[Input<'_>; 16], out: &mut [[u8; OUT_LEN]]) {
     assert_eq!(out.len(), 16, "sixteen root outputs");
     crate::ran_kernel(blake3_servil_output16 as *const ());
     // Sound: caller supplies the ISA; references and fixed descriptor count
     // provide the readable data, and the checked output holds all stores.
     unsafe { blake3_servil_output16(inputs.as_ptr(), out.as_mut_ptr().cast()) };
+}
+
+/// Gather a bulk caller's first chunk without serial prefix compression.
+/// The existing chunk buffer holds its first block; the existing stage holds
+/// the suffix. The next bulk finalization compresses the prefixes together.
+pub(crate) fn gather_first(hasher: &mut Hasher, bytes: &[u8]) -> bool {
+    let c = &mut hasher.core.chunk_state;
+    if hasher.core.initial_chunk_counter != 0
+        || c.chunk_counter != 0
+        || c.blocks_compressed != 0
+        || hasher.core.cv_stack.len() != 0
+        || (hasher.staged != 0 && c.buf_len as usize != BLOCK_LEN)
+        || c.buf_len as usize + hasher.staged + bytes.len() > CHUNK_LEN
+    {
+        return false;
+    }
+    let take = bytes.len().min(BLOCK_LEN - c.buf_len as usize);
+    let start = c.buf_len as usize;
+    c.buf[start..start + take].copy_from_slice(&bytes[..take]);
+    c.buf_len += take as u8;
+    hasher.stage(&bytes[take..]);
+    true
+}
+
+/// Finalize sixteen first-chunk states whose uncompressed suffixes wait in
+/// their stages. Hashers remain immutable. Finished lanes keep their digest
+/// while longer lanes complete their prefix blocks.
+pub(crate) unsafe fn staged_group(hashers: &[Hasher], which: &[usize; 16], out: &mut [[u8; OUT_LEN]]) -> bool {
+    let states = which.map(|i| &hashers[i]);
+    if states.iter().any(|h| {
+        let c = &h.core.chunk_state;
+        h.core.initial_chunk_counter != 0
+            || c.chunk_counter != 0
+            || c.blocks_compressed != 0
+            || h.core.cv_stack.len() != 0
+            || (h.staged != 0 && c.buf_len as usize != BLOCK_LEN)
+            || h.staged + c.buf_len as usize > CHUNK_LEN
+    }) {
+        return false;
+    }
+    let ends: [usize; 16] = core::array::from_fn(|i| (states[i].core.chunk_state.buf_len as usize + states[i].staged).saturating_sub(1) / BLOCK_LEN);
+    let lens: [u8; 16] = core::array::from_fn(|i| (states[i].core.chunk_state.buf_len as usize + states[i].staged - ends[i] * BLOCK_LEN) as u8);
+    let mut tails = [[0u8; BLOCK_LEN]; 16];
+    for i in 0..16 {
+        if states[i].staged == 0 {
+            tails[i] = states[i].core.chunk_state.buf;
+        } else {
+            let start = (ends[i] - 1) * BLOCK_LEN;
+            tails[i][..lens[i] as usize].copy_from_slice(&states[i].staged_bytes()[start..]);
+        }
+    }
+    let mut cvs: [[u32; 8]; 16] = core::array::from_fn(|i| states[i].core.chunk_state.cv);
+    let mut values = [[0u8; OUT_LEN]; 16];
+    for block in 0..=*ends.iter().max().unwrap() {
+        let inputs = core::array::from_fn(|i| {
+            let last = block >= ends[i];
+            let bytes = if last {
+                &tails[i]
+            } else if block == 0 {
+                &states[i].core.chunk_state.buf
+            } else {
+                states[i].staged_bytes()[(block - 1) * BLOCK_LEN..block * BLOCK_LEN].try_into().unwrap()
+            };
+            Input {
+                block: bytes,
+                cv: &cvs[i],
+                len: if last { lens[i] } else { BLOCK_LEN as u8 },
+                flags: states[i].core.chunk_state.flags | if block == 0 { CHUNK_START } else { 0 } | if last { CHUNK_END | ROOT } else { 0 },
+            }
+        });
+        // Sound: caller supplies AVX-512F+VL; every pointer borrows a readable
+        // full block and CV, including the padded final blocks above.
+        unsafe { hash_group(&inputs, &mut values) };
+        for i in 0..16 {
+            if block == ends[i] {
+                out[i] = values[i];
+            } else if block < ends[i] {
+                cvs[i] = core::array::from_fn(|w| u32::from_le_bytes(values[i][4 * w..4 * w + 4].try_into().unwrap()));
+            }
+        }
+    }
+    true
 }
 
 const SELF_TEST_EXPECTED: u64 = 0x54e3da46af4eb775;
@@ -60,7 +143,7 @@ fn self_test_shape(mut hash: impl FnMut(&[Input<'_>; 16], &mut [[u8; OUT_LEN]]))
         core::array::from_fn(|w| (0x1234abcdu32.wrapping_add(i as u32 * 0x9e37).wrapping_add(w as u32 * 0x1020304)).wrapping_mul(0x85ebca6b))
     });
     let blocks: [[u8; 64]; 16] = core::array::from_fn(|i| core::array::from_fn(|j| if j < lens[i] as usize { ((i * 37 + j * 17) ^ 0x5a) as u8 } else { 0 }));
-    let inputs = core::array::from_fn(|i| Input { block: &blocks[i], cv: &cvs[i], len: lens[i], flags: flags[i] });
+    let inputs = core::array::from_fn(|i| Input { block: &blocks[i], cv: &cvs[i], len: lens[i], flags: flags[i] | ROOT });
     let mut out = [[0u8; OUT_LEN]; 16];
     hash(&inputs, &mut out);
     crate::self_test::fold(out.as_flattened())
@@ -179,6 +262,51 @@ mod tests {
                 let repeated = vec![0usize; count];
                 crate::each::finalize_each(&hashers, &repeated, &mut out);
                 assert!(out.iter().all(|x| *x == expected[0]));
+            }
+        }
+    }
+
+    #[test]
+    fn bulk_first_chunk_prefixes_all_modes_and_continuations() {
+        crate::initialize();
+        for count in [2, 15, 16, 17, 31, 32, 65] {
+            let lens = [0usize, 1, 63, 64, 65, 127, 128, 255, 512, 1023, 1024];
+            let keys: Vec<_> = (0..count).map(|i| [i as u8; 32]).collect();
+            let data: Vec<Vec<u8>> = (0..count).map(|i| (0..lens[i % lens.len()]).map(|j| (i * 37 + j * 11) as u8).collect()).collect();
+            let mode = |i: usize| match i % 3 {
+                0 => crate::Mode::Plain,
+                1 => crate::Mode::Keyed(&keys[i]),
+                _ => crate::Mode::DeriveKey("BLAKE3-Servil bulk prefix test"),
+            };
+            let mut hashers: Vec<_> = (0..count).map(|i| Hasher::new(mode(i))).collect();
+            // Ordinary and grouped updates can alternate on the same state.
+            for (h, bytes) in hashers.iter_mut().zip(&data) {
+                h.update(&bytes[..bytes.len().min(3)]);
+            }
+            for from in (3..1024).step_by(17) {
+                let pieces: Vec<_> = data.iter().enumerate().map(|(i, bytes)| (i, &bytes[from.min(bytes.len())..(from + 17).min(bytes.len())])).collect();
+                crate::each::update_each(&mut hashers, &pieces);
+            }
+            let which: Vec<_> = (0..count).rev().collect();
+            let wanted: Vec<_> = which.iter().map(|&i| crate::test::official::hash(mode(i), &data[i])).collect();
+            let mut out = vec![[0u8; OUT_LEN]; count];
+            crate::each::finalize_each(&hashers, &which, &mut out);
+            assert_eq!(out, wanted);
+            crate::each::finalize_each(&hashers, &which, &mut out);
+            assert_eq!(out, wanted, "immutable reusable staged states");
+            for (i, h) in hashers.iter().enumerate() {
+                assert_eq!(h.count(), data[i].len() as u64);
+                assert_eq!(h.finalize().as_bytes(), &crate::test::official::hash(mode(i), &data[i]));
+            }
+            // Continue across the chunk and 16-KiB staging boundaries.
+            let suffix = vec![0xacu8; 17003];
+            let pieces: Vec<_> = (0..count).map(|i| (i, suffix.as_slice())).collect();
+            crate::each::update_each(&mut hashers, &pieces);
+            crate::each::finalize_each(&hashers, &which, &mut out);
+            for (slot, &i) in which.iter().enumerate() {
+                let mut whole = data[i].clone();
+                whole.extend_from_slice(&suffix);
+                assert_eq!(out[slot], crate::test::official::hash(mode(i), &whole));
             }
         }
     }

@@ -4,9 +4,9 @@
 (inputs, out): inputs is 16 repr(C) descriptors of stride 24:
 block pointer at 0 (64 readable bytes), CV pointer at 8 (eight readable u32),
 block length byte at 16 (0..64), flags byte at 17. Blocks are zero-padded.
-The first root output block uses counter zero and flags|ROOT in every lane.
+Each compression uses counter zero and the descriptor's flags in every lane.
 Each lane has its own CV, length and flags. out holds 16 canonical 32-byte
-hashes. All input data is read before output stores. No calls or allocation.
+chaining values (root digests when ROOT is present). All input data is read before output stores. No calls or allocation.
 """
 import ast
 import pathlib
@@ -40,7 +40,6 @@ for i in range(16):
     emit(f'movzx edx, BYTE PTR [rdi + {24*i+16}]')
     emit(f'mov DWORD PTR [rsp + {256+4*i}], edx')
     emit(f'movzx edx, BYTE PTR [rdi + {24*i+17}]')
-    emit('or edx, 8')
     emit(f'mov DWORD PTR [rsp + {320+4*i}], edx')
 rows = transpose(list(range(16, 32)), 8)
 for w in range(8):
