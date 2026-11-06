@@ -766,14 +766,10 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
         open.member[open.members] = Member { input, len, out };
         open.members += 1;
         open.len += len;
-        // A task fills TASK_LEN bytes or MEMBERS messages. (Tasks of messages
-        // once stopped at a quarter, to spread over more threads while their
-        // members ran one at a time; members of one length now run side by
-        // side or across, and the fuller task takes more of them at once: 16
-        // messages of 4 KiB fill the widest lanes, at about 30% less CPU time
-        // a byte with the pool's workers, and on one thread 4 KiB messages
-        // ran x1.3 faster.)
-        if open.members == MEMBERS || open.len >= TASK_LEN {
+        // Probe: restore the original task size for messages, keeping the
+        // new hashing kernels. This separates lost parallelism from the
+        // cost of the kernels in mixed-file streams. Batches keep TASK_LEN.
+        if open.members == MEMBERS || open.len >= if batch.is_some() { TASK_LEN } else { TASK_LEN / 4 } {
             self.publish();
         }
     }
@@ -1825,7 +1821,7 @@ mod test {
         let input = std::vec![7u8; 4096];
         let blocks = crate::test::message(&input);
         let members = |s: &Stream<'_, _>| s.open.as_ref().map(|t| (t.members, t.len));
-        let mut got = places(64 + 64 + 16 + 1);
+        let mut got = places(64 + 17 + 4 + 1);
         let mut rest: &mut [Hash] = &mut got;
         let empty = crate::throughput::Batch::new(64, 0);
         let mut none: [Hash; 0] = [];
@@ -1835,7 +1831,7 @@ mod test {
             |s| {
                 s.submit_batch(&empty, &mut none);
                 assert_eq!(members(s), None, "an empty batch joins no task");
-                for (len, closing) in [(64, MEMBERS), (1000, MEMBERS), (4096, TASK_LEN / 4096)] {
+                for (len, closing) in [(64, MEMBERS), (1000, 17), (4096, TASK_LEN / 4 / 4096)] {
                     for k in 1..=closing {
                         s.submit(&blocks, len, &mut take(&mut rest, 1)[0]);
                         assert_eq!(members(s), (k < closing).then_some((k, len * k)), "{len}-byte message {k}");
@@ -1847,9 +1843,9 @@ mod test {
             },
         );
         let digest = |len: usize| crate::convenience::hash(&input[..len]);
-        assert!(got[..64].iter().chain(&got[144..]).all(|h| *h == digest(64)));
-        assert!(got[64..128].iter().all(|h| *h == digest(1000)));
-        assert!(got[128..144].iter().all(|h| *h == digest(4096)));
+        assert!(got[..64].iter().chain(&got[85..]).all(|h| *h == digest(64)));
+        assert!(got[64..81].iter().all(|h| *h == digest(1000)));
+        assert!(got[81..85].iter().all(|h| *h == digest(4096)));
     }
 
     /// A finished stream gives back what it held: its source's slot (with
