@@ -192,11 +192,14 @@ lands: removing the owed wakes passed the i7 and made the EPYC 4-12%
 slower in 14 pool cells (BLAKE3 #119), and the i7 then found its fix
 16-25% slower.
 
-A regression holds the commit: find its cause and fix it. When the
-slowdown is the price of something worth more (correctness, a simpler
-design), the maintainers decide; an accepted one lands with `--no-verify`
-and its slowed cells, their numbers, and the decision in its message. A
-streaming API's cells never slow to speed up another API. A commit in
+A measured regression requires explicit review before landing. Maintainers
+weigh the change's benefits, affected workloads, and complexity. Larger time
+or energy savings, correctness, or a simpler design can justify a measured
+cost. An accepted tradeoff lands with `--no-verify` and its slowed cells,
+their numbers, the decision, and an assigned GitHub follow-up issue in its
+commit message. The issue collects reproduction details, raw evidence,
+attempted fixes, and the next investigation. A streaming API's cells never
+slow to speed up another API. A commit in
 `src/` or `c/` that leaves the machine code as it was (code for other
 targets, tests, comments) skips the check with `--no-verify` and a line
 in its message saying why. Commits made without the hook are checked
