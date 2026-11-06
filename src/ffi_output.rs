@@ -103,6 +103,42 @@ mod tests {
         }
     }
     #[test]
+    fn independent_blocks_cvs_descriptors_and_output_against_guard_pages() {
+        use crate::test::guard_pages::Guarded;
+        crate::initialize();
+        if !matches!(Platform::detect(), Platform::AVX512) {
+            return;
+        }
+        for at_end in [false, true] {
+            let answer = self_test_shape(|inputs, out| {
+                let mut blocks: Vec<_> = (0..16).map(|_| Guarded::new(64, at_end)).collect();
+                let mut cvs: Vec<_> = (0..16).map(|_| Guarded::new(32, at_end)).collect();
+                let mut table = Guarded::new(core::mem::size_of_val(inputs), at_end);
+                let table_ptr = table.bytes().as_mut_ptr().cast::<Input<'_>>();
+                for i in 0..16 {
+                    blocks[i].bytes().copy_from_slice(inputs[i].block);
+                    cvs[i].bytes().copy_from_slice(&hasher::le_bytes(inputs[i].cv));
+                    // Page placement aligns CVs to u32 and descriptors to
+                    // Input. The guarded mappings outlive every borrowed view.
+                    let block = unsafe { &*blocks[i].bytes().as_ptr().cast::<[u8; 64]>() };
+                    let cv = unsafe { &*cvs[i].bytes().as_ptr().cast::<[u32; 8]>() };
+                    unsafe { table_ptr.add(i).write(Input { block, cv, len: inputs[i].len, flags: inputs[i].flags }) };
+                }
+                for page in blocks.iter_mut().chain(cvs.iter_mut()) {
+                    page.read_only();
+                }
+                table.read_only();
+                let descriptors = unsafe { &*table_ptr.cast::<[Input<'_>; 16]>() };
+                let mut output = Guarded::new(16 * OUT_LEN, at_end);
+                let guarded_out = output.bytes().as_chunks_mut::<OUT_LEN>().0;
+                unsafe { hash_group(descriptors, guarded_out) };
+                out.copy_from_slice(guarded_out);
+            });
+            assert_eq!(answer, SELF_TEST_EXPECTED, "guard placement at_end={at_end}");
+        }
+    }
+
+    #[test]
     fn startup_rejects_corrupted_answer() {
         assert!(std::panic::catch_unwind(|| check_self_test(SELF_TEST_EXPECTED ^ 1)).is_err());
     }
