@@ -220,10 +220,12 @@ fn next_piece_len(remaining: usize, threads: usize) -> usize {
 /// `flags` (IV and 0 for plain hashing).
 #[inline]
 pub(crate) fn hash_with_key(input: &[u8], key: &crate::CVWords, flags: u8) -> Hash {
-    // The short path first and inline, so a small input costs what hash()
-    // costs; everything the pool needs is behind the call below.
+    // The short path first and inline, so a small input costs what
+    // performance::hash costs (its kernels, crate::hash_hot: the
+    // multithreaded calls are performance calls, for call after call);
+    // everything the pool needs is behind the call below.
     if input.len() < MIN_SPLIT_LEN {
-        return crate::hash_serial(input, key, flags);
+        return crate::hash_hot(input, key, flags);
     }
     hash_over_pool(input, key, flags)
 }

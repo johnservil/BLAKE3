@@ -860,9 +860,9 @@ mod x86_features_test {
 
     /// The integer-register chunk root's CPUs: AMD from family 0x1A; its bit
     /// agrees with /proc/cpuinfo's vendor and family whether or not the CPU
-    /// has AVX-512; and performance::hash of one chunk or less takes that
-    /// kernel exactly on such a CPU, convenience::hash never (the entries
-    /// that ran, from the tests' record).
+    /// has AVX-512; and performance::hash and hash_multithreaded of one
+    /// chunk or less take that kernel exactly on such a CPU,
+    /// convenience::hash never (the entries that ran, from the tests' record).
     #[test]
     #[cfg(all(target_os = "linux", feature = "std", blake3_sse41_ffi))]
     fn test_gpr_chunk_root_on_amd_from_zen5_alone() {
@@ -889,6 +889,13 @@ mod x86_features_test {
                 let (hot, hot_gpr) = ran(&mut || crate::performance::hash(mode, batch.blocks(), len));
                 assert_eq!(*hot.as_bytes(), official, "{len} B: performance::hash");
                 assert_eq!(hot_gpr, want && len <= crate::CHUNK_LEN, "{len} B: performance::hash takes the GPR kernel exactly where it pays");
+                let (mt, mt_gpr) = ran(&mut || crate::performance::hash_multithreaded(mode, batch.blocks(), len));
+                assert_eq!(*mt.as_bytes(), official, "{len} B: performance::hash_multithreaded");
+                assert_eq!(
+                    mt_gpr,
+                    want && len <= crate::CHUNK_LEN,
+                    "{len} B: performance::hash_multithreaded takes the GPR kernel exactly where performance::hash does"
+                );
                 let (cold, cold_gpr) = ran(&mut || crate::convenience::hash_with(mode, &input));
                 assert_eq!(*cold.as_bytes(), official, "{len} B: convenience::hash_with");
                 assert!(!cold_gpr, "{len} B: convenience::hash_with keeps the compact kernels");
