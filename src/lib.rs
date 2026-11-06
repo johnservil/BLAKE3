@@ -229,6 +229,22 @@ mod chunk_root;
 #[cfg(blake3_neon)]
 #[path = "ffi_neon_hybrid.rs"]
 mod neon_hybrid;
+/// PROBE (pair-warm): one-block messages on the pair kernel alone, and on
+/// the parent plans, both with flags as a batch's.
+#[cfg(blake3_neon)]
+#[doc(hidden)]
+pub fn __probe_pairs(table: &[&[u8; 64]], out: &mut [u8], pairs: bool) {
+    let (s, e) = (CHUNK_START, CHUNK_END | ROOT);
+    // Sound: the probe runs only where SHA-3 is present (asserted).
+    assert!(neon_hybrid::sha3_detected());
+    unsafe {
+        if pairs {
+            neon_hybrid::hash_pairs(table, IV, 0, s, e, 64, out)
+        } else {
+            neon_hybrid::hash_many_last_len(table, IV, 0, IncrementCounter::No, 0, s, e, 64, out)
+        }
+    }
+}
 #[cfg(blake3_sme2)]
 #[path = "ffi_sme2.rs"]
 mod sme2;
