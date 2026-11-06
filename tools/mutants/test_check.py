@@ -222,3 +222,102 @@ class Hangs(unittest.TestCase):
         self.assertTrue(check.clock_only(clock), "the clock stopped one; the rest were ended: timed out")
         self.assertFalse(check.clock_only(both), "a test failed beside the clock: caught")
         self.assertFalse(check.clock_only([("a", "PASS", 1)]))
+
+
+class ChangeRows(unittest.TestCase):
+    """A change's check runs every mutant of each function it touches and
+    writes those functions' rows (touched_functions, function_patterns,
+    rewrite_rows, write_rows)."""
+
+    LISTED = [
+        {"file": "src/a.rs", "name": "src/a.rs:3:5: replace && with || in Foo::bar", "function": {"function_name": "Foo::bar"}},
+        {"file": "src/a.rs", "name": "src/a.rs:9:1: replace baz -> u8 with 0", "function": {"function_name": "baz"}},
+        {"file": "src/a.rs", "name": "src/a.rs:20:12: replace + with - in Foo::bar", "function": {"function_name": "Foo::bar"}},
+        {"file": "src/b.rs", "name": "src/b.rs:1:20: replace * with + ", "function": None},
+    ]
+
+    def test_touched_functions_are_each_listed_mutants_file_and_function(self):
+        self.assertEqual(check.touched_functions(self.LISTED), [("src/a.rs", "Foo::bar"), ("src/a.rs", "baz")])
+
+    def test_the_patterns_select_each_functions_mutants_and_no_others(self):
+        import re
+        patterns = [re.compile(p) for p in check.function_patterns(check.touched_functions(self.LISTED), self.LISTED)]
+        picked = lambda name: any(p.search(name) for p in patterns)
+        for name in ["src/a.rs:30:9: delete ! in Foo::bar", "src/a.rs:1:1: replace Foo::bar -> bool with true",
+                     "src/a.rs:1:1: replace Foo::bar with ()", "src/a.rs:7:7: replace < with == in baz",
+                     "src/b.rs:1:20: replace * with + "]:
+            self.assertTrue(picked(name), name)
+        for name in ["src/a.rs:3:5: replace && with || in Foo::barx", "src/a.rs:3:5: replace && with || in Qux::Foo::bar",
+                     "src/c.rs:3:5: replace && with || in Foo::bar", "src/a.rs:1:1: replace Foo::baz -> bool with true",
+                     "src/b.rs:2:20: replace * with + "]:
+            self.assertFalse(picked(name), name)
+
+    def test_rewrite_rows_takes_the_runs_counts_for_the_written_names_alone(self):
+        same = check.SAME_REASON
+        known = {"f\ta": (2, "speed: a"), "f\tb": (1, "equivalent: b"), "f\tc": (3, same), "f\td": (1, "untouched")}
+        found = {"f\ta": 1, "f\tc": 3, "f\te": 2}
+        rows = check.rewrite_rows(known, {"f\ta", "f\tb", "f\tc", "f\te"}, found, lambda k, n: f"UNCLASSIFIED {n}")
+        self.assertEqual(rows, {
+            "f\ta": (1, "speed: a"),          # fewer places survive: its count, its reason kept
+            "f\tc": (3, "UNCLASSIFIED 3"),    # the tool's reason is the tool's to give again
+            "f\td": (1, "untouched"),         # not written: as it was
+            "f\te": (2, "UNCLASSIFIED 2"),    # new: the reason function's
+        })                                   # b: caught now, its row gone
+
+    def test_an_open_pool_row_keeps_its_most(self):
+        known = {"src/lanes.rs\tx": (3, "OPEN: the pool's scheduling under interleavings the tests leave to chance; Loom would force them (#103)")}
+        with patch.object(check, "open_pool", lambda k, r: r.startswith("OPEN: the pool")):
+            rows = check.rewrite_rows(known, {"src/lanes.rs\tx"}, {"src/lanes.rs\tx": 1}, lambda k, n: "UNCLASSIFIED")
+        self.assertEqual(rows["src/lanes.rs\tx"][0], 3)
+
+    def test_write_rows_changes_only_the_rows_that_change(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "known.txt")
+            # Out of sorted order on purpose (q before b): kept as it is.
+            open(path, "w").write("# head\nfiles: src/a.rs\nsrc/a.rs\tq\t1\tr\nsrc/a.rs\tb\t2\trb\nsrc/a.rs\tgone\t1\tr\nsrc/a.rs\tm\t1\t[cpu has x] r\n")
+            rows = {"src/a.rs\tq": (1, "r"), "src/a.rs\tb": (3, "rb"), "src/a.rs\tc": (1, "new")}
+            check.write_rows(path, rows, ["src/a.rs\tm\t1\t[cpu has x] r"], [])
+            # q and b as they were (b changed in place), gone removed, c before
+            # the first line that sorts after it (q).
+            self.assertEqual(open(path).read(), "# head\nfiles: src/a.rs\nsrc/a.rs\tc\t1\tnew\nsrc/a.rs\tq\t1\tr\nsrc/a.rs\tb\t3\trb\nsrc/a.rs\tm\t1\t[cpu has x] r\n")
+
+    def test_write_rows_writes_a_new_list_sorted(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "timeouts.txt")
+            check.write_rows(path, {"src/a.rs\tz": (2, "r2"), "src/a.rs\ta": (1, "r1")}, [], ["# new"])
+            self.assertEqual(open(path).read(), "# new\nsrc/a.rs\ta\t1\tr1\nsrc/a.rs\tz\t2\tr2\n")
+
+
+class HelperChanges(unittest.TestCase):
+    """A change to a test helper reruns what the tests that use it alone
+    catch (users, catches_only_by), not the whole run."""
+
+    INDEX = [
+        ("helper", "paint", "    for b in buf { *b = 7; }"),
+        ("helper", "golden", "    let x = paint(&mut v);"),
+        ("test", "test_a", "    golden();"),
+        ("test", "test_b", "    paint(&mut w);"),
+        ("test", "test_c", "    painted();"),
+        ("test", "test_d", "    let paint_count = 1;"),
+    ]
+
+    def test_users_follow_helpers_through_helpers_by_whole_word(self):
+        self.assertEqual(check.users(self.INDEX, {"paint"}), {"test_a", "test_b"})
+        self.assertEqual(check.users(self.INDEX, {"golden"}), {"test_a"})
+        self.assertEqual(check.users(self.INDEX, {"nothing"}), set())
+
+    def test_a_place_reruns_only_when_its_every_catcher_is_altered(self):
+        rows = [check.HEADER,
+                "src/a.rs\tm1\t1:1\tf\tblake3-servil t::test_a\tFAIL\t1\n",
+                "src/a.rs\tm2\t2:1\tf\tblake3-servil t::test_a\tFAIL\t1\n",
+                "src/a.rs\tm2\t2:1\tf\tblake3-servil t::test_z\tSIGABRT\t1\n",
+                "src/a.rs\tm3\t3:1\tf\tblake3-servil t::test_a\tPASS\t1\n",
+                "src/a.rs\tm4\t4:1\tf\t" + check.SELF_TEST + "\tFAIL\t1\n",
+                "src/a.rs\tm4\t4:1\tf\tblake3-servil t::test_a\tFAIL\t1\n"]
+        self.assertEqual(check.catches_only_by(iter(rows), {"test_a"}), ["src/a.rs\tm1"])
+        self.assertEqual(check.catches_only_by(iter(rows), {"test_a", "test_z"}), ["src/a.rs\tm1", "src/a.rs\tm2"])
+
+    def test_item_names_for_helper_lines(self):
+        lines = ["mod t {", "    const SIZES: [usize; 2] = [", "        1,", "    ];", "    fn helper() {", "        let x = 1;", "    }", "}"]
+        self.assertEqual(check.item_name(lines, 2), "SIZES")
+        self.assertEqual(check.item_name(lines, 5), "helper")

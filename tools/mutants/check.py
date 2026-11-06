@@ -422,7 +422,9 @@ def run(files, extra=(), shards=SHARDS, label="run", loom=False):
     timed = collections.Counter()  # the time-outs, by name: their own outcome
     functions = collections.defaultdict(list)  # (file, function) -> [(outcome, name)]
     rows = []  # (mutant name, function, test, outcome, ms); the unmutated tree's mutant name is UNMUTATED
-    kept = os.path.join(ROOT, "tmp", "mutants-last", "map" if MAP and label == "run" else label)
+    # A change's run (filtered: `extra`) keeps its record apart, so the last
+    # whole run's record, which caught_by reads, stays whole.
+    kept = os.path.join(ROOT, "tmp", "mutants-last", "map" if MAP and label == "run" else "change" if label == "run" and extra else label)
     shutil.rmtree(kept, ignore_errors=True)
     for k, (tree, process) in enumerate(runs):
         # 0: every mutant caught; 2: some missed; 3: some timed out. Any
@@ -502,6 +504,10 @@ def run(files, extra=(), shards=SHARDS, label="run", loom=False):
             f.writelines("\t".join(map(str, r)) + "\n" for r in rows)
         if MAP and label == "run":  # the confirming pass reruns a few mutants: its weights would be noise
             weigh(rows, os.path.join(kept, "tests.tsv"))
+        if label == "run" and not extra:
+            # A whole run's record names each caught place's catchers (the
+            # tests that failed first): a later change's check reruns the
+            # places whose every catcher it alters (caught_by).
             head = subprocess.run(["git", "-C", ROOT, "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout
             open(os.path.join(kept, "commit"), "w").write(head)
     return names, functions, timed
@@ -668,7 +674,73 @@ def stale_rows(rows, listed):
     return [r for r in rows if (r[1], r[2]) not in exist]
 
 
-def check_rows_exist():
+def touched_functions(listed):
+    """The (file, function) of each mutant `listed` holds (cargo mutants
+    --list --json --in-diff: the mutants in a change's lines): the functions
+    the change touches, whose every mutant a change's check runs, so that
+    their rows can be written whole."""
+    return sorted({(m["file"], (m.get("function") or {}).get("function_name", "")) for m in listed} - {(f, "") for f in {m["file"] for m in listed}})
+
+
+def function_patterns(touched, listed=()):
+    """--re patterns that select every mutant of each touched function by
+    its name ("file:line:column: mutant"): its body replaced ("replace F ->
+    T with V", "replace F with ()"), or a change inside it ("... in F");
+    and each of `listed`'s mutants in no function, by its whole name."""
+    patterns = [f"^{re.escape(m['name'])}$" for m in listed if not (m.get("function") or {}).get("function_name")]
+    for file, function in touched:
+        f = re.escape(function)
+        patterns.append(f"^{re.escape(file)}:[0-9]+:[0-9]+: (?:.* in {f}|replace {f} -> .*|replace {f} with .*)$")
+    return patterns
+
+
+def rewrite_rows(known, names, found, reason):
+    """`known`'s rows with each of `names` (whose every place this run
+    tested) as the run found it: its count, its row gone where nothing of
+    it survives (an OPEN pool row keeps its most, as --write keeps it),
+    `reason(name, count)` for one the list lacks or whose reason was the
+    tool's (same code). The other rows as they were."""
+    rows = {k: v for k, v in known.items() if k not in names}
+    for k in names:
+        n = found.get(k, 0)
+        if k in known and open_pool(k, known[k][1]):
+            n = max(n, known[k][0])
+        if n:
+            rows[k] = (n, known[k][1] if k in known and known[k][1] not in SAME_REASONS else reason(k, n))
+    return rows
+
+
+def write_rows(path, rows, inactive, header):
+    """The list at `path` holding `rows` and the other CPUs' rows
+    (`inactive`): its header and lines as they were, each kept row changed
+    in place, a gone row's line removed, a new row inserted before the first
+    line that sorts after it (so a diff shows the change alone); a new
+    list, `header` then the rows sorted."""
+    new = {f"{k}\t{n}\t{r}" for k, (n, r) in rows.items()} | set(inactive)
+    if not os.path.exists(path):
+        open(path, "w").write("\n".join(header + sorted(new)) + "\n")
+        return
+    by_name = {"\t".join(l.split("\t")[:2]): l for l in new}
+    out, placed = [], set()
+    for line in open(path).read().splitlines():
+        if not line.strip() or line.startswith(("#", "files:", "model files:")):
+            out.append(line)
+            continue
+        if line in new:
+            out.append(line)
+            placed.add(line)
+            continue
+        name = "\t".join(line.split("\t")[:2])
+        if name in by_name and by_name[name] not in placed and line not in inactive:
+            out.append(by_name[name])  # the row changed in place
+            placed.add(by_name[name])
+    for line in sorted(new - placed):
+        at = next((i for i, l in enumerate(out) if l.strip() and not l.startswith(("#", "files:", "model files:")) and l > line), len(out))
+        out.insert(at, line)
+    open(path, "w").write("\n".join(out) + "\n")
+
+
+def check_rows_exist(remove=False):
     """Every row of every architecture's lists names a mutant the source
     holds now. Which mutants exist is the source's alone: cargo mutants
     --list reads it unbuilt, every target's files alike, so any machine
@@ -685,8 +757,18 @@ def check_rows_exist():
     listed = subprocess.run(args, cwd=ROOT, capture_output=True, text=True, check=True).stdout.splitlines()
     stale = stale_rows(rows, listed)
     for name, file, mutant in stale:
-        print(f"STALE ROW: {name}: {file}\t{mutant}")
-    if stale:
+        print(f"{'REMOVED' if remove else 'STALE'} ROW: {name}: {file}\t{mutant}")
+    if stale and remove:
+        # A change's check: a row naming code the change removed (or
+        # renamed) goes; its mutants are gone from every machine alike.
+        gone = {(n, f, m) for n, f, m in stale}
+        for path in paths:
+            lines = open(path).read().splitlines()
+            keep = [l for l in lines if not (l.strip() and not l.startswith(("#", "files:", "model files:"))
+                                            and (os.path.basename(path), *l.split("\t")[:2]) in gone)]
+            if keep != lines:
+                open(path, "w").write("\n".join(keep) + "\n")
+    elif stale:
         sys.exit(f"mutants: {len(stale)} rows name mutants the source no longer has; remove them")
     return listed
 
@@ -744,7 +826,7 @@ def changed_tests(since, head="HEAD"):
     so `sure` is False. Lines of the library's code are the change's own
     mutants' business."""
     diff = subprocess.run(["git", "-C", ROOT, "diff", "-U0", f"{since}...{head}", "--", "src", "tests"], capture_output=True, text=True, check=True).stdout
-    names, sure, file, old = set(), True, None, []
+    names, helpers, sure, file, old = set(), set(), True, None, []
     for line in diff.splitlines():
         if line.startswith("--- "):
             file = line[6:] if line.startswith("--- a/") else None
@@ -752,15 +834,84 @@ def changed_tests(since, head="HEAD"):
         elif line.startswith("@@") and file:
             start, count = re.match(r"@@ -(\d+)(?:,(\d+))?", line).groups()
             for n in range(int(start), int(start) + int(count if count is not None else 1)):
-                if not old[n - 1].strip() or old[n - 1].lstrip().startswith("//"):
-                    continue  # a comment or a blank line weakens no test
+                if not old[n - 1].strip() or old[n - 1].lstrip().startswith(("//", "use ")):
+                    continue  # a comment, a blank line or an import weakens no test
                 # src/test.rs is the library's test module (lib.rs: #[cfg(test)] mod test).
                 kind, name = enclosing(old, n - 1, file.startswith("tests/") or file == "src/test.rs")
                 if kind == "test":
                     names.add(name)
                 elif kind == "helper":
-                    sure = False
+                    item = name or item_name(old, n - 1)
+                    if item:
+                        helpers.add(item)
+                    else:
+                        sure = False
+    if helpers and sure:
+        # A helper's change can weaken every test that uses it, directly
+        # or through other helpers: those tests count as altered.
+        names |= users(test_code_index(since), helpers)
     return names, sure
+
+
+ITEM = re.compile(r"\s*(?:pub(?:\([a-z]+\))? )?(?:const|static|struct|enum|type|trait|fn) (\w+)|\s*macro_rules! (\w+)")
+
+
+def item_name(lines, i):
+    """The name of the item line `i` belongs to (a const, static, struct,
+    enum, type, trait, fn or macro, the nearest one starting at or above
+    it no deeper than it), or None."""
+    depth = len(lines[i]) - len(lines[i].lstrip())
+    for k in range(i, -1, -1):
+        line = lines[k]
+        if not line.strip():
+            continue
+        indent = len(line) - len(line.lstrip())
+        if indent <= depth:
+            m = ITEM.match(line)
+            if m:
+                return m.group(1) or m.group(2)
+            depth = min(depth, indent)
+    return None
+
+
+def test_code_index(rev):
+    """Every function, test and helper, in the test code at `rev` (the
+    library's #[cfg(test)] modules, src/test.rs, tests/): (kind, name, body)."""
+    paths = subprocess.run(["git", "-C", ROOT, "ls-tree", "-r", "--name-only", rev, "--", "src", "tests"],
+                           capture_output=True, text=True, check=True).stdout.split()
+    index = []
+    for path in (p for p in paths if p.endswith(".rs")):
+        lines = subprocess.run(["git", "-C", ROOT, "show", f"{rev}:{path}"], capture_output=True, text=True, check=True).stdout.splitlines()
+        test_file = path.startswith("tests/") or path == "src/test.rs"
+        for i, line in enumerate(lines):
+            m = re.match(r"(\s*)(?:pub(?:\([a-z]+\))? )?(?:async )?fn (\w+)", line)
+            if not m or i + 1 >= len(lines):
+                continue
+            kind, _ = enclosing(lines, i + 1, test_file)
+            if kind == "code":
+                continue
+            end = next((k for k in range(i + 1, len(lines)) if lines[k] == m.group(1) + "}"), len(lines))
+            # The body's code alone: a word in a comment uses nothing.
+            code = [re.sub(r"\s//.*$", "", l) for l in lines[i + 1:end] if not l.lstrip().startswith("//")]
+            index.append((kind, m.group(2), "\n".join(code)))
+    return index
+
+
+def users(index, helpers):
+    """The tests in `index` that use any of `helpers`, directly or through
+    other test code that does."""
+    reached, frontier, tests = set(helpers), set(helpers), set()
+    while frontier:
+        pattern = re.compile(r"\b(?:" + "|".join(map(re.escape, sorted(frontier))) + r")\b")
+        frontier = set()
+        for kind, name, body in index:
+            if pattern.search(body):
+                if kind == "test":
+                    tests.add(name)
+                elif name not in reached:
+                    reached.add(name)
+                    frontier.add(name)
+    return tests
 
 
 def enclosing(lines, i, test_file):
@@ -789,27 +940,34 @@ def enclosing(lines, i, test_file):
         if re.match(r"\s*(?:pub(?:\([a-z]+\))? )?mod \w+ \{", line):
             above = lines[k - 1] if k else ""
             if "cfg(test" in above or "cfg(all(test" in above:
-                return "helper", None
+                return "helper", fn
         depth = min(depth, indent)
-    return ("helper" if test_file else "code"), None
+    return ("helper", fn) if test_file else ("code", None)
 
 
 MAP_DIR = os.path.join(ROOT, "tmp", "mutants-last", "map")
+RUN_DIR = os.path.join(ROOT, "tmp", "mutants-last", "run")
 
 
 def caught_by(tests):
-    """The mutants the latest map (a --map run of an ancestor of HEAD) records
-    as caught by any of `tests` (by function name) at a place the startup
-    self-test does not catch, by name (rerun at all its places); None when
-    there is no such map."""
-    record, commit = os.path.join(MAP_DIR, "tests.tsv"), os.path.join(MAP_DIR, "commit")
-    if not (os.path.exists(record) and os.path.exists(commit)):
-        return None
-    if subprocess.run(["git", "-C", ROOT, "merge-base", "--is-ancestor", open(commit).read().strip(), "HEAD"]).returncode != 0:
-        return None
-    by, self_test = collections.defaultdict(set), set()
-    lines = open(record)
-    assert next(lines) == HEADER, f"{record} is in an older format: make a new map with --map"
+    """The mutants a record of an ancestor of HEAD (a --map run's, or a
+    whole run's: each caught place with the tests that failed on it) shows
+    caught only by `tests` (by function name) at some place the startup
+    self-test does not catch, by name (rerun at all its places): where any
+    other test catches it, it is caught still. None with no such record."""
+    for kept in (MAP_DIR, RUN_DIR):
+        record, commit = os.path.join(kept, "tests.tsv"), os.path.join(kept, "commit")
+        if os.path.exists(record) and os.path.exists(commit) and subprocess.run(
+                ["git", "-C", ROOT, "merge-base", "--is-ancestor", open(commit).read().strip(), "HEAD"]).returncode == 0:
+            return catches_only_by(open(record), tests)
+    return None
+
+
+def catches_only_by(lines, tests):
+    """From a record's lines, the names caught at some place, not by the
+    startup self-test, whose every catcher there is one of `tests`."""
+    catchers, self_test = collections.defaultdict(set), set()
+    assert next(lines) == HEADER, "the record is in an older format: make a new one (a whole run, or --map)"
     for line in lines:
         file, mutant, place, _function, test, outcome, _ms = line.rstrip("\n").split("\t")
         if file == "(unmutated)" or outcome == "PASS":
@@ -817,9 +975,9 @@ def caught_by(tests):
         name = (f"{file}\t{mutant}", place)
         if test == SELF_TEST:
             self_test.add(name)
-        elif re.split(r"[ :]", test)[-1] in tests:
-            by[name].add(test)
-    return sorted({name for name, _ in set(by) - self_test})
+        else:
+            catchers[name].add(re.split(r"[ :]", test)[-1])
+    return sorted({name for (name, place), by in catchers.items() if (name, place) not in self_test and by <= set(tests)})
 
 
 def figure(functions, known):
@@ -850,7 +1008,16 @@ def main():
     changed = subprocess.run(["git", "-C", ROOT, "status", "--porcelain", "--untracked-files=no"], capture_output=True, text=True, check=True).stdout.strip()
     print(f"mutants: BLAKE3-Servil at {commit}{', with uncommitted changes' if changed else ''}", flush=True)
     remove_leftovers()
-    listed = check_rows_exist()
+    since = sys.argv[sys.argv.index("--since") + 1] if "--since" in sys.argv else None
+    if since is None and "--whole" not in sys.argv and "--write" not in sys.argv:
+        base = subprocess.run(["git", "-C", ROOT, "merge-base", "HEAD", "origin/servil"], capture_output=True, text=True)
+        if base.returncode == 0:
+            since = base.stdout.strip()
+        else:
+            print("mutants: no origin/servil to take a base from")
+    # Preserve #250's scope label for the release gate, before work starts.
+    print(f"mutants: the change since {since}" if since is not None else "mutants: the whole run")
+    all_listed = check_rows_exist(remove=since is not None)
     files, known = read_known()
     _, tknown = read_known(TIMEOUTS, INACTIVE_TIMEOUTS)
     # A test known to be missing is work to do now, not a survivor to keep:
@@ -860,16 +1027,6 @@ def main():
         print(f"MISSING TEST: {k}")
     if missing:
         sys.exit("mutants: the list names missing tests; write them first")
-    since = sys.argv[sys.argv.index("--since") + 1] if "--since" in sys.argv else None
-    if since is None and "--whole" not in sys.argv and "--write" not in sys.argv:
-        base = subprocess.run(["git", "-C", ROOT, "merge-base", "HEAD", "origin/servil"], capture_output=True, text=True)
-        if base.returncode == 0:
-            since = base.stdout.strip()
-        else:
-            print("mutants: no origin/servil to take a base from")
-    # The log names its own scope on its first line: a release gate reads
-    # a whole run alone (tools/release-check.py's mutation_result).
-    print(f"mutants: the change since {since}" if since is not None else "mutants: the whole run")
     extra = []  # the mutants the change's altered tests caught (the map's)
     if since is not None:
         diff = subprocess.run(["git", "-C", ROOT, "diff", f"{since}...HEAD", "--", *files, *LOOM_FILES], capture_output=True, text=True, check=True).stdout
@@ -892,39 +1049,79 @@ def main():
         path = os.path.join(tempfile.mkdtemp(prefix="mutants-diff-", dir=scratch_dir()), "change.diff")
         with open(path, "w") as f:
             f.write(diff)
-        # One shard: a change's mutants are few, and each shard builds anew.
-        found, functions, timed = run(files, ["--in-diff", path], shards=1) if diff else (collections.Counter(), {}, collections.Counter())
+        # Every mutant of each function the change's lines touch, not only
+        # those in the lines: then the run knows each such name's every
+        # place, and writes its row whole (a list never waits for a whole
+        # run to learn a change's counts; Sam, the project's owner,
+        # November 6, 2026).
+        listed = json.loads(subprocess.run(["cargo", "mutants", "--list", "--json", *BUILD, "--in-diff", path, *[a for f in files for a in ("--file", f)]],
+                                           cwd=ROOT, capture_output=True, text=True, check=True).stdout) if diff else []
+        touched = touched_functions(listed)
+        if touched or listed:
+            print(f"mutants: the change touches {len(touched)} function{'s' if len(touched) > 1 else ''}: every mutant of each runs, and their rows are written")
+        found, functions, timed = (run(sorted({f for f, _ in touched}), [a for p in function_patterns(touched, listed) for a in ("--re", p)],
+                                       shards=min(SHARDS, max(1, len(touched)))) if listed else (collections.Counter(), {}, collections.Counter()))
         if any(f in diff for f in LOOM_FILES):
             found, timed, functions = with_loom(found, timed, functions, run(LOOM_FILES, ["--in-diff", path], shards=1, label="loom", loom=True)[1])
+        written = {name for key in touched for _, name in functions.get(key, [])}
         if extra:
-            # The altered tests' catches, wherever they are: by name.
+            # The altered tests' catches, wherever they are: by name, each
+            # name's every place, so its row is written too.
             again, more, again_timed = run(sorted({k.split("\t", 1)[0] for k in extra}), [arg for k in extra for arg in ("--re", ": " + re.escape(k.split("\t", 1)[1]) + "$")], label="tests")
+            # The model files' names are judged with the model beside the
+            # suite, as in a whole run (a wait the suite's clock stops, the
+            # model catches: Park::park_unless's != as ==, November 6).
+            modelled = [k for k in extra if k.split("\t", 1)[0] in LOOM_FILES]
+            if modelled:
+                run(sorted({k.split("\t", 1)[0] for k in modelled}), [arg for k in modelled for arg in ("--re", ": " + re.escape(k.split("\t", 1)[1]) + "$")],
+                    shards=1, label="loom", loom=True)
+                again, again_timed = with_model("tests", again, again_timed)
             found, timed = found + again, timed + again_timed
             functions = {**more, **functions}
-        # Only the names with more survivors than the list: the run holds
-        # the change's lines alone, so a listed name's other places are
-        # missing from it (a whole run sees those, and stale entries).
-        found, timed = confirm(found, known, timed, tknown, sorted({k for k in found if found[k] > known.get(k, (0, ""))[0]}
-                                                                   | {k for k in timed if timed[k] > tknown.get(k, (0, ""))[0]}))
-        new = {k: n for k, n in found.items() if n > known.get(k, (0, ""))[0]}
-        new_timed = {k: n for k, n in timed.items() if n > tknown.get(k, (0, ""))[0]}
+            written |= set(extra)
+        # The written names whose counts differ from the lists, again alone
+        # (confirm); a name the loom model judged outside them is reported, not written.
+        found, timed = confirm(found, known, timed, tknown, sorted({k for k in written if found.get(k, 0) != known.get(k, (0, ""))[0]
+                                                                    or timed.get(k, 0) != tknown.get(k, (0, ""))[0]}
+                                                                   | {k for k in found if k not in written and found[k] > known.get(k, (0, ""))[0]}))
+        def reason(k, n):
+            if SAME["run"][k] == n:
+                return SAME_RELEASE_REASON if RELEASE_SAME["run"][k] else SAME_REASON
+            return unclassified(k, "survives")
+        rows = rewrite_rows(known, written, found, reason)
+        trows = rewrite_rows(tknown, written, timed, lambda k, n: unclassified(k, "times out"))
+        for k in sorted(written):
+            was, now = known.get(k, (0, ""))[0], rows.get(k, (0, ""))[0]
+            if was != now:
+                print(f"WRITTEN ({was} -> {now}): {k}" + ("" if now else ": no place survives now"))
+            was, now = tknown.get(k, (0, ""))[0], trows.get(k, (0, ""))[0]
+            if was != now:
+                print(f"WRITTEN TIME-OUT ({was} -> {now}): {k}")
+        if rows != known:
+            write_rows(KNOWN, rows, INACTIVE, [])
+        if trows != tknown:
+            write_rows(TIMEOUTS, trows, INACTIVE_TIMEOUTS,
+                       [f"# The mutants that time out on {platform.machine()}: no test fails, the clock stops one (tools/mutants/check.py, TIMEOUTS).",
+                        "# A line: file <TAB> mutant (function and change) <TAB> places <TAB> reason."])
+        # Outside the written names (the model's outcomes): reported, as before.
+        new = {k: n for k, n in found.items() if k not in written and n > known.get(k, (0, ""))[0]}
         for k, n in sorted(new.items()):
-            # A name all of whose places build to the same code gets that
-            # row's reason (SAME_REASON, or SAME_RELEASE_REASON), as --write
-            # gives it in a whole run.
-            same = " same code" + (", in a release build" if RELEASE_SAME["run"][k] else "") if SAME["run"][k] == n else ""
-            print(f"NEW SURVIVOR ({n - known.get(k, (0, ''))[0]}{';' + same if same else ''}): {k}")
-        for k, n in sorted(new_timed.items()):
-            print(f"NEW TIME-OUT ({n - tknown.get(k, (0, ''))[0]}): {k}")
-        print(f"mutants: the change since {since}: {sum(1 for f in functions.values() for _ in f)} mutants, "
-              + ("no new survivor" if not new else f"{len(new)} names with a new survivor")
-              + ("" if not new_timed else f", {len(new_timed)} names with a new time-out (no verdict on them)"))
-        sys.exit(1 if new else 2 if new_timed else 0)
+            print(f"NEW SURVIVOR ({n - known.get(k, (0, ''))[0]}): {k}")
+        open_rows = sorted(k for k in written if rows.get(k, (0, ""))[1].startswith("UNCLASSIFIED"))
+        open_timed = sorted(k for k in written if trows.get(k, (0, ""))[1].startswith("UNCLASSIFIED"))
+        for k in open_rows:
+            print(f"NEW SURVIVOR, written UNCLASSIFIED ({rows[k][0]}): {k}: give it its reason in {os.path.basename(KNOWN)}")
+        for k in open_timed:
+            print(f"NEW TIME-OUT, written UNCLASSIFIED ({trows[k][0]}): {k}: give it its reason in {os.path.basename(TIMEOUTS)}")
+        print(f"mutants: the change since {since}: {sum(1 for f in functions.values() for _ in f)} mutants, {len(written)} names written; "
+              + ("no new survivor" if not (open_rows or new) else f"{len(open_rows) + len(new)} names with a new survivor")
+              + ("" if not open_timed else f", {len(open_timed)} names with a new time-out (no verdict on them)"))
+        sys.exit(1 if open_rows or new else 2 if open_timed else 0)
     # The known hangs stay out of a whole run (known_hangs); their rows stand
     # as listed. A run that rewrites the lists (--write) runs them, so a row
     # that no longer hangs leaves its list: a skipped one would stay listed
     # (two sources::find rows, caught at servil 06f6e26d, did in the trial).
-    hangs = [] if "--all-hangs" in sys.argv or "--write" in sys.argv else known_hangs(tknown, listed)
+    hangs = [] if "--all-hangs" in sys.argv or "--write" in sys.argv else known_hangs(tknown, all_listed)
     if hangs:
         print(f"mutants: {len(hangs)} known hangs ({sum(tknown[k][0] for k in hangs)} places) not run, each listed with its reason "
               f"in {os.path.basename(TIMEOUTS)} (--all-hangs runs them)", flush=True)
