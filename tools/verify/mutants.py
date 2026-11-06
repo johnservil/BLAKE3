@@ -168,8 +168,8 @@ def last_mutant_jobs():
         base = aarch64.disassemble(obj, syms[f"blake3_servil_hybrid_l{n}"], syms[f"blake3_servil_hybrid_l{n}_end"])
         def first(pred):
             return next(a for a, (m, o) in sorted(base.items()) if pred(m, o))
-        length = first(lambda m, o: m == "ldr" and o == ["w8", "[x6, #0x4]"])
-        last = first(lambda m, o: m == "ldr" and o == ["x8", "[x7, #0x8]"])
+        length = first(lambda m, o: m == "ldr" and o == ["w8", "[x6, #4]"])
+        last = first(lambda m, o: m == "ldr" and o == ["x8", "[x7, #8]"])
         end = first(lambda m, o: m == "orr" and o == ["w2", "w2", "w3"])
         switch = first(lambda m, o: m == "csel" and o == ["x4", "x3", "x4", "eq"])
         for label, at, instruction, reason in (
@@ -454,6 +454,7 @@ def main():
         failures += failed
     for line, failed in workers.each(run, chunk_root_mutant_jobs(), 2, fork):
         print(line, flush=True)
+        failures += failed
     for line, failed in workers.each(run, wide_mutant_jobs(), 1, fork):
         print(line, flush=True)
         failures += failed
