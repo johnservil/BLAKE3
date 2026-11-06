@@ -130,21 +130,28 @@ pub fn finalize_each(hashers: &[Hasher], which: &[usize], out: &mut [[u8; OUT_LE
 /// their parents in one call. Then the waiting pieces, the same way, until
 /// none is left.
 fn update_turn(hashers: &mut [Hasher], pieces: &[(usize, &[u8])], pooled: bool) {
+    #[cfg(all(blake3_avx512_ffi, target_os = "linux"))]
+    let pieces = if hashers.len() >= 16 && matches!(Platform::detect(), Platform::AVX512) {
+        let mut gathered = 0;
+        while gathered < pieces.len() && crate::ffi_output::gather_first(&mut hashers[pieces[gathered].0], pieces[gathered].1) {
+            gathered += 1;
+        }
+        &pieces[gathered..]
+    } else {
+        pieces
+    };
+    if pieces.is_empty() {
+        return;
+    }
     let mut turn: Vec<(usize, &[u8])> = pieces.to_vec();
     let mut waiting: Vec<(usize, &[u8])> = Vec::new();
     let mut held: Vec<usize> = Vec::new();
     while !turn.is_empty() {
-        #[cfg(all(blake3_avx512_ffi, target_os = "linux"))]
-        let batch_first = hashers.len() >= 16 && matches!(Platform::detect(), Platform::AVX512);
         for &(i, bytes) in &turn {
             // A hasher holding a group takes no more until the turn's
             // groups are hashed: its pieces wait, in order.
             if hashers[i].held_group().is_some() {
                 waiting.push((i, bytes));
-                continue;
-            }
-            #[cfg(all(blake3_avx512_ffi, target_os = "linux"))]
-            if batch_first && crate::ffi_output::gather_first(&mut hashers[i], bytes) {
                 continue;
             }
             let rest = hashers[i].gather_part(bytes, pooled, true);
