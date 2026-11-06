@@ -8,8 +8,8 @@
 //! last partial chunk hashes on its own. Each message's chunk chaining values
 //! then merge into its root as BLAKE3's tree places them.
 
-use crate::throughput::Block;
 use crate::platform::Platform;
+use crate::throughput::Block;
 use crate::{CHUNK_END, CHUNK_LEN, CHUNK_START, CVBytes, CVWords, ChunkState, Hash, Hasher, IncrementCounter, Mode, OUT_LEN};
 
 /// [`hash_each`], using other CPU cores where that is faster: the
