@@ -619,6 +619,11 @@ pub(crate) fn entries() -> std::vec::Vec<(std::string::String, *const ())> {
         for n in 1..=9 {
             out.push((std::format!("q{n}"), partial_kernel(n) as *const ()));
         }
+        for (n, kernel) in LAST_KERNELS.iter().enumerate() {
+            if let Some(kernel) = kernel {
+                out.push((std::format!("l{n}"), *kernel as *const ()));
+            }
+        }
     }
     out.push(("c1".into(), asm::blake3_servil_hybrid_c1 as *const ()));
     out.push(("x1".into(), asm::blake3_servil_hybrid_x1 as *const ()));
@@ -894,7 +899,10 @@ pub unsafe fn hash_last_lanes(
     let packed = flags as u64 | (flags_start as u64) << 8 | (flags_end as u64) << 16;
     if count == 1 {
         // Sound: the caller's contract; c1 reads its last block from `last`.
-        unsafe { asm::blake3_servil_hybrid_c1(inputs[0], blocks as u64, key.as_ptr(), 0, packed | (lens[0] as u64) << 24, out.as_mut_ptr(), lasts[0]) };
+        unsafe {
+            crate::ran_kernel(asm::blake3_servil_hybrid_c1 as *const ());
+            asm::blake3_servil_hybrid_c1(inputs[0], blocks as u64, key.as_ptr(), 0, packed | (lens[0] as u64) << 24, out.as_mut_ptr(), lasts[0]);
+        }
         return;
     }
     let mut done = 0;
@@ -902,6 +910,7 @@ pub unsafe fn hash_last_lanes(
         let kernel = LAST_KERNELS[size].expect("an l kernel for every size a plan of two or more names");
         // Sound: the caller's contract, for items done..done + size.
         unsafe {
+            crate::ran_kernel(kernel as *const ());
             kernel(
                 inputs.as_ptr().add(done),
                 blocks as u64,
@@ -938,7 +947,8 @@ mod test {
             x
         };
         for (mode, key) in [(crate::Mode::Plain, *crate::IV), (crate::Mode::Keyed(&key_bytes), crate::platform::words_from_le_bytes_32(&key_bytes))] {
-            let (_, flags) = mode.key_and_flags();
+            let mut room = core::mem::MaybeUninit::uninit();
+            let (_, flags) = mode.key(&mut room);
             for blocks in 1..=16usize {
                 for count in 1..=GROUP {
                     let lens: std::vec::Vec<usize> = (0..count)

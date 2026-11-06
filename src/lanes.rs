@@ -1486,10 +1486,9 @@ impl Task {
 }
 
 impl Task {
-    /// The members' digests: messages of one length side by side on the
-    /// multi-lane kernels (`hash_many`'s, from a table of pointers) where
-    /// that length is one block, or on x86 two to sixteen blocks of a power
-    /// of two (128 B to 1 KiB); any others one at a time.
+    /// The members' digests: equal-length messages on the many-input
+    /// kernels; mixed lengths on the collection path, grouped by their
+    /// blocks or chunks. A message that fills the lanes runs alone.
     fn run_members(&self, platform: Platform) {
         let members = &self.member[..self.members];
         if let Some(message_len) = self.batch {
@@ -1539,7 +1538,7 @@ impl Task {
         }
         // Members of any lengths. Those of up to a chunk: each one's whole
         // blocks before its last side by side with the others' of as many,
-        // then its last block on its own (by_blocks). Longer ones as a
+        // their last blocks included on NEON with SHA-3. Longer ones as a
         // collection's (each::hash_each_on): those of 2 to 15 chunks their
         // whole chunks side by side, chunk by chunk, longer ones alone.
         let small = members.iter().filter(|m| m.len <= CHUNK_LEN).count();
@@ -1586,13 +1585,8 @@ const BY_BLOCKS_LEAST: usize = 2;
 use crate::each::by_blocks_takes;
 
 impl Task {
-    /// The digests of the members of up to a chunk, of any lengths: those
-    /// with as many whole blocks before their last (k) side by side on the
-    /// platform's hash_many, up to sixteen at a time, CHUNK_START on the
-    /// first block and no end, leaving each its chaining value; then each
-    /// one's last block (1 to 64 bytes, zero-padded; an empty message's is
-    /// empty) compressed on its own with CHUNK_END and ROOT, CHUNK_START too
-    /// where k is 0. Requires a platform by_blocks_takes.
+    /// The small members' digests through the collection's shared
+    /// [`crate::each::hash_by_blocks`] path. Requires `by_blocks_takes(platform)`.
     fn run_by_blocks(&self, platform: Platform) {
         let members = &self.member[..self.members];
         let small = || members.iter().filter(|m| m.len <= CHUNK_LEN);
@@ -2427,8 +2421,8 @@ mod test {
 
     /// run_by_blocks's work, counted (BLAKE3 #219): one hash_many call for
     /// each count of whole blocks before the last that two or more members
-    /// share, or one, a call per sixteen; none for members with no whole
-    /// block before their last (up to a block, or empty). 40 members,
+    /// share, or one, a call per sixteen. NEON with SHA-3 also includes
+    /// the last block, so members of up to a block share a call too. 40 members,
     /// interleaved (so the calls count only once they are sorted): 20 of
     /// 2 whole blocks before the last, 17 of 5, 2 of none, 1 of 9.
     #[test]
@@ -2457,8 +2451,13 @@ mod test {
             }
             crate::COUNTED.with(|c| c[crate::Counted::ByBlocksCall as usize].set(0));
             task.run(platform);
-            // 20 of two: two calls (16 and 4); 17 of five: two (16 and 1); one of nine: one.
-            assert_eq!(crate::COUNTED.with(|c| c[crate::Counted::ByBlocksCall as usize].get()), 5, "{platform:?}");
+            // 20 of two: two calls (16 and 4); 17 of five: two (16 and 1);
+            // one of nine: one. NEON's l kernels also take the two of zero.
+            #[cfg(blake3_neon)]
+            let calls = if crate::neon_hybrid::sha3_detected() { 6 } else { 5 };
+            #[cfg(not(blake3_neon))]
+            let calls = 5;
+            assert_eq!(crate::COUNTED.with(|c| c[crate::Counted::ByBlocksCall as usize].get()), calls, "{platform:?}");
             assert!(out.iter().zip(&inputs).all(|(o, i)| o == crate::convenience::hash(i).as_bytes()), "{platform:?}");
         }
     }

@@ -3,10 +3,11 @@
 //!
 //! Chunk k of every message has chunk counter k, so the full chunks k of
 //! different messages hash in one call of the many-inputs kernel, at counter
-//! k for every lane. Messages of one chunk or less, and messages of 16 chunks
-//! or more (which fill the lanes alone), go through `hash_with`; a message's
-//! last partial chunk hashes on its own. Each message's chunk chaining values
-//! then merge into its root as BLAKE3's tree places them.
+//! k for every lane. Messages of up to a chunk share lanes by their block
+//! counts (`hash_by_blocks`); NEON with SHA-3 includes their last blocks in
+//! the same pass. Messages of 16 chunks or more fill the lanes alone; a
+//! longer message's last partial chunk hashes on its own. Each message's
+//! chunk chaining values then merge into its root as BLAKE3's tree places them.
 
 use crate::throughput::Block;
 use crate::platform::Platform;
@@ -268,7 +269,9 @@ const BY_BLOCKS_AT_ONCE: usize = crate::lanes::MEMBERS;
 /// The digest of each of `items`, every one of up to a chunk, of any
 /// lengths, by their blocks: those with as many whole blocks before their
 /// last (k) side by side on the platform's hash_many, up to sixteen at a
-/// time, CHUNK_START on the first block and no end, leaving each its
+/// time. On NEON with SHA-3 their last blocks run in the same lanes,
+/// each with its own length (the l kernels). Other platforms hash the
+/// prefix with CHUNK_START on the first block and no end, leaving each its
 /// chaining value; then each one's last block (1 to 64 bytes, zero-padded;
 /// an empty message's is empty) compressed on its own with CHUNK_END and
 /// ROOT, CHUNK_START too where k is 0. Up to BY_BLOCKS_AT_ONCE items are
@@ -286,11 +289,44 @@ fn by_blocks_at_once(items: &[&[u8]], key: &CVWords, flags: u8, out: &mut [[u8; 
     let whole = |item: &[u8]| item.len().saturating_sub(1) / crate::BLOCK_LEN;
     let mut order: arrayvec::ArrayVec<usize, BY_BLOCKS_AT_ONCE> = (0..items.len()).collect();
     order.sort_unstable_by_key(|&i| whole(items[i]));
+    // With SHA-3 the last block stays in the lanes too; other AArch64
+    // CPUs keep the prefix kernels followed by scalar last blocks.
+    #[cfg(blake3_neon)]
+    let last_lanes = crate::neon_hybrid::sha3_detected();
+    #[cfg(not(blake3_neon))]
+    let last_lanes = false;
     let mut cvs = [*key; BY_BLOCKS_AT_ONCE];
     let mut at = 0;
     while at < order.len() {
         let k = whole(items[order[at]]);
         let end = at + order[at..].iter().take_while(|&&i| whole(items[i]) == k).count();
+        #[cfg(blake3_neon)]
+        if last_lanes {
+            for group in order[at..end].chunks(GROUP) {
+                let inputs: arrayvec::ArrayVec<*const u8, GROUP> = group.iter().map(|&i| items[i].as_ptr()).collect();
+                let mut last_blocks = [[0u8; crate::BLOCK_LEN]; GROUP];
+                let mut lengths = [0u32; GROUP];
+                for ((&i, block), len) in group.iter().zip(&mut last_blocks).zip(&mut lengths) {
+                    let tail = &items[i][k * crate::BLOCK_LEN..];
+                    block[..tail.len()].copy_from_slice(tail);
+                    *len = tail.len() as u32;
+                }
+                let lasts: arrayvec::ArrayVec<*const u8, GROUP> = last_blocks[..group.len()].iter().map(|b| b.as_ptr()).collect();
+                let mut digests = [0u8; GROUP * OUT_LEN];
+                crate::counted(crate::Counted::ByBlocksCall);
+                // Sound: SHA-3 is present; these items share k whole blocks
+                // before their separately padded last block, 0 to 64 bytes.
+                unsafe {
+                    crate::neon_hybrid::hash_last_lanes(&inputs, &lasts, &lengths[..group.len()], k + 1,
+                        key, flags, CHUNK_START, CHUNK_END | crate::ROOT, &mut digests[..group.len() * OUT_LEN]);
+                }
+                for (&i, digest) in group.iter().zip(digests.chunks_exact(OUT_LEN)) {
+                    out[i].copy_from_slice(digest);
+                }
+            }
+            at = end;
+            continue;
+        }
         if k > 0 {
             for group in order[at..end].chunks(GROUP) {
                 let inputs: arrayvec::ArrayVec<*const u8, GROUP> = group.iter().map(|&i| items[i].as_ptr()).collect();
@@ -323,6 +359,9 @@ fn by_blocks_at_once(items: &[&[u8]], key: &CVWords, flags: u8, out: &mut [[u8; 
             }
         }
         at = end;
+    }
+    if last_lanes {
+        return;
     }
     for &i in &order {
         let item = items[i];
@@ -508,7 +547,11 @@ mod test {
             // A call where two or more items are of up to a chunk and one of
             // them has a whole block before its last.
             let small: Vec<usize> = lens.iter().copied().filter(|&n| n <= CHUNK_LEN).collect();
-            let calls_expected = by_blocks_takes(Platform::detect()) && small.len() >= 2 && small.iter().any(|&n| n > crate::BLOCK_LEN);
+            #[cfg(blake3_neon)]
+            let last_lanes = crate::neon_hybrid::sha3_detected();
+            #[cfg(not(blake3_neon))]
+            let last_lanes = false;
+            let calls_expected = by_blocks_takes(Platform::detect()) && small.len() >= 2 && (last_lanes || small.iter().any(|&n| n > crate::BLOCK_LEN));
             assert_eq!(calls > 0, calls_expected, "{count} items: by their blocks");
             let expected: Vec<[u8; OUT_LEN]> = items.iter().map(|i| *crate::convenience::hash(i).as_bytes()).collect();
             assert_eq!(out, expected, "{count} items");

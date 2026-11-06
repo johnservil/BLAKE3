@@ -48,6 +48,12 @@ C ABI, every kernel:
   one-entry table, and a seventh argument in x6: the address of the last
   block, read from there instead of the input. The entry for a single
   chunk's blocks, whose short final block arrives zero-padded elsewhere.
+  l<n> keeps p<n>'s fixed counter and takes two extra arguments: x6 is
+  a table of n u32 final-block lengths, and x7 a table of n last-block
+  pointers. Each input needs only blocks - 1 whole blocks; the final
+  block is read from its separate, zero-padded 64-byte buffer. The
+  packed length byte is ignored. l2/l3/l4/l5/l7/l8/l9 use the parent
+  plans, with l8 using two quads, and c1 handles a single lane.
 
 Tried and set aside (VM unless said; E-core cycles from the Mac):
   - Two scalar chunks in place of the pair for two chunks (k2): 2 KiB 919
