@@ -370,6 +370,7 @@ fn finishing_kernel_takes(width: usize, count: usize, whole: usize, fast512: boo
 
 /// Sparse groups' whole blocks side by side, then each last block on its
 /// own; AArch64's path for all groups until its finishing kernel arrives.
+#[inline(always)]
 fn by_blocks_then_last(items: &[&[u8]], order: &[usize], key: &CVWords, flags: u8, out: &mut [[u8; OUT_LEN]], platform: Platform) {
     const GROUP: usize = 16;
     let whole = |item: &[u8]| item.len().saturating_sub(1) / crate::BLOCK_LEN;
