@@ -2359,7 +2359,7 @@ mod test {
             #[cfg(target_arch = "x86_64")]
             let calls = {
                 let l = crate::ffi_last::lanes(platform);
-                if l == 16 { lens.len().div_ceil(l) } else { 20usize.div_ceil(l) + 17usize.div_ceil(l) + 1 + 1 }
+                if l >= 8 { lens.len().div_ceil(l) } else { 20usize.div_ceil(l) + 17usize.div_ceil(l) + 1 + 1 }
             };
             assert_eq!(crate::COUNTED.with(|c| c[crate::Counted::ByBlocksCall as usize].get()), calls as u64, "{platform:?}");
             assert!(out.iter().zip(&inputs).all(|(o, i)| o == crate::convenience::hash(i).as_bytes()), "{platform:?}");

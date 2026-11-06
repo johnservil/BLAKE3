@@ -281,21 +281,25 @@ fn by_blocks_at_once(items: &[&[u8]], key: &CVWords, flags: u8, out: &mut [[u8; 
     let whole = |item: &[u8]| item.len().saturating_sub(1) / crate::BLOCK_LEN;
     let mut order: arrayvec::ArrayVec<usize, BY_BLOCKS_AT_ONCE> = (0..items.len()).collect();
     order.sort_unstable_by_key(|&i| whole(items[i]));
-    #[cfg(blake3_avx512_ffi)]
-    if matches!(platform, Platform::AVX512) {
-        // Adjacent lengths fill sixteen lanes even when their block counts
-        // differ. Each lane's own last step records its digest; sorting
-        // bounds the wasted steps of the shorter lanes within each group.
-        for group in order.chunks(16) {
+    #[cfg(target_arch = "x86_64")]
+    if crate::ffi_last::lanes(platform) >= 8 {
+        // Adjacent lengths fill the lanes even when their block counts
+        // differ. Each lane's last step records its digest; sorting bounds
+        // the shorter lanes' unused steps within each group.
+        let width = crate::ffi_last::lanes(platform);
+        for group in order.chunks(width) {
             let members: arrayvec::ArrayVec<&[u8], 16> = group.iter().map(|&i| items[i]).collect();
             let mut digests = [[0u8; OUT_LEN]; 16];
             let k = whole(members[0]);
             crate::counted(crate::Counted::ByBlocksCall);
             if members.iter().all(|m| whole(m) == k) {
                 crate::ffi_last::hash_group(platform, &members, k, key, flags, &mut digests[..members.len()]);
-            } else {
+            } else if width == 16 {
                 // Sound: the selected platform guarantees AVX-512F.
                 unsafe { crate::ffi_last::hash_mixed16(&members, key, flags, &mut digests[..members.len()]) };
+            } else {
+                // Sound: width eight is the AVX2 platform.
+                unsafe { crate::ffi_last::hash_mixed8(&members, key, flags, &mut digests[..members.len()]) };
             }
             for (n, &i) in group.iter().enumerate() {
                 out[i] = digests[n];

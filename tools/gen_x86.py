@@ -78,8 +78,10 @@ def layout(w, last=False):
 
 
 class Kernel:
-    def __init__(self, isa, last=False):
+    def __init__(self, isa, last=False, mixed=False):
         self.isa = isa
+        self.mixed = mixed
+        assert not mixed or last and isa == "avx2"
         # The last-blocks family (blake3_servil_last_*): END blocks, not 16,
         # and block SWITCH/64 read through LASTMSG; no snapshot.
         self.last = last
@@ -90,6 +92,8 @@ class Kernel:
         self.word = "ymmword" if self.avx else "xmmword"
         self.p = "rdi"
         self.off = layout(self.w, last)
+        if mixed:
+            self.off['ENDS'] = (self.off['SIZE'] + 63) // 64 * 64
         self.lines = []
         # Stack frame: the sixteen message vectors and the spill slot.
         self.msg = 0
@@ -183,12 +187,13 @@ class Kernel:
         of lane j at element j of message vector i."""
         r = self.r
         lanes = [f"r{8 + j}" for j in range(self.w)]
+        index = "" if self.mixed else "+rdx"
         for q in range(4):
             d = f"+{16 * q}" if q else ""
             if self.avx:
                 for k in range(4):
-                    self.e(f"vmovdqu xmm{8 + k}, xmmword ptr [{lanes[k]}+rdx{d}]")
-                    self.e(f"vinsertf128 ymm{8 + k}, ymm{8 + k}, xmmword ptr [{lanes[k + 4]}+rdx{d}], 1")
+                    self.e(f"vmovdqu xmm{8 + k}, xmmword ptr [{lanes[k]}{index}{d}]")
+                    self.e(f"vinsertf128 ymm{8 + k}, ymm{8 + k}, xmmword ptr [{lanes[k + 4]}{index}{d}], 1")
                 self.e("vunpcklpd ymm12, ymm8, ymm9")
                 self.e("vunpckhpd ymm13, ymm8, ymm9")
                 self.e("vunpcklpd ymm14, ymm10, ymm11")
@@ -198,7 +203,7 @@ class Kernel:
                     self.store_aligned(self.m(4 * q + k), r(8 + k))
             else:
                 for k in range(4):
-                    self.e(f"movdqu xmm{8 + k}, xmmword ptr [{lanes[k]}+rdx{d}]")
+                    self.e(f"movdqu xmm{8 + k}, xmmword ptr [{lanes[k]}{index}{d}]")
                 for dst, a, b, op in [(12, 8, 9, "unpcklpd"), (13, 8, 9, "unpckhpd"), (14, 10, 11, "unpcklpd"), (15, 10, 11, "unpckhpd")]:
                     self.e(f"movaps xmm{dst}, xmm{a}")
                     self.e(f"{op} xmm{dst}, xmm{b}")
@@ -223,7 +228,13 @@ class Kernel:
         self.e("xor edx, edx")
         self.e("xor ebx, ebx")
         L.append(f"{name}_block:")
-        if self.last:
+        if self.mixed:
+            for j in range(w):
+                self.e(f"mov r{8+j}, qword ptr [{self.p}+{self.off['MSG']+8*j}]")
+                self.e(f"add r{8+j}, rdx")
+                self.e(f"cmp edx, dword ptr [{self.p}+{self.off['ENDS']+4*j}]")
+                self.e(f"cmovae r{8+j}, qword ptr [{self.p}+{self.off['LASTMSG']+8*j}]")
+        elif self.last:
             # At block SWITCH/64, each lane's pointer moves to its last
             # block (LASTMSG, less the block's offset, which the loads add).
             self.e(f"cmp edx, dword ptr [{self.p}+{self.off['SWITCH']}]")
@@ -248,7 +259,15 @@ class Kernel:
         self.xor(r(0), r(0), self.mem("rsp", self.spill))
         for i in range(1, 8):
             self.xor(r(i), r(i), r(i + 8))
-        if not self.last:
+        if self.mixed:
+            self.e('vmovd xmm15, edx')
+            self.e('vpbroadcastd ymm15, xmm15')
+            self.e(f"vpcmpeqd ymm15, ymm15, {self.pm('ENDS')}")
+            for i in range(8):
+                self.load(r(8), self.pm('SNAP', v*i))
+                self.e(f'vpblendvb ymm8, ymm8, ymm{i}, ymm15')
+                self.store(self.pm('SNAP', v*i), r(8))
+        elif not self.last:
             self.e(f"cmp edx, dword ptr [{self.p}+{self.off['LAST']}]")
             self.e(f"jne {name}_next")
             for i in range(8):
@@ -420,6 +439,10 @@ def unix(family="partial"):
         k.body(name)
         out += ["        .p2align 6", f"_{name}:", f"{name}:", "        _CET_ENDBR"] + k.lines
     if last:
+        name = 'blake3_servil_mixed_avx2'
+        k = Kernel('avx2', last=True, mixed=True)
+        k.body(name)
+        out += [f'.global {name}', f'.global _{name}', '.p2align 6', f'{name}:', f'_{name}:', '        _CET_ENDBR'] + k.lines
         out += last16() + last16(mixed=True)
     return out
 

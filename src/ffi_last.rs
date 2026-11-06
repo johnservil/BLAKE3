@@ -136,6 +136,69 @@ pub(crate) unsafe fn hash_mixed16(items: &[&[u8]], key: &CVWords, flags: u8, out
     }
 }
 
+/// AVX2's mixed-lane ending offsets follow the existing parameter block,
+/// whose size includes its 64-byte alignment padding.
+#[repr(C, align(64))]
+struct ParamsMixed8 {
+    common: Params<8>,
+    ends: [u32; 8],
+}
+
+unsafe extern "C" {
+    fn blake3_servil_mixed_avx2(params: *mut ParamsMixed8);
+}
+
+/// AVX2 version of hash_mixed16: up to eight lanes, a per-lane snapshot at
+/// its last block. Unsafe: the CPU supports AVX2.
+pub(crate) unsafe fn hash_mixed8(items: &[&[u8]], key: &CVWords, flags: u8, out: &mut [[u8; OUT_LEN]]) {
+    let n = items.len();
+    assert!((1..=8).contains(&n) && out.len() == n, "1 to 8 items, one digest each");
+    assert!(items.iter().all(|i| i.len() <= crate::CHUNK_LEN), "items up to one chunk");
+    let ends: [u32; 8] = core::array::from_fn(|j| (items[if j < n { j } else { 0 }].len().saturating_sub(1) / BLOCK_LEN * BLOCK_LEN) as u32);
+    let mut last = [[0u8; BLOCK_LEN]; 8];
+    let lens: [u32; 8] = core::array::from_fn(|j| {
+        let item = items[if j < n { j } else { 0 }];
+        let tail = &item[ends[j] as usize..];
+        last[j][..tail.len()].copy_from_slice(tail);
+        tail.len() as u32
+    });
+    let f = flags as u32;
+    let mut p = ParamsMixed8 {
+        common: Params {
+            msg: core::array::from_fn(|j| items[if j < n { j } else { 0 }].as_ptr()),
+            lastmsg: core::array::from_fn(|j| last[j].as_ptr()),
+            key: core::array::from_fn(|i| [key[i]; 8]),
+            iv: core::array::from_fn(|i| [IV[i]; 8]),
+            rot16: crate::ffi_partial::rotation(2),
+            rot8: crate::ffi_partial::rotation(1),
+            ctr: [[0; 8]; 2],
+            lens: [[64; 8]; 16],
+            flags: [[f; 8]; 16],
+            last: [0; 16],
+            h: [[0; 8]; 8],
+            snap: [[0; 8]; 8],
+            end: *ends.iter().max().unwrap() + BLOCK_LEN as u32,
+            switch: 0,
+        },
+        ends,
+    };
+    for j in 0..8 {
+        let k = ends[j] as usize / BLOCK_LEN;
+        p.common.lens[k][j] = lens[j];
+        p.common.flags[0][j] |= CHUNK_START as u32;
+        p.common.flags[k][j] |= (CHUNK_END | ROOT) as u32;
+    }
+    // Sound: each lane reads only its whole blocks before ends[j], then
+    // a padded last block. The snapshot retains its digest thereafter;
+    // all parameter storage is initialized and owned by this caller.
+    unsafe { blake3_servil_mixed_avx2(&mut p) };
+    for (j, digest) in out.iter_mut().enumerate() {
+        for (i, word) in p.common.snap.iter().enumerate() {
+            digest[4 * i..][..4].copy_from_slice(&word[j].to_le_bytes());
+        }
+    }
+}
+
 /// The widest last-block kernel the selected platform takes.
 pub(crate) fn lanes(platform: crate::platform::Platform) -> usize {
     match platform {
@@ -251,41 +314,47 @@ mod test {
         assert_eq!(core::mem::offset_of!(Params16, out), 360);
         assert_eq!(core::mem::offset_of!(ParamsMixed, common), 0);
         assert_eq!(core::mem::offset_of!(ParamsMixed, ends), 384);
+        assert_eq!(core::mem::offset_of!(ParamsMixed8, common), 0);
+        assert_eq!(core::mem::offset_of!(ParamsMixed8, ends), 2304);
     }
 
     /// Every lane can end at a different step. Exercise all block counts,
     /// every partial-block length, empty lanes beside full chunks, all
     /// widths 1..16 and three modes, against the independent reference.
     #[test]
-    fn test_mixed16_against_official() {
-        if !crate::platform::avx512_detected() {
-            return;
-        }
+    fn test_mixed_lanes_against_official() {
+        type Kernel = unsafe fn(&[&[u8]], &CVWords, u8, &mut [[u8; OUT_LEN]]);
+        let kernels: [(usize, Kernel, bool); 2] = [(8, hash_mixed8, crate::platform::avx2_detected()), (16, hash_mixed16, crate::platform::avx512_detected())];
         let input: std::vec::Vec<u8> = (0..32768usize).map(|i| (i * 37 + i / 991) as u8).collect();
         let key = [9u8; 32];
         for mode in [crate::Mode::Plain, crate::Mode::Keyed(&key), crate::Mode::DeriveKey("mixed last blocks")] {
             let mut room = core::mem::MaybeUninit::uninit();
             let (words, flags) = mode.key(&mut room);
-            for tail in 0..=64usize {
-                for n in 1..=16usize {
-                    let items: std::vec::Vec<&[u8]> = (0..n)
-                        .map(|j| {
-                            let k = (j * 7 + tail) % 16;
-                            let len = if j == 0 {
-                                0
-                            } else if j == 1 {
-                                1024
-                            } else {
-                                k * 64 + tail.max(1)
-                            };
-                            &input[j * 1027..][..len]
-                        })
-                        .collect();
-                    let mut out = std::vec![[0u8; OUT_LEN]; n];
-                    // Sound: AVX-512F was detected above.
-                    unsafe { hash_mixed16(&items, words, flags, &mut out) };
-                    for (j, item) in items.iter().enumerate() {
-                        assert_eq!(out[j], crate::test::official::hash(mode, item), "tail {tail}, n {n}, lane {j}, {} bytes", item.len());
+            for (w, kernel, present) in kernels {
+                if !present {
+                    continue;
+                }
+                for tail in 0..=64usize {
+                    for n in 1..=w {
+                        let items: std::vec::Vec<&[u8]> = (0..n)
+                            .map(|j| {
+                                let k = (j * 7 + tail) % 16;
+                                let len = if j == 0 {
+                                    0
+                                } else if j == 1 {
+                                    1024
+                                } else {
+                                    k * 64 + tail.max(1)
+                                };
+                                &input[j * 1027..][..len]
+                            })
+                            .collect();
+                        let mut out = std::vec![[0u8; OUT_LEN]; n];
+                        // Sound: this kernel's CPU features were detected.
+                        unsafe { kernel(&items, words, flags, &mut out) };
+                        for (j, item) in items.iter().enumerate() {
+                            assert_eq!(out[j], crate::test::official::hash(mode, item), "{w} lanes, tail {tail}, n {n}, lane {j}, {} bytes", item.len());
+                        }
                     }
                 }
             }
