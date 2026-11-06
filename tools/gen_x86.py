@@ -77,6 +77,12 @@ def layout(w, last=False):
     return off
 
 
+def last8_layout():
+    """Compact last-only AVX2 ABI; the partial family's layout is unchanged."""
+    return dict(H=0, SNAP=256, MSG=512, LASTMSG=576, KEY=640, LENS=672,
+                ENDS=704, SWITCH=704, FLAGS=736, END=740, SIZE=768)
+
+
 class Kernel:
     def __init__(self, isa, last=False, mixed=False):
         self.isa = isa
@@ -91,8 +97,9 @@ class Kernel:
         self.reg = "ymm" if self.avx else "xmm"
         self.word = "ymmword" if self.avx else "xmmword"
         self.p = "rdi"
-        self.off = layout(self.w, last)
-        if mixed:
+        self.compact = last and self.avx
+        self.off = last8_layout() if self.compact else layout(self.w, last)
+        if mixed and not self.compact:
             self.off['ENDS'] = (self.off['SIZE'] + 63) // 64 * 64
         self.lines = []
         # Stack frame: the sixteen message vectors and the spill slot.
@@ -114,6 +121,8 @@ class Kernel:
         return self.mem("rsp", self.msg + self.v * i)
 
     def pm(self, name, extra=0):
+        if self.compact and name in ('ROT16', 'ROT8'):
+            return self.mem(f'rip+.Llast8_{name}', extra)
         return self.mem(self.p, self.off[name] + extra)
 
     # Operations, VEX three-operand or legacy two-operand (dst is a).
@@ -224,7 +233,10 @@ class Kernel:
         for j in range(w):
             self.e(f"mov r{8 + j}, qword ptr [{self.p}+{self.off['MSG'] + 8 * j}]")
         for i in range(8):
-            self.load(r(i), self.pm("KEY", v * i))
+            if self.compact:
+                self.e(f'vpbroadcastd {r(i)}, dword ptr [{self.p}+{self.off["KEY"]+4*i}]')
+            else:
+                self.load(r(i), self.pm("KEY", v * i))
         self.e("xor edx, edx")
         self.e("xor ebx, ebx")
         L.append(f"{name}_block:")
@@ -244,14 +256,34 @@ class Kernel:
                 self.e(f"sub r{8 + j}, rdx")
             L.append(f"{name}_read:")
         self.transpose()
-        self.load(r(8), self.pm("IV"))
-        self.store_aligned(self.mem("rsp", self.spill), r(8))
-        for i in range(1, 4):
-            self.load(r(8 + i), self.pm("IV", v * i))
-        self.load(r(12), self.pm("CTR"))
-        self.load(r(13), self.pm("CTR", v))
-        self.load(r(14), self.mem(f"{self.p}+rbx", self.off["LENS"]))
-        self.load(r(15), self.mem(f"{self.p}+rbx", self.off["FLAGS"]))
+        if self.compact:
+            for i in range(4):
+                self.e(f'vpbroadcastd {r(8+i)}, dword ptr [rip+.Llast8_IV+{4*i}]')
+            self.store_aligned(self.mem('rsp', self.spill), r(8))
+            self.e('vpxor ymm12, ymm12, ymm12')
+            self.e('vpxor ymm13, ymm13, ymm13')
+            self.load(r(14), self.pm('LENS'))
+            self.e('vmovd xmm15, edx')
+            self.e('vpbroadcastd ymm15, xmm15')
+            self.e(f'vpcmpeqd ymm15, ymm15, {self.pm("ENDS")}')
+            self.e('vpbroadcastd ymm8, dword ptr [rip+.Llast8_64]')
+            self.e('vpblendvb ymm14, ymm8, ymm14, ymm15')
+            self.e(f'vpand ymm15, ymm15, {self.mem("rip+.Llast8_ENDROOT",0)}')
+            self.e(f'vpbroadcastd ymm8, dword ptr [{self.p}+{self.off["FLAGS"]}]')
+            self.e('vpor ymm15, ymm15, ymm8')
+            self.e('test edx, edx')
+            self.e(f'jne {name}_flags')
+            self.e(f'vpor ymm15, ymm15, {self.mem("rip+.Llast8_START",0)}')
+            L.append(f'{name}_flags:')
+        else:
+            self.load(r(8), self.pm("IV"))
+            self.store_aligned(self.mem("rsp", self.spill), r(8))
+            for i in range(1, 4):
+                self.load(r(8 + i), self.pm("IV", v * i))
+            self.load(r(12), self.pm("CTR"))
+            self.load(r(13), self.pm("CTR", v))
+            self.load(r(14), self.mem(f"{self.p}+rbx", self.off["LENS"]))
+            self.load(r(15), self.mem(f"{self.p}+rbx", self.off["FLAGS"]))
         for s in schedule():
             for quads, base in ((COLS, 0), (DIAGS, 8)):
                 self.half(quads, [s[base + 2 * k] for k in range(4)], 16, 12)
@@ -445,6 +477,11 @@ def unix(family="partial"):
         k.body(name)
         out += [f'.global {name}', f'.global _{name}', '.p2align 6', f'{name}:', f'_{name}:', '        _CET_ENDBR'] + k.lines
         out += last16() + last16(mixed=True)
+        out += ['.p2align 6', '.Llast8_IV:', '    .long 0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a',
+                '.Llast8_64:', '    .long 64', '.p2align 5', '.Llast8_ENDROOT:', '    .long '+','.join(['10']*8),
+                '.Llast8_START:', '    .long '+','.join(['1']*8)]
+        for label,rot in [('ROT16',2),('ROT8',1)]:
+            out += [f'.Llast8_{label}:', '    .byte '+','.join(str(4*(j%4)+(b+rot)%4) for j in range(8) for b in range(4))]
     return out
 
 

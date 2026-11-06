@@ -1273,42 +1273,42 @@ blake3_servil_last_avx2:
         mov rbp, rsp
         sub rsp, 608
         and rsp, -64
-        mov r8, qword ptr [rdi+0]
-        mov r9, qword ptr [rdi+8]
-        mov r10, qword ptr [rdi+16]
-        mov r11, qword ptr [rdi+24]
-        mov r12, qword ptr [rdi+32]
-        mov r13, qword ptr [rdi+40]
-        mov r14, qword ptr [rdi+48]
-        mov r15, qword ptr [rdi+56]
-        vmovdqu ymm0, ymmword ptr [rdi+64]
-        vmovdqu ymm1, ymmword ptr [rdi+96]
-        vmovdqu ymm2, ymmword ptr [rdi+128]
-        vmovdqu ymm3, ymmword ptr [rdi+160]
-        vmovdqu ymm4, ymmword ptr [rdi+192]
-        vmovdqu ymm5, ymmword ptr [rdi+224]
-        vmovdqu ymm6, ymmword ptr [rdi+256]
-        vmovdqu ymm7, ymmword ptr [rdi+288]
+        mov r8, qword ptr [rdi+512]
+        mov r9, qword ptr [rdi+520]
+        mov r10, qword ptr [rdi+528]
+        mov r11, qword ptr [rdi+536]
+        mov r12, qword ptr [rdi+544]
+        mov r13, qword ptr [rdi+552]
+        mov r14, qword ptr [rdi+560]
+        mov r15, qword ptr [rdi+568]
+        vpbroadcastd ymm0, dword ptr [rdi+640]
+        vpbroadcastd ymm1, dword ptr [rdi+644]
+        vpbroadcastd ymm2, dword ptr [rdi+648]
+        vpbroadcastd ymm3, dword ptr [rdi+652]
+        vpbroadcastd ymm4, dword ptr [rdi+656]
+        vpbroadcastd ymm5, dword ptr [rdi+660]
+        vpbroadcastd ymm6, dword ptr [rdi+664]
+        vpbroadcastd ymm7, dword ptr [rdi+668]
         xor edx, edx
         xor ebx, ebx
 blake3_servil_last_avx2_block:
-        cmp edx, dword ptr [rdi+2244]
+        cmp edx, dword ptr [rdi+704]
         jne blake3_servil_last_avx2_read
-        mov r8, qword ptr [rdi+2176]
+        mov r8, qword ptr [rdi+576]
         sub r8, rdx
-        mov r9, qword ptr [rdi+2184]
+        mov r9, qword ptr [rdi+584]
         sub r9, rdx
-        mov r10, qword ptr [rdi+2192]
+        mov r10, qword ptr [rdi+592]
         sub r10, rdx
-        mov r11, qword ptr [rdi+2200]
+        mov r11, qword ptr [rdi+600]
         sub r11, rdx
-        mov r12, qword ptr [rdi+2208]
+        mov r12, qword ptr [rdi+608]
         sub r12, rdx
-        mov r13, qword ptr [rdi+2216]
+        mov r13, qword ptr [rdi+616]
         sub r13, rdx
-        mov r14, qword ptr [rdi+2224]
+        mov r14, qword ptr [rdi+624]
         sub r14, rdx
-        mov r15, qword ptr [rdi+2232]
+        mov r15, qword ptr [rdi+632]
         sub r15, rdx
 blake3_servil_last_avx2_read:
         vmovdqu xmm8, xmmword ptr [r8+rdx]
@@ -1391,15 +1391,26 @@ blake3_servil_last_avx2_read:
         vmovdqa ymmword ptr [rsp+448], ymm10
         vshufps ymm11, ymm13, ymm15, 221
         vmovdqa ymmword ptr [rsp+480], ymm11
-        vmovdqu ymm8, ymmword ptr [rdi+320]
+        vpbroadcastd ymm8, dword ptr [rip+.Llast8_IV+0]
+        vpbroadcastd ymm9, dword ptr [rip+.Llast8_IV+4]
+        vpbroadcastd ymm10, dword ptr [rip+.Llast8_IV+8]
+        vpbroadcastd ymm11, dword ptr [rip+.Llast8_IV+12]
         vmovdqa ymmword ptr [rsp+512], ymm8
-        vmovdqu ymm9, ymmword ptr [rdi+352]
-        vmovdqu ymm10, ymmword ptr [rdi+384]
-        vmovdqu ymm11, ymmword ptr [rdi+416]
-        vmovdqu ymm12, ymmword ptr [rdi+512]
-        vmovdqu ymm13, ymmword ptr [rdi+544]
-        vmovdqu ymm14, ymmword ptr [rdi+rbx+576]
-        vmovdqu ymm15, ymmword ptr [rdi+rbx+1088]
+        vpxor ymm12, ymm12, ymm12
+        vpxor ymm13, ymm13, ymm13
+        vmovdqu ymm14, ymmword ptr [rdi+672]
+        vmovd xmm15, edx
+        vpbroadcastd ymm15, xmm15
+        vpcmpeqd ymm15, ymm15, ymmword ptr [rdi+704]
+        vpbroadcastd ymm8, dword ptr [rip+.Llast8_64]
+        vpblendvb ymm14, ymm8, ymm14, ymm15
+        vpand ymm15, ymm15, ymmword ptr [rip+.Llast8_ENDROOT]
+        vpbroadcastd ymm8, dword ptr [rdi+736]
+        vpor ymm15, ymm15, ymm8
+        test edx, edx
+        jne blake3_servil_last_avx2_flags
+        vpor ymm15, ymm15, ymmword ptr [rip+.Llast8_START]
+blake3_servil_last_avx2_flags:
         vpaddd ymm0, ymm0, ymmword ptr [rsp]
         vpaddd ymm1, ymm1, ymmword ptr [rsp+64]
         vpaddd ymm2, ymm2, ymmword ptr [rsp+128]
@@ -1412,7 +1423,7 @@ blake3_servil_last_avx2_read:
         vpxor ymm13, ymm13, ymm1
         vpxor ymm14, ymm14, ymm2
         vpxor ymm15, ymm15, ymm3
-        vmovdqu ymm8, ymmword ptr [rdi+448]
+        vmovdqu ymm8, ymmword ptr [rip+.Llast8_ROT16]
         vpshufb ymm12, ymm12, ymm8
         vpshufb ymm13, ymm13, ymm8
         vpshufb ymm14, ymm14, ymm8
@@ -1450,7 +1461,7 @@ blake3_servil_last_avx2_read:
         vpxor ymm13, ymm13, ymm1
         vpxor ymm14, ymm14, ymm2
         vpxor ymm15, ymm15, ymm3
-        vmovdqu ymm8, ymmword ptr [rdi+480]
+        vmovdqu ymm8, ymmword ptr [rip+.Llast8_ROT8]
         vpshufb ymm12, ymm12, ymm8
         vpshufb ymm13, ymm13, ymm8
         vpshufb ymm14, ymm14, ymm8
@@ -1488,7 +1499,7 @@ blake3_servil_last_avx2_read:
         vpxor ymm12, ymm12, ymm1
         vpxor ymm13, ymm13, ymm2
         vpxor ymm14, ymm14, ymm3
-        vmovdqu ymm8, ymmword ptr [rdi+448]
+        vmovdqu ymm8, ymmword ptr [rip+.Llast8_ROT16]
         vpshufb ymm15, ymm15, ymm8
         vpshufb ymm12, ymm12, ymm8
         vpshufb ymm13, ymm13, ymm8
@@ -1526,7 +1537,7 @@ blake3_servil_last_avx2_read:
         vpxor ymm12, ymm12, ymm1
         vpxor ymm13, ymm13, ymm2
         vpxor ymm14, ymm14, ymm3
-        vmovdqu ymm8, ymmword ptr [rdi+480]
+        vmovdqu ymm8, ymmword ptr [rip+.Llast8_ROT8]
         vpshufb ymm15, ymm15, ymm8
         vpshufb ymm12, ymm12, ymm8
         vpshufb ymm13, ymm13, ymm8
@@ -1564,7 +1575,7 @@ blake3_servil_last_avx2_read:
         vpxor ymm13, ymm13, ymm1
         vpxor ymm14, ymm14, ymm2
         vpxor ymm15, ymm15, ymm3
-        vmovdqu ymm8, ymmword ptr [rdi+448]
+        vmovdqu ymm8, ymmword ptr [rip+.Llast8_ROT16]
         vpshufb ymm12, ymm12, ymm8
         vpshufb ymm13, ymm13, ymm8
         vpshufb ymm14, ymm14, ymm8
@@ -1602,7 +1613,7 @@ blake3_servil_last_avx2_read:
         vpxor ymm13, ymm13, ymm1
         vpxor ymm14, ymm14, ymm2
         vpxor ymm15, ymm15, ymm3
-        vmovdqu ymm8, ymmword ptr [rdi+480]
+        vmovdqu ymm8, ymmword ptr [rip+.Llast8_ROT8]
         vpshufb ymm12, ymm12, ymm8
         vpshufb ymm13, ymm13, ymm8
         vpshufb ymm14, ymm14, ymm8
@@ -1640,7 +1651,7 @@ blake3_servil_last_avx2_read:
         vpxor ymm12, ymm12, ymm1
         vpxor ymm13, ymm13, ymm2
         vpxor ymm14, ymm14, ymm3
-        vmovdqu ymm8, ymmword ptr [rdi+448]
+        vmovdqu ymm8, ymmword ptr [rip+.Llast8_ROT16]
         vpshufb ymm15, ymm15, ymm8
         vpshufb ymm12, ymm12, ymm8
         vpshufb ymm13, ymm13, ymm8
@@ -1678,7 +1689,7 @@ blake3_servil_last_avx2_read:
         vpxor ymm12, ymm12, ymm1
         vpxor ymm13, ymm13, ymm2
         vpxor ymm14, ymm14, ymm3
-        vmovdqu ymm8, ymmword ptr [rdi+480]
+        vmovdqu ymm8, ymmword ptr [rip+.Llast8_ROT8]
         vpshufb ymm15, ymm15, ymm8
         vpshufb ymm12, ymm12, ymm8
         vpshufb ymm13, ymm13, ymm8
@@ -1716,7 +1727,7 @@ blake3_servil_last_avx2_read:
         vpxor ymm13, ymm13, ymm1
         vpxor ymm14, ymm14, ymm2
         vpxor ymm15, ymm15, ymm3
-        vmovdqu ymm8, ymmword ptr [rdi+448]
+        vmovdqu ymm8, ymmword ptr [rip+.Llast8_ROT16]
         vpshufb ymm12, ymm12, ymm8
         vpshufb ymm13, ymm13, ymm8
         vpshufb ymm14, ymm14, ymm8
@@ -1754,7 +1765,7 @@ blake3_servil_last_avx2_read:
         vpxor ymm13, ymm13, ymm1
         vpxor ymm14, ymm14, ymm2
         vpxor ymm15, ymm15, ymm3
-        vmovdqu ymm8, ymmword ptr [rdi+480]
+        vmovdqu ymm8, ymmword ptr [rip+.Llast8_ROT8]
         vpshufb ymm12, ymm12, ymm8
         vpshufb ymm13, ymm13, ymm8
         vpshufb ymm14, ymm14, ymm8
@@ -1792,7 +1803,7 @@ blake3_servil_last_avx2_read:
         vpxor ymm12, ymm12, ymm1
         vpxor ymm13, ymm13, ymm2
         vpxor ymm14, ymm14, ymm3
-        vmovdqu ymm8, ymmword ptr [rdi+448]
+        vmovdqu ymm8, ymmword ptr [rip+.Llast8_ROT16]
         vpshufb ymm15, ymm15, ymm8
         vpshufb ymm12, ymm12, ymm8
         vpshufb ymm13, ymm13, ymm8
@@ -1830,7 +1841,7 @@ blake3_servil_last_avx2_read:
         vpxor ymm12, ymm12, ymm1
         vpxor ymm13, ymm13, ymm2
         vpxor ymm14, ymm14, ymm3
-        vmovdqu ymm8, ymmword ptr [rdi+480]
+        vmovdqu ymm8, ymmword ptr [rip+.Llast8_ROT8]
         vpshufb ymm15, ymm15, ymm8
         vpshufb ymm12, ymm12, ymm8
         vpshufb ymm13, ymm13, ymm8
@@ -1868,7 +1879,7 @@ blake3_servil_last_avx2_read:
         vpxor ymm13, ymm13, ymm1
         vpxor ymm14, ymm14, ymm2
         vpxor ymm15, ymm15, ymm3
-        vmovdqu ymm8, ymmword ptr [rdi+448]
+        vmovdqu ymm8, ymmword ptr [rip+.Llast8_ROT16]
         vpshufb ymm12, ymm12, ymm8
         vpshufb ymm13, ymm13, ymm8
         vpshufb ymm14, ymm14, ymm8
@@ -1906,7 +1917,7 @@ blake3_servil_last_avx2_read:
         vpxor ymm13, ymm13, ymm1
         vpxor ymm14, ymm14, ymm2
         vpxor ymm15, ymm15, ymm3
-        vmovdqu ymm8, ymmword ptr [rdi+480]
+        vmovdqu ymm8, ymmword ptr [rip+.Llast8_ROT8]
         vpshufb ymm12, ymm12, ymm8
         vpshufb ymm13, ymm13, ymm8
         vpshufb ymm14, ymm14, ymm8
@@ -1944,7 +1955,7 @@ blake3_servil_last_avx2_read:
         vpxor ymm12, ymm12, ymm1
         vpxor ymm13, ymm13, ymm2
         vpxor ymm14, ymm14, ymm3
-        vmovdqu ymm8, ymmword ptr [rdi+448]
+        vmovdqu ymm8, ymmword ptr [rip+.Llast8_ROT16]
         vpshufb ymm15, ymm15, ymm8
         vpshufb ymm12, ymm12, ymm8
         vpshufb ymm13, ymm13, ymm8
@@ -1982,7 +1993,7 @@ blake3_servil_last_avx2_read:
         vpxor ymm12, ymm12, ymm1
         vpxor ymm13, ymm13, ymm2
         vpxor ymm14, ymm14, ymm3
-        vmovdqu ymm8, ymmword ptr [rdi+480]
+        vmovdqu ymm8, ymmword ptr [rip+.Llast8_ROT8]
         vpshufb ymm15, ymm15, ymm8
         vpshufb ymm12, ymm12, ymm8
         vpshufb ymm13, ymm13, ymm8
@@ -2020,7 +2031,7 @@ blake3_servil_last_avx2_read:
         vpxor ymm13, ymm13, ymm1
         vpxor ymm14, ymm14, ymm2
         vpxor ymm15, ymm15, ymm3
-        vmovdqu ymm8, ymmword ptr [rdi+448]
+        vmovdqu ymm8, ymmword ptr [rip+.Llast8_ROT16]
         vpshufb ymm12, ymm12, ymm8
         vpshufb ymm13, ymm13, ymm8
         vpshufb ymm14, ymm14, ymm8
@@ -2058,7 +2069,7 @@ blake3_servil_last_avx2_read:
         vpxor ymm13, ymm13, ymm1
         vpxor ymm14, ymm14, ymm2
         vpxor ymm15, ymm15, ymm3
-        vmovdqu ymm8, ymmword ptr [rdi+480]
+        vmovdqu ymm8, ymmword ptr [rip+.Llast8_ROT8]
         vpshufb ymm12, ymm12, ymm8
         vpshufb ymm13, ymm13, ymm8
         vpshufb ymm14, ymm14, ymm8
@@ -2096,7 +2107,7 @@ blake3_servil_last_avx2_read:
         vpxor ymm12, ymm12, ymm1
         vpxor ymm13, ymm13, ymm2
         vpxor ymm14, ymm14, ymm3
-        vmovdqu ymm8, ymmword ptr [rdi+448]
+        vmovdqu ymm8, ymmword ptr [rip+.Llast8_ROT16]
         vpshufb ymm15, ymm15, ymm8
         vpshufb ymm12, ymm12, ymm8
         vpshufb ymm13, ymm13, ymm8
@@ -2134,7 +2145,7 @@ blake3_servil_last_avx2_read:
         vpxor ymm12, ymm12, ymm1
         vpxor ymm13, ymm13, ymm2
         vpxor ymm14, ymm14, ymm3
-        vmovdqu ymm8, ymmword ptr [rdi+480]
+        vmovdqu ymm8, ymmword ptr [rip+.Llast8_ROT8]
         vpshufb ymm15, ymm15, ymm8
         vpshufb ymm12, ymm12, ymm8
         vpshufb ymm13, ymm13, ymm8
@@ -2172,7 +2183,7 @@ blake3_servil_last_avx2_read:
         vpxor ymm13, ymm13, ymm1
         vpxor ymm14, ymm14, ymm2
         vpxor ymm15, ymm15, ymm3
-        vmovdqu ymm8, ymmword ptr [rdi+448]
+        vmovdqu ymm8, ymmword ptr [rip+.Llast8_ROT16]
         vpshufb ymm12, ymm12, ymm8
         vpshufb ymm13, ymm13, ymm8
         vpshufb ymm14, ymm14, ymm8
@@ -2210,7 +2221,7 @@ blake3_servil_last_avx2_read:
         vpxor ymm13, ymm13, ymm1
         vpxor ymm14, ymm14, ymm2
         vpxor ymm15, ymm15, ymm3
-        vmovdqu ymm8, ymmword ptr [rdi+480]
+        vmovdqu ymm8, ymmword ptr [rip+.Llast8_ROT8]
         vpshufb ymm12, ymm12, ymm8
         vpshufb ymm13, ymm13, ymm8
         vpshufb ymm14, ymm14, ymm8
@@ -2248,7 +2259,7 @@ blake3_servil_last_avx2_read:
         vpxor ymm12, ymm12, ymm1
         vpxor ymm13, ymm13, ymm2
         vpxor ymm14, ymm14, ymm3
-        vmovdqu ymm8, ymmword ptr [rdi+448]
+        vmovdqu ymm8, ymmword ptr [rip+.Llast8_ROT16]
         vpshufb ymm15, ymm15, ymm8
         vpshufb ymm12, ymm12, ymm8
         vpshufb ymm13, ymm13, ymm8
@@ -2286,7 +2297,7 @@ blake3_servil_last_avx2_read:
         vpxor ymm12, ymm12, ymm1
         vpxor ymm13, ymm13, ymm2
         vpxor ymm14, ymm14, ymm3
-        vmovdqu ymm8, ymmword ptr [rdi+480]
+        vmovdqu ymm8, ymmword ptr [rip+.Llast8_ROT8]
         vpshufb ymm15, ymm15, ymm8
         vpshufb ymm12, ymm12, ymm8
         vpshufb ymm13, ymm13, ymm8
@@ -2324,7 +2335,7 @@ blake3_servil_last_avx2_read:
         vpxor ymm13, ymm13, ymm1
         vpxor ymm14, ymm14, ymm2
         vpxor ymm15, ymm15, ymm3
-        vmovdqu ymm8, ymmword ptr [rdi+448]
+        vmovdqu ymm8, ymmword ptr [rip+.Llast8_ROT16]
         vpshufb ymm12, ymm12, ymm8
         vpshufb ymm13, ymm13, ymm8
         vpshufb ymm14, ymm14, ymm8
@@ -2362,7 +2373,7 @@ blake3_servil_last_avx2_read:
         vpxor ymm13, ymm13, ymm1
         vpxor ymm14, ymm14, ymm2
         vpxor ymm15, ymm15, ymm3
-        vmovdqu ymm8, ymmword ptr [rdi+480]
+        vmovdqu ymm8, ymmword ptr [rip+.Llast8_ROT8]
         vpshufb ymm12, ymm12, ymm8
         vpshufb ymm13, ymm13, ymm8
         vpshufb ymm14, ymm14, ymm8
@@ -2400,7 +2411,7 @@ blake3_servil_last_avx2_read:
         vpxor ymm12, ymm12, ymm1
         vpxor ymm13, ymm13, ymm2
         vpxor ymm14, ymm14, ymm3
-        vmovdqu ymm8, ymmword ptr [rdi+448]
+        vmovdqu ymm8, ymmword ptr [rip+.Llast8_ROT16]
         vpshufb ymm15, ymm15, ymm8
         vpshufb ymm12, ymm12, ymm8
         vpshufb ymm13, ymm13, ymm8
@@ -2438,7 +2449,7 @@ blake3_servil_last_avx2_read:
         vpxor ymm12, ymm12, ymm1
         vpxor ymm13, ymm13, ymm2
         vpxor ymm14, ymm14, ymm3
-        vmovdqu ymm8, ymmword ptr [rdi+480]
+        vmovdqu ymm8, ymmword ptr [rip+.Llast8_ROT8]
         vpshufb ymm15, ymm15, ymm8
         vpshufb ymm12, ymm12, ymm8
         vpshufb ymm13, ymm13, ymm8
@@ -2474,16 +2485,16 @@ blake3_servil_last_avx2_read:
         vpxor ymm7, ymm7, ymm15
         add rdx, 64
         add rbx, 32
-        cmp edx, dword ptr [rdi+2240]
+        cmp edx, dword ptr [rdi+740]
         jne blake3_servil_last_avx2_block
-        vmovdqu ymmword ptr [rdi+1664], ymm0
-        vmovdqu ymmword ptr [rdi+1696], ymm1
-        vmovdqu ymmword ptr [rdi+1728], ymm2
-        vmovdqu ymmword ptr [rdi+1760], ymm3
-        vmovdqu ymmword ptr [rdi+1792], ymm4
-        vmovdqu ymmword ptr [rdi+1824], ymm5
-        vmovdqu ymmword ptr [rdi+1856], ymm6
-        vmovdqu ymmword ptr [rdi+1888], ymm7
+        vmovdqu ymmword ptr [rdi], ymm0
+        vmovdqu ymmword ptr [rdi+32], ymm1
+        vmovdqu ymmword ptr [rdi+64], ymm2
+        vmovdqu ymmword ptr [rdi+96], ymm3
+        vmovdqu ymmword ptr [rdi+128], ymm4
+        vmovdqu ymmword ptr [rdi+160], ymm5
+        vmovdqu ymmword ptr [rdi+192], ymm6
+        vmovdqu ymmword ptr [rdi+224], ymm7
         vzeroupper
         mov rsp, rbp
         pop r15
@@ -2508,57 +2519,57 @@ _blake3_servil_mixed_avx2:
         mov rbp, rsp
         sub rsp, 608
         and rsp, -64
-        mov r8, qword ptr [rdi+0]
-        mov r9, qword ptr [rdi+8]
-        mov r10, qword ptr [rdi+16]
-        mov r11, qword ptr [rdi+24]
-        mov r12, qword ptr [rdi+32]
-        mov r13, qword ptr [rdi+40]
-        mov r14, qword ptr [rdi+48]
-        mov r15, qword ptr [rdi+56]
-        vmovdqu ymm0, ymmword ptr [rdi+64]
-        vmovdqu ymm1, ymmword ptr [rdi+96]
-        vmovdqu ymm2, ymmword ptr [rdi+128]
-        vmovdqu ymm3, ymmword ptr [rdi+160]
-        vmovdqu ymm4, ymmword ptr [rdi+192]
-        vmovdqu ymm5, ymmword ptr [rdi+224]
-        vmovdqu ymm6, ymmword ptr [rdi+256]
-        vmovdqu ymm7, ymmword ptr [rdi+288]
+        mov r8, qword ptr [rdi+512]
+        mov r9, qword ptr [rdi+520]
+        mov r10, qword ptr [rdi+528]
+        mov r11, qword ptr [rdi+536]
+        mov r12, qword ptr [rdi+544]
+        mov r13, qword ptr [rdi+552]
+        mov r14, qword ptr [rdi+560]
+        mov r15, qword ptr [rdi+568]
+        vpbroadcastd ymm0, dword ptr [rdi+640]
+        vpbroadcastd ymm1, dword ptr [rdi+644]
+        vpbroadcastd ymm2, dword ptr [rdi+648]
+        vpbroadcastd ymm3, dword ptr [rdi+652]
+        vpbroadcastd ymm4, dword ptr [rdi+656]
+        vpbroadcastd ymm5, dword ptr [rdi+660]
+        vpbroadcastd ymm6, dword ptr [rdi+664]
+        vpbroadcastd ymm7, dword ptr [rdi+668]
         xor edx, edx
         xor ebx, ebx
 blake3_servil_mixed_avx2_block:
-        mov r8, qword ptr [rdi+0]
+        mov r8, qword ptr [rdi+512]
         add r8, rdx
-        cmp edx, dword ptr [rdi+2304]
-        cmovae r8, qword ptr [rdi+2176]
-        mov r9, qword ptr [rdi+8]
+        cmp edx, dword ptr [rdi+704]
+        cmovae r8, qword ptr [rdi+576]
+        mov r9, qword ptr [rdi+520]
         add r9, rdx
-        cmp edx, dword ptr [rdi+2308]
-        cmovae r9, qword ptr [rdi+2184]
-        mov r10, qword ptr [rdi+16]
+        cmp edx, dword ptr [rdi+708]
+        cmovae r9, qword ptr [rdi+584]
+        mov r10, qword ptr [rdi+528]
         add r10, rdx
-        cmp edx, dword ptr [rdi+2312]
-        cmovae r10, qword ptr [rdi+2192]
-        mov r11, qword ptr [rdi+24]
+        cmp edx, dword ptr [rdi+712]
+        cmovae r10, qword ptr [rdi+592]
+        mov r11, qword ptr [rdi+536]
         add r11, rdx
-        cmp edx, dword ptr [rdi+2316]
-        cmovae r11, qword ptr [rdi+2200]
-        mov r12, qword ptr [rdi+32]
+        cmp edx, dword ptr [rdi+716]
+        cmovae r11, qword ptr [rdi+600]
+        mov r12, qword ptr [rdi+544]
         add r12, rdx
-        cmp edx, dword ptr [rdi+2320]
-        cmovae r12, qword ptr [rdi+2208]
-        mov r13, qword ptr [rdi+40]
+        cmp edx, dword ptr [rdi+720]
+        cmovae r12, qword ptr [rdi+608]
+        mov r13, qword ptr [rdi+552]
         add r13, rdx
-        cmp edx, dword ptr [rdi+2324]
-        cmovae r13, qword ptr [rdi+2216]
-        mov r14, qword ptr [rdi+48]
+        cmp edx, dword ptr [rdi+724]
+        cmovae r13, qword ptr [rdi+616]
+        mov r14, qword ptr [rdi+560]
         add r14, rdx
-        cmp edx, dword ptr [rdi+2328]
-        cmovae r14, qword ptr [rdi+2224]
-        mov r15, qword ptr [rdi+56]
+        cmp edx, dword ptr [rdi+728]
+        cmovae r14, qword ptr [rdi+624]
+        mov r15, qword ptr [rdi+568]
         add r15, rdx
-        cmp edx, dword ptr [rdi+2332]
-        cmovae r15, qword ptr [rdi+2232]
+        cmp edx, dword ptr [rdi+732]
+        cmovae r15, qword ptr [rdi+632]
         vmovdqu xmm8, xmmword ptr [r8]
         vinsertf128 ymm8, ymm8, xmmword ptr [r12], 1
         vmovdqu xmm9, xmmword ptr [r9]
@@ -2639,15 +2650,26 @@ blake3_servil_mixed_avx2_block:
         vmovdqa ymmword ptr [rsp+448], ymm10
         vshufps ymm11, ymm13, ymm15, 221
         vmovdqa ymmword ptr [rsp+480], ymm11
-        vmovdqu ymm8, ymmword ptr [rdi+320]
+        vpbroadcastd ymm8, dword ptr [rip+.Llast8_IV+0]
+        vpbroadcastd ymm9, dword ptr [rip+.Llast8_IV+4]
+        vpbroadcastd ymm10, dword ptr [rip+.Llast8_IV+8]
+        vpbroadcastd ymm11, dword ptr [rip+.Llast8_IV+12]
         vmovdqa ymmword ptr [rsp+512], ymm8
-        vmovdqu ymm9, ymmword ptr [rdi+352]
-        vmovdqu ymm10, ymmword ptr [rdi+384]
-        vmovdqu ymm11, ymmword ptr [rdi+416]
-        vmovdqu ymm12, ymmword ptr [rdi+512]
-        vmovdqu ymm13, ymmword ptr [rdi+544]
-        vmovdqu ymm14, ymmword ptr [rdi+rbx+576]
-        vmovdqu ymm15, ymmword ptr [rdi+rbx+1088]
+        vpxor ymm12, ymm12, ymm12
+        vpxor ymm13, ymm13, ymm13
+        vmovdqu ymm14, ymmword ptr [rdi+672]
+        vmovd xmm15, edx
+        vpbroadcastd ymm15, xmm15
+        vpcmpeqd ymm15, ymm15, ymmword ptr [rdi+704]
+        vpbroadcastd ymm8, dword ptr [rip+.Llast8_64]
+        vpblendvb ymm14, ymm8, ymm14, ymm15
+        vpand ymm15, ymm15, ymmword ptr [rip+.Llast8_ENDROOT]
+        vpbroadcastd ymm8, dword ptr [rdi+736]
+        vpor ymm15, ymm15, ymm8
+        test edx, edx
+        jne blake3_servil_mixed_avx2_flags
+        vpor ymm15, ymm15, ymmword ptr [rip+.Llast8_START]
+blake3_servil_mixed_avx2_flags:
         vpaddd ymm0, ymm0, ymmword ptr [rsp]
         vpaddd ymm1, ymm1, ymmword ptr [rsp+64]
         vpaddd ymm2, ymm2, ymmword ptr [rsp+128]
@@ -2660,7 +2682,7 @@ blake3_servil_mixed_avx2_block:
         vpxor ymm13, ymm13, ymm1
         vpxor ymm14, ymm14, ymm2
         vpxor ymm15, ymm15, ymm3
-        vmovdqu ymm8, ymmword ptr [rdi+448]
+        vmovdqu ymm8, ymmword ptr [rip+.Llast8_ROT16]
         vpshufb ymm12, ymm12, ymm8
         vpshufb ymm13, ymm13, ymm8
         vpshufb ymm14, ymm14, ymm8
@@ -2698,7 +2720,7 @@ blake3_servil_mixed_avx2_block:
         vpxor ymm13, ymm13, ymm1
         vpxor ymm14, ymm14, ymm2
         vpxor ymm15, ymm15, ymm3
-        vmovdqu ymm8, ymmword ptr [rdi+480]
+        vmovdqu ymm8, ymmword ptr [rip+.Llast8_ROT8]
         vpshufb ymm12, ymm12, ymm8
         vpshufb ymm13, ymm13, ymm8
         vpshufb ymm14, ymm14, ymm8
@@ -2736,7 +2758,7 @@ blake3_servil_mixed_avx2_block:
         vpxor ymm12, ymm12, ymm1
         vpxor ymm13, ymm13, ymm2
         vpxor ymm14, ymm14, ymm3
-        vmovdqu ymm8, ymmword ptr [rdi+448]
+        vmovdqu ymm8, ymmword ptr [rip+.Llast8_ROT16]
         vpshufb ymm15, ymm15, ymm8
         vpshufb ymm12, ymm12, ymm8
         vpshufb ymm13, ymm13, ymm8
@@ -2774,7 +2796,7 @@ blake3_servil_mixed_avx2_block:
         vpxor ymm12, ymm12, ymm1
         vpxor ymm13, ymm13, ymm2
         vpxor ymm14, ymm14, ymm3
-        vmovdqu ymm8, ymmword ptr [rdi+480]
+        vmovdqu ymm8, ymmword ptr [rip+.Llast8_ROT8]
         vpshufb ymm15, ymm15, ymm8
         vpshufb ymm12, ymm12, ymm8
         vpshufb ymm13, ymm13, ymm8
@@ -2812,7 +2834,7 @@ blake3_servil_mixed_avx2_block:
         vpxor ymm13, ymm13, ymm1
         vpxor ymm14, ymm14, ymm2
         vpxor ymm15, ymm15, ymm3
-        vmovdqu ymm8, ymmword ptr [rdi+448]
+        vmovdqu ymm8, ymmword ptr [rip+.Llast8_ROT16]
         vpshufb ymm12, ymm12, ymm8
         vpshufb ymm13, ymm13, ymm8
         vpshufb ymm14, ymm14, ymm8
@@ -2850,7 +2872,7 @@ blake3_servil_mixed_avx2_block:
         vpxor ymm13, ymm13, ymm1
         vpxor ymm14, ymm14, ymm2
         vpxor ymm15, ymm15, ymm3
-        vmovdqu ymm8, ymmword ptr [rdi+480]
+        vmovdqu ymm8, ymmword ptr [rip+.Llast8_ROT8]
         vpshufb ymm12, ymm12, ymm8
         vpshufb ymm13, ymm13, ymm8
         vpshufb ymm14, ymm14, ymm8
@@ -2888,7 +2910,7 @@ blake3_servil_mixed_avx2_block:
         vpxor ymm12, ymm12, ymm1
         vpxor ymm13, ymm13, ymm2
         vpxor ymm14, ymm14, ymm3
-        vmovdqu ymm8, ymmword ptr [rdi+448]
+        vmovdqu ymm8, ymmword ptr [rip+.Llast8_ROT16]
         vpshufb ymm15, ymm15, ymm8
         vpshufb ymm12, ymm12, ymm8
         vpshufb ymm13, ymm13, ymm8
@@ -2926,7 +2948,7 @@ blake3_servil_mixed_avx2_block:
         vpxor ymm12, ymm12, ymm1
         vpxor ymm13, ymm13, ymm2
         vpxor ymm14, ymm14, ymm3
-        vmovdqu ymm8, ymmword ptr [rdi+480]
+        vmovdqu ymm8, ymmword ptr [rip+.Llast8_ROT8]
         vpshufb ymm15, ymm15, ymm8
         vpshufb ymm12, ymm12, ymm8
         vpshufb ymm13, ymm13, ymm8
@@ -2964,7 +2986,7 @@ blake3_servil_mixed_avx2_block:
         vpxor ymm13, ymm13, ymm1
         vpxor ymm14, ymm14, ymm2
         vpxor ymm15, ymm15, ymm3
-        vmovdqu ymm8, ymmword ptr [rdi+448]
+        vmovdqu ymm8, ymmword ptr [rip+.Llast8_ROT16]
         vpshufb ymm12, ymm12, ymm8
         vpshufb ymm13, ymm13, ymm8
         vpshufb ymm14, ymm14, ymm8
@@ -3002,7 +3024,7 @@ blake3_servil_mixed_avx2_block:
         vpxor ymm13, ymm13, ymm1
         vpxor ymm14, ymm14, ymm2
         vpxor ymm15, ymm15, ymm3
-        vmovdqu ymm8, ymmword ptr [rdi+480]
+        vmovdqu ymm8, ymmword ptr [rip+.Llast8_ROT8]
         vpshufb ymm12, ymm12, ymm8
         vpshufb ymm13, ymm13, ymm8
         vpshufb ymm14, ymm14, ymm8
@@ -3040,7 +3062,7 @@ blake3_servil_mixed_avx2_block:
         vpxor ymm12, ymm12, ymm1
         vpxor ymm13, ymm13, ymm2
         vpxor ymm14, ymm14, ymm3
-        vmovdqu ymm8, ymmword ptr [rdi+448]
+        vmovdqu ymm8, ymmword ptr [rip+.Llast8_ROT16]
         vpshufb ymm15, ymm15, ymm8
         vpshufb ymm12, ymm12, ymm8
         vpshufb ymm13, ymm13, ymm8
@@ -3078,7 +3100,7 @@ blake3_servil_mixed_avx2_block:
         vpxor ymm12, ymm12, ymm1
         vpxor ymm13, ymm13, ymm2
         vpxor ymm14, ymm14, ymm3
-        vmovdqu ymm8, ymmword ptr [rdi+480]
+        vmovdqu ymm8, ymmword ptr [rip+.Llast8_ROT8]
         vpshufb ymm15, ymm15, ymm8
         vpshufb ymm12, ymm12, ymm8
         vpshufb ymm13, ymm13, ymm8
@@ -3116,7 +3138,7 @@ blake3_servil_mixed_avx2_block:
         vpxor ymm13, ymm13, ymm1
         vpxor ymm14, ymm14, ymm2
         vpxor ymm15, ymm15, ymm3
-        vmovdqu ymm8, ymmword ptr [rdi+448]
+        vmovdqu ymm8, ymmword ptr [rip+.Llast8_ROT16]
         vpshufb ymm12, ymm12, ymm8
         vpshufb ymm13, ymm13, ymm8
         vpshufb ymm14, ymm14, ymm8
@@ -3154,7 +3176,7 @@ blake3_servil_mixed_avx2_block:
         vpxor ymm13, ymm13, ymm1
         vpxor ymm14, ymm14, ymm2
         vpxor ymm15, ymm15, ymm3
-        vmovdqu ymm8, ymmword ptr [rdi+480]
+        vmovdqu ymm8, ymmword ptr [rip+.Llast8_ROT8]
         vpshufb ymm12, ymm12, ymm8
         vpshufb ymm13, ymm13, ymm8
         vpshufb ymm14, ymm14, ymm8
@@ -3192,7 +3214,7 @@ blake3_servil_mixed_avx2_block:
         vpxor ymm12, ymm12, ymm1
         vpxor ymm13, ymm13, ymm2
         vpxor ymm14, ymm14, ymm3
-        vmovdqu ymm8, ymmword ptr [rdi+448]
+        vmovdqu ymm8, ymmword ptr [rip+.Llast8_ROT16]
         vpshufb ymm15, ymm15, ymm8
         vpshufb ymm12, ymm12, ymm8
         vpshufb ymm13, ymm13, ymm8
@@ -3230,7 +3252,7 @@ blake3_servil_mixed_avx2_block:
         vpxor ymm12, ymm12, ymm1
         vpxor ymm13, ymm13, ymm2
         vpxor ymm14, ymm14, ymm3
-        vmovdqu ymm8, ymmword ptr [rdi+480]
+        vmovdqu ymm8, ymmword ptr [rip+.Llast8_ROT8]
         vpshufb ymm15, ymm15, ymm8
         vpshufb ymm12, ymm12, ymm8
         vpshufb ymm13, ymm13, ymm8
@@ -3268,7 +3290,7 @@ blake3_servil_mixed_avx2_block:
         vpxor ymm13, ymm13, ymm1
         vpxor ymm14, ymm14, ymm2
         vpxor ymm15, ymm15, ymm3
-        vmovdqu ymm8, ymmword ptr [rdi+448]
+        vmovdqu ymm8, ymmword ptr [rip+.Llast8_ROT16]
         vpshufb ymm12, ymm12, ymm8
         vpshufb ymm13, ymm13, ymm8
         vpshufb ymm14, ymm14, ymm8
@@ -3306,7 +3328,7 @@ blake3_servil_mixed_avx2_block:
         vpxor ymm13, ymm13, ymm1
         vpxor ymm14, ymm14, ymm2
         vpxor ymm15, ymm15, ymm3
-        vmovdqu ymm8, ymmword ptr [rdi+480]
+        vmovdqu ymm8, ymmword ptr [rip+.Llast8_ROT8]
         vpshufb ymm12, ymm12, ymm8
         vpshufb ymm13, ymm13, ymm8
         vpshufb ymm14, ymm14, ymm8
@@ -3344,7 +3366,7 @@ blake3_servil_mixed_avx2_block:
         vpxor ymm12, ymm12, ymm1
         vpxor ymm13, ymm13, ymm2
         vpxor ymm14, ymm14, ymm3
-        vmovdqu ymm8, ymmword ptr [rdi+448]
+        vmovdqu ymm8, ymmword ptr [rip+.Llast8_ROT16]
         vpshufb ymm15, ymm15, ymm8
         vpshufb ymm12, ymm12, ymm8
         vpshufb ymm13, ymm13, ymm8
@@ -3382,7 +3404,7 @@ blake3_servil_mixed_avx2_block:
         vpxor ymm12, ymm12, ymm1
         vpxor ymm13, ymm13, ymm2
         vpxor ymm14, ymm14, ymm3
-        vmovdqu ymm8, ymmword ptr [rdi+480]
+        vmovdqu ymm8, ymmword ptr [rip+.Llast8_ROT8]
         vpshufb ymm15, ymm15, ymm8
         vpshufb ymm12, ymm12, ymm8
         vpshufb ymm13, ymm13, ymm8
@@ -3420,7 +3442,7 @@ blake3_servil_mixed_avx2_block:
         vpxor ymm13, ymm13, ymm1
         vpxor ymm14, ymm14, ymm2
         vpxor ymm15, ymm15, ymm3
-        vmovdqu ymm8, ymmword ptr [rdi+448]
+        vmovdqu ymm8, ymmword ptr [rip+.Llast8_ROT16]
         vpshufb ymm12, ymm12, ymm8
         vpshufb ymm13, ymm13, ymm8
         vpshufb ymm14, ymm14, ymm8
@@ -3458,7 +3480,7 @@ blake3_servil_mixed_avx2_block:
         vpxor ymm13, ymm13, ymm1
         vpxor ymm14, ymm14, ymm2
         vpxor ymm15, ymm15, ymm3
-        vmovdqu ymm8, ymmword ptr [rdi+480]
+        vmovdqu ymm8, ymmword ptr [rip+.Llast8_ROT8]
         vpshufb ymm12, ymm12, ymm8
         vpshufb ymm13, ymm13, ymm8
         vpshufb ymm14, ymm14, ymm8
@@ -3496,7 +3518,7 @@ blake3_servil_mixed_avx2_block:
         vpxor ymm12, ymm12, ymm1
         vpxor ymm13, ymm13, ymm2
         vpxor ymm14, ymm14, ymm3
-        vmovdqu ymm8, ymmword ptr [rdi+448]
+        vmovdqu ymm8, ymmword ptr [rip+.Llast8_ROT16]
         vpshufb ymm15, ymm15, ymm8
         vpshufb ymm12, ymm12, ymm8
         vpshufb ymm13, ymm13, ymm8
@@ -3534,7 +3556,7 @@ blake3_servil_mixed_avx2_block:
         vpxor ymm12, ymm12, ymm1
         vpxor ymm13, ymm13, ymm2
         vpxor ymm14, ymm14, ymm3
-        vmovdqu ymm8, ymmword ptr [rdi+480]
+        vmovdqu ymm8, ymmword ptr [rip+.Llast8_ROT8]
         vpshufb ymm15, ymm15, ymm8
         vpshufb ymm12, ymm12, ymm8
         vpshufb ymm13, ymm13, ymm8
@@ -3572,7 +3594,7 @@ blake3_servil_mixed_avx2_block:
         vpxor ymm13, ymm13, ymm1
         vpxor ymm14, ymm14, ymm2
         vpxor ymm15, ymm15, ymm3
-        vmovdqu ymm8, ymmword ptr [rdi+448]
+        vmovdqu ymm8, ymmword ptr [rip+.Llast8_ROT16]
         vpshufb ymm12, ymm12, ymm8
         vpshufb ymm13, ymm13, ymm8
         vpshufb ymm14, ymm14, ymm8
@@ -3610,7 +3632,7 @@ blake3_servil_mixed_avx2_block:
         vpxor ymm13, ymm13, ymm1
         vpxor ymm14, ymm14, ymm2
         vpxor ymm15, ymm15, ymm3
-        vmovdqu ymm8, ymmword ptr [rdi+480]
+        vmovdqu ymm8, ymmword ptr [rip+.Llast8_ROT8]
         vpshufb ymm12, ymm12, ymm8
         vpshufb ymm13, ymm13, ymm8
         vpshufb ymm14, ymm14, ymm8
@@ -3648,7 +3670,7 @@ blake3_servil_mixed_avx2_block:
         vpxor ymm12, ymm12, ymm1
         vpxor ymm13, ymm13, ymm2
         vpxor ymm14, ymm14, ymm3
-        vmovdqu ymm8, ymmword ptr [rdi+448]
+        vmovdqu ymm8, ymmword ptr [rip+.Llast8_ROT16]
         vpshufb ymm15, ymm15, ymm8
         vpshufb ymm12, ymm12, ymm8
         vpshufb ymm13, ymm13, ymm8
@@ -3686,7 +3708,7 @@ blake3_servil_mixed_avx2_block:
         vpxor ymm12, ymm12, ymm1
         vpxor ymm13, ymm13, ymm2
         vpxor ymm14, ymm14, ymm3
-        vmovdqu ymm8, ymmword ptr [rdi+480]
+        vmovdqu ymm8, ymmword ptr [rip+.Llast8_ROT8]
         vpshufb ymm15, ymm15, ymm8
         vpshufb ymm12, ymm12, ymm8
         vpshufb ymm13, ymm13, ymm8
@@ -3722,43 +3744,43 @@ blake3_servil_mixed_avx2_block:
         vpxor ymm7, ymm7, ymm15
         vmovd xmm15, edx
         vpbroadcastd ymm15, xmm15
-        vpcmpeqd ymm15, ymm15, ymmword ptr [rdi+2304]
-        vmovdqu ymm8, ymmword ptr [rdi+1920]
+        vpcmpeqd ymm15, ymm15, ymmword ptr [rdi+704]
+        vmovdqu ymm8, ymmword ptr [rdi+256]
         vpblendvb ymm8, ymm8, ymm0, ymm15
-        vmovdqu ymmword ptr [rdi+1920], ymm8
-        vmovdqu ymm8, ymmword ptr [rdi+1952]
+        vmovdqu ymmword ptr [rdi+256], ymm8
+        vmovdqu ymm8, ymmword ptr [rdi+288]
         vpblendvb ymm8, ymm8, ymm1, ymm15
-        vmovdqu ymmword ptr [rdi+1952], ymm8
-        vmovdqu ymm8, ymmword ptr [rdi+1984]
+        vmovdqu ymmword ptr [rdi+288], ymm8
+        vmovdqu ymm8, ymmword ptr [rdi+320]
         vpblendvb ymm8, ymm8, ymm2, ymm15
-        vmovdqu ymmword ptr [rdi+1984], ymm8
-        vmovdqu ymm8, ymmword ptr [rdi+2016]
+        vmovdqu ymmword ptr [rdi+320], ymm8
+        vmovdqu ymm8, ymmword ptr [rdi+352]
         vpblendvb ymm8, ymm8, ymm3, ymm15
-        vmovdqu ymmword ptr [rdi+2016], ymm8
-        vmovdqu ymm8, ymmword ptr [rdi+2048]
+        vmovdqu ymmword ptr [rdi+352], ymm8
+        vmovdqu ymm8, ymmword ptr [rdi+384]
         vpblendvb ymm8, ymm8, ymm4, ymm15
-        vmovdqu ymmword ptr [rdi+2048], ymm8
-        vmovdqu ymm8, ymmword ptr [rdi+2080]
+        vmovdqu ymmword ptr [rdi+384], ymm8
+        vmovdqu ymm8, ymmword ptr [rdi+416]
         vpblendvb ymm8, ymm8, ymm5, ymm15
-        vmovdqu ymmword ptr [rdi+2080], ymm8
-        vmovdqu ymm8, ymmword ptr [rdi+2112]
+        vmovdqu ymmword ptr [rdi+416], ymm8
+        vmovdqu ymm8, ymmword ptr [rdi+448]
         vpblendvb ymm8, ymm8, ymm6, ymm15
-        vmovdqu ymmword ptr [rdi+2112], ymm8
-        vmovdqu ymm8, ymmword ptr [rdi+2144]
+        vmovdqu ymmword ptr [rdi+448], ymm8
+        vmovdqu ymm8, ymmword ptr [rdi+480]
         vpblendvb ymm8, ymm8, ymm7, ymm15
-        vmovdqu ymmword ptr [rdi+2144], ymm8
+        vmovdqu ymmword ptr [rdi+480], ymm8
         add rdx, 64
         add rbx, 32
-        cmp edx, dword ptr [rdi+2240]
+        cmp edx, dword ptr [rdi+740]
         jne blake3_servil_mixed_avx2_block
-        vmovdqu ymmword ptr [rdi+1664], ymm0
-        vmovdqu ymmword ptr [rdi+1696], ymm1
-        vmovdqu ymmword ptr [rdi+1728], ymm2
-        vmovdqu ymmword ptr [rdi+1760], ymm3
-        vmovdqu ymmword ptr [rdi+1792], ymm4
-        vmovdqu ymmword ptr [rdi+1824], ymm5
-        vmovdqu ymmword ptr [rdi+1856], ymm6
-        vmovdqu ymmword ptr [rdi+1888], ymm7
+        vmovdqu ymmword ptr [rdi], ymm0
+        vmovdqu ymmword ptr [rdi+32], ymm1
+        vmovdqu ymmword ptr [rdi+64], ymm2
+        vmovdqu ymmword ptr [rdi+96], ymm3
+        vmovdqu ymmword ptr [rdi+128], ymm4
+        vmovdqu ymmword ptr [rdi+160], ymm5
+        vmovdqu ymmword ptr [rdi+192], ymm6
+        vmovdqu ymmword ptr [rdi+224], ymm7
         vzeroupper
         mov rsp, rbp
         pop r15
@@ -5821,3 +5843,17 @@ _blake3_servil_mixed_avx512:
 .p2align 6
 .Lmixed16_endflags:
     .long 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10
+.p2align 6
+.Llast8_IV:
+    .long 0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a
+.Llast8_64:
+    .long 64
+.p2align 5
+.Llast8_ENDROOT:
+    .long 10,10,10,10,10,10,10,10
+.Llast8_START:
+    .long 1,1,1,1,1,1,1,1
+.Llast8_ROT16:
+    .byte 2,3,0,1,6,7,4,5,10,11,8,9,14,15,12,13,2,3,0,1,6,7,4,5,10,11,8,9,14,15,12,13
+.Llast8_ROT8:
+    .byte 1,2,3,0,5,6,7,4,9,10,11,8,13,14,15,12,1,2,3,0,5,6,7,4,9,10,11,8,13,14,15,12

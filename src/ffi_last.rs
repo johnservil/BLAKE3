@@ -13,25 +13,21 @@ use crate::{BLOCK_LEN, CHUNK_END, CHUNK_START, CVWords, IV, OUT_LEN, ROOT};
 /// The kernels' parameter block for `W` lanes, laid out as gen_x86.py's
 /// `layout(w, last=True)` says (the test below checks the offsets).
 #[repr(C, align(64))]
-pub struct Params<const W: usize> {
-    msg: [*const u8; W],
-    key: [[u32; W]; 8],
-    iv: [[u32; W]; 4],
-    rot16: [u32; W],
-    rot8: [u32; W],
-    ctr: [[u32; W]; 2],
-    lens: [[u32; W]; 16],
-    flags: [[u32; W]; 16],
-    last: [u32; 16],
-    h: [[u32; W]; 8],
-    snap: [[u32; W]; 8],
-    lastmsg: [*const u8; W],
+struct Params8 {
+    h: [[u32; 8]; 8],
+    snap: [[u32; 8]; 8],
+    msg: [*const u8; 8],
+    lastmsg: [*const u8; 8],
+    key: CVWords,
+    lens: [u32; 8],
+    ends: [u32; 8],
+    flags: u32,
     end: u32,
-    switch: u32,
 }
 
 unsafe extern "C" {
-    fn blake3_servil_last_avx2(params: *mut Params<8>);
+    fn blake3_servil_last_avx2(params: *mut Params8);
+    fn blake3_servil_mixed_avx2(params: *mut Params8);
 }
 
 /// AVX-512's compact parameter block (gen_x86.py's last16): common
@@ -143,71 +139,54 @@ pub(crate) unsafe fn hash_mixed16(items: &[&[u8]], key: &CVWords, flags: u8, out
     }
 }
 
-/// AVX2's mixed-lane ending offsets follow the existing parameter block,
-/// whose size includes its 64-byte alignment padding.
-#[repr(C, align(64))]
-struct ParamsMixed8 {
-    common: Params<8>,
-    ends: [u32; 8],
-}
-
-unsafe extern "C" {
-    fn blake3_servil_mixed_avx2(params: *mut ParamsMixed8);
-}
-
-/// AVX2 version of hash_mixed16: up to eight lanes, a per-lane snapshot at
-/// its last block. Unsafe: the CPU supports AVX2.
-pub(crate) unsafe fn hash_mixed8(items: &[&[u8]], key: &CVWords, flags: u8, out: &mut [[u8; OUT_LEN]]) {
+/// AVX2's equal and mixed kernels share this compact builder. The kernel
+/// derives each step's length and flags from one last length and ending
+/// offset per lane, rather than receiving sixteen precomputed row tables.
+/// Unsafe: the CPU supports AVX2.
+unsafe fn hash8(items: &[&[u8]], key: &CVWords, flags: u8, out: &mut [[u8; OUT_LEN]], mixed: bool) {
     assert_eq!(flags & CHUNK_START, 0, "the finishing kernel supplies CHUNK_START");
     let n = items.len();
     assert!((1..=8).contains(&n) && out.len() == n, "1 to 8 items, one digest each");
     assert!(items.iter().all(|i| i.len() <= crate::CHUNK_LEN), "items up to one chunk");
-    let ends: [u32; 8] = core::array::from_fn(|j| (items[if j < n { j } else { 0 }].len().saturating_sub(1) / BLOCK_LEN * BLOCK_LEN) as u32);
-    let mut last = [[0u8; BLOCK_LEN]; 8];
-    let lens: [u32; 8] = core::array::from_fn(|j| {
-        let item = items[if j < n { j } else { 0 }];
-        let tail = &item[ends[j] as usize..];
+    let ends: [u32; 8] = core::array::from_fn(|j| (items[if j < n { j } else { 0 }].len().saturating_sub(1) / 64 * 64) as u32);
+    assert!(mixed || ends.iter().all(|&e| e == ends[0]), "equal block counts for the equal kernel");
+    let mut last = [[0u8; 64]; 8];
+    let lens = core::array::from_fn(|j| {
+        let input = items[if j < n { j } else { 0 }];
+        let tail = &input[ends[j] as usize..];
         last[j][..tail.len()].copy_from_slice(tail);
         tail.len() as u32
     });
-    let f = flags as u32;
-    let mut p = ParamsMixed8 {
-        common: Params {
-            msg: core::array::from_fn(|j| items[if j < n { j } else { 0 }].as_ptr()),
-            lastmsg: core::array::from_fn(|j| last[j].as_ptr()),
-            key: core::array::from_fn(|i| [key[i]; 8]),
-            iv: core::array::from_fn(|i| [IV[i]; 8]),
-            rot16: crate::ffi_partial::rotation(2),
-            rot8: crate::ffi_partial::rotation(1),
-            ctr: [[0; 8]; 2],
-            lens: [[64; 8]; 16],
-            flags: [[f; 8]; 16],
-            last: [0; 16],
-            h: [[0; 8]; 8],
-            snap: [[0; 8]; 8],
-            end: *ends.iter().max().unwrap() + BLOCK_LEN as u32,
-            switch: 0,
-        },
+    let mut p = Params8 {
+        h: [[0; 8]; 8],
+        snap: [[0; 8]; 8],
+        msg: core::array::from_fn(|j| items[if j < n { j } else { 0 }].as_ptr()),
+        lastmsg: core::array::from_fn(|j| last[j].as_ptr()),
+        key: *key,
+        lens,
         ends,
+        flags: flags as u32,
+        end: *ends.iter().max().unwrap() + 64,
     };
-    for j in 0..8 {
-        let k = ends[j] as usize / BLOCK_LEN;
-        p.common.lens[k][j] = lens[j];
-        p.common.flags[0][j] |= CHUNK_START as u32;
-        p.common.flags[k][j] |= (CHUNK_END | ROOT) as u32;
-    }
-    // Sound: each lane reads only its whole blocks before ends[j], then
-    // a padded last block. The snapshot retains its digest thereafter;
-    // all parameter storage is initialized and owned by this caller.
     #[cfg(test)]
-    test::check_vector_params(&p.common, items, key, flags, &last, Some(&p.ends));
-    crate::ran_kernel(blake3_servil_mixed_avx2 as *const ());
-    unsafe { blake3_servil_mixed_avx2(&mut p) };
+    test::check_vector_params(&p, items, key, flags, &last);
+    let kernel = if mixed { blake3_servil_mixed_avx2 } else { blake3_servil_last_avx2 };
+    // Whole prefixes stay within the input, last pointers address padded
+    // owned blocks. H/SNAP are caller-owned and the CPU has AVX2.
+    crate::ran_kernel(kernel as *const ());
+    unsafe { kernel(&mut p) };
+    let words = if mixed { &p.snap } else { &p.h };
     for (j, digest) in out.iter_mut().enumerate() {
-        for (i, word) in p.common.snap.iter().enumerate() {
-            digest[4 * i..][..4].copy_from_slice(&word[j].to_le_bytes());
+        for (i, row) in words.iter().enumerate() {
+            digest[4 * i..][..4].copy_from_slice(&row[j].to_le_bytes());
         }
     }
+}
+
+/// Eight or fewer independently ending messages up to one chunk.
+/// Unsafe: the CPU supports AVX2.
+pub(crate) unsafe fn hash_mixed8(items: &[&[u8]], key: &CVWords, flags: u8, out: &mut [[u8; OUT_LEN]]) {
+    unsafe { hash8(items, key, flags, out, true) };
 }
 
 /// Finishing width for this platform, or zero for SSE4.1's serial path.
@@ -228,67 +207,10 @@ pub(crate) fn hash_group(platform: crate::platform::Platform, items: &[&[u8]], k
         unsafe { hash_group16(items, k, key, flags, out) }
     } else if !matches!(platform, crate::platform::Platform::SSE41) {
         // Sound: the CPU has AVX2.
-        unsafe { hash_group_on::<8>(blake3_servil_last_avx2, items, k, key, flags, out) }
+        assert!(items.iter().all(|i| i.len().saturating_sub(1) / 64 == k), "items of {k} whole blocks before their last");
+        unsafe { hash8(items, key, flags, out, false) }
     } else {
         unreachable!("SSE4.1 uses the serial collection path")
-    }
-}
-
-/// [`hash_group`] on `W` lanes. Unsafe: the CPU must have `kernel`'s
-/// instructions.
-unsafe fn hash_group_on<const W: usize>(
-    kernel: unsafe extern "C" fn(*mut Params<W>),
-    items: &[&[u8]],
-    k: usize,
-    key: &CVWords,
-    flags: u8,
-    out: &mut [[u8; OUT_LEN]],
-) {
-    let n = items.len();
-    assert_eq!(flags & CHUNK_START, 0, "the finishing kernel supplies CHUNK_START");
-    assert!((1..=W).contains(&n) && out.len() == n && k < 16, "1 to {W} items of up to a chunk");
-    assert!(items.iter().all(|i| i.len().saturating_sub(1) / BLOCK_LEN == k), "items of {k} whole blocks before their last");
-    // Each lane's last block, zero-padded; the lanes past `n` hash item 0
-    // again, their digests unread.
-    let mut last = [[0u8; BLOCK_LEN]; W];
-    let lens: [u32; W] = core::array::from_fn(|j| {
-        let item = items[if j < n { j } else { 0 }];
-        let tail = &item[k * BLOCK_LEN..];
-        last[j][..tail.len()].copy_from_slice(tail);
-        tail.len() as u32
-    });
-    let flags = flags as u32;
-    let start = if k == 0 { CHUNK_START as u32 } else { 0 };
-    let mut p = Params::<W> {
-        msg: core::array::from_fn(|j| items[if j < n { j } else { 0 }].as_ptr()),
-        key: core::array::from_fn(|i| [key[i]; W]),
-        iv: core::array::from_fn(|i| [IV[i]; W]),
-        rot16: crate::ffi_partial::rotation(2),
-        rot8: crate::ffi_partial::rotation(1),
-        ctr: [[0; W]; 2],
-        lens: [[BLOCK_LEN as u32; W]; 16],
-        flags: [[flags; W]; 16],
-        last: [0; 16],
-        h: [[0; W]; 8],
-        snap: [[0; W]; 8],
-        lastmsg: core::array::from_fn(|j| last[j].as_ptr()),
-        end: (BLOCK_LEN * (k + 1)) as u32,
-        switch: (BLOCK_LEN * k) as u32,
-    };
-    p.lens[k] = lens;
-    p.flags[0] = [flags | CHUNK_START as u32; W];
-    p.flags[k] = [flags | start | (CHUNK_END | ROOT) as u32; W];
-    // Sound: each lane's pointer reaches its k whole blocks (an item of
-    // more than k of them, or item 0 again), LASTMSG a whole block each,
-    // and the caller's CPU has the kernel's instructions.
-    #[cfg(test)]
-    test::check_vector_params(&p, items, key, flags as u8, &last, None);
-    crate::ran_kernel(kernel as *const ());
-    unsafe { kernel(&mut p) };
-    for (lane, digest) in out.iter_mut().enumerate() {
-        for (i, word) in p.h.iter().enumerate() {
-            digest[4 * i..][..4].copy_from_slice(&word[lane].to_le_bytes());
-        }
     }
 }
 
@@ -355,42 +277,28 @@ mod test {
     // Inspect the actual block before assembly overwrites its H/SNAP fields.
     // These rows independently express prove_last.py's byte-level contract;
     // no extra production builder or callback is needed for the inspection.
-    pub(super) fn check_vector_params<const W: usize>(p: &Params<W>, items: &[&[u8]], key: &CVWords, flags: u8, last: &[[u8; 64]; W], ends: Option<&[u32]>) {
+    pub(super) fn check_vector_params(p: &Params8, items: &[&[u8]], key: &CVWords, flags: u8, last: &[[u8; 64]; 8]) {
         let mut longest = 0;
-        for lane in 0..W {
+        for lane in 0..8 {
             let item = items[if lane < items.len() { lane } else { 0 }];
             let k = item.len().saturating_sub(1) / 64;
             let len = item.len() - 64 * k;
             longest = longest.max(k);
             assert_eq!(p.msg[lane], item.as_ptr());
             assert_eq!(p.lastmsg[lane], last[lane].as_ptr());
+            assert_eq!(p.lens[lane] as usize, len);
+            assert_eq!(p.ends[lane] as usize, 64 * k);
             for b in 0..64 {
                 assert_eq!(last[lane][b], if b < len { item[64 * k + b] } else { 0 });
             }
-            if let Some(ends) = ends {
-                assert_eq!(ends[lane] as usize, k * 64);
+            for word in 0..8 {
+                assert_eq!(p.h[word][lane], 0);
+                assert_eq!(p.snap[word][lane], 0);
             }
-            for step in 0..16 {
-                assert_eq!(p.lens[step][lane] as usize, if step == k { len } else { 64 });
-                let expected = flags | if step == 0 { 1 } else { 0 } | if step == k { 10 } else { 0 };
-                assert_eq!(p.flags[step][lane], expected as u32);
-            }
-            for w in 0..8 {
-                assert_eq!(p.key[w][lane], key[w]);
-                assert_eq!(p.h[w][lane], 0);
-                assert_eq!(p.snap[w][lane], 0);
-            }
-            for (w, value) in [0x6A09E667, 0xBB67AE85, 0x3C6EF372, 0xA54FF53A].iter().enumerate() {
-                assert_eq!(p.iv[w][lane], *value);
-            }
-            let base = (lane % 4 * 4) as u8;
-            assert_eq!(p.rot16[lane].to_le_bytes(), [base + 2, base + 3, base, base + 1]);
-            assert_eq!(p.rot8[lane].to_le_bytes(), [base + 1, base + 2, base + 3, base]);
-            assert_eq!([p.ctr[0][lane], p.ctr[1][lane]], [0, 0]);
         }
-        assert_eq!(p.last, [0; 16]);
+        assert_eq!(p.key, *key);
+        assert_eq!(p.flags, flags as u32);
         assert_eq!(p.end as usize, 64 * (longest + 1));
-        assert_eq!(p.switch as usize, if ends.is_some() { 0 } else { 64 * longest });
     }
 
     pub(super) fn check_compact_params(
@@ -517,25 +425,21 @@ mod test {
     /// `layout(w, last=True)`).
     #[test]
     fn test_params_layout_is_the_generators() {
-        fn check<const W: usize>() {
-            let v = 4 * W;
-            let snap = 8 * W + 48 * v + 64 + 8 * v;
-            let got = [
-                core::mem::offset_of!(Params<W>, lens),
-                core::mem::offset_of!(Params<W>, flags),
-                core::mem::offset_of!(Params<W>, h),
-                core::mem::offset_of!(Params<W>, snap),
-                core::mem::offset_of!(Params<W>, lastmsg),
-                core::mem::offset_of!(Params<W>, end),
-                core::mem::offset_of!(Params<W>, switch),
-            ];
-            assert_eq!(
-                got,
-                [8 * W + 16 * v, 8 * W + 32 * v, 8 * W + 48 * v + 64, snap, snap + 8 * v, snap + 8 * v + 8 * W, snap + 8 * v + 8 * W + 4],
-                "{W} lanes"
-            );
-        }
-        check::<8>();
+        assert_eq!(
+            [
+                core::mem::offset_of!(Params8, h),
+                core::mem::offset_of!(Params8, snap),
+                core::mem::offset_of!(Params8, msg),
+                core::mem::offset_of!(Params8, lastmsg),
+                core::mem::offset_of!(Params8, key),
+                core::mem::offset_of!(Params8, lens),
+                core::mem::offset_of!(Params8, ends),
+                core::mem::offset_of!(Params8, flags),
+                core::mem::offset_of!(Params8, end)
+            ],
+            [0, 256, 512, 576, 640, 672, 704, 736, 740]
+        );
+        assert_eq!(core::mem::size_of::<Params8>(), 768);
         assert_eq!(core::mem::offset_of!(Params16, lastmsg), 128);
         assert_eq!(core::mem::offset_of!(Params16, lens), 256);
         assert_eq!(core::mem::offset_of!(Params16, key), 320);
@@ -544,8 +448,6 @@ mod test {
         assert_eq!(core::mem::offset_of!(Params16, out), 360);
         assert_eq!(core::mem::offset_of!(ParamsMixed, common), 0);
         assert_eq!(core::mem::offset_of!(ParamsMixed, ends), 384);
-        assert_eq!(core::mem::offset_of!(ParamsMixed8, common), 0);
-        assert_eq!(core::mem::offset_of!(ParamsMixed8, ends), 2304);
     }
 
     /// Every lane can end at a different step. Exercise all block counts,
@@ -601,7 +503,7 @@ mod test {
         crate::test::paint_test_input(&mut input);
         let key: [u8; 32] = core::array::from_fn(|j| (j * 13 + 7) as u8);
         let kernels: [(usize, unsafe fn(&[&[u8]], usize, &CVWords, u8, &mut [[u8; OUT_LEN]]), bool); 2] = [
-            (8, |i, k, key, f, o| unsafe { hash_group_on::<8>(blake3_servil_last_avx2, i, k, key, f, o) }, crate::platform::avx2_detected()),
+            (8, |i, k, key, f, o| hash_group(crate::platform::Platform::AVX2, i, k, key, f, o), crate::platform::avx2_detected()),
             (16, |i, k, key, f, o| unsafe { hash_group16(i, k, key, f, o) }, crate::platform::avx512_detected()),
         ];
         for mode in [crate::Mode::Plain, crate::Mode::Keyed(&key), crate::Mode::DeriveKey("last blocks")] {
