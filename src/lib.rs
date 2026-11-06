@@ -349,15 +349,15 @@ pub(crate) enum Counted {
     /// One root output block computed alone (Output::root_output_block):
     /// OutputReader::fill's tails, where its whole blocks go to xof_many.
     RootBlock = 2,
-    /// A hash_many call of Task::run_by_blocks: up to sixteen members with
-    /// as many whole blocks before their last.
+    /// A group hashed by blocks: up to sixteen members with as many whole
+    /// blocks before their last, the last included on NEON with SHA-3.
     ByBlocksCall = 3,
 }
 
 #[cfg(all(test, feature = "std"))]
 std::thread_local! {
     /// This thread's counts since the test last cleared them, by Counted.
-    pub(crate) static COUNTED: [core::cell::Cell<u64>; 3] = const { [core::cell::Cell::new(0), core::cell::Cell::new(0), core::cell::Cell::new(0)] };
+    pub(crate) static COUNTED: [core::cell::Cell<u64>; 4] = const { [const { core::cell::Cell::new(0) }; 4] };
 }
 
 /// Count one of `what`: in the tests' record, and nothing in any other
