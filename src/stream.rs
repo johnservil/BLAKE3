@@ -1824,7 +1824,7 @@ mod test {
     fn test_uniform_tasks_fill_and_mixed_tasks_spread_their_work() {
         crate::initialize_multithreaded(core::num::NonZeroUsize::new(1));
         let input = crate::test::message(&vec![7u8; 16 * CHUNK_LEN]);
-        let mut got = places(64 + 4 + 2);
+        let mut got = places(64 + 4 + 2 + 64);
         let mut rest: &mut [Hash] = &mut got;
         stream(
             Mode::Plain,
@@ -1840,12 +1840,17 @@ mod test {
                 s.submit(&input, 16 * CHUNK_LEN, &mut take(&mut rest, 1)[0]);
                 assert!(s.open.is_none(), "a mixed task closes at 16 KiB");
                 assert_eq!((s.s.entries[68].first, s.s.entries[69].first), (68, 68));
+                // A fresh task forgets the preceding task's mixed lengths.
+                for n in 1..=64 {
+                    s.submit(&input, CHUNK_LEN, &mut take(&mut rest, 1)[0]);
+                    assert_eq!(s.open.as_ref().map(|t| (t.members, t.len)), (n < 64).then_some((n, CHUNK_LEN * n)), "uniform task after a mixed task");
+                }
                 s.finish();
             },
         );
         for (i, digest) in got.iter().enumerate() {
             let len = match i {
-                0..64 => CHUNK_LEN,
+                0..64 | 70.. => CHUNK_LEN,
                 64..68 | 69 => 16 * CHUNK_LEN,
                 _ => 64,
             };
