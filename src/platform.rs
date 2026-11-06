@@ -602,43 +602,6 @@ pub fn sse41_detected() -> bool {
     x86_features() & x86_bits::SSE41 != 0
 }
 
-/// The core's virtual counter (CNTVCT_EL0, which user code reads
-/// directly): control, not measurement.
-#[cfg(all(blake3_neon, feature = "std"))]
-#[inline]
-pub(crate) fn counter() -> u64 {
-    // The tests' clock, where a test set one: a pause is then exact, never
-    // left to the scheduler (BLAKE3 #219).
-    #[cfg(test)]
-    if let Some(now) = TEST_COUNTER.with(|c| c.get()) {
-        return now;
-    }
-    let now: u64;
-    // Sound: readable at EL0 on every AArch64 OS this crate builds the
-    // hybrids for (Linux, macOS).
-    unsafe { core::arch::asm!("mrs {0}, cntvct_el0", out(reg) now, options(nomem, nostack, preserves_flags)) };
-    now
-}
-
-/// The counter's ticks in 100 us (CNTFRQ_EL0 / 10,000: 2400 on Apple's
-/// cores), read once: reading the frequency costs about 10 cycles on an M4
-/// Max (probe/stamp-cost, job 1015), the counter itself next to nothing.
-#[cfg(all(blake3_neon, feature = "std"))]
-#[inline]
-pub(crate) fn ticks_in_100_us() -> u64 {
-    static TICKS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
-    let ticks = TICKS.load(core::sync::atomic::Ordering::Relaxed);
-    if ticks != 0 {
-        return ticks;
-    }
-    let per_second: u64;
-    // Sound: as counter().
-    unsafe { core::arch::asm!("mrs {0}, cntfrq_el0", out(reg) per_second, options(nomem, nostack, preserves_flags)) };
-    let ticks = (per_second / 10_000).max(1);
-    TICKS.store(ticks, core::sync::atomic::Ordering::Relaxed);
-    ticks
-}
-
 /// Prefetch code from `start` to `end` into the L2 cache, a line (128
 /// bytes on Apple's cores) at a time. A call after other work otherwise
 /// fetches its kernel's lines from DRAM one miss after another: hash() of
@@ -686,8 +649,6 @@ pub(crate) fn prefetch_code((start, end): (usize, usize)) {
 
 #[cfg(all(test, blake3_neon, feature = "std"))]
 std::thread_local! {
-    /// The tests' clock for counter(), in its ticks, where a test set one.
-    pub(crate) static TEST_COUNTER: core::cell::Cell<Option<u64>> = const { core::cell::Cell::new(None) };
     /// The tests' record of prefetch_code on this thread since they last
     /// took it, while one asks (Some): each range, and the steps of four
     /// lines it took. None, as in every other test, records nothing.

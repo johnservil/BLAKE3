@@ -1704,41 +1704,34 @@ fn test_grouped_hash() {
     }
 }
 
-/// The prefetches a call makes after a pause, at every length below the
-/// prefetch limit and every batch count, on every platform: they look up
-/// the kernels' plans by length and count, and a lookup out of range would
-/// end the program. Called directly, since a pause (100 µs since this
-/// thread's last call) is a timing the other tests leave to chance.
+/// The prefetches a call now and then makes, at every length below the
+/// prefetch limit, on every platform: they look up the kernels' plans by
+/// length, and a lookup out of range would end the program.
 #[test]
 #[cfg(all(blake3_neon, feature = "std"))]
-fn test_prefetches_after_a_pause_every_length() {
+fn test_cold_prefetches_every_length() {
     for platform in every_platform() {
         for len in (0..crate::PREFETCH_BELOW).step_by(17) {
             crate::prefetch_kernels(len, platform);
             crate::prefetch_update_kernels(len, platform);
         }
     }
-    for count in 0..=4 * crate::PREFETCH_BATCH_BELOW {
-        crate::neon_hybrid::prefetch_message_code(count);
-    }
 }
 
-/// What the calls after a pause prefetch, counted (BLAKE3 #219): every
+/// What the calls now and then prefetch, counted (BLAKE3 #219): every
 /// prefetch is a speed choice, invisible in the digests, so these tests
 /// hold its record (platform::PREFETCHED) against the kernels the call then
-/// runs (RAN_ENTRIES), on the tests' clock (platform::TEST_COUNTER), so a
-/// pause is exact. The NEON hybrids' paths: SME2's own prefetch is the SME2
-/// rows' (the hybrids run on every AArch64 core with the SHA-3 extension).
+/// runs (RAN_ENTRIES). The call alone decides (AGENTS, "Cold calls and warm
+/// calls, by their API"): the cold one-shot path and a fresh Hasher's first
+/// update prefetch, the warm one-shot path never. The NEON hybrids' paths:
+/// SME2's own prefetch is the SME2 rows' (the hybrids run on every AArch64
+/// core with the SHA-3 extension).
 #[cfg(all(blake3_neon, feature = "std"))]
 mod prefetch_counts {
-    use crate::platform::{self, PREFETCHED, Platform, TEST_COUNTER};
-    use crate::{BLOCK_LEN, CHUNK_LEN, IV, OUT_LEN, RAN_ENTRIES};
+    use crate::platform::{PREFETCHED, Platform};
+    use crate::{CHUNK_LEN, IV, RAN_ENTRIES};
     use std::collections::BTreeSet;
     use std::vec::Vec;
-
-    fn at(ticks: u64) {
-        TEST_COUNTER.with(|c| c.set(Some(ticks)));
-    }
 
     /// The prefetches and kernel entries since the last call, both cleared.
     fn taken() -> (Vec<((usize, usize), usize)>, BTreeSet<usize>) {
@@ -1762,18 +1755,12 @@ mod prefetch_counts {
         }
     }
 
-    /// `call` after a pause and then straight after: after the pause it
-    /// prefetches exactly the kernels it runs where `prefetches`, else
-    /// nothing; straight after, nothing.
+    /// `call` prefetches exactly the kernels it runs where `prefetches`,
+    /// else nothing.
     fn check(what: &str, prefetches: bool, mut call: impl FnMut()) {
         // Without the SHA-3 extension the hybrids' plans do not run, and nothing is prefetched.
         let prefetches = prefetches && crate::neon_hybrid::sha3_detected();
-        let pause = 10 * platform::ticks_in_100_us();
-        let t = 1_000 * pause;
-        at(t);
-        call(); // the thread's last call, now
         taken();
-        at(t + pause);
         call();
         let (prefetched, ran) = taken();
         if prefetches {
@@ -1782,10 +1769,6 @@ mod prefetch_counts {
         } else {
             assert_eq!(prefetched, [], "{what}: no prefetch");
         }
-        at(t + pause + 1);
-        call();
-        assert_eq!(taken().0, [], "{what}: no prefetch straight after a call");
-        TEST_COUNTER.with(|c| c.set(None));
     }
 
     fn painted(len: usize) -> Vec<u8> {
@@ -1795,33 +1778,53 @@ mod prefetch_counts {
     }
 
     /// A one-shot hash of more than a chunk, up to 16 chunks, every length
-    /// in steps of 31 bytes: the kernels it runs, exactly. From 17 chunks
-    /// to PREFETCH_BELOW the prefetch plans the input as 16 chunks
-    /// (prefetch_kernels), and the walk then splits it and runs others
-    /// (BLAKE3 #219): those lengths are checked only to prefetch something.
+    /// in steps of 31 bytes: the cold path prefetches the kernels it runs,
+    /// exactly, and the warm path nothing. From 17 chunks to PREFETCH_BELOW
+    /// the prefetch plans the input as 16 chunks (prefetch_kernels), and the
+    /// walk then splits it and runs others (BLAKE3 #219): those lengths are
+    /// checked only to prefetch something.
     #[test]
-    fn test_a_one_shot_hash_after_a_pause_prefetches_what_it_runs() {
+    fn test_a_cold_one_shot_hash_prefetches_what_it_runs_and_a_warm_one_nothing() {
         let input = painted(crate::PREFETCH_BELOW + CHUNK_LEN);
+        let hash = |len: usize, cold: bool| std::hint::black_box(crate::hash_serial_from(Platform::NEON, &input[..len], IV, 0, cold));
         for len in (CHUNK_LEN + 1..=16 * CHUNK_LEN).step_by(31).chain([16 * CHUNK_LEN]) {
-            check(&std::format!("hash of {len} bytes"), true, || {
-                std::hint::black_box(crate::hash_serial_from(Platform::NEON, &input[..len], IV, 0));
+            check(&std::format!("a cold hash of {len} bytes"), true, || {
+                hash(len, true);
+            });
+            check(&std::format!("a warm hash of {len} bytes"), false, || {
+                hash(len, false);
             });
         }
         for len in [0, 1, CHUNK_LEN, crate::PREFETCH_BELOW, crate::PREFETCH_BELOW + 1, crate::PREFETCH_BELOW + CHUNK_LEN] {
-            check(&std::format!("hash of {len} bytes"), false, || {
-                std::hint::black_box(crate::hash_serial_from(Platform::NEON, &input[..len], IV, 0));
-            });
+            for cold in [true, false] {
+                check(&std::format!("a hash of {len} bytes, cold {cold}"), false, || {
+                    hash(len, cold);
+                });
+            }
         }
         for len in [16 * CHUNK_LEN + 1, 33 * CHUNK_LEN + 9, crate::PREFETCH_BELOW - 1] {
-            let pause = 10 * platform::ticks_in_100_us();
-            at(1_000 * pause);
-            std::hint::black_box(crate::hash_serial_from(Platform::NEON, &input[..len], IV, 0));
             taken();
-            at(1_001 * pause);
-            std::hint::black_box(crate::hash_serial_from(Platform::NEON, &input[..len], IV, 0));
-            assert_eq!(!taken().0.is_empty(), crate::neon_hybrid::sha3_detected(), "hash of {len} bytes after a pause prefetches (where the hybrids run)");
-            TEST_COUNTER.with(|c| c.set(None));
+            hash(len, true);
+            assert_eq!(!taken().0.is_empty(), crate::neon_hybrid::sha3_detected(), "a cold hash of {len} bytes prefetches (where the hybrids run)");
+            hash(len, false);
+            assert_eq!(taken().0, [], "a warm hash of {len} bytes prefetches nothing");
         }
+    }
+
+    /// The public calls take their paths: convenience::hash the cold one,
+    /// performance::hash the warm one.
+    #[test]
+    fn test_convenience_prefetches_and_performance_does_not() {
+        if !matches!(Platform::detect(), Platform::NEON | Platform::SME2) || !crate::neon_hybrid::sha3_detected() {
+            return;
+        }
+        let blocks = std::vec![crate::performance::Block::ZERO; 64];
+        let len = 4 * CHUNK_LEN;
+        taken();
+        std::hint::black_box(crate::convenience::hash(&crate::performance::Block::bytes(&blocks)[..len]));
+        assert!(!taken().0.is_empty(), "convenience::hash prefetches");
+        std::hint::black_box(crate::performance::hash(crate::Mode::Plain, &blocks, len));
+        assert_eq!(taken().0, [], "performance::hash prefetches nothing");
     }
 
     /// A fresh Hasher's first update and its finalize (the Hasher-per-message
@@ -1829,7 +1832,7 @@ mod prefetch_counts {
     /// stages, and the kernels run in finalize), every length in steps of
     /// 97 bytes; its later updates never prefetch.
     #[test]
-    fn test_a_fresh_hashers_first_update_after_a_pause_prefetches_what_it_runs() {
+    fn test_a_fresh_hashers_first_update_prefetches_what_it_runs() {
         // A Hasher on the NEON platform whatever the machine, as the other
         // tests here call hash_serial_from(Platform::NEON, ..): on an SME2
         // machine a Hasher::new would take SME2, and the test once returned
@@ -1849,102 +1852,12 @@ mod prefetch_counts {
             check(&std::format!("a fresh Hasher's update of {len} bytes and its finalize"), prefetches, || {
                 std::hint::black_box(neon().update(&input[..len]).finalize());
             });
-            // A second update, after a pause: never.
+            // A second update: never.
             let mut h = neon();
             h.update(&input[..1]);
             taken();
-            at(1 << 40);
             h.update(&input[1..len.max(2)]);
             assert_eq!(taken().0, [], "a Hasher's second update prefetches nothing");
-            TEST_COUNTER.with(|c| c.set(None));
         }
-    }
-
-    /// A batch of one-block messages, 1 to PREFETCH_BATCH_BELOW of them:
-    /// up to PAIRS_AFTER_PAUSE_UPTO on the pair kernel alone (one kernel,
-    /// one range), more on the plans; every call's digests checked, the
-    /// pair kernel's after the pause among them.
-    #[test]
-    fn test_a_small_batch_after_a_pause_prefetches_what_it_runs() {
-        let input = painted(4 * crate::PREFETCH_BATCH_BELOW * BLOCK_LEN);
-        for message_len in [BLOCK_LEN, 33, 0] {
-            for count in [1, 2, 3, 7, 8, 9, 15, 16, 17, 31, 33, crate::PREFETCH_BATCH_BELOW, crate::PREFETCH_BATCH_BELOW + 1, 3 * crate::PREFETCH_BATCH_BELOW] {
-                let mut slots = std::vec![0u8; count * BLOCK_LEN];
-                for (k, slot) in slots.chunks_exact_mut(BLOCK_LEN).enumerate() {
-                    slot[..message_len].copy_from_slice(&input[k * BLOCK_LEN..k * BLOCK_LEN + message_len]);
-                }
-                let expected: Vec<[u8; OUT_LEN]> =
-                    (0..count).map(|k| *crate::convenience::hash(&slots[k * BLOCK_LEN..k * BLOCK_LEN + message_len]).as_bytes()).collect();
-                let prefetches = count <= crate::PREFETCH_BATCH_BELOW;
-                let what = std::format!("{count} messages of {message_len} bytes");
-                let call = || {
-                    let mut out = std::vec![[0u8; OUT_LEN]; count];
-                    crate::hash_many_serial_from(Platform::NEON, &slots, message_len, IV, 0, &mut out);
-                    assert_eq!(out, expected, "{what}: the digests");
-                };
-                if message_len == 0 {
-                    // Empty messages take no plan, yet batch_after_pause prefetches one for them
-                    // (BLAKE3 #219): their digests only, after a pause too.
-                    at(1 << 40);
-                    call();
-                    at(1 << 41);
-                    call();
-                    taken();
-                    TEST_COUNTER.with(|c| c.set(None));
-                    continue;
-                }
-                check(&what, prefetches, call);
-                if message_len > 0 && count <= crate::PAIRS_AFTER_PAUSE_UPTO && crate::neon_hybrid::sha3_detected() {
-                    // After a pause: the pair kernel alone, prefetched alone.
-                    let pause = 10 * platform::ticks_in_100_us();
-                    at(1_000 * pause);
-                    let mut out = std::vec![[0u8; OUT_LEN]; count];
-                    crate::hash_many_serial_from(Platform::NEON, &slots, message_len, IV, 0, &mut out);
-                    taken();
-                    at(1_001 * pause);
-                    crate::hash_many_serial_from(Platform::NEON, &slots, message_len, IV, 0, &mut out);
-                    let (prefetched, ran) = taken();
-                    assert_eq!((prefetched.len(), ran.len()), (1, 1), "{what}: one kernel, the pair kernel, after a pause");
-                    TEST_COUNTER.with(|c| c.set(None));
-                }
-            }
-        }
-    }
-
-    /// The pause is 100 us of the counter, CNTFRQ_EL0 / 10,000 ticks, read
-    /// here on its own: a call that long after the last is cold, one a
-    /// tick sooner is not.
-    #[test]
-    fn test_the_pause_is_100_us_exactly() {
-        let per_second: u64;
-        // Sound: readable at EL0 (platform::ticks_in_100_us).
-        unsafe { core::arch::asm!("mrs {0}, cntfrq_el0", out(reg) per_second, options(nomem, nostack, preserves_flags)) };
-        let ticks = (per_second / 10_000).max(1);
-        assert_eq!(platform::ticks_in_100_us(), ticks);
-        let input = painted(4 * CHUNK_LEN);
-        let call = || std::hint::black_box(crate::hash_serial_from(Platform::NEON, &input, IV, 0));
-        let t = 1 << 30;
-        at(t);
-        call();
-        taken();
-        at(t + ticks);
-        call();
-        assert_eq!(taken().0, [], "{ticks} ticks after the last call: not a pause");
-        at(t + 2 * ticks + 1);
-        call();
-        assert_eq!(!taken().0.is_empty(), crate::neon_hybrid::sha3_detected(), "{} ticks after the last call: a pause (where the hybrids run)", ticks + 1);
-        TEST_COUNTER.with(|c| c.set(None));
-    }
-
-    /// On the real counter: a millisecond's sleep is a pause.
-    #[test]
-    fn test_a_real_pause_prefetches() {
-        let input = painted(4 * CHUNK_LEN);
-        let call = || std::hint::black_box(crate::hash_serial_from(Platform::NEON, &input, IV, 0));
-        call();
-        taken();
-        std::thread::sleep(std::time::Duration::from_millis(1));
-        call();
-        assert_eq!(!taken().0.is_empty(), crate::neon_hybrid::sha3_detected(), "a call 1 ms after the last prefetches (where the hybrids run)");
     }
 }

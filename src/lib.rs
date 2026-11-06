@@ -50,14 +50,21 @@
 //!
 //! - **[`convenience`]**: one call per hash, every feature of BLAKE3 (the
 //!   plain hash, the keyed hash, key derivation, extended output), any
-//!   slice, the result returned.
+//!   slice, the result returned. Tuned for a hash now and then, amid other
+//!   work: where it helps, a call fetches its code back into the caches
+//!   before it starts.
 //! - **[`performance`]**, for power users: every way this crate makes
-//!   hashing fast (other cores, batches, collections, streams, the
-//!   [`Hasher`] for a message fed in pieces). The
+//!   hashing fast (other cores, batches, collections, streams), tuned for
+//!   call after call: an occasional call amid other work may run slower
+//!   than a convenience call would. The
 //!   program takes on more of the work: inputs come as
 //!   [`Block`](performance::Block)s (64 bytes on a 64-byte boundary, so
 //!   alignment is the type's), digests go into the program's places, and
 //!   every call takes a [`Mode`].
+//!
+//! The [`Hasher`], for a message fed in pieces, is both: its first update
+//! is treated as a call now and then (its code fetched first where that
+//! helps), and its later updates as call after call.
 //!
 //! Start with the convenience calls; when a program needs more speed, it
 //! moves to the performance ones.
@@ -1128,30 +1135,46 @@ impl Mode<'_> {
 /// through here.
 #[inline]
 fn hash_serial(input: &[u8], key: &CVWords, flags: u8) -> Hash {
-    hash_serial_from(Platform::detect(), input, key, flags)
+    hash_serial_from(Platform::detect(), input, key, flags, false)
 }
 
-/// [`hash_serial`] from `platform`: the startup self-test's way in, which
-/// has not run `Platform::detect`'s check (it is that check).
+/// [`hash_serial`] for a call now and then (`convenience`'s): its kernels'
+/// code prefetched first, where that helps a call whose code has left the
+/// caches (AGENTS, "Cold calls and warm calls, by their API").
 #[inline]
-fn hash_serial_from(platform: Platform, input: &[u8], key: &CVWords, flags: u8) -> Hash {
+fn hash_serial_cold(input: &[u8], key: &CVWords, flags: u8) -> Hash {
+    hash_serial_from(Platform::detect(), input, key, flags, true)
+}
+
+/// [`hash_serial`] from `platform`, and `cold` for a call now and then:
+/// the startup self-test's way in, which has not run `Platform::detect`'s
+/// check (it is that check). Always inlined, so each entry point has its
+/// own copy with `cold` a constant, as hash_serial alone did before cold
+/// calls had their path (one out-of-line copy taking `cold` as an argument
+/// made convenience::hash of 512 B after other work 11.5% slower, the VM's
+/// check).
+#[inline(always)]
+fn hash_serial_from(platform: Platform, input: &[u8], key: &CVWords, flags: u8, cold: bool) -> Hash {
     let turn = platform::Sme2Turn::take(platform, input.len() >= SME2_SIZED_LEN);
     // One comparison on the path of a chunk or less: everything else is
     // out of line, so that path's code stays as small as it was (a call
     // after other work fetches every line of it from DRAM).
     #[cfg(all(blake3_neon, feature = "std"))]
-    if (CHUNK_LEN + 1..PREFETCH_BELOW).contains(&input.len()) {
-        prefetch_after_pause(input.len(), turn.platform(), false);
+    if cold && (CHUNK_LEN + 1..PREFETCH_BELOW).contains(&input.len()) {
+        prefetch_cold(input.len(), turn.platform(), false);
     }
+    #[cfg(not(all(blake3_neon, feature = "std")))]
+    let _ = cold;
     hash_serial_on(input, key, flags, turn.platform())
 }
 
-/// Below this length a one-shot call that follows a pause prefetches its
-/// kernels' code: after other work the call then fetches it from DRAM in
-/// parallel, not one miss at a time (M4 Max, after other work: 4 KiB
-/// x0.61, 8 KiB x0.51, 16 KiB x0.66; 32 KiB and up level, the hashing's
-/// own time dwarfing it; jobs 971-975). The streaming paths (Hasher,
-/// batches, the streams' tasks) run back to back with their code near.
+/// Below this length a call now and then (`convenience`'s, and a fresh
+/// Hasher's first update) prefetches its kernels' code: after other work
+/// the call then fetches it from DRAM in parallel, not one miss at a time
+/// (M4 Max, after other work: 4 KiB x0.61, 8 KiB x0.51, 16 KiB x0.66;
+/// 32 KiB and up level, the hashing's own time dwarfing it; jobs
+/// 971-975). It costs a call whose code is near 2-4%, which is why the
+/// performance calls, for call after call, take no prefetch.
 /// A cold call of 2-8 KiB spends about a third of its time on its code
 /// (10-24 KB of kernels and glue); from 3 KiB what remains is the kernels
 /// starting before their lines arrive. Tried and set aside: prefetching
@@ -1164,88 +1187,20 @@ fn hash_serial_from(platform: Platform, input: &[u8], key: &CVWords, flags: u8) 
 #[cfg(all(blake3_neon, feature = "std"))]
 const PREFETCH_BELOW: usize = 64 * 1024;
 
-/// After a pause (code_may_be_cold), prefetch the kernels hashing `len`
-/// bytes runs: a one-shot call's (prefetch_kernels), or with `fresh_hasher`
-/// a fresh Hasher's first update's (prefetch_update_kernels).
+/// Prefetch the kernels hashing `len` bytes runs, for a call now and then:
+/// a one-shot call's (prefetch_kernels), or with `fresh_hasher` a fresh
+/// Hasher's first update's (prefetch_update_kernels).
 #[cfg(all(blake3_neon, feature = "std"))]
 // Cold for layout: the path of a chunk or less falls through past its
 // call, on the lines it had before the call existed.
 #[cold]
 #[inline(never)]
-fn prefetch_after_pause(len: usize, platform: Platform, fresh_hasher: bool) {
-    if code_may_be_cold() {
-        if fresh_hasher {
-            prefetch_update_kernels(len, platform);
-        } else {
-            prefetch_kernels(len, platform);
-        }
+fn prefetch_cold(len: usize, platform: Platform, fresh_hasher: bool) {
+    if fresh_hasher {
+        prefetch_update_kernels(len, platform);
+    } else {
+        prefetch_kernels(len, platform);
     }
-}
-
-/// Whether this thread's last call in the prefetching range was over
-/// 100 us ago (or never). Calls back to back find their code near, where
-/// the prefetch would cost them 2-4% (jobs 972-975); one that follows a
-/// pause is the one other work may have taken the code from.
-#[cfg(all(blake3_neon, feature = "std"))]
-#[inline]
-fn code_may_be_cold() -> bool {
-    std::thread_local! {
-        static LAST_CALL: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
-    }
-    let now = platform::counter();
-    let last = LAST_CALL.with(|last| last.replace(now));
-    now.wrapping_sub(last) > platform::ticks_in_100_us()
-}
-
-/// Batches of one-block messages up to this many prefetch their code after
-/// a pause: past it the hashing's own time dwarfs a cold kernel's.
-#[cfg(all(blake3_neon, feature = "std"))]
-const PREFETCH_BATCH_BELOW: usize = 64;
-
-/// Batches of 1 to this many one-block messages run on the pair kernel
-/// alone after a pause (neon_hybrid::hash_pairs): its code (2.9 KB) is a
-/// fraction of the plans' for 3 to 16 (up to 17 KB) and less than the one
-/// message's kernel (3.9 KB), and after a pause the code comes from memory
-/// (Mac jobs 1320-1337: 12 and 16 run faster after idling and slower after
-/// other work this way).
-#[cfg(all(blake3_neon, feature = "std"))]
-const PAIRS_AFTER_PAUSE_UPTO: usize = 8;
-
-/// After a pause (code_may_be_cold), a batch of `count` one-block
-/// messages: 1 to PAIRS_AFTER_PAUSE_UPTO hashed here on the pair kernel
-/// (true: done); otherwise its kernels' code prefetched (false: hash it as
-/// usual), SME2's message kernel where it takes the batch, else the
-/// hybrids' parent plans.
-#[cfg(all(blake3_neon, feature = "std"))]
-#[cold]
-#[inline(never)]
-fn batch_after_pause(input: &[u8], message_len: usize, key: &CVWords, flags: u8, out: &mut [[u8; OUT_LEN]], platform: Platform) -> bool {
-    if !code_may_be_cold() {
-        return false;
-    }
-    let count = out.len();
-    #[cfg(blake3_sme2)]
-    if matches!(platform, Platform::SME2) && count >= many::ONE_BLOCK_PAD_MIN {
-        sme2::prefetch_code();
-        return false;
-    }
-    let _ = platform;
-    if !neon_hybrid::sha3_detected() {
-        return false;
-    }
-    if message_len == 0 || !(1..=PAIRS_AFTER_PAUSE_UPTO).contains(&count) {
-        neon_hybrid::prefetch_message_code(count);
-        return false;
-    }
-    many::assert_slots(input, message_len, count);
-    neon_hybrid::prefetch_pair_code();
-    let mut table: [&[u8; BLOCK_LEN]; PAIRS_AFTER_PAUSE_UPTO] = [&[0; BLOCK_LEN]; PAIRS_AFTER_PAUSE_UPTO];
-    for (slot, message) in table.iter_mut().zip(input.chunks_exact(BLOCK_LEN)) {
-        *slot = message.try_into().unwrap();
-    }
-    // Sound: the SHA-3 extension is here (above).
-    unsafe { neon_hybrid::hash_pairs(&table[..count], key, flags, CHUNK_START, CHUNK_END | ROOT, message_len, out.as_flattened_mut()) };
-    true
 }
 
 /// Prefetch the code of the kernels hashing `len` bytes on `platform`
@@ -1328,12 +1283,6 @@ pub(crate) fn hash_many_serial(input: &[u8], message_len: usize, key: &CVWords, 
 #[inline]
 fn hash_many_serial_from(platform: Platform, input: &[u8], message_len: usize, key: &CVWords, flags: u8, out: &mut [[u8; OUT_LEN]]) {
     let turn = platform::Sme2Turn::take(platform, many::sme2_sized(message_len, out.len()));
-    // A small batch of one-block messages after a pause fetches its kernels'
-    // code in parallel (as hash_serial does): its time is mostly that code.
-    #[cfg(all(blake3_neon, feature = "std"))]
-    if message_len <= BLOCK_LEN && (1..=PREFETCH_BATCH_BELOW).contains(&out.len()) && batch_after_pause(input, message_len, key, flags, out, turn.platform()) {
-        return;
-    }
     many::hash_many_on(input, message_len, key, flags, out, turn.platform());
 }
 

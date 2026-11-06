@@ -256,11 +256,11 @@ impl Hasher {
     /// [`update_reader`](#method.update_reader).
     pub fn update(&mut self, input: &[u8]) -> &mut Self {
         // A fresh hasher's first update is a one-shot call's work (a
-        // Hasher per message, the digest traits): it prefetches its code
-        // after a pause, as hash() does.
+        // Hasher per message, the digest traits): it prefetches its code,
+        // as convenience::hash does. A Hasher fed in pieces pays it once.
         #[cfg(all(blake3_neon, feature = "std"))]
         if self.count() == 0 && (CHUNK_LEN + 1..PREFETCH_BELOW).contains(&input.len()) {
-            prefetch_after_pause(input.len(), self.core.chunk_state.platform, true);
+            prefetch_cold(input.len(), self.core.chunk_state.platform, true);
         }
         self.gather(input, false)
     }

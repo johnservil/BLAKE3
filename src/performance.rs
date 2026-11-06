@@ -33,6 +33,8 @@ use crate::{ContextKey, DERIVE_KEY_CONTEXT, Hash, IV, Mode, OUT_LEN};
 /// The hash in `mode` of the message of `len` bytes that starts `input`:
 /// a batch of one. The message starts a block, so on a cache line; the
 /// bytes past its end, in its last block and any after, are ignored.
+/// Tuned for call after call: for a hash now and then amid other work,
+/// [`convenience::hash`](crate::convenience::hash) is the faster call.
 ///
 /// ```
 /// # blake3_servil::initialize();

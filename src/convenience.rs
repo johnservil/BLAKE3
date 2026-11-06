@@ -38,7 +38,7 @@ use crate::{Hash, IV, Mode, OutputReader};
 // (i7-12700K, after idling, 64 B: -16.5%, 8 fresh layouts a side).
 #[inline]
 pub fn hash(input: &[u8]) -> Hash {
-    crate::hash_serial(input, IV, 0)
+    crate::hash_serial_cold(input, IV, 0)
 }
 
 /// [`hash`] in any [`Mode`]: the plain hash, the keyed hash, or key
@@ -55,7 +55,7 @@ pub fn hash(input: &[u8]) -> Hash {
 pub fn hash_with(mode: Mode, input: &[u8]) -> Hash {
     let mut room = core::mem::MaybeUninit::uninit();
     let (key, flags) = mode.key(&mut room);
-    crate::hash_serial(input, key, flags)
+    crate::hash_serial_cold(input, key, flags)
 }
 
 /// The extended output of `input` in `mode`: an [`OutputReader`] that
