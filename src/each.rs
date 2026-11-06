@@ -285,12 +285,20 @@ fn by_blocks_at_once(items: &[&[u8]], key: &CVWords, flags: u8, out: &mut [[u8; 
     // included, straight to its digests (ffi_last: BLAKE3-Servil #247).
     #[cfg(target_arch = "x86_64")]
     {
-        let _ = platform;
         let lanes = crate::ffi_last::lanes();
+        let limit = last_kernel_takes(platform);
+        let mut wide: arrayvec::ArrayVec<usize, BY_BLOCKS_AT_ONCE> = arrayvec::ArrayVec::new();
         let mut at = 0;
         while at < order.len() {
             let k = whole(items[order[at]]);
             let end = at + order[at..].iter().take_while(|&&i| whole(items[i]) == k).count();
+            if k > limit {
+                // Past the kernel's 8 lanes' worth: AVX-512's 16 for the
+                // whole blocks, the last ones after them.
+                wide.try_extend_from_slice(&order[at..end]).unwrap();
+                at = end;
+                continue;
+            }
             for group in order[at..end].chunks(lanes) {
                 let members: arrayvec::ArrayVec<&[u8], 8> = group.iter().map(|&i| items[i]).collect();
                 let mut digests = [[0u8; OUT_LEN]; 8];
@@ -302,15 +310,36 @@ fn by_blocks_at_once(items: &[&[u8]], key: &CVWords, flags: u8, out: &mut [[u8; 
             }
             at = end;
         }
+        if !wide.is_empty() {
+            by_blocks_then_last(items, &wide, key, flags, out, platform);
+        }
     }
     #[cfg(not(target_arch = "x86_64"))]
     by_blocks_then_last(items, &order, key, flags, out, platform);
 }
 
-/// [`by_blocks_at_once`] where no kernel takes the last blocks too
-/// (AArch64): the whole blocks side by side, then each item's last block
-/// on its own.
-#[cfg(not(target_arch = "x86_64"))]
+/// The most whole blocks before the last that x86-64's last-blocks kernel
+/// takes on `platform` (ffi_last, 8 lanes on AVX2): every count on AVX2,
+/// where the whole blocks' kernel has 8 lanes too; on AVX-512, up to where
+/// its 16 lanes for the whole blocks, the last ones after them, cost less
+/// (warm hash_each of 1024 items, ns a byte against #249: EPYC 9255 and
+/// Ryzen 7 9700X, 64 B -71%, 512 B -6%, 768 B +15%; Xeon Gold 6330, 256 B
+/// -5%, 512 B +20%). An AVX-512 kernel of 16 lanes would take them all.
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn last_kernel_takes(platform: Platform) -> usize {
+    match platform {
+        #[cfg(blake3_avx512_ffi)]
+        Platform::AVX512 if crate::platform::wide_avx512() => 7,
+        #[cfg(blake3_avx512_ffi)]
+        Platform::AVX512 => 3,
+        _ => 15,
+    }
+}
+
+/// [`by_blocks_at_once`] for the items `order` names, where no kernel
+/// takes the last blocks too (AArch64; on AVX-512 the items past
+/// last_kernel_takes): the whole blocks side by side, then each item's last
+/// block on its own.
 fn by_blocks_then_last(items: &[&[u8]], order: &[usize], key: &CVWords, flags: u8, out: &mut [[u8; OUT_LEN]], platform: Platform) {
     const GROUP: usize = 16;
     let whole = |item: &[u8]| item.len().saturating_sub(1) / crate::BLOCK_LEN;
@@ -326,6 +355,10 @@ fn by_blocks_then_last(items: &[&[u8]], order: &[usize], key: &CVWords, flags: u
                 crate::counted(crate::Counted::ByBlocksCall);
                 // Sound: each item holds more than k whole blocks; the
                 // platform takes the assembly (by_blocks_takes).
+                #[cfg(target_arch = "x86_64")]
+                unsafe {
+                    crate::pair::hash_many_blocks(platform, &inputs, k, key, 0, false, flags, CHUNK_START, 0, &mut lanes[..group.len() * OUT_LEN])
+                };
                 #[cfg(blake3_neon)]
                 unsafe {
                     crate::neon_hybrid::hash_messages_raw(
