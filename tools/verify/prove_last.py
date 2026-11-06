@@ -9,7 +9,7 @@ System V callee-saved registers are checked by the existing x86 executor.
     python3 tools/verify/prove_last.py [--workers N] [WIDTH:K ...]
     python3 tools/verify/prove_last.py --workers N --mixed
 
-Widths are 4 (SSE4.1), 8 (AVX2), 16 (AVX-512F); k is 0..15. Mixed cases
+Widths are 8 (AVX2) and 16 (AVX-512F); k is 0..15. Mixed cases
 WIDTH:K:PHASE give lane j (j+PHASE) mod (K+1) whole blocks, with K+1
 steps in the kernel. The 384 mixed cases vary the step count from one to
 sixteen and rotate the ending pattern through every lane position. This is finite pattern
@@ -99,7 +99,7 @@ def prove(case):
             for j in range(w):
                 put(end_offset+4*j, BitVecVal(ks[j]*64,32))
             size = end_offset+4*w
-        entry = "blake3_servil_mixed_avx2" if mixed else f"blake3_servil_last_{'sse41' if w==4 else 'avx2'}"
+        entry = "blake3_servil_mixed_avx2" if mixed else "blake3_servil_last_avx2"
 
     # Explicit initialization avoids inventing symbolic input for padding.
     params = Region("params", size, w!=16, None, alignment=64)
@@ -142,7 +142,7 @@ if __name__ == "__main__":
     if args[:1] == ["--workers"]:
         count = int(args[1]); args = args[2:]
     cases = ([(w,k,p) for w in (8,16) for k in range(16) for p in range(w)] if args == ["--mixed"] else
-             [tuple(map(int,a.split(":"))) for a in args] if args else [(w,k) for w in (4,8,16) for k in range(16)])
-    assert count >= 1 and all(c[0] in (4,8,16) and 0<=c[1]<16 and (len(c)==2 or len(c)==3 and c[0] in (8,16) and 0<=c[2]<c[0]) for c in cases)
+             [tuple(map(int,a.split(":"))) for a in args] if args else [(w,k) for w in (8,16) for k in range(16)])
+    assert count >= 1 and all(c[0] in (8,16) and 0<=c[1]<16 and (len(c)==2 or len(c)==3 and c[0] in (8,16) and 0<=c[2]<c[0]) for c in cases)
     for result in workers.each(prove,cases,count):
         print(result,flush=True)

@@ -429,11 +429,12 @@ def unix(family="partial"):
            "#define _CET_ENDBR",
            "#endif",
            ".intel_syntax noprefix"]
-    for isa in ("sse41", "avx2"):
+    isas = ("avx2",) if last else ("sse41", "avx2")
+    for isa in isas:
         name = f"blake3_servil_{family}_{isa}"
         out += [f".global _{name}", f".global {name}"]
     out += ["#ifdef __APPLE__", ".text", "#else", ".section .text", "#endif"]
-    for isa in ("sse41", "avx2"):
+    for isa in isas:
         name = f"blake3_servil_{family}_{isa}"
         k = Kernel(isa, last)
         k.body(name)

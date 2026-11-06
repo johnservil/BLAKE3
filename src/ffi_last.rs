@@ -1,7 +1,7 @@
 //! Items of equal block count side by side, last blocks included, each the
 //! root of one chunk at counter 0: the generated kernels of
 //! `c/blake3_last_x86-64_unix.S` (tools/gen_x86.py --last, BLAKE3-Servil
-//! #247), four lanes on SSE4.1, eight on AVX2. They are the partial
+//! #247), eight lanes on AVX2, sixteen on AVX-512. They share the partial
 //! kernels' rounds with two changes: they hash END/64 blocks, not 16, and
 //! read block SWITCH/64 of each lane through its own pointer (LASTMSG),
 //! to a zero-padded copy of the item's last block, so no lane reads past
@@ -31,7 +31,6 @@ pub struct Params<const W: usize> {
 }
 
 unsafe extern "C" {
-    fn blake3_servil_last_sse41(params: *mut Params<4>);
     fn blake3_servil_last_avx2(params: *mut Params<8>);
 }
 
@@ -202,12 +201,12 @@ pub(crate) unsafe fn hash_mixed8(items: &[&[u8]], key: &CVWords, flags: u8, out:
     }
 }
 
-/// The widest last-block kernel the selected platform takes.
+/// Finishing width for this platform, or zero for SSE4.1's serial path.
 pub(crate) fn lanes(platform: crate::platform::Platform) -> usize {
     match platform {
         crate::platform::Platform::AVX512 => 16,
         crate::platform::Platform::AVX2 => 8,
-        crate::platform::Platform::SSE41 => 4,
+        crate::platform::Platform::SSE41 => 0,
     }
 }
 
@@ -222,8 +221,7 @@ pub(crate) fn hash_group(platform: crate::platform::Platform, items: &[&[u8]], k
         // Sound: the CPU has AVX2.
         unsafe { hash_group_on::<8>(blake3_servil_last_avx2, items, k, key, flags, out) }
     } else {
-        // Sound: every x86-64 CPU this crate runs on has SSE4.1 (detect()).
-        unsafe { hash_group_on::<4>(blake3_servil_last_sse41, items, k, key, flags, out) }
+        unreachable!("SSE4.1 uses the serial collection path")
     }
 }
 
@@ -374,7 +372,7 @@ mod test {
     #[test]
     fn test_lane_widths_are_the_platforms() {
         use crate::platform::Platform;
-        assert_eq!(lanes(Platform::SSE41), 4);
+        assert_eq!(lanes(Platform::SSE41), 0);
         assert_eq!(lanes(Platform::AVX2), 8);
         assert_eq!(lanes(Platform::AVX512), 16);
     }
@@ -401,7 +399,6 @@ mod test {
                 "{W} lanes"
             );
         }
-        check::<4>();
         check::<8>();
         assert_eq!(core::mem::offset_of!(Params16, lastmsg), 128);
         assert_eq!(core::mem::offset_of!(Params16, lens), 256);
@@ -467,8 +464,7 @@ mod test {
         let mut input = std::vec![0u8; 16 * crate::CHUNK_LEN];
         crate::test::paint_test_input(&mut input);
         let key: [u8; 32] = core::array::from_fn(|j| (j * 13 + 7) as u8);
-        let kernels: [(usize, unsafe fn(&[&[u8]], usize, &CVWords, u8, &mut [[u8; OUT_LEN]]), bool); 3] = [
-            (4, |i, k, key, f, o| unsafe { hash_group_on::<4>(blake3_servil_last_sse41, i, k, key, f, o) }, crate::platform::sse41_detected()),
+        let kernels: [(usize, unsafe fn(&[&[u8]], usize, &CVWords, u8, &mut [[u8; OUT_LEN]]), bool); 2] = [
             (8, |i, k, key, f, o| unsafe { hash_group_on::<8>(blake3_servil_last_avx2, i, k, key, f, o) }, crate::platform::avx2_detected()),
             (16, |i, k, key, f, o| unsafe { hash_group16(i, k, key, f, o) }, crate::platform::avx512_detected()),
         ];
