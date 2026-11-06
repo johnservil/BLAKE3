@@ -1398,18 +1398,21 @@ blake3_servil_last_avx2_read:
         vmovdqa ymmword ptr [rsp+512], ymm8
         vpxor ymm12, ymm12, ymm12
         vpxor ymm13, ymm13, ymm13
-        vmovdqu ymm14, ymmword ptr [rdi+672]
-        vmovd xmm15, edx
-        vpbroadcastd ymm15, xmm15
-        vpcmpeqd ymm15, ymm15, ymmword ptr [rdi+704]
-        vpbroadcastd ymm8, dword ptr [rip+.Llast8_64]
-        vpblendvb ymm14, ymm8, ymm14, ymm15
-        vpand ymm15, ymm15, ymmword ptr [rip+.Llast8_ENDROOT]
-        vpbroadcastd ymm8, dword ptr [rdi+736]
-        vpor ymm15, ymm15, ymm8
+        mov eax, dword ptr [rdi+736]
         test edx, edx
-        jne blake3_servil_last_avx2_flags
-        vpor ymm15, ymm15, ymmword ptr [rip+.Llast8_START]
+        jne blake3_servil_last_avx2_started
+        or eax, 1
+blake3_servil_last_avx2_started:
+        cmp edx, dword ptr [rdi+704]
+        jne blake3_servil_last_avx2_prefixlen
+        vmovdqu ymm14, ymmword ptr [rdi+672]
+        or eax, 10
+        jmp blake3_servil_last_avx2_broadcastflags
+blake3_servil_last_avx2_prefixlen:
+        vpbroadcastd ymm14, dword ptr [rip+.Llast8_64]
+blake3_servil_last_avx2_broadcastflags:
+        vmovd xmm15, eax
+        vpbroadcastd ymm15, xmm15
 blake3_servil_last_avx2_flags:
         vpaddd ymm0, ymm0, ymmword ptr [rsp]
         vpaddd ymm1, ymm1, ymmword ptr [rsp+64]
