@@ -489,7 +489,11 @@ unsafe fn execute_batch(context: *mut (), platform: Platform) {
         output.release();
     }
     owner.finalize_if_idle(id);
-    owner.source.finished(1);
+    // The core's handle goes before the count: a drain that returns on the
+    // count may close the receiver, which checks that no handle is left.
+    let source = owner.source;
+    drop(owner);
+    source.finished(1);
 }
 
 /// An ended or aborted message's pending result; its slot returns through
@@ -667,8 +671,11 @@ unsafe fn execute(context: *mut (), platform: Platform) {
     if let Some(barrier) = after {
         barrier.wait();
     }
-    owner.source.finished(1);
-    // Ownership ends after the source count, keeping all metadata alive.
+    // The core's handle goes before the count (see execute_batch). The
+    // source persists, so the count itself needs no handle.
+    let source = owner.source;
+    drop(owner);
+    source.finished(1);
 }
 
 #[cfg(test)]

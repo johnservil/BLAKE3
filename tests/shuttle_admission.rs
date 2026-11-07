@@ -47,17 +47,20 @@ fn a_new_request_cannot_take_an_older_requests_grant() {
             let mut cx = Context::from_waker(std::task::Waker::noop());
             let mut first = std::pin::pin!(pool.acquire());
             assert!(first.as_mut().poll(&mut cx).is_pending());
+            let mut newcomer = std::pin::pin!(pool.acquire());
+            assert!(newcomer.as_mut().poll(&mut cx).is_pending());
             thread::scope(|s| {
                 s.spawn(move || held.release());
-                let mut newcomer = std::pin::pin!(pool.acquire());
-                assert!(newcomer.as_mut().poll(&mut cx).is_pending());
-                let granted = block_on(first.as_mut());
-                assert_eq!(*granted, 7);
-                granted.release();
-                let granted = block_on(newcomer.as_mut());
-                assert_eq!(*granted, 7);
-                granted.release();
             });
+            // The resource is free and the newcomer is polled first: FIFO
+            // keeps it pending behind the older request.
+            assert!(newcomer.as_mut().poll(&mut cx).is_pending(), "a newer request waits its turn");
+            let granted = block_on(first.as_mut());
+            assert_eq!(*granted, 7);
+            granted.release();
+            let granted = block_on(newcomer.as_mut());
+            assert_eq!(*granted, 7);
+            granted.release();
         },
         3000,
         3,
@@ -77,7 +80,7 @@ fn cancellation_races_with_a_grant_and_preserves_the_next_request() {
             assert!(next.as_mut().poll(&mut cx).is_pending());
             thread::scope(|s| {
                 s.spawn(move || held.release());
-                cancelled.as_mut().cancel();
+                drop(cancelled);
                 let granted = block_on(next.as_mut());
                 assert_eq!(*granted, 11);
                 granted.release();

@@ -68,7 +68,7 @@ fn granted_capacity_is_reserved_before_notification() {
 }
 
 #[test]
-fn cancellation_unlinks_every_queue_position() {
+fn a_dropped_request_leaves_the_queue_at_every_position() {
     for cancel in 0..3 {
         let pool = Pool::new(vec![9]);
         let waker = Waker::from(Arc::new(Signal::default()));
@@ -78,7 +78,7 @@ fn cancellation_unlinks_every_queue_position() {
         for request in &mut waiting {
             assert!(request.as_mut().poll(&mut cx).is_pending());
         }
-        waiting.remove(cancel).as_mut().cancel();
+        drop(waiting.remove(cancel));
         let mut appended = Box::pin(pool.acquire());
         assert!(appended.as_mut().poll(&mut cx).is_pending());
         waiting.push(appended);
@@ -93,7 +93,7 @@ fn cancellation_unlinks_every_queue_position() {
 }
 
 #[test]
-fn cancelling_a_grant_passes_capacity_to_the_next_waiter() {
+fn dropping_the_woken_waiter_wakes_the_next() {
     let pool = Pool::new(vec![11]);
     let first_signal = Arc::new(Signal::default());
     let first_waker = Waker::from(first_signal.clone());
@@ -109,7 +109,7 @@ fn cancelling_a_grant_passes_capacity_to_the_next_waiter() {
     held.release();
     assert_eq!(first_signal.0.load(Ordering::SeqCst), 1);
     assert_eq!(second_signal.0.load(Ordering::SeqCst), 0);
-    first.as_mut().cancel();
+    drop(first);
     assert_eq!(second_signal.0.load(Ordering::SeqCst), 1);
     ready(second.as_mut(), &mut second_cx).release();
 }
@@ -232,50 +232,33 @@ fn owned_and_borrowed_requests_share_one_fifo() {
     granted.release();
 }
 
-/// Crash-only: a broken ownership contract ends the process at once. Each
-/// case runs in a child process that must die by SIGABRT.
+/// Crash-only: a reserved resource dropped unreleased ends the process.
+/// The case runs in a child process that must die by SIGABRT. A pending
+/// request, which holds nothing, is dropped freely (the tests above).
 #[test]
-fn ownership_mistakes_abort_the_process() {
-    for case in ["pending", "granted", "resource"] {
-        if std::env::var_os("ADMISSION_MISUSE").is_some() {
-            continue;
-        }
+fn an_unreleased_resource_aborts_the_process() {
+    if std::env::var_os("ADMISSION_MISUSE").is_none() {
         let out = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "ownership_mistakes_abort_the_process", "--nocapture"])
-            .env("ADMISSION_MISUSE", case)
+            .args(["--exact", "an_unreleased_resource_aborts_the_process", "--nocapture"])
+            .env("ADMISSION_MISUSE", "resource")
             .env("NEXTEST", "1")
             .output()
             .unwrap();
         let stderr = String::from_utf8_lossy(&out.stderr);
-        assert!(stderr.contains("crash-only"), "{case}: the mistake is named: {stderr}");
+        assert!(stderr.contains("crash-only"), "the mistake is named: {stderr}");
         #[cfg(unix)]
         {
             use std::os::unix::process::ExitStatusExt;
-            assert_eq!(out.status.signal(), Some(libc_sigabrt()), "{case}: the process aborts");
+            assert_eq!(out.status.signal(), Some(libc_sigabrt()), "the process aborts");
         }
+        return;
     }
-    let Some(case) = std::env::var_os("ADMISSION_MISUSE") else { return };
     let pool = Pool::new(vec![5]);
     let mut cx = Context::from_waker(Waker::noop());
     let held = take(&pool, &mut cx);
-    match case.to_str().unwrap() {
-        "pending" => {
-            let mut request = Box::pin(pool.acquire());
-            assert!(request.as_mut().poll(&mut cx).is_pending());
-            drop(request);
-            core::mem::forget(held);
-        }
-        "granted" => {
-            let mut request = Box::pin(pool.acquire());
-            assert!(request.as_mut().poll(&mut cx).is_pending());
-            held.release();
-            drop(request);
-        }
-        "resource" => drop(held),
-        other => panic!("unknown case {other}"),
-    }
+    drop(held);
     // An undetected mistake ends here, quietly: the parent then sees no
-    // abort and fails. (Leaked state is fine in a process that exits.)
+    // abort and fails.
     std::process::exit(0);
 }
 

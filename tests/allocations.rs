@@ -126,15 +126,17 @@ fn resource_admission_allocates_nothing_when_ready_or_waiting() {
             };
             let mut waiting = std::pin::pin!(pool.clone().acquire_owned());
             assert!(waiting.as_mut().poll(&mut cx).is_pending());
-            let mut withdrawn = std::pin::pin!(pool.acquire());
-            assert!(withdrawn.as_mut().poll(&mut cx).is_pending());
-            withdrawn.as_mut().cancel();
             held.release();
             let returned: admission::OwnedLease<usize> = match waiting.as_mut().poll(&mut cx) {
                 Poll::Ready(value) => value,
                 Poll::Pending => panic!("the buffer is reserved"),
             };
             assert_eq!(*returned, 17);
+            // A request dropped while pending leaves the queue, within the
+            // queue's reserved capacity.
+            let mut withdrawn = std::pin::pin!(pool.acquire());
+            assert!(withdrawn.as_mut().poll(&mut cx).is_pending());
+            drop(withdrawn);
             returned.release();
         }
     });

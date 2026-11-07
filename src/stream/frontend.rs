@@ -314,8 +314,12 @@ mod tests {
             room.commit(3);
         }
         second.end();
-        run(stream.ready());
-        assert_eq!(stream.collect(), 1);
+        // The completion may be delivered by end() itself when the worker
+        // is quick; otherwise ready() waits for it.
+        while events.borrow().is_empty() {
+            run(stream.ready());
+            stream.collect();
+        }
         assert!(matches!(events.borrow()[0], Event::Hashed { tag: 2, .. }), "message 2 delivered while 1 is held");
         gate.release.wait();
         first.end();
