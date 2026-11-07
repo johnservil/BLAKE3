@@ -286,8 +286,9 @@ def check(job, run, work, out):
     against old_commit. check builds both
     sides itself (under BLAKE3-Servil's target/check/), relinks each per pair,
     and measures the job's scope (the module docstring). Its exit is the
-    verdict: 0 no cell slower, 1 a regression, 2 no verdict (other programs
-    kept the machine busy, or no scope given to a bench that needs one)."""
+    outcome: 0 completed (a probe gives no speed verdict), 1 a regression,
+    2 no verdict (other programs kept the machine busy, or no scope given
+    to a bench that needs one)."""
     old, new = hex_commit(job, "old_commit"), hex_commit(job, "new_commit")
     fork, bench = run.checkouts(new, hex_commit(job, "bench_commit"))
     cmd = ["cargo", "run", "--release", "--quiet", "--", "check", "--fork", str(fork), "--against", old, "--keep", str(out / "samples")]
@@ -303,7 +304,7 @@ def check(job, run, work, out):
         cmd += ["--old-bench", hex_commit(job, "old_bench_commit")]
     try:
         run.run(cmd, cwd=bench)
-        return "probe done" if "probe" in job else "no regression"
+        return "ok" if "probe" in job else "no regression"
     except subprocess.CalledProcessError as e:
         if e.returncode in (1, 2):
             return {1: "regression", 2: "no verdict"}[e.returncode]
