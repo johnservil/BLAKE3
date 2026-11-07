@@ -135,7 +135,7 @@ impl Hasher {
     }
 
     /// The bytes gathered in the stage.
-    fn staged_bytes(&self) -> &[u8] {
+    pub(crate) fn staged_bytes(&self) -> &[u8] {
         // Sound: the first `staged` bytes of the stage were written (gather).
         unsafe { core::slice::from_raw_parts(self.stage.as_ptr() as *const u8, self.staged) }
     }
@@ -220,6 +220,9 @@ impl Hasher {
 
     /// The root's output: the core's, after the stage's bytes.
     pub(crate) fn final_output(&self) -> Output {
+        if self.staged == 0 {
+            return self.core.final_output();
+        }
         let mut core = self.core.clone();
         core.update(self.staged_bytes());
         core.final_output()
@@ -564,6 +567,29 @@ mod test {
         let mut input = std::vec![0u8; 3 * STAGE_LEN];
         crate::test::paint_test_input(&mut input);
         input
+    }
+
+    #[test]
+    #[cfg(feature = "std")]
+    fn finalization_clones_the_core_only_for_a_pending_stage() {
+        crate::initialize();
+        for len in [0usize, 64, 1024, 2048, STAGE_LEN, 2 * STAGE_LEN] {
+            let bytes = vec![0xacu8; len];
+            let mut h = Hasher::new(Mode::Plain);
+            for part in bytes.chunks(17) {
+                h.update(part);
+            }
+            let expected = crate::test::official::hash(Mode::Plain, &bytes);
+            let clones = (h.staged != 0) as u64;
+            crate::COUNTED.with(|c| c[crate::Counted::StackClone as usize].set(0));
+            assert_eq!(h.finalize().as_bytes(), &expected);
+            assert_eq!(crate::COUNTED.with(|c| c[crate::Counted::StackClone as usize].get()), clones, "canonical len={len}");
+            crate::COUNTED.with(|c| c[crate::Counted::StackClone as usize].set(0));
+            let mut out = [0u8; 32];
+            h.finalize_xof().fill(&mut out);
+            assert_eq!(out, expected);
+            assert_eq!(crate::COUNTED.with(|c| c[crate::Counted::StackClone as usize].get()), clones, "xof len={len}");
+        }
     }
 
     /// A fresh hasher's first chunk and a whole group from a 16 KiB
