@@ -1,11 +1,15 @@
-//! The Hasher: a message fed in pieces (a power user's call; see
-//! crate::throughput, which exports it).
+//! The Hasher: a message fed in pieces, on the calling thread (the
+//! convenience API exports it; the throughput API's free functions take
+//! it to other cores and in groups).
 
 use super::*;
 
 /// A message's hash, fed in pieces: [`update`](Hasher::update) with each
 /// piece, in order, then [`finalize`](Hasher::finalize). The pieces may be
 /// of any lengths; the hash is the same as [`hash`](convenience::hash) of them all at once.
+/// Every call runs on the calling thread and returns with its input
+/// incorporated. For other cores, [`throughput::update_multithreaded`](crate::throughput::update_multithreaded);
+/// for many messages at once, [`throughput::update_each`](crate::throughput::update_each).
 ///
 /// A `Hasher` is about 18 KiB (it holds short pieces until it has 16 KiB
 /// to hash at once); box it where that matters.
@@ -16,7 +20,7 @@ use super::*;
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// # blake3_servil::initialize();
 /// // Hash an input incrementally.
-/// let mut hasher = blake3_servil::throughput::Hasher::new(blake3_servil::Mode::Plain);
+/// let mut hasher = blake3_servil::convenience::Hasher::new(blake3_servil::Mode::Plain, None);
 /// hasher.update(b"foo");
 /// hasher.update(b"bar");
 /// hasher.update(b"baz");
@@ -227,16 +231,26 @@ impl Hasher {
 
     /// Construct a new `Hasher` in a [`Mode`]: the plain hash, the keyed
     /// hash, or key derivation with a context string or a context key.
-    pub fn new(mode: Mode) -> Self {
+    ///
+    /// `length_hint` is the message's likely length in bytes, where the
+    /// program knows one (a file's size, a protocol's length field), or
+    /// `None`: a scheduling hint, never part of the hash, so the digest is
+    /// the same whatever it says and however many bytes then arrive. The
+    /// Hasher does not use it today; it is here so that one that does
+    /// changes no caller (AGENTS, "Our APIs freeze at 1.0").
+    pub fn new(mode: Mode, length_hint: Option<u64>) -> Self {
+        let _ = length_hint;
         let (key, flags) = mode.key_and_flags();
         Self::from_core(HasherCore::new_internal(&key, flags))
     }
 
-    /// Reset the `Hasher` to its initial state.
+    /// Reset the `Hasher` to its initial state, for a new message with its
+    /// own `length_hint` (as [`new`](Hasher::new) takes it).
     ///
     /// This is functionally the same as overwriting the `Hasher` with a new
     /// one, using the same key or context string if any.
-    pub fn reset(&mut self) -> &mut Self {
+    pub fn reset(&mut self, length_hint: Option<u64>) -> &mut Self {
+        let _ = length_hint;
         self.core.reset();
         self.staged = 0;
         self
@@ -262,25 +276,9 @@ impl Hasher {
         self.gather(input, false)
     }
 
-    /// [`update`](Hasher::update), using other CPU cores where that is
-    /// faster: the same result, never slower. Pieces of 512 KiB and more
-    /// use them, as [`hash_multithreaded`](throughput::hash_multithreaded) does; shorter ones hash on the
-    /// calling thread. One `Hasher` may mix the two calls. When reading
-    /// the pieces keeps your thread busy, a [`stream`](throughput::stream) is faster
-    /// ([`Stream::submit_reader`](throughput::Stream::submit_reader), or [`Stream::submit_with`](throughput::Stream::submit_with)): it hashes
-    /// each piece while your thread reads the next.
-    ///
-    /// ```
-    /// # blake3_servil::initialize_multithreaded(None);
-    /// let input = vec![7u8; 3 << 20];
-    /// let mut hasher = blake3_servil::throughput::Hasher::new(blake3_servil::Mode::Plain);
-    /// for piece in input.chunks(64 * 1024) {
-    ///     hasher.update_multithreaded(piece);
-    /// }
-    /// assert_eq!(hasher.finalize(), blake3_servil::convenience::hash(&input));
-    /// ```
+    /// [`throughput::update_multithreaded`](crate::throughput::update_multithreaded)'s work.
     #[cfg(feature = "std")]
-    pub fn update_multithreaded(&mut self, input: &[u8]) -> &mut Self {
+    pub(crate) fn update_pooled(&mut self, input: &[u8]) -> &mut Self {
         lanes::require();
         self.gather(input, true)
     }
@@ -342,7 +340,7 @@ impl Hasher {
     /// # fn main() -> io::Result<()> {
     /// # blake3_servil::initialize();
     /// // Hash standard input.
-    /// let mut hasher = blake3_servil::throughput::Hasher::new(blake3_servil::Mode::Plain);
+    /// let mut hasher = blake3_servil::convenience::Hasher::new(blake3_servil::Mode::Plain, None);
     /// hasher.update_reader(std::io::stdin().lock())?;
     /// println!("{}", hasher.finalize());
     /// # Ok(())
@@ -573,7 +571,7 @@ mod test {
     #[test]
     fn test_update_stages_exactly_what_it_must() {
         let input = painted();
-        let mut h = Hasher::new(Mode::Plain);
+        let mut h = Hasher::new(Mode::Plain, None);
         for (end, staged) in [(CHUNK_LEN, 0), (CHUNK_LEN + 100, 100), (STAGE_LEN, 0), (2 * STAGE_LEN, 0)] {
             let from = h.count() as usize;
             h.update(&input[from..end]);
@@ -588,7 +586,7 @@ mod test {
     #[test]
     fn test_update_stages_to_the_message_boundary_from_an_offset() {
         let input = painted();
-        let mut h = Hasher::new(Mode::Plain);
+        let mut h = Hasher::new(Mode::Plain, None);
         h.core.set_input_offset(8 * CHUNK_LEN as u64);
         h.update(&input[..CHUNK_LEN]);
         h.update(&input[CHUNK_LEN..8 * CHUNK_LEN]);
@@ -603,7 +601,7 @@ mod test {
     #[cfg(feature = "std")]
     fn test_gather_part_holds_a_whole_group() {
         let input = painted();
-        let mut h = Hasher::new(Mode::Plain);
+        let mut h = Hasher::new(Mode::Plain, None);
         h.update(&input[..STAGE_LEN]);
         h.update(&input[STAGE_LEN..STAGE_LEN + 100]);
         let rest = h.gather_part(&input[STAGE_LEN + 100..2 * STAGE_LEN + 50], false, true);

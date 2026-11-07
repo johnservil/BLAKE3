@@ -901,6 +901,9 @@ pub(crate) mod sources {
 
     #[repr(align(128))]
     pub(crate) struct Source {
+        /// A GPU-path fixture reserves its first batch from CPU claims.
+        #[cfg(all(test, blake3_gpu))]
+        gpu_batch_reserved: core::sync::atomic::AtomicBool,
         claimed: OwnLine<AtomicUsize>,
         /// A stream's tasks; empty for a caller's jobs.
         ring: Box<[UnsafeCell<MaybeUninit<Task>>]>,
@@ -933,6 +936,8 @@ pub(crate) mod sources {
         /// caller's jobs).
         pub(crate) fn new(len: usize) -> Source {
             Source {
+                #[cfg(all(test, blake3_gpu))]
+                gpu_batch_reserved: core::sync::atomic::AtomicBool::new(false),
                 claimed: OwnLine(AtomicUsize::new(0)),
                 ring: (0..len).map(|_| UnsafeCell::new(MaybeUninit::uninit())).collect(),
                 job: AtomicPtr::new(core::ptr::null_mut()),
@@ -959,7 +964,10 @@ pub(crate) mod sources {
         /// worker parked, a worker.
         pub(crate) fn publish(&self, task: Task) {
             let p = self.finish.published.load(Ordering::Relaxed);
-            debug_assert!(p - self.claimed.load(Ordering::Relaxed) < self.ring.len(), "a source's ring holds every task not yet taken");
+            // Every build: a task written over one not yet taken would be
+            // run as garbage (memory mismanagement, at the cost of a load
+            // and a comparison the debug check already made).
+            assert!(p - self.claimed.load(Ordering::Relaxed) < self.ring.len(), "a source's ring holds every task not yet taken");
             // Sound: slot p % len is free (its last task was taken), and
             // only this stream writes it.
             unsafe { (*self.ring[p % self.ring.len()].get()).write(task) };
@@ -998,6 +1006,12 @@ pub(crate) mod sources {
                 if c >= p {
                     return None;
                 }
+                // Read after the publication Acquire: the fixture reserved
+                // its batch before publishing this task.
+                #[cfg(all(test, blake3_gpu))]
+                if self.gpu_batch_reserved.load(Ordering::SeqCst) {
+                    return None;
+                }
                 // A job's pieces go in runs, consecutive, sized to the work
                 // left (guided self-scheduling): each worker reads its input
                 // front to back, so a mapped file from storage meets the
@@ -1013,6 +1027,13 @@ pub(crate) mod sources {
                     Err(now) => c = now,
                 }
             }
+        }
+
+        /// Establish the GPU-claim precondition of its finish/reclaim test.
+        /// The first successful GPU claim restores ordinary CPU service.
+        #[cfg(all(test, blake3_gpu))]
+        pub(crate) fn reserve_gpu_batch_for_test(&self) {
+            self.gpu_batch_reserved.store(true, Ordering::SeqCst);
         }
 
         /// Claim the `n` oldest waiting tasks at once, for a stream's GPU
@@ -1031,6 +1052,8 @@ pub(crate) mod sources {
             if self.claimed.compare_exchange(c, c + n, Ordering::AcqRel, Ordering::Acquire).is_err() {
                 return false;
             }
+            #[cfg(test)]
+            self.gpu_batch_reserved.store(false, Ordering::SeqCst);
             // Sound: this thread alone took slots c..c + n, written before
             // `published` passed them.
             f(&mut (c..c + n).map(|i| unsafe { (*self.ring[i % self.ring.len()].get()).assume_init_ref() }));
@@ -1100,6 +1123,14 @@ pub(crate) mod sources {
         /// written before); the last one wakes a caller parked for it.
         pub(crate) fn finished(&self, n: usize) {
             self.finish.finished(n);
+        }
+
+        /// The prototype's scope boundary: all published actions finish
+        /// before their producer's borrowed contexts go away.
+        #[cfg(test)]
+        pub(crate) fn drain_actions(&self) {
+            self.finish.own();
+            self.finish.wait(self.finish.published.load(Ordering::SeqCst), || false);
         }
 
         /// Wait until `finished` reaches `target`: polling for
@@ -1401,6 +1432,10 @@ pub(crate) const TASK_LEN: usize = 64 * CHUNK_LEN;
 /// their slots, their digests at `out`. Then it counts down `left`; the
 /// stream keeps the bytes, `out`, and `left` in place until `left` is zero.
 pub(crate) struct Task {
+    // Prototype action owns its input lease and completes its handoff. It
+    // runs on this same source/pool; no second worker engine is introduced.
+    #[cfg(test)]
+    pub(crate) action: Option<(unsafe fn(*mut (), Platform), *mut ())>,
     pub(crate) input: *const u8,
     pub(crate) len: usize,
     pub(crate) counter: u64,
@@ -1430,7 +1465,9 @@ pub(crate) struct Member {
 
 const NO_MEMBER: Member = Member { input: core::ptr::null(), len: 0, out: core::ptr::null_mut() };
 
-// Sound: a task's pointers stay valid until its `left` reaches zero (above).
+// Sound: ordinary task pointers stay valid until left reaches zero. A
+// prototype action holds its context through its source completion barrier;
+// it counts completion as its last access, as documented on drain_actions.
 unsafe impl Send for Task {}
 
 impl Task {
@@ -1438,6 +1475,8 @@ impl Task {
     /// destinations still to fill in.
     pub(crate) fn of(input: &[u8], counter: u64) -> Task {
         Task {
+            #[cfg(test)]
+            action: None,
             input: input.as_ptr(),
             len: input.len(),
             counter,
@@ -1462,6 +1501,13 @@ impl Task {
     /// values; for any other, its chaining value (first 32 bytes). Then
     /// count down.
     pub(crate) fn run(self, platform: Platform) {
+        #[cfg(test)]
+        if let Some((run, context)) = self.action {
+            // Sound: the producer holds the action's context through the
+            // source's completion barrier, as it holds ordinary task data.
+            unsafe { run(context, platform) };
+            return;
+        }
         if self.members > 0 {
             self.run_members(platform);
             // Sound: the stream keeps `left` in place until it is zero.
@@ -1641,6 +1687,23 @@ fn worker_main(me: usize) {
 #[cfg(test)]
 mod test {
     use super::*;
+
+    /// Fake task payloads stay off workers. The fixture's reservation blocks
+    /// CPU claims, survives a failed GPU claim and ends at a successful one.
+    #[cfg(blake3_gpu)]
+    #[test]
+    fn gpu_fixture_reserves_its_batch_until_the_gpu_claims_it() {
+        crate::initialize_multithreaded(core::num::NonZeroUsize::new(1));
+        let source = sources::Source::new(4);
+        source.reserve_gpu_batch_for_test();
+        source.publish(Task::of(&[], 0));
+        source.publish(Task::of(&[], 1));
+        assert!(source.take_task().is_none());
+        assert!(!source.take_run(0, 1, 2, |_| panic!("the run is too short")));
+        assert!(source.take_task().is_none(), "a failed claim keeps the reservation");
+        assert!(source.take_run(0, 2, 1, |tasks| assert_eq!(tasks.count(), 1)));
+        assert!(source.take_task().is_some(), "CPU service resumes after the GPU claim");
+    }
 
     /// A call gives its place among the pool's callers back: alone in its
     /// process, as each test is, the count is zero again after one call
@@ -2359,14 +2422,14 @@ mod test {
             );
             let context_key = crate::throughput::context_key("lanes test");
             assert_eq!(
-                *Hasher::new(crate::Mode::DeriveKeyWith(&context_key)).update(&input[..len]).finalize().as_bytes(),
+                *Hasher::new(crate::Mode::DeriveKeyWith(&context_key), None).update(&input[..len]).finalize().as_bytes(),
                 *hash_with_key(&input[..len], &crate::platform::words_from_le_bytes_32(&context_key), crate::DERIVE_KEY_MATERIAL).as_bytes(),
                 "derive len = {len}"
             );
         }
     }
 
-    /// `Hasher::update_multithreaded` against `hash`, fed in pieces of
+    /// `throughput::update_multithreaded` against `hash`, fed in pieces of
     /// several sizes after a first piece that leaves the counter unaligned
     /// (so `update` shrinks the subtrees it hands the pool), keyed too.
     #[test]
@@ -2378,13 +2441,13 @@ mod test {
             for first in [0, 1, 1024, 3000, MIN_SPLIT_LEN] {
                 for piece in [1000, MIN_SPLIT_LEN, 4 * MIN_SPLIT_LEN, 1 << 20, usize::MAX] {
                     let first = first.min(len);
-                    let mut hasher = Hasher::new(crate::Mode::Plain);
-                    let mut keyed = Hasher::new(crate::Mode::Keyed(&key));
-                    hasher.update_multithreaded(&input[..first]);
-                    keyed.update_multithreaded(&input[..first]);
+                    let mut hasher = Hasher::new(crate::Mode::Plain, None);
+                    let mut keyed = Hasher::new(crate::Mode::Keyed(&key), None);
+                    crate::throughput::update_multithreaded(&mut hasher, &input[..first]);
+                    crate::throughput::update_multithreaded(&mut keyed, &input[..first]);
                     for part in input[first..len].chunks(piece.min(len.max(1))) {
-                        hasher.update_multithreaded(part);
-                        keyed.update_multithreaded(part);
+                        crate::throughput::update_multithreaded(&mut hasher, part);
+                        crate::throughput::update_multithreaded(&mut keyed, part);
                     }
                     let what = format!("len {len}, first {first}, pieces of {piece}");
                     assert_eq!(hasher.finalize(), crate::convenience::hash(&input[..len]), "{what}");

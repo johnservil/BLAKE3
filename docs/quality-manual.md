@@ -240,7 +240,7 @@ unrolled kernel code.
   public call that reads a caller's bytes or writes into a caller's
   places, in each mode, from 0 bytes to 1 MiB + 5: `hash_with`,
   `hash_xof`, `throughput::hash` and `hash_multithreaded`,
-  `update_multithreaded`, `finalize_each`, and the stream's `submit`,
+  `throughput::update_multithreaded`, `finalize_each`, and the stream's `submit`,
   `submit_with` and `submit_batch` with their digests; the key and the
   context string sit against pages too. The C API has its own
   (`capi/tests/guard_pages.rs`), with the hasher's state in guarded

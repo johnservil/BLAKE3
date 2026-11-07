@@ -1,7 +1,6 @@
 //! The C API against the official test vectors (test_vectors.json), through
-//! every call: one-shot and multithreaded, a batch of the case's input
-//! repeated, and a hasher fed in uneven pieces, its digest and its extended
-//! output at an offset.
+//! every call: one-shot, and a hasher fed in uneven pieces, its digest and
+//! its extended output at an offset.
 
 use b3_servil::*;
 use core::ffi::c_void;
@@ -25,14 +24,13 @@ fn every_call_against_the_test_vectors() {
             let what = format!("{name}, {len} bytes");
             unsafe {
                 assert_eq!(hex(&b3_hash(mode, input.as_ptr() as *const c_void, len).bytes), expected[..64], "b3_hash, {what}");
-                assert_eq!(hex(&b3_hash_multithreaded(mode, input.as_ptr() as *const c_void, len).bytes), expected[..64], "b3_hash_multithreaded, {what}");
                 // A hasher fed in pieces of 1, 1000, and the rest.
-                b3_hasher_new(&mut *hasher, mode);
+                b3_hasher_new(&mut *hasher, mode, 0, 0);
                 let (a, rest) = input.split_at(len.min(1));
                 let (b, c) = rest.split_at(rest.len().min(1000));
                 b3_hasher_update(&mut *hasher, a.as_ptr() as *const c_void, a.len());
                 b3_hasher_update(&mut *hasher, b.as_ptr() as *const c_void, b.len());
-                b3_hasher_update_multithreaded(&mut *hasher, c.as_ptr() as *const c_void, c.len());
+                b3_hasher_update(&mut *hasher, c.as_ptr() as *const c_void, c.len());
                 assert_eq!(hex(&b3_hasher_finalize(&*hasher).bytes), expected[..64], "b3_hasher_finalize, {what}");
                 let full = expected.len() / 2;
                 let mut output = vec![0u8; full - 7];

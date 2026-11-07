@@ -115,7 +115,7 @@ fn one_message_every_form_matches_the_vectors() {
     }
 }
 
-/// A message in pieces through `Hasher::update_multithreaded` (and mixed
+/// A message in pieces through `throughput::update_multithreaded` (and mixed
 /// with `update`), in every mode: streams of 64 KiB pieces long enough to
 /// keep the workers ready between updates (past the first 128 KiB), pieces
 /// that leave a chunk part-filled, and pieces past the multithreaded split,
@@ -125,9 +125,9 @@ fn a_message_in_pieces_matches_the_fixed_values() {
     blake3_servil::initialize_multithreaded(None);
     let mut fixed = Fixed::new("api_plan pieces");
     let hashers = |m: usize| match m {
-        0 => blake3_servil::throughput::Hasher::new(blake3_servil::Mode::Plain),
-        1 => blake3_servil::throughput::Hasher::new(Mode::Keyed(KEY)),
-        _ => blake3_servil::throughput::Hasher::new(Mode::DeriveKey(CONTEXT)),
+        0 => blake3_servil::convenience::Hasher::new(blake3_servil::Mode::Plain, None),
+        1 => blake3_servil::convenience::Hasher::new(Mode::Keyed(KEY), None),
+        _ => blake3_servil::convenience::Hasher::new(Mode::DeriveKey(CONTEXT), None),
     };
     let cases: [(usize, usize); 8] = [
         (64 << 10, 64 << 10),
@@ -145,7 +145,7 @@ fn a_message_in_pieces_matches_the_fixed_values() {
             let expected = Hash::from(fixed.want(m, &data));
             let mut hasher = hashers(m);
             for part in data.chunks(piece) {
-                hasher.update_multithreaded(part);
+                blake3_servil::throughput::update_multithreaded(&mut hasher, part);
             }
             assert_eq!(hasher.finalize(), expected, "update_multithreaded, {len} B in {piece} B pieces, mode {m}");
             // Alternating with update, a piece at a time.
@@ -154,7 +154,7 @@ fn a_message_in_pieces_matches_the_fixed_values() {
                 if k % 3 == 1 {
                     hasher.update(part);
                 } else {
-                    hasher.update_multithreaded(part);
+                    blake3_servil::throughput::update_multithreaded(&mut hasher, part);
                 }
             }
             assert_eq!(hasher.finalize(), expected, "update and update_multithreaded, {len} B in {piece} B pieces, mode {m}");
