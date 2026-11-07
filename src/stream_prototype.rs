@@ -74,7 +74,7 @@ fn reserved_buffer_returns_from_an_actual_worker() {
         // All context reads precede returning input: a new owner may
         // immediately overwrite the returned buffer. The source is
         // persistent, so the final completion access stays valid too.
-        drop(input);
+        input.release();
         source.finished(1);
     }
     let work = Box::new(Work {
@@ -101,6 +101,7 @@ fn reserved_buffer_returns_from_an_actual_worker() {
     let mut returned = wait_for(next_input.as_mut(), &mut cx);
     assert_eq!(returned.as_ptr(), address, "the worker returns the same receive storage");
     crate::throughput::Block::bytes_mut(&mut returned).fill(0);
+    returned.release();
     source.drain_actions();
     assert_eq!(unsafe { (*work.output.get()).as_bytes() }, &expected);
     assert_ne!(work.worker.lock().unwrap().unwrap(), std::thread::current().id(), "hashing ran on the shared worker pool");
@@ -162,7 +163,7 @@ fn one_message_accepts_callback_pieces_and_finishes_on_the_workers() {
         }
         // The message lock is released before notifications can reenter.
         // No context access follows returning the buffer to the producer.
-        drop(input);
+        input.release();
         source.finished(1);
     }
     let key = [7; 32];
@@ -212,7 +213,7 @@ fn one_message_accepts_callback_pieces_and_finishes_on_the_workers() {
                 task.action = Some((run, (&*work as *const Work<'_>).cast_mut().cast()));
                 source.publish(task);
                 source.wake_for_waiting();
-                drop(wait_for(next.as_mut(), &mut cx));
+                wait_for(next.as_mut(), &mut cx).release();
             }
             source.drain_actions();
             assert_eq!(unsafe { (*work.output.get()).unwrap() }.as_bytes(), &expected, "flags={flags} length={len}");

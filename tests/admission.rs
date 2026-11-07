@@ -57,14 +57,14 @@ fn granted_capacity_is_reserved_before_notification() {
     assert!(first.as_mut().poll(&mut cx).is_pending());
     // Repeated polls retain one queue position and one notification.
     assert!(first.as_mut().poll(&mut cx).is_pending());
-    drop(held);
+    held.release();
     assert_eq!(signal.0.load(Ordering::SeqCst), 1);
     let mut newcomer = Box::pin(pool.acquire());
     assert!(newcomer.as_mut().poll(&mut cx).is_pending(), "a new arrival cannot steal the grant");
     let granted = ready(first.as_mut(), &mut cx);
     assert_eq!(*granted, 17);
-    drop(granted);
-    assert_eq!(*ready(newcomer.as_mut(), &mut cx), 17);
+    granted.release();
+    ready(newcomer.as_mut(), &mut cx).release();
 }
 
 #[test]
@@ -78,15 +78,17 @@ fn cancellation_unlinks_every_queue_position() {
         for request in &mut waiting {
             assert!(request.as_mut().poll(&mut cx).is_pending());
         }
-        drop(waiting.remove(cancel));
+        waiting.remove(cancel).as_mut().cancel();
         let mut appended = Box::pin(pool.acquire());
         assert!(appended.as_mut().poll(&mut cx).is_pending());
         waiting.push(appended);
-        drop(held);
+        held.release();
         for mut request in waiting {
-            assert_eq!(*ready(request.as_mut(), &mut cx), 9);
+            let granted = ready(request.as_mut(), &mut cx);
+            assert_eq!(*granted, 9);
+            granted.release();
         }
-        assert_eq!(*take(&pool, &mut cx), 9);
+        take(&pool, &mut cx).release();
     }
 }
 
@@ -104,12 +106,12 @@ fn cancelling_a_grant_passes_capacity_to_the_next_waiter() {
     let mut second = Box::pin(pool.acquire());
     assert!(first.as_mut().poll(&mut first_cx).is_pending());
     assert!(second.as_mut().poll(&mut second_cx).is_pending());
-    drop(held);
+    held.release();
     assert_eq!(first_signal.0.load(Ordering::SeqCst), 1);
     assert_eq!(second_signal.0.load(Ordering::SeqCst), 0);
-    drop(first);
+    first.as_mut().cancel();
     assert_eq!(second_signal.0.load(Ordering::SeqCst), 1);
-    assert_eq!(*ready(second.as_mut(), &mut second_cx), 11);
+    ready(second.as_mut(), &mut second_cx).release();
 }
 
 #[test]
@@ -127,10 +129,10 @@ fn a_moved_pending_future_replaces_its_notification() {
     // Move the pinned owner, keeping its allocation in place.
     let mut moved = request;
     assert!(moved.as_mut().poll(&mut new_cx).is_pending());
-    drop(held);
+    held.release();
     assert_eq!(old.0.load(Ordering::SeqCst), 0);
     assert_eq!(new.0.load(Ordering::SeqCst), 1);
-    assert_eq!(*ready(moved.as_mut(), &mut new_cx), 1);
+    ready(moved.as_mut(), &mut new_cx).release();
 }
 
 #[test]
@@ -145,6 +147,7 @@ fn worker_writes_are_visible_when_the_buffer_returns() {
     std::thread::scope(|s| {
         s.spawn(move || {
             held.fill(42);
+            held.release();
         })
         .join()
         .unwrap();
@@ -152,15 +155,19 @@ fn worker_writes_are_visible_when_the_buffer_returns() {
     let returned = ready(waiting.as_mut(), &mut cx);
     assert_eq!(returned.as_ptr(), address, "handoff preserves the buffer's address");
     assert_eq!(returned.as_slice(), &[42; 64]);
+    returned.release();
 }
 
 #[test]
 fn unused_requests_leave_capacity_available() {
     let pool = Pool::new(vec![23]);
+    // Never polled: nothing is queued or granted, so dropping is harmless.
     drop(pool.acquire());
     let waker = Waker::from(Arc::new(Signal::default()));
     let mut cx = Context::from_waker(&waker);
-    assert_eq!(*take(&pool, &mut cx), 23);
+    let granted = take(&pool, &mut cx);
+    assert_eq!(*granted, 23);
+    granted.release();
 }
 
 #[test]
@@ -172,8 +179,9 @@ fn capacity_returned_while_cloning_the_notification_is_taken() {
     unsafe fn clone(data: *const ()) -> RawWaker {
         // Sound: this test keeps ReturnOnClone alive through every waker.
         let state = unsafe { &*data.cast::<ReturnOnClone<'_>>() };
-        let held = state.held.lock().unwrap().take();
-        drop(held);
+        if let Some(held) = state.held.lock().unwrap().take() {
+            held.release();
+        }
         RawWaker::new(data, &VTABLE)
     }
     unsafe fn noop(_: *const ()) {}
@@ -188,6 +196,7 @@ fn capacity_returned_while_cloning_the_notification_is_taken() {
     let mut request = std::pin::pin!(pool.acquire());
     let granted = ready(request.as_mut(), &mut cx);
     assert_eq!(*granted, 37, "registration rechecks capacity after cloning the waker");
+    granted.release();
 }
 
 #[test]
@@ -201,8 +210,8 @@ fn an_owned_grant_keeps_the_pool_alive_after_the_original_handle_drops() {
     drop(pool);
     assert!(weak.upgrade().is_some());
     assert_eq!(*granted, 19);
-    drop(request);
-    drop(granted);
+    drop(request); // Completed: it holds nothing.
+    granted.release();
     assert!(weak.upgrade().is_none(), "the final lease releases pool ownership");
 }
 
@@ -215,8 +224,61 @@ fn owned_and_borrowed_requests_share_one_fifo() {
     let mut owned = Box::pin(pool.clone().acquire_owned());
     assert!(borrowed.as_mut().poll(&mut cx).is_pending());
     assert!(owned.as_mut().poll(&mut cx).is_pending());
-    drop(held);
+    held.release();
     assert!(owned.as_mut().poll(&mut cx).is_pending(), "ownership form preserves queue order");
-    drop(ready(borrowed.as_mut(), &mut cx));
-    assert_eq!(*ready(owned.as_mut(), &mut cx), 29);
+    ready(borrowed.as_mut(), &mut cx).release();
+    let granted = ready(owned.as_mut(), &mut cx);
+    assert_eq!(*granted, 29);
+    granted.release();
+}
+
+/// Crash-only: a broken ownership contract ends the process at once. Each
+/// case runs in a child process that must die by SIGABRT.
+#[test]
+fn ownership_mistakes_abort_the_process() {
+    for case in ["pending", "granted", "resource"] {
+        if std::env::var_os("ADMISSION_MISUSE").is_some() {
+            continue;
+        }
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "ownership_mistakes_abort_the_process", "--nocapture"])
+            .env("ADMISSION_MISUSE", case)
+            .env("NEXTEST", "1")
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(stderr.contains("crash-only"), "{case}: the mistake is named: {stderr}");
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::ExitStatusExt;
+            assert_eq!(out.status.signal(), Some(libc_sigabrt()), "{case}: the process aborts");
+        }
+    }
+    let Some(case) = std::env::var_os("ADMISSION_MISUSE") else { return };
+    let pool = Pool::new(vec![5]);
+    let mut cx = Context::from_waker(Waker::noop());
+    let held = take(&pool, &mut cx);
+    match case.to_str().unwrap() {
+        "pending" => {
+            let mut request = Box::pin(pool.acquire());
+            assert!(request.as_mut().poll(&mut cx).is_pending());
+            drop(request);
+            core::mem::forget(held);
+        }
+        "granted" => {
+            let mut request = Box::pin(pool.acquire());
+            assert!(request.as_mut().poll(&mut cx).is_pending());
+            held.release();
+            drop(request);
+        }
+        "resource" => drop(held),
+        other => panic!("unknown case {other}"),
+    }
+    // An undetected mistake ends here, quietly: the parent then sees no
+    // abort and fails. (Leaked state is fine in a process that exits.)
+    std::process::exit(0);
+}
+
+fn libc_sigabrt() -> i32 {
+    6
 }

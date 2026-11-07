@@ -2,8 +2,10 @@
 //! straight to the oldest waiter, before its notification. A caller that
 //! resumes owns its resource, independently of what other producers do.
 //!
-//! The future holds its own queue node. Pinning keeps that node in place;
-//! cancellation unlinks it under the same mutex that grants resources.
+//! The future holds its own queue node. Pinning keeps that node in place.
+//! Returns and cancellations are explicit operations (crash-only: no Drop
+//! does lifecycle work). A pending request forgotten in the queue is a
+//! caller's mistake that the pool detects when it next grants.
 //! The pool initializes its fixed metadata in new. Waiting uses the caller's
 //! future node. It makes no per-request allocation.
 //!
@@ -205,13 +207,18 @@ impl<P: Deref<Target = Pool<T>> + Unpin, T> Future for Acquire<P, T> {
     }
 }
 
-impl<P: Deref<Target = Pool<T>> + Unpin, T> Drop for Acquire<P, T> {
-    fn drop(&mut self) {
-        let Some(pool) = &self.pool else { return };
-        let node = self.node.get();
+impl<P: Deref<Target = Pool<T>> + Unpin, T> Acquire<P, T> {
+    /// Withdraw this request. A pending request leaves the queue; a grant
+    /// received since the last poll returns to the pool. A completed
+    /// request has nothing to withdraw and is a caller's mistake.
+    pub(crate) fn cancel(self: Pin<&mut Self>) {
+        // Sound: the node is unlinked under the mutex before this returns
+        // and is never touched again through the queue.
+        let this = unsafe { self.get_unchecked_mut() };
+        let pool = this.pool.take().expect("a completed request has nothing to cancel");
+        let node = this.node.get();
         let (value, wake) = {
             let mut state = pool.state.lock().unwrap();
-            // Sound: Drop keeps the node alive until it has been unlinked.
             unsafe {
                 if (*node).queued {
                     state.unlink(node);
@@ -222,6 +229,37 @@ impl<P: Deref<Target = Pool<T>> + Unpin, T> Drop for Acquire<P, T> {
         drop(wake);
         if let Some(value) = value {
             pool.give(value);
+        }
+    }
+}
+
+/// A broken ownership contract ends the process at once, as the pool's
+/// guards do. No cleanup runs: a queued node left behind would be read
+/// after its memory is gone, and a lost resource would stall every waiter.
+fn misuse(what: &str) -> ! {
+    eprintln!("blake3-servil: {what}; the process ends (crash-only)");
+    std::process::abort()
+}
+
+impl<P: Deref<Target = Pool<T>> + Unpin, T> Drop for Acquire<P, T> {
+    fn drop(&mut self) {
+        if self.pool.is_none() {
+            return;
+        }
+        // Sound: pinned storage stays valid until this drop; the flag is
+        // written only under the mutex, read here after the owner stopped
+        // polling (misuse detection, no recovery).
+        let node = self.node.get();
+        if unsafe { (*node).queued || (*node).granted.is_some() } {
+            misuse("a pending or granted resource request was dropped; cancel it or receive its grant");
+        }
+    }
+}
+
+impl<P: Deref<Target = Pool<T>> + Unpin, T> Drop for Resource<P, T> {
+    fn drop(&mut self) {
+        if self.value.is_some() {
+            misuse("a reserved resource was dropped without release()");
         }
     }
 }
@@ -239,8 +277,10 @@ impl<P: Deref<Target = Pool<T>> + Unpin, T> DerefMut for Resource<P, T> {
     }
 }
 
-impl<P: Deref<Target = Pool<T>> + Unpin, T> Drop for Resource<P, T> {
-    fn drop(&mut self) {
-        self.pool.give(self.value.take().unwrap());
+impl<P: Deref<Target = Pool<T>> + Unpin, T> Resource<P, T> {
+    /// Give the resource back, waking the oldest waiter with it.
+    pub(crate) fn release(mut self) {
+        let value = self.value.take().unwrap();
+        self.pool.give(value);
     }
 }

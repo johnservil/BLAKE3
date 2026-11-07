@@ -4,9 +4,10 @@
 //! remains in that slot until earlier prefixes of its message have folded.
 //! This bounds queued work and completed-but-unmerged results together.
 //!
-//! The prototype uses owned completion leases to exercise async cancellation.
-//! Public output ownership remains a review question in docs/api-sketch.md
-//! on the design branch. This module is test-only until frontend integration.
+//! Crash-only: no Drop does lifecycle work. Ending, aborting, releasing a
+//! grant and retiring a result are explicit operations. A producer that
+//! unwinds while its work is accepted ends the process (AbortOnUnwind), as
+//! the stream scope does. This module is test-only until frontend integration.
 
 use crate::admission::{Acquire, OwnedLease, Pool, initialized_mutex};
 use crate::incremental::{HasherCore, STAGE_LEN};
@@ -181,7 +182,7 @@ impl Receiver {
                 state.output = Some(output);
                 Id { index, generation: state.generation }
             };
-            Message { current: None, used: 0, sent: 0, next_hooks: Hooks::default(), owner: WriterOwner { core, id, armed: true } }
+            Message { current: None, used: 0, sent: 0, next_hooks: Hooks::default(), core, id, guard: crate::lanes::AbortOnUnwind }
         }
     }
 
@@ -227,7 +228,9 @@ impl Receiver {
             core.source.wake_for_waiting();
             BatchCompletion {
                 request: core.outputs[id.index].clone().acquire_owned(),
-                owner: CompletionOwner { core, id, resolved: false },
+                core,
+                id,
+                guard: Some(crate::lanes::AbortOnUnwind),
                 borrow: core::marker::PhantomData,
             }
         }
@@ -240,33 +243,25 @@ impl Receiver {
     }
 }
 
-impl Drop for Core {
-    fn drop(&mut self) {
-        // Every queued/running job owns this Core. Once the last owner drops,
-        // no task can access its metadata. Source storage itself persists.
-        Source::unregister(self.registration);
+impl Receiver {
+    /// Give the registry slot back. Every message has retired its result,
+    /// and drain has run, so no task reaches this core again.
+    pub(super) fn close(self) {
+        assert!(self.core.messages.iter().all(|s| s.lock().unwrap().slot.is_none()), "every message retired its result before close");
+        Source::unregister(self.core.registration);
     }
 }
 
 pub(super) struct Message {
-    // Return an uncommitted buffer before aborting this writer on cancellation.
     current: Option<OwnedLease<Buffer>>,
     used: usize,
     sent: u64,
     next_hooks: Hooks,
-    owner: WriterOwner,
-}
-struct WriterOwner {
     core: Arc<Core>,
     id: Id,
-    armed: bool,
-}
-impl Drop for WriterOwner {
-    fn drop(&mut self) {
-        if self.armed {
-            self.core.forget(self.id, true);
-        }
-    }
+    /// Dropped only if the producer unwinds with work accepted: the process
+    /// ends, since workers may still write this message's state.
+    guard: crate::lanes::AbortOnUnwind,
 }
 
 pub(super) struct Input<'a> {
@@ -287,18 +282,19 @@ impl Input<'_> {
         }
     }
 }
-impl Drop for Input<'_> {
-    fn drop(&mut self) {
-        if self.message.used == 0 {
-            drop(self.message.current.take());
-        }
+impl Input<'_> {
+    /// Give an unused room back without committing bytes.
+    pub(super) fn release(self) {
+        let message = &mut *self.message;
+        assert_eq!(message.used, 0, "a room with committed bytes stays with its message");
+        message.current.take().unwrap().release();
     }
 }
 
 impl Message {
     pub(super) async fn input(&mut self) -> Input<'_> {
         if self.current.is_none() {
-            self.current = Some(self.owner.core.buffers.clone().acquire_owned().await);
+            self.current = Some(self.core.buffers.clone().acquire_owned().await);
         }
         Input { message: self }
     }
@@ -321,8 +317,8 @@ impl Message {
             assert_eq!(len, INPUT_BYTES, "a nonfinal input fills whole algorithm groups");
         }
         let index = buffer.index;
-        let owner = self.owner.core.clone();
-        let id = self.owner.id;
+        let owner = self.core.clone();
+        let id = self.id;
         let job = Job { owner: owner.clone(), id, buffer, counter: self.sent / CHUNK_LEN as u64, len, last, hooks: core::mem::take(&mut self.next_hooks) };
         {
             let mut slot = owner.slots[index].state.lock().unwrap();
@@ -355,16 +351,42 @@ impl Message {
         if self.current.is_some() && self.used > 0 {
             self.submit(true);
         } else {
-            let mut state = self.owner.core.messages[self.owner.id.index].lock().unwrap();
+            if let Some(room) = self.current.take() {
+                room.release();
+            }
+            let mut state = self.core.messages[self.id.index].lock().unwrap();
             state.ended = true;
             state.writer_open = false;
         }
-        self.owner.armed = false;
-        let core = self.owner.core.clone();
-        let id = self.owner.id;
+        let Message { core, id, guard, .. } = self;
+        core::mem::forget(guard); // The completion carries its own guard.
         core.finalize_if_idle(id);
-        let request = core.outputs[id.index].clone().acquire_owned();
-        Completion { request, owner: CompletionOwner { core, id, resolved: false } }
+        Completion { request: core.outputs[id.index].clone().acquire_owned(), core, id, guard: Some(crate::lanes::AbortOnUnwind) }
+    }
+
+    /// Stop this message: no digest. Queued work for it is skipped; running
+    /// jobs finish before its buffers return. The slot returns once the
+    /// pool has retired that work.
+    pub(super) fn abort(mut self) -> Aborted {
+        if let Some(room) = self.current.take() {
+            room.release();
+        }
+        let Message { core, id, guard, .. } = self;
+        core::mem::forget(guard);
+        core.forget(id, true);
+        Aborted { core, id }
+    }
+}
+
+/// An aborted message's slot comes back once its accepted work has retired.
+/// The scope's drain waits for that work; then `retire` gives the slot back.
+pub(super) struct Aborted {
+    core: Arc<Core>,
+    id: Id,
+}
+impl Aborted {
+    pub(super) fn retire(self) {
+        self.core.retire(self.id);
     }
 }
 
@@ -380,36 +402,46 @@ struct BatchJob {
     count: usize,
 }
 
-/// A batch's result. Dropping it before completion cancels the wait only.
-/// The borrowed batch and places must stay in place until the receiver
-/// drains: a test that panicked before draining let a worker write into a
-/// freed stack frame. The public frontend needs the stream scope's
-/// abort-on-unwind rule, or owned output slots (docs/api-sketch.md, item 2).
+/// A batch's result. The borrowed batch and places stay in place until the
+/// receiver drains; a producer that unwinds first ends the process (a test
+/// that panicked before draining once let a worker write into a freed stack
+/// frame; the guard now aborts there).
 pub(super) struct BatchCompletion<'a> {
     request: Acquire<Arc<Pool<Outcome>>, Outcome>,
-    owner: CompletionOwner,
+    core: Arc<Core>,
+    id: Id,
+    guard: Option<crate::lanes::AbortOnUnwind>,
     borrow: core::marker::PhantomData<&'a mut [u8]>,
 }
 impl Future for BatchCompletion<'_> {
     type Output = BatchFinished;
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<BatchFinished> {
-        // Sound: request stays pinned; the owner is Unpin and changes only
-        // after the result transfers.
+        // Sound: request stays pinned; the other fields are Unpin and are
+        // read only after the result transfers.
         let this = unsafe { self.get_unchecked_mut() };
         let request = unsafe { Pin::new_unchecked(&mut this.request) };
         match request.poll(cx) {
             Poll::Pending => Poll::Pending,
             Poll::Ready(result) => {
-                this.owner.resolved = true;
                 assert!(matches!(*result, Outcome::Hashed(_)), "a batch job completes with its digests written");
-                Poll::Ready(BatchFinished { _result: result, _owner: ResultOwner { core: this.owner.core.clone(), id: this.owner.id } })
+                core::mem::forget(this.guard.take().expect("the guard is live until the result transfers or the wait is cancelled"));
+                Poll::Ready(BatchFinished { result, core: this.core.clone(), id: this.id })
             }
         }
     }
 }
+/// A finished batch: every digest is in its place. `retire` returns its slot.
 pub(super) struct BatchFinished {
-    _result: OwnedLease<Outcome>,
-    _owner: ResultOwner,
+    result: OwnedLease<Outcome>,
+    core: Arc<Core>,
+    id: Id,
+}
+impl BatchFinished {
+    pub(super) fn retire(self) {
+        self.result.release();
+        self.core.forget(self.id, false);
+        self.core.retire(self.id);
+    }
 }
 
 unsafe fn execute_batch(context: *mut (), platform: Platform) {
@@ -432,60 +464,57 @@ unsafe fn execute_batch(context: *mut (), platform: Platform) {
         *output = if aborted { Outcome::Aborted } else { Outcome::Hashed(Hash::from_bytes([0; 32])) };
         state.done = true;
         drop(state);
-        drop(output);
+        output.release();
     }
     owner.finalize_if_idle(id);
     owner.source.finished(1);
 }
 
-/// request drops before owner: unregister the result waiter before releasing
-/// its message slot or making that slot eligible for another message.
+/// An ended message's pending result. Await it, or `cancel` it to stop
+/// waiting; either way its slot returns through `retire`.
 pub(super) struct Completion {
     request: Acquire<Arc<Pool<Outcome>>, Outcome>,
-    owner: CompletionOwner,
-}
-struct CompletionOwner {
     core: Arc<Core>,
     id: Id,
-    resolved: bool,
-}
-impl Drop for CompletionOwner {
-    fn drop(&mut self) {
-        if !self.resolved {
-            self.core.forget(self.id, true);
-        }
-    }
+    /// Live while the result is pending: dropped only if the producer
+    /// unwinds, which ends the process. Taken and forgotten otherwise.
+    guard: Option<crate::lanes::AbortOnUnwind>,
 }
 impl Future for Completion {
     type Output = Finished;
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Finished> {
-        // Sound: request stays pinned. Its owner and the bool are Unpin and
-        // are changed only after request has transferred its result.
+        // Sound: request stays pinned; the other fields are Unpin and are
+        // read only after request has transferred its result.
         let this = unsafe { self.get_unchecked_mut() };
         let request = unsafe { Pin::new_unchecked(&mut this.request) };
         match request.poll(cx) {
             Poll::Pending => Poll::Pending,
             Poll::Ready(result) => {
-                this.owner.resolved = true;
-                Poll::Ready(Finished { result, _owner: ResultOwner { core: this.owner.core.clone(), id: this.owner.id } })
+                core::mem::forget(this.guard.take().expect("the guard is live until the result transfers or the wait is cancelled"));
+                Poll::Ready(Finished { result, core: this.core.clone(), id: this.id })
             }
         }
     }
 }
+impl Completion {
+    /// Stop waiting for the result. Accepted work still runs to its end;
+    /// the scope's drain waits for it, then `retire` gives the slot back.
+    pub(super) fn cancel(self: Pin<&mut Self>) -> Aborted {
+        // Sound: request stays pinned through cancel; the guard is taken
+        // and forgotten, so no abort fires on this ordinary path.
+        let this = unsafe { self.get_unchecked_mut() };
+        unsafe { Pin::new_unchecked(&mut this.request) }.cancel();
+        core::mem::forget(this.guard.take().expect("the guard is live until the result transfers or the wait is cancelled"));
+        this.core.forget(this.id, true);
+        Aborted { core: this.core.clone(), id: this.id }
+    }
+}
 
-/// Return the result token before releasing its message slot.
+/// A finished message's digest. `retire` returns its result token and slot.
 pub(super) struct Finished {
     result: OwnedLease<Outcome>,
-    _owner: ResultOwner,
-}
-struct ResultOwner {
     core: Arc<Core>,
     id: Id,
-}
-impl Drop for ResultOwner {
-    fn drop(&mut self) {
-        self.core.forget(self.id, false);
-    }
 }
 impl Finished {
     pub(super) fn hash(&self) -> &Hash {
@@ -493,6 +522,11 @@ impl Finished {
             Outcome::Hashed(hash) => hash,
             _ => panic!("only successful completion yields a digest"),
         }
+    }
+    pub(super) fn retire(self) {
+        self.result.release();
+        self.core.forget(self.id, false);
+        self.core.retire(self.id);
     }
 }
 
@@ -512,7 +546,7 @@ impl Core {
     }
 
     fn finalize_if_idle(&self, id: Id) {
-        let (output, slot) = {
+        let output = {
             let mut state = self.messages[id.index].lock().unwrap();
             if state.generation != id.generation || !state.queue.is_empty() {
                 return;
@@ -525,13 +559,25 @@ impl Core {
             } else {
                 None
             };
-            let slot = if state.done && state.receiver_gone { state.slot.take() } else { None };
-            (output, slot)
+            output
         };
-        // A waker may poll another operation immediately. All notifications
-        // happen after releasing message/slot locks.
-        drop(output);
-        drop(slot);
+        // A waker may poll another operation immediately. The notification
+        // happens after releasing the message lock.
+        if let Some(output) = output {
+            output.release();
+        }
+    }
+
+    /// Give a message's slot back: its work has retired (the scope drained)
+    /// and its result holder is gone.
+    fn retire(&self, id: Id) {
+        let slot = {
+            let mut state = self.messages[id.index].lock().unwrap();
+            assert_eq!(state.generation, id.generation);
+            assert!(state.done && state.receiver_gone && state.queue.is_empty(), "retire after the result and the drain");
+            state.slot.take().expect("one retire per message")
+        };
+        slot.release();
     }
 
     fn consume(&self, id: Id) {
@@ -565,7 +611,7 @@ impl Core {
             };
             // Return input and its metadata reservation outside both locks.
             // Another producer can reuse this slot immediately afterward.
-            drop(completed);
+            completed.job.buffer.release();
         }
     }
 }
@@ -686,9 +732,10 @@ mod tests {
                 feed(&mut message, &input, 1448);
                 let finished = run(message.end());
                 assert_eq!(finished.hash().as_bytes(), &expected(mode, &input), "{len} bytes");
-                drop(finished);
                 receiver.drain();
+                finished.retire();
             }
+            receiver.close();
         }
     }
 
@@ -719,8 +766,9 @@ mod tests {
         }
         let finished = run(message.end());
         assert_eq!(finished.hash().as_bytes(), &expected(Mode::Plain, &input));
-        drop(finished);
         receiver.drain();
+        finished.retire();
+        receiver.close();
     }
 
     /// A short message completes while an earlier message is still held.
@@ -738,18 +786,19 @@ mod tests {
         feed(&mut second, b"abc", 3);
         let finished = run(second.end());
         assert_eq!(finished.hash().as_bytes(), &expected(Mode::Plain, b"abc"));
-        drop(finished);
+        finished.retire(); // Its own work retired with its result.
         gate.release.wait();
         let first = run(first.end());
         assert_eq!(first.hash().as_bytes(), &expected(Mode::Plain, &long));
-        drop(first);
         receiver.drain();
+        first.retire();
+        receiver.close();
     }
 
-    /// Dropping a writer aborts its message. Its slot and buffers return,
-    /// so the next message proceeds with the same budget.
+    /// Aborting a writer skips its queued work. After the drain retires that
+    /// work, its slot and buffers return and the next message proceeds.
     #[test]
-    fn dropping_a_writer_aborts_and_returns_its_resources() {
+    fn aborting_a_writer_returns_its_resources_after_the_drain() {
         let receiver = receiver(Mode::Plain, 1, 1);
         let mut input = vec![0u8; INPUT_BYTES + 5];
         crate::test::paint_test_input(&mut input);
@@ -758,14 +807,17 @@ mod tests {
         message.hold_next(gate.clone());
         feed(&mut message, &input[..INPUT_BYTES], INPUT_BYTES);
         gate.started.wait();
-        drop(message); // The sketch's abort(): dropping the writer.
+        let aborted = message.abort();
         gate.release.wait();
+        receiver.drain();
+        aborted.retire();
         let mut next = run(receiver.message(None));
         feed(&mut next, b"after abort", 11);
         let finished = run(next.end());
         assert_eq!(finished.hash().as_bytes(), &expected(Mode::Plain, b"after abort"));
-        drop(finished);
         receiver.drain();
+        finished.retire();
+        receiver.close();
     }
 
     /// A prepared batch keeps its layout: one admission, one job, every
@@ -788,15 +840,17 @@ mod tests {
         // Admission first, then completion: every digest is written before
         // the result resolves.
         let admitted = run(receiver.submit_batch(&batch, &mut places));
-        drop(run(admitted));
+        let batch_finished = run(admitted);
         for (i, place) in places.iter().enumerate() {
             assert_eq!(place, &expected(Mode::Plain, &[i as u8; 100]), "message {i}");
         }
         gate.release.wait();
         let finished = run(completion);
         assert_eq!(finished.hash().as_bytes(), &expected(Mode::Plain, b"incremental"));
-        drop(finished);
         receiver.drain();
+        batch_finished.retire();
+        finished.retire();
+        receiver.close();
     }
 
     /// An empty batch and a whole-block borrowed batch complete too.
@@ -805,37 +859,82 @@ mod tests {
         let receiver = receiver(Mode::Plain, 1, 1);
         let empty = Batch::new(64, 0);
         let mut no_places: [[u8; OUT_LEN]; 0] = [];
-        drop(run(run(receiver.submit_batch(&empty, &mut no_places))));
+        let empty_done = run(run(receiver.submit_batch(&empty, &mut no_places)));
+        receiver.drain();
+        empty_done.retire();
         let mut blocks = vec![Block::ZERO; 8];
         crate::test::paint_test_input(Block::bytes_mut(&mut blocks));
         let borrowed = Batch::from_blocks(&blocks, 128);
         let mut places = [[0u8; OUT_LEN]; 4];
-        drop(run(run(receiver.submit_batch(&borrowed, &mut places))));
+        let borrowed_done = run(run(receiver.submit_batch(&borrowed, &mut places)));
         for (i, place) in places.iter().enumerate() {
             assert_eq!(place, &expected(Mode::Plain, &Block::bytes(&blocks)[i * 128..][..128]), "message {i}");
         }
         receiver.drain();
+        borrowed_done.retire();
+        receiver.close();
     }
 
-    /// Dropping a pending completion cancels its result wait. The message
-    /// still finishes its accepted work and releases its slot afterward.
+    /// A producer that unwinds while its message has accepted work ends the
+    /// process (crash-only): workers may still write that message's state.
+    /// The child must die by SIGABRT, with the held job then released by
+    /// nobody, which the dead process no longer needs.
     #[test]
-    fn dropping_a_completion_releases_the_message_slot() {
+    fn unwinding_with_accepted_work_aborts_the_process() {
+        if std::env::var_os("RECEIVER_UNWIND").is_none() {
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "stream::prototype::receiver::tests::unwinding_with_accepted_work_aborts_the_process", "--nocapture"])
+                .env("RECEIVER_UNWIND", "1")
+                .env("NEXTEST", "1")
+                .output()
+                .unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::process::ExitStatusExt;
+                assert_eq!(out.status.signal(), Some(6), "SIGABRT: {}", String::from_utf8_lossy(&out.stderr));
+            }
+            return;
+        }
+        let receiver = receiver(Mode::Plain, 1, 1);
+        let mut message = run(receiver.message(None));
+        let gate = Gate::new();
+        message.hold_next(gate.clone());
+        feed(&mut message, &[7; INPUT_BYTES], INPUT_BYTES);
+        gate.started.wait();
+        // The producer panics with a part on a worker. Unwinding drops the
+        // message's guard, which ends the process before the frame goes.
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _message = message;
+            panic!("the producer failed mid-message");
+        }));
+        std::process::exit(0);
+    }
+
+    /// Cancelling a pending completion stops the result wait. The message
+    /// still finishes its accepted work; the slot returns after the drain.
+    #[test]
+    fn cancelling_a_completion_releases_the_message_slot_after_the_drain() {
         let receiver = receiver(Mode::Plain, 1, 1);
         let mut message = run(receiver.message(None));
         let gate = Gate::new();
         message.hold_next(gate.clone());
         feed(&mut message, b"held", 4);
         // A partial final piece is submitted by end().
-        let completion = message.end();
+        let mut completion = core::pin::pin!(message.end());
         gate.started.wait();
-        drop(completion);
+        assert!(poll_once(completion.as_mut()).is_pending());
+        let aborted = completion.as_mut().cancel();
         gate.release.wait();
+        receiver.drain();
+        aborted.retire();
         let mut next = run(receiver.message(None));
+        // A room taken and given back untouched leaves the budget whole.
+        run(next.input()).release();
         feed(&mut next, b"next", 4);
         let finished = run(next.end());
         assert_eq!(finished.hash().as_bytes(), &expected(Mode::Plain, b"next"));
-        drop(finished);
         receiver.drain();
+        finished.retire();
+        receiver.close();
     }
 }
