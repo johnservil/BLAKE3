@@ -1103,19 +1103,34 @@ mod test {
     /// Engage every run (crate::gpu::Run: its timing is the machine's, and
     /// a gap of 5 ms between streams, a finish's or a check's, ends one),
     /// wait until the GPU is ready (its start runs on a thread of its own),
-    /// then a stream of 64 messages of 16 MiB, in which the GPU takes
-    /// batches.
+    /// then establish one GPU batch on a 16 MiB message. Holding CPU claims
+    /// until that batch is taken makes this a setup condition, not a race.
     #[cfg(blake3_gpu)]
     fn gpu_ready(input: &[u8]) {
         crate::gpu::test::ENGAGED.store(true, Ordering::Relaxed);
-        let started = std::time::Instant::now();
         while !crate::gpu::ready() {
-            assert!(started.elapsed() < std::time::Duration::from_secs(10), "the GPU starts within 10 s");
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
         let before = gpu_batches();
-        gpu_stream_checked(Mode::Plain, input, &[16 << 20; 64], usize::MAX, false);
-        assert!(gpu_batches() > before, "the GPU took batches in a stream of 1 GiB");
+        let mut got = Hash::from_bytes([0; 32]);
+        stream(
+            Mode::Plain,
+            |_| {},
+            |s| {
+                s.s.source.reserve_gpu_batch_for_test();
+                s.submit_with(
+                    16 << 20,
+                    |at, room| {
+                        room.copy_from_slice(&input[at..][..room.len()]);
+                        room.len()
+                    },
+                    &mut got,
+                );
+                assert!(gpu_batches() > before, "the GPU took the setup batch before finish");
+                s.finish();
+            },
+        );
+        assert_eq!(got, crate::convenience::hash(&input[..16 << 20]));
     }
 
     /// Long messages with the GPU taking batches, in every mode, among
@@ -1235,8 +1250,30 @@ mod test {
         gpu_ready(&input);
         let lens = [16 << 20; 4];
         let (batches, reclaims, feeds) = (gpu_batches(), crate::gpu::test::RECLAIMS.load(Ordering::Relaxed), crate::gpu::test::FEEDS.load(Ordering::Relaxed));
-        crate::gpu::test::HOLD.store(true, Ordering::Release);
-        let got = gpu_stream(Mode::Plain, &input, &lens, usize::MAX, false);
+        let mut got = places(lens.len());
+        stream(
+            Mode::Plain,
+            |_| {},
+            |s| {
+                // Warm-up commands may have been reclaimed by its finish. Wait
+                // for their callbacks before holding the commands of this run.
+                s.s.gpu.as_ref().expect("the warm-up created GPU storage").wait_idle_for_test();
+                s.s.source.reserve_gpu_batch_for_test();
+                crate::gpu::test::HOLD.store(true, Ordering::Release);
+                for (i, out) in got.iter_mut().enumerate() {
+                    s.submit_with(
+                        lens[i],
+                        |at, room| {
+                            room.copy_from_slice(&gpu_message(&input, i, lens[i])[at..][..room.len()]);
+                            room.len()
+                        },
+                        out,
+                    );
+                }
+                assert!(gpu_batches() > batches, "the held run owns a GPU batch before finish");
+                s.finish();
+            },
+        );
         crate::gpu::test::HOLD.store(false, Ordering::Release);
         assert!(
             gpu_batches() > batches,

@@ -317,6 +317,15 @@ impl Gpu {
         true
     }
 
+    /// The held-command fixture starts with the warm-up's commands done.
+    /// Its later HOLD applies only to work submitted by that fixture.
+    #[cfg(test)]
+    pub(crate) fn wait_idle_for_test(&self) {
+        while self.commands.iter().any(|c| c.state.load(Ordering::Acquire) != FREE) {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+
     /// Whether any command is in flight: loads alone, for the finish's
     /// loop, which asks on every pass.
     #[inline]
