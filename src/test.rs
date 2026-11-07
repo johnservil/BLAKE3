@@ -484,9 +484,9 @@ fn test_xof_clone_and_empty_fill() {
     golden.check(0x5bbf88ec4d96901e);
 }
 
-/// fill computes each output block once: the whole blocks of a fill from
-/// a block boundary go to xof_many (no block alone), a tail or a head
-/// inside a block is one block alone, an empty fill none. The guards
+/// fill computes each partial output block once across sequential calls:
+/// whole blocks from a boundary go to xof_many (no block alone), a new
+/// tail is one block alone, a cached head and an empty fill none. The guards
 /// that keep it so are speed alone (the bytes are right either way), so
 /// the count is what catches a mutant of them (BLAKE3 #219, #238).
 #[cfg(feature = "std")]
@@ -502,11 +502,50 @@ fn test_fill_computes_each_block_once() {
     assert_eq!(blocks(&mut || reader.fill(&mut buf[..128])), 0, "two whole blocks from the boundary: xof_many alone");
     assert_eq!(blocks(&mut || reader.fill(&mut [])), 0, "an empty fill computes nothing");
     assert_eq!(blocks(&mut || reader.fill(&mut buf[..100])), 1, "a block and 36 bytes: the tail block alone");
-    assert_eq!(blocks(&mut || reader.fill(&mut buf[..28])), 1, "the rest of that block, from inside it");
+    assert_eq!(blocks(&mut || reader.fill(&mut buf[..28])), 0, "the rest of that block is cached");
     assert_eq!(blocks(&mut || reader.fill(&mut buf[..64])), 0, "one whole block from the boundary: xof_many");
     assert_eq!(blocks(&mut || reader.fill(&mut buf[..10])), 1, "10 bytes into a block");
-    assert_eq!(blocks(&mut || reader.fill(&mut buf[..200])), 2, "54 bytes to the boundary, two whole blocks, 18 into the next: two alone");
+    assert_eq!(blocks(&mut || reader.fill(&mut buf[..200])), 1, "54 cached bytes to the boundary, two whole blocks, then one new tail block");
     assert_eq!(reader.position(), 128 + 100 + 28 + 64 + 10 + 200);
+}
+
+/// Sequential short reads share the current block; seeks invalidate it,
+/// and cloning a reader preserves both its position and its cached bytes.
+#[cfg(feature = "std")]
+#[test]
+fn test_xof_partial_block_cache_seeks_and_clones() {
+    for platform in every_platform() {
+        let key = [0x42u8; 32];
+        for mode in [crate::Mode::Plain, crate::Mode::Keyed(&key), crate::Mode::DeriveKey("partial XOF block cache")] {
+            let mut hasher = crate::Hasher::new(mode);
+            hasher.core.chunk_state.platform = platform;
+            hasher.update(b"the cached output belongs to its counter and mode");
+            let expected = official::xof(mode, b"the cached output belongs to its counter and mode", 0, 256);
+            let mut reader = hasher.finalize_xof();
+            crate::COUNTED.with(|c| c[crate::Counted::RootBlock as usize].set(0));
+            let mut got = [0u8; 33];
+            for byte in &mut got {
+                reader.fill(&mut []);
+                reader.fill(core::slice::from_mut(byte));
+            }
+            assert_eq!(got.as_slice(), &expected[..33]);
+            assert_eq!(crate::COUNTED.with(|c| c[crate::Counted::RootBlock as usize].get()), 1, "one cached block: {platform:?}");
+            let mut copy = reader.clone();
+            let mut tail = [0u8; 31];
+            copy.fill(&mut tail);
+            assert_eq!(tail.as_slice(), &expected[33..64]);
+            assert_eq!(copy.position(), 64);
+            assert_eq!(reader.position(), 33);
+            assert_eq!(crate::COUNTED.with(|c| c[crate::Counted::RootBlock as usize].get()), 1, "clone reuses its copied block");
+            for position in [77, 13, 64, 129, 13] {
+                reader.set_position(position);
+                let mut bytes = [0u8; 17];
+                reader.fill(&mut bytes);
+                assert_eq!(bytes.as_slice(), &expected[position as usize..position as usize + bytes.len()]);
+                assert_eq!(reader.position(), position + bytes.len() as u64);
+            }
+        }
+    }
 }
 
 /// pair's hash_many_blocks on every platform this build has: AVX2's and
@@ -782,6 +821,8 @@ fn test_zeroize() {
             platform: crate::Platform::detect_unchecked(),
         },
         position_within_block: 42,
+        cached_block: [42; crate::BLOCK_LEN],
+        cache_valid: false, // Inactive cached bytes must be wiped too.
     };
 
     output_reader.zeroize();
@@ -792,6 +833,8 @@ fn test_zeroize() {
     assert_eq!(output_reader.inner.flags, 0);
     assert_eq!(output_reader.inner.platform, crate::Platform::detect_unchecked(), "zeroize leaves the platform");
     assert_eq!(output_reader.position_within_block, 0);
+    assert_eq!(output_reader.cached_block, [0; crate::BLOCK_LEN]);
+    assert!(!output_reader.cache_valid);
 }
 
 #[test]
@@ -973,12 +1016,12 @@ mod unsafe_paths {
 // outside its buffers stops the test with a fault. The assembly kernels'
 // accesses are invisible to the sanitizers; these are not.
 #[cfg(all(feature = "std", any(target_arch = "aarch64", target_arch = "x86_64"), any(target_vendor = "apple", target_os = "linux")))]
-mod guard_pages {
+pub(crate) mod guard_pages {
     use crate::*;
 
     /// `len` bytes with an inaccessible page before and after them, the
     /// bytes flush against the page after (`at_end`) or before.
-    struct Guarded {
+    pub(crate) struct Guarded {
         base: *mut u8,
         total: usize,
         start: usize,
@@ -986,7 +1029,7 @@ mod guard_pages {
     }
 
     impl Guarded {
-        fn new(len: usize, at_end: bool) -> Self {
+        pub(crate) fn new(len: usize, at_end: bool) -> Self {
             let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as usize;
             let body = len.div_ceil(page).max(1) * page;
             let total = body + 2 * page;
@@ -1001,8 +1044,15 @@ mod guard_pages {
             Guarded { base, total, start, len }
         }
 
-        fn bytes(&mut self) -> &mut [u8] {
+        pub(crate) fn bytes(&mut self) -> &mut [u8] {
             unsafe { core::slice::from_raw_parts_mut(self.base.add(self.start), self.len) }
+        }
+
+        /// Build shared views first; after this call the body is read-only.
+        #[cfg(all(target_os = "linux", blake3_avx512_ffi))]
+        pub(crate) fn read_only(&mut self) {
+            let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as usize;
+            assert_eq!(unsafe { libc::mprotect(self.base.add(page).cast(), self.total - 2 * page, libc::PROT_READ) }, 0);
         }
     }
 

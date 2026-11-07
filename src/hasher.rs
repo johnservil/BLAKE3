@@ -19,6 +19,7 @@ pub struct CvStack {
 
 impl Clone for CvStack {
     fn clone(&self) -> CvStack {
+        crate::counted(crate::Counted::StackClone);
         CvStack { cvs: self.cvs, len: self.len }
     }
 }
