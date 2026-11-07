@@ -55,6 +55,8 @@ impl Gate {
 struct Job {
     owner: Arc<Core>,
     id: Id,
+    key: CVWords,
+    flags: u8,
     buffer: OwnedLease<Buffer>,
     counter: u64,
     len: usize,
@@ -97,11 +99,12 @@ struct Progress {
     output: Option<OwnedLease<Outcome>>,
 }
 
+/// A receiver's storage: kept for the next receiver of the same capacity
+/// once closed (as a stream's Storage is), never freed. Its jobs carry
+/// their mode, so one core serves receivers of any mode.
 struct Core {
     source: &'static Source,
-    registration: usize,
-    key: CVWords,
-    flags: u8,
+    registration: core::sync::atomic::AtomicUsize,
     buffers: Arc<Pool<Buffer>>,
     message_slots: Arc<Pool<usize>>,
     messages: Box<[Mutex<Progress>]>,
@@ -109,9 +112,14 @@ struct Core {
     slots: Box<[Slot]>,
 }
 
-/// One test producer. Message and result owners can outlive this handle.
+/// Cores closed and kept, each with its capacities (buffers, messages).
+static FREE: Mutex<Vec<(usize, usize, Arc<Core>)>> = Mutex::new(Vec::new());
+
+/// One producer. Message and result owners can outlive this handle.
 pub(super) struct Receiver {
     core: Arc<Core>,
+    key: CVWords,
+    flags: u8,
 }
 
 impl Receiver {
@@ -119,14 +127,23 @@ impl Receiver {
     pub(super) fn new(mode: Mode<'_>, buffers: usize, messages: usize) -> Self {
         assert!(buffers > 0 && messages > 0, "the receiver has input and message capacity");
         let (key, flags) = mode.key_and_flags();
-        // Sources persist, as the existing registry requires. The eventual
-        // frontend will reuse its storage pool; each test owns one source.
-        // The ring holds every task that can be published before a worker
-        // claims it: a part per input buffer, and a batch job per message
-        // slot (a batch holds no buffer). The Mac's timing found the ring
-        // sized at `buffers` overflowing: a worker read a garbage task.
+        let kept = {
+            let mut free = FREE.lock().unwrap();
+            free.iter().position(|(b, m, _)| (*b, *m) == (buffers, messages)).map(|i| free.swap_remove(i).2)
+        };
+        let core = kept.unwrap_or_else(|| Self::core(buffers, messages));
+        core.registration.store(core.source.register().expect("a source slot for this receiver"), core::sync::atomic::Ordering::Relaxed);
+        Self { core, key, flags }
+    }
+
+    /// A core of the given capacities, its source and pools made once.
+    fn core(buffers: usize, messages: usize) -> Arc<Core> {
+        // The source persists, as the registry requires. Its ring holds
+        // every task that can be published before a worker claims it: a
+        // part per input buffer, and a batch job per message slot (a batch
+        // holds no buffer). The Mac's timing found a ring sized at
+        // `buffers` overflowing: a worker read a garbage task.
         let source = Box::leak(Box::new(Source::new(buffers + messages)));
-        let registration = source.register().expect("a source slot for this prototype");
         source.drain_actions(); // Initialize its platform completion metadata.
         let input = (0..buffers).map(|index| Buffer { index, blocks: vec![Block::ZERO; INPUT_BYTES / 64].into_boxed_slice() }).collect();
         let slots = (0..buffers).map(|_| Slot { state: initialized_mutex(SlotState::Vacant) }).collect();
@@ -134,7 +151,7 @@ impl Receiver {
             .map(|_| {
                 initialized_mutex(Progress {
                     generation: 0,
-                    core: HasherCore::new_internal(&key, flags),
+                    core: HasherCore::new_internal(&crate::IV, 0),
                     queue: VecDeque::with_capacity(buffers),
                     writer_open: false,
                     ended: true,
@@ -147,23 +164,20 @@ impl Receiver {
             })
             .collect();
         let outputs = (0..messages).map(|_| Arc::new(Pool::new(vec![Outcome::Pending]))).collect();
-        Self {
-            core: Arc::new(Core {
-                source,
-                registration,
-                key,
-                flags,
-                buffers: Arc::new(Pool::new(input)),
-                message_slots: Arc::new(Pool::new((0..messages).collect())),
-                messages: states,
-                outputs,
-                slots,
-            }),
-        }
+        Arc::new(Core {
+            source,
+            registration: core::sync::atomic::AtomicUsize::new(0),
+            buffers: Arc::new(Pool::new(input)),
+            message_slots: Arc::new(Pool::new((0..messages).collect())),
+            messages: states,
+            outputs,
+            slots,
+        })
     }
 
     pub(super) fn message(&self, length_hint: Option<u64>) -> impl Future<Output = Message> + Send + 'static {
         let core = self.core.clone();
+        let (key, flags) = (self.key, self.flags);
         async move {
             // Hints are advisory. The scheduling prototype accepts but does
             // not use them, as submit_reader does today.
@@ -176,7 +190,7 @@ impl Receiver {
                 let mut state = core.messages[index].lock().unwrap();
                 assert!(state.queue.is_empty() && state.slot.is_none(), "a returned message slot has retired its work");
                 state.generation = state.generation.checked_add(1).expect("message generations fit u64");
-                state.core.reset();
+                state.core = HasherCore::new_internal(&key, flags);
                 state.writer_open = true;
                 state.ended = false;
                 state.aborted = false;
@@ -186,7 +200,7 @@ impl Receiver {
                 state.output = Some(output);
                 Id { index, generation: state.generation }
             };
-            Message { current: None, used: 0, sent: 0, next_hooks: Hooks::default(), core, id, guard: crate::lanes::AbortOnUnwind }
+            Message { current: None, used: 0, sent: 0, next_hooks: Hooks::default(), core, id, key, flags, guard: crate::lanes::AbortOnUnwind }
         }
     }
 
@@ -198,6 +212,7 @@ impl Receiver {
     pub(super) fn submit_batch<'a>(&self, batch: &'a Batch<'a>, places: &'a mut [[u8; OUT_LEN]]) -> impl Future<Output = BatchCompletion<'a>> + 'a {
         assert_eq!(batch.len(), places.len(), "one place per batch message");
         let core = self.core.clone();
+        let (key, flags) = (self.key, self.flags);
         async move {
             let slot = core.message_slots.clone().acquire_owned().await;
             let index = *slot;
@@ -219,6 +234,8 @@ impl Receiver {
             let job = Box::new(BatchJob {
                 owner: core.clone(),
                 id,
+                key,
+                flags,
                 input: Block::bytes(batch.blocks()).as_ptr(),
                 input_len: Block::bytes(batch.blocks()).len(),
                 message_len: batch.message_len(),
@@ -248,11 +265,15 @@ impl Receiver {
 }
 
 impl Receiver {
-    /// Give the registry slot back. Every message has retired its result,
-    /// and drain has run, so no task reaches this core again.
+    /// Give the registry slot back and keep the core for the next receiver
+    /// of these capacities. Every message has retired its result and drain
+    /// has run, so no task or handle holds the core: checked by its count.
     pub(super) fn close(self) {
         assert!(self.core.messages.iter().all(|s| s.lock().unwrap().slot.is_none()), "every message retired its result before close");
-        Source::unregister(self.core.registration);
+        Source::unregister(self.core.registration.load(core::sync::atomic::Ordering::Relaxed));
+        assert_eq!(Arc::strong_count(&self.core), 1, "a receiver closes with no job or handle outstanding");
+        let (buffers, messages) = (self.core.slots.len(), self.core.messages.len());
+        FREE.lock().unwrap().push((buffers, messages, self.core));
     }
 }
 
@@ -263,6 +284,8 @@ pub(super) struct Message {
     next_hooks: Hooks,
     core: Arc<Core>,
     id: Id,
+    key: CVWords,
+    flags: u8,
     /// Dropped only if the producer unwinds with work accepted: the process
     /// ends, since workers may still write this message's state.
     guard: crate::lanes::AbortOnUnwind,
@@ -318,7 +341,17 @@ impl Message {
         let index = buffer.index;
         let owner = self.core.clone();
         let id = self.id;
-        let job = Job { owner: owner.clone(), id, buffer, counter: self.sent / CHUNK_LEN as u64, len, last, hooks: core::mem::take(&mut self.next_hooks) };
+        let job = Job {
+            owner: owner.clone(),
+            id,
+            key: self.key,
+            flags: self.flags,
+            buffer,
+            counter: self.sent / CHUNK_LEN as u64,
+            len,
+            last,
+            hooks: core::mem::take(&mut self.next_hooks),
+        };
         {
             let mut slot = owner.slots[index].state.lock().unwrap();
             assert!(matches!(*slot, SlotState::Vacant), "a buffer reserves its vacant metadata slot");
@@ -382,6 +415,8 @@ impl Message {
 struct BatchJob {
     owner: Arc<Core>,
     id: Id,
+    key: CVWords,
+    flags: u8,
     input: *const u8,
     input_len: usize,
     message_len: usize,
@@ -439,7 +474,7 @@ unsafe fn execute_batch(context: *mut (), platform: Platform) {
     if !aborted {
         let input = unsafe { core::slice::from_raw_parts(job.input, job.input_len) };
         let out = unsafe { core::slice::from_raw_parts_mut(job.out, job.count) };
-        crate::many::hash_many_on(input, job.message_len, &job.owner.key, job.owner.flags, out, platform);
+        crate::many::hash_many_on(input, job.message_len, &job.key, job.flags, out, platform);
     }
     let owner = job.owner.clone();
     let id = job.id;
@@ -616,9 +651,9 @@ unsafe fn execute(context: *mut (), platform: Platform) {
     if !aborted && !job.last {
         let input = &Block::bytes(&job.buffer.blocks)[..job.len];
         if job.counter == 0 {
-            result = crate::compress_subtree_to_parent_node(input, 0, &owner.key, 0, owner.flags, platform);
+            result = crate::compress_subtree_to_parent_node(input, 0, &job.key, 0, job.flags, platform);
         } else {
-            result[..32].copy_from_slice(&crate::hash_all_at_once(input, &owner.key, job.counter, owner.flags, platform).chaining_value());
+            result[..32].copy_from_slice(&crate::hash_all_at_once(input, &job.key, job.counter, job.flags, platform).chaining_value());
         }
     }
     {
@@ -798,6 +833,36 @@ pub(super) mod tests {
         receiver.drain();
         finished.retire();
         receiver.close();
+    }
+
+    /// A closed receiver's core serves the next receiver of its capacities,
+    /// in another mode: the kept pools and source, the new key.
+    #[test]
+    fn a_closed_receivers_core_serves_the_next_receiver_in_another_mode() {
+        let key = [9u8; 32];
+        let first = receiver(Mode::Plain, 2, 1);
+        let core = Arc::as_ptr(&first.core);
+        let mut message = run(first.message(None));
+        feed(&mut message, b"first receiver", 14);
+        let finished = run(message.end());
+        assert_eq!(finished.hash().as_bytes(), &expected(Mode::Plain, b"first receiver"));
+        first.drain();
+        finished.retire();
+        first.close();
+        let second = Receiver::new(Mode::Keyed(&key), 2, 1);
+        assert_eq!(Arc::as_ptr(&second.core), core, "the kept core, not a new allocation");
+        let mut message = run(second.message(None));
+        feed(&mut message, b"second receiver", 15);
+        let finished = run(message.end());
+        assert_eq!(finished.hash().as_bytes(), &expected(Mode::Keyed(&key), b"second receiver"));
+        second.drain();
+        finished.retire();
+        second.close();
+        // Other capacities make a core of their own.
+        let third = Receiver::new(Mode::Plain, 3, 1);
+        assert_ne!(Arc::as_ptr(&third.core), core);
+        third.drain();
+        third.close();
     }
 
     /// A prepared batch keeps its layout: one admission, one job, every
