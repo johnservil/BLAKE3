@@ -220,6 +220,9 @@ impl Hasher {
 
     /// The root's output: the core's, after the stage's bytes.
     pub(crate) fn final_output(&self) -> Output {
+        if self.staged == 0 {
+            return self.core.final_output();
+        }
         let mut core = self.core.clone();
         core.update(self.staged_bytes());
         core.final_output()
