@@ -132,7 +132,7 @@ struct Inner {
 struct Args {
     inner: Inner,
     file_args: Vec<PathBuf>,
-    base_hasher: blake3::throughput::Hasher,
+    base_hasher: blake3::convenience::Hasher,
 }
 
 impl Args {
@@ -148,11 +148,11 @@ impl Args {
         let base_hasher = if inner.keyed {
             // In keyed mode, since stdin is used for the key, we can't handle
             // `-` arguments. Input::open handles that case below.
-            blake3::throughput::Hasher::new(blake3::Mode::Keyed(&read_key_from_stdin()?))
+            blake3::convenience::Hasher::new(blake3::Mode::Keyed(&read_key_from_stdin()?), None)
         } else if let Some(ref context) = inner.derive_key {
-            blake3::throughput::Hasher::new(blake3::Mode::DeriveKey(context))
+            blake3::convenience::Hasher::new(blake3::Mode::DeriveKey(context), None)
         } else {
-            blake3::throughput::Hasher::new(blake3::Mode::Plain)
+            blake3::convenience::Hasher::new(blake3::Mode::Plain, None)
         };
         Ok(Self { inner, file_args, base_hasher })
     }
@@ -335,10 +335,10 @@ fn pool_threads() -> std::num::NonZeroUsize {
 /// the first such input
 /// (`initialize_multithreaded`), so a run of small files starts no
 /// threads; on this thread below, or always with one thread.
-fn update(hasher: &mut blake3::throughput::Hasher, input: &[u8]) {
+fn update(hasher: &mut blake3::convenience::Hasher, input: &[u8]) {
     if input.len() >= POOL_LEN && pool_threads().get() > 1 {
         blake3::initialize_multithreaded(Some(pool_threads()));
-        hasher.update_multithreaded(input);
+        blake3::throughput::update_multithreaded(hasher, input);
     } else {
         hasher.update(input);
     }
@@ -374,7 +374,7 @@ fn fill(reader: &mut impl Read, buffer: &mut [u8]) -> io::Result<usize> {
 /// than a piece has the rest read on a second thread into the other
 /// buffer while this one hashes the last piece over the pool
 /// (`bench-hashes b3sum`).
-fn update_from(hasher: &mut blake3::throughput::Hasher, mut reader: impl Read + Send) -> io::Result<()> {
+fn update_from(hasher: &mut blake3::convenience::Hasher, mut reader: impl Read + Send) -> io::Result<()> {
     BUFFERS.with_borrow_mut(|[first, second]| {
         let mut len = fill(&mut reader, first)?;
         // An input of one piece asks no thread count (see threads).

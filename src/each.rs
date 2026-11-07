@@ -63,8 +63,8 @@ pub fn hash_each_multithreaded(mode: Mode, items: &[(&[Block], usize)], out: &mu
 ///
 /// ```
 /// # blake3_servil::initialize();
-/// use blake3_servil::throughput::{self, Hasher};
-/// let mut hashers = vec![Hasher::new(blake3_servil::Mode::Plain), Hasher::new(blake3_servil::Mode::Plain)];
+/// use blake3_servil::{convenience::Hasher, throughput};
+/// let mut hashers = vec![Hasher::new(blake3_servil::Mode::Plain, None), Hasher::new(blake3_servil::Mode::Plain, None)];
 /// throughput::update_each(&mut hashers, &[(0, b"ab"), (1, b"xyz"), (0, b"c")]);
 /// let mut out = [[0u8; 32]; 2];
 /// throughput::finalize_each(&hashers, &[0, 1], &mut out);
@@ -697,12 +697,12 @@ mod test {
         let mut hashers: Vec<Hasher> = subtrees
             .iter()
             .map(|&(offset, _)| {
-                let mut h = Hasher::new(crate::Mode::Plain);
+                let mut h = Hasher::new(crate::Mode::Plain, None);
                 h.set_input_offset(offset as u64);
                 h
             })
             .collect();
-        hashers.extend(whole.iter().map(|_| Hasher::new(crate::Mode::Plain)));
+        hashers.extend(whole.iter().map(|_| Hasher::new(crate::Mode::Plain, None)));
         let lens: Vec<usize> = subtrees.iter().map(|&(_, len)| len).chain(whole).collect();
         let mut done = vec![0usize; lens.len()];
         let pieces = [1448usize, 31, 16384, 4096, 1];
@@ -719,7 +719,7 @@ mod test {
             crate::throughput::update_each(&mut hashers, &turn);
         }
         for (i, &(offset, len)) in subtrees.iter().enumerate() {
-            let mut one = Hasher::new(crate::Mode::Plain);
+            let mut one = Hasher::new(crate::Mode::Plain, None);
             one.set_input_offset(offset as u64).update(&input[..len]);
             assert_eq!(hashers[i].finalize_non_root(), one.finalize_non_root(), "subtree at {offset}, {len} bytes");
         }
@@ -736,7 +736,7 @@ mod test {
             h.core.chunk_state.platform = platform;
             h
         };
-        let mut hashers: Vec<Hasher> = (0..6).map(|i| on(Hasher::new(crate::Mode::Keyed(&keys[i % 2])))).collect();
+        let mut hashers: Vec<Hasher> = (0..6).map(|i| on(Hasher::new(crate::Mode::Keyed(&keys[i % 2]), None))).collect();
         // Each hasher a group in, its message at a different offset into the
         // input; then one turn of two pieces each, which stage its second
         // group from its start and fill it (held), and 7 bytes more.
@@ -756,7 +756,7 @@ mod test {
         // And each hasher's first group (chunk counter zero, which hands
         // its core the group's two halves), six at once: a first piece
         // longer than a chunk, so it is staged from offset zero.
-        let mut fresh: Vec<Hasher> = (0..6).map(|i| on(Hasher::new(crate::Mode::Keyed(&keys[i % 2])))).collect();
+        let mut fresh: Vec<Hasher> = (0..6).map(|i| on(Hasher::new(crate::Mode::Keyed(&keys[i % 2]), None))).collect();
         let turn: Vec<(usize, &[u8])> =
             (0..6).flat_map(|i| [(i, &input[start(i)..start(i) + 1100]), (i, &input[start(i) + 1100..start(i) + group + 7])]).collect();
         crate::throughput::update_each(&mut fresh, &turn);
@@ -779,7 +779,7 @@ mod test {
             let key = [5u8; 32];
             // Every third hasher keyed: a turn's held groups in two kinds.
             let mut hashers: Vec<Hasher> =
-                (0..lens.len()).map(|i| if i % 3 == 1 { Hasher::new(crate::Mode::Keyed(&key)) } else { Hasher::new(crate::Mode::Plain) }).collect();
+                (0..lens.len()).map(|i| if i % 3 == 1 { Hasher::new(crate::Mode::Keyed(&key), None) } else { Hasher::new(crate::Mode::Plain, None) }).collect();
             let mut done = vec![0usize; lens.len()];
             let mut k = 0;
             while done.iter().zip(&lens).any(|(d, l)| d < l) {

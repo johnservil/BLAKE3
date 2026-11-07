@@ -79,7 +79,6 @@ fn installed_consumer(kind: &str) -> String {
             output = String::from_utf8(out.stdout).unwrap();
         }
     }
-    assert!(output.contains("stream ok\n"), "the C stream's digests match b3_hash's");
     output
 }
 
@@ -96,17 +95,17 @@ fn from_c() {
         for mode in modes {
             for len in [0, 1025, 100000] {
                 let d = blake3_servil::convenience::hash_with(mode, &input[..len]).to_hex();
-                for _ in 0..3 {
+                // b3_hash, then the hasher fed in two pieces.
+                for _ in 0..2 {
                     expected.push(d.to_string());
                 }
             }
         }
         // b3.h's b3_hasher holds the crate's Hasher.
         let first = out.lines().next().unwrap();
-        assert_eq!(first, format!("hasher {} 64", size_of::<blake3_servil::throughput::Hasher>()), "b3.h's B3_HASHER_SIZE");
-        assert!(align_of::<blake3_servil::throughput::Hasher>() <= 64);
-        // The stream's own check prints its verdict last.
-        let got: Vec<&str> = out.lines().skip(1).filter(|l| *l != "stream ok").map(|l| l.split(' ').nth(1).unwrap()).collect();
+        assert_eq!(first, format!("hasher {} 64", size_of::<blake3_servil::convenience::Hasher>()), "b3.h's B3_HASHER_SIZE");
+        assert!(align_of::<blake3_servil::convenience::Hasher>() <= 64);
+        let got: Vec<&str> = out.lines().skip(1).map(|l| l.split(' ').nth(1).unwrap()).collect();
         assert_eq!(got.len(), expected.len(), "{out}");
         for (i, (g, e)) in got.iter().zip(&expected).enumerate() {
             assert_eq!(g, e, "line {i}: {}", out.lines().nth(i).unwrap());

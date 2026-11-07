@@ -47,10 +47,6 @@ impl Guarded {
     fn bytes(&mut self) -> &mut [u8] {
         unsafe { core::slice::from_raw_parts_mut(self.ptr(), self.len) }
     }
-
-    fn digests(&self) -> &[Digest] {
-        unsafe { core::slice::from_raw_parts(self.ptr() as *const Digest, self.len / 32) }
-    }
 }
 
 impl Drop for Guarded {
@@ -58,8 +54,6 @@ impl Drop for Guarded {
         unsafe { libc::munmap(self.base as *mut _, self.total) };
     }
 }
-
-extern "C" fn ignore(_: *mut c_void, _: *mut Digest, _: usize) {}
 
 #[test]
 fn every_call_inside_guard_pages() {
@@ -79,30 +73,20 @@ fn every_call_inside_guard_pages() {
                 unsafe {
                     let input = flush.ptr() as *const c_void;
                     assert_eq!(b3_hash(mode, input, len).bytes, want, "b3_hash, {what}");
-                    assert_eq!(b3_hash_multithreaded(mode, input, len).bytes, want, "b3_hash_multithreaded, {what}");
                     // A hasher whose state sits flush against a page too.
                     let state = Guarded::new(core::mem::size_of::<B3Hasher>(), at_end);
                     let hasher = state.ptr() as *mut B3Hasher;
-                    b3_hasher_new(hasher, mode);
+                    b3_hasher_new(hasher, mode, 0, 0);
                     b3_hasher_update(hasher, input, len.min(1000));
-                    b3_hasher_update_multithreaded(hasher, flush.bytes()[len.min(1000)..].as_ptr() as *const c_void, len - len.min(1000));
+                    b3_hasher_update(hasher, flush.bytes()[len.min(1000)..].as_ptr() as *const c_void, len - len.min(1000));
                     assert_eq!(b3_hasher_finalize(hasher).bytes, want, "b3_hasher_finalize, {what}");
                     let mut plain: Box<B3Hasher> = Box::new(core::mem::zeroed());
-                    b3_hasher_new(&mut *plain, mode);
+                    b3_hasher_new(&mut *plain, mode, 0, 0);
                     b3_hasher_update(&mut *plain, message.as_ptr() as *const c_void, len);
                     b3_hasher_finalize_xof(&*plain, 7, xof_want.as_mut_ptr() as *mut c_void, 100);
                     let mut xof = Guarded::new(100, !at_end);
                     b3_hasher_finalize_xof(hasher, 7, xof.ptr() as *mut c_void, 100);
                     assert_eq!(xof.bytes(), &xof_want[..], "b3_hasher_finalize_xof, {what}");
-                    // A stream: one message in its whole blocks.
-                    let stride = if len == 0 { 64 } else { len.div_ceil(64) * 64 };
-                    let mut blocks = Guarded::new(stride, at_end);
-                    blocks.bytes()[..len].copy_from_slice(&message);
-                    let one = Guarded::new(32, !at_end);
-                    let stream = b3_stream_begin(mode, Some(ignore), core::ptr::null_mut());
-                    b3_stream_submit(stream, blocks.ptr() as *const c_void, len, one.ptr() as *mut Digest);
-                    b3_stream_finish(stream);
-                    assert_eq!(one.digests()[0].bytes, want, "b3_stream_submit, {what}");
                 }
             }
         }

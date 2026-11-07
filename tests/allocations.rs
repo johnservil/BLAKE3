@@ -8,7 +8,8 @@
 #[path = "../tools/require_nextest.rs"]
 mod require_nextest;
 
-use blake3_servil::throughput::{self, Batch, Block, Hasher};
+use blake3_servil::convenience::Hasher;
+use blake3_servil::throughput::{self, Batch, Block};
 use blake3_servil::{Mode, convenience};
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
@@ -67,7 +68,7 @@ fn single_threaded_calls_allocate_as_the_memory_section_says() {
             0,
             "throughput::hash of {len} B"
         );
-        let mut hasher = Hasher::new(Mode::Plain);
+        let mut hasher = Hasher::new(Mode::Plain, None);
         assert_eq!(
             allocated(|| {
                 std::hint::black_box(hasher.update(&bytes[..len]).finalize());

@@ -6,13 +6,12 @@
 //!
 //! Every unsafe entry additionally requires disjoint writable argument
 //! ranges, valid storage/lifetimes, and exclusive use of a mutable handle.
-//! Stream inputs remain unchanged through finish; outputs are inaccessible
-//! until delivered. A callback may use its returned places, but must return
-//! normally and never re-enter the same stream. A place can be resubmitted
-//! after the callback and the library call invoking it have returned.
+//! The C API is the convenience API: one-shot and incremental hashing on
+//! the calling thread (BLAKE3 #267, Zooko, November 6); batches, other
+//! cores and streams are the Rust throughput API's.
 // Output-storage initialization remains a separate BLAKE3 #155 review item.
 
-use blake3_servil::throughput::{Block, Hasher, Stream};
+use blake3_servil::convenience::Hasher;
 use blake3_servil::{Hash, Mode, OUT_LEN};
 use core::ffi::{CStr, c_char, c_void};
 
@@ -144,27 +143,15 @@ pub unsafe extern "C" fn b3_hash(mode: *const B3Mode, input: *const c_void, len:
 }
 
 /// # Safety
-/// As `b3_hash`.
+/// `hasher` points at a `b3_hasher`'s memory; `mode` is a mode. The hint
+/// is advisory (b3.h): `length_hint` counts only with `has_length_hint`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn b3_hash_multithreaded(mode: *const B3Mode, input: *const c_void, len: usize) -> Digest {
-    blake3_servil::initialize_multithreaded(None);
-    let mode = unsafe { self::mode(mode) };
-    // Any pointer, as b3_hash takes: the Hasher takes any slice, at the
-    // one-shot's speed (the i7, 512 KiB to 1 GiB).
-    digest(Hasher::new(mode.mode()).update_multithreaded(unsafe { bytes(input, len, "the input") }).finalize())
-}
-
-/// # Safety
-/// `hasher` points at a `b3_hasher`'s memory; `mode` is a mode.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn b3_hasher_new(hasher: *mut B3Hasher, mode: *const B3Mode) {
+pub unsafe extern "C" fn b3_hasher_new(hasher: *mut B3Hasher, mode: *const B3Mode, has_length_hint: core::ffi::c_int, length_hint: u64) {
     blake3_servil::initialize();
     check_hasher(hasher);
     check_disjoint(hasher.cast(), size_of::<B3Hasher>(), mode.cast(), size_of::<B3Mode>());
     let mode = unsafe { self::mode(mode) };
-    let new = match mode.mode() {
-        _ => Hasher::new(mode.mode()),
-    };
+    let new = Hasher::new(mode.mode(), (has_length_hint != 0).then_some(length_hint));
     // Sound: the memory is the caller's, sized and aligned for a Hasher,
     // which owns nothing to drop.
     unsafe { (hasher as *mut Hasher).write(new) };
@@ -178,16 +165,6 @@ pub unsafe extern "C" fn b3_hasher_update(hasher: *mut B3Hasher, input: *const c
     check_disjoint(hasher.cast(), size_of::<B3Hasher>(), input, len);
     let hasher = unsafe { hasher_mut(hasher) };
     hasher.update(unsafe { bytes(input, len, "the input") });
-}
-
-/// # Safety
-/// As `b3_hasher_update`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn b3_hasher_update_multithreaded(hasher: *mut B3Hasher, input: *const c_void, len: usize) {
-    blake3_servil::initialize_multithreaded(None);
-    check_disjoint(hasher.cast(), size_of::<B3Hasher>(), input, len);
-    let hasher = unsafe { hasher_mut(hasher) };
-    hasher.update_multithreaded(unsafe { bytes(input, len, "the input") });
 }
 
 /// # Safety
@@ -214,97 +191,6 @@ pub unsafe extern "C" fn b3_hasher_finalize_xof(hasher: *const B3Hasher, offset:
     // since the caller's storage may be uninitialized (#155).
     unsafe { core::ptr::write_bytes(out.cast::<u8>(), 0, len) };
     reader.fill(unsafe { core::slice::from_raw_parts_mut(out as *mut u8, len) });
-}
-
-/// The C handler: called with each place handed back, in order, on the
-/// thread that made the stream's calls.
-pub type B3Done = unsafe extern "C" fn(ctx: *mut c_void, places: *mut Digest, count: usize);
-
-/// What the stream's handler is in Rust: the C function and its context.
-type Done = Box<dyn FnMut(&'static mut [Hash])>;
-
-/// `b3_stream`: a [`Stream`] the program holds between `b3_stream_begin`
-/// and `b3_stream_finish`. The messages and places a C program submits
-/// live as long as the stream (its contract), which `'static` stands for
-/// here.
-pub struct B3Stream {
-    stream: Stream<'static, Done>,
-    finished: bool,
-}
-
-unsafe fn stream_mut<'a>(stream: *mut B3Stream) -> &'a mut B3Stream {
-    check_range(stream.cast(), size_of::<B3Stream>(), "the stream");
-    assert!(stream.is_aligned(), "b3: the stream handle is misaligned");
-    let s = unsafe { &mut *stream };
-    assert!(!s.finished, "b3: the stream is finished; begin another");
-    s
-}
-
-/// # Safety
-/// `mode` is a mode; `done` is a function; `ctx` is passed to it unread.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn b3_stream_begin(mode: *const B3Mode, done: Option<B3Done>, ctx: *mut c_void) -> *mut B3Stream {
-    // Option<extern fn> has the nullable C function-pointer representation:
-    // NULL is a valid Rust value until this check, rather than an invalid fn.
-    let done = done.expect("b3: the done callback is NULL");
-    blake3_servil::initialize_multithreaded(None);
-    let mode = unsafe { self::mode(mode) };
-    let handler: Done = Box::new(move |places: &mut [Hash]| {
-        // Sound: a Hash is a Digest (both 32 bytes, repr(transparent)).
-        // Keep the context as a pointer, preserving its provenance.
-        unsafe { done(ctx, places.as_mut_ptr() as *mut Digest, places.len()) }
-    });
-    Box::into_raw(Box::new(B3Stream { stream: Stream::open(mode.mode(), handler), finished: false }))
-}
-
-/// # Safety
-/// `stream` came from `b3_stream_begin` and is not finished; `input` starts
-/// at a 64-byte boundary and holds `len` bytes rounded up to whole 64-byte
-/// blocks (one block for `len` 0; NULL only with `len` 0), and `out` a
-/// digest's room, both alive until `b3_stream_finish`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn b3_stream_submit(stream: *mut B3Stream, input: *const c_void, len: usize, out: *mut Digest) {
-    check_range(input, len, "the input");
-    check_range(out.cast(), OUT_LEN, "the digest's place");
-    check_disjoint(input, len, out.cast(), OUT_LEN);
-    let s = unsafe { stream_mut(stream) };
-    // Sound by the contract: both live until finish, which is 'static to
-    // the stream; a Digest is a Hash.
-    let blocks = len.div_ceil(64).max(1);
-    // The message's blocks: a misaligned pointer cannot soundly become a
-    // &[Block], the stop Rust's soundness needs.
-    let input = if input.is_null() {
-        assert_eq!(len, 0, "b3: the input is NULL with a length of {len}");
-        &[Block::ZERO][..]
-    } else {
-        Block::from_bytes(unsafe { bytes(input, blocks * 64, "the input") })
-            .expect("b3: a submitted message starts at a 64-byte boundary (aligned_alloc(64, n))")
-    };
-    let input: &'static [Block] = unsafe { core::slice::from_raw_parts(input.as_ptr(), input.len()) };
-    // The caller's place may be uninitialized (#155): zeroed before it is
-    // a reference.
-    unsafe { core::ptr::write_bytes(out.cast::<u8>(), 0, OUT_LEN) };
-    s.stream.submit(input, len, unsafe { &mut *(out as *mut Hash) });
-}
-
-/// # Safety
-/// `stream` came from `b3_stream_begin` and is not finished.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn b3_stream_collect(stream: *mut B3Stream) {
-    unsafe { stream_mut(stream) }.stream.collect();
-}
-
-/// # Safety
-/// `stream` came from `b3_stream_begin` and is not finished. After this
-/// call the stream is gone; its messages and places are the program's
-/// again, every place handed back.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn b3_stream_finish(stream: *mut B3Stream) {
-    let s = unsafe { stream_mut(stream) };
-    s.stream.finish();
-    s.finished = true;
-    // Sound: made by Box::into_raw in b3_stream_begin, finished once.
-    drop(unsafe { Box::from_raw(stream) });
 }
 
 #[cfg(test)]

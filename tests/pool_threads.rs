@@ -55,11 +55,12 @@ fn one_thread_starts_no_workers() {
     // bytes after a 1-byte update (subtrees cut at other counters).
     let big: Vec<u8> = (0..3usize << 20 | 6).map(|i| (i * 13 + i / 4093) as u8).collect();
     let mut g = golden::Golden::new("hasher_on_a_pool_of_one");
-    let mut h = blake3_servil::throughput::Hasher::new(blake3_servil::Mode::Plain);
-    h.update_multithreaded(&big[..1 << 20]);
+    let mut h = blake3_servil::convenience::Hasher::new(blake3_servil::Mode::Plain, None);
+    blake3_servil::throughput::update_multithreaded(&mut h, &big[..1 << 20]);
     g.add(h.finalize().as_bytes(), || blake3::hash(&big[..1 << 20]).as_bytes().to_vec());
-    let mut h = blake3_servil::throughput::Hasher::new(blake3_servil::Mode::Plain);
-    h.update_multithreaded(&big[..1]).update_multithreaded(&big[1..]);
+    let mut h = blake3_servil::convenience::Hasher::new(blake3_servil::Mode::Plain, None);
+    blake3_servil::throughput::update_multithreaded(&mut h, &big[..1]);
+    blake3_servil::throughput::update_multithreaded(&mut h, &big[1..]);
     g.add(h.finalize().as_bytes(), || blake3::hash(&big).as_bytes().to_vec());
     g.check(0x43fd488273159b1a);
     // No other thread: no workers, no SME2 thread.

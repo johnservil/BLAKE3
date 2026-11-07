@@ -2359,14 +2359,14 @@ mod test {
             );
             let context_key = crate::throughput::context_key("lanes test");
             assert_eq!(
-                *Hasher::new(crate::Mode::DeriveKeyWith(&context_key)).update(&input[..len]).finalize().as_bytes(),
+                *Hasher::new(crate::Mode::DeriveKeyWith(&context_key), None).update(&input[..len]).finalize().as_bytes(),
                 *hash_with_key(&input[..len], &crate::platform::words_from_le_bytes_32(&context_key), crate::DERIVE_KEY_MATERIAL).as_bytes(),
                 "derive len = {len}"
             );
         }
     }
 
-    /// `Hasher::update_multithreaded` against `hash`, fed in pieces of
+    /// `throughput::update_multithreaded` against `hash`, fed in pieces of
     /// several sizes after a first piece that leaves the counter unaligned
     /// (so `update` shrinks the subtrees it hands the pool), keyed too.
     #[test]
@@ -2378,13 +2378,13 @@ mod test {
             for first in [0, 1, 1024, 3000, MIN_SPLIT_LEN] {
                 for piece in [1000, MIN_SPLIT_LEN, 4 * MIN_SPLIT_LEN, 1 << 20, usize::MAX] {
                     let first = first.min(len);
-                    let mut hasher = Hasher::new(crate::Mode::Plain);
-                    let mut keyed = Hasher::new(crate::Mode::Keyed(&key));
-                    hasher.update_multithreaded(&input[..first]);
-                    keyed.update_multithreaded(&input[..first]);
+                    let mut hasher = Hasher::new(crate::Mode::Plain, None);
+                    let mut keyed = Hasher::new(crate::Mode::Keyed(&key), None);
+                    crate::throughput::update_multithreaded(&mut hasher, &input[..first]);
+                    crate::throughput::update_multithreaded(&mut keyed, &input[..first]);
                     for part in input[first..len].chunks(piece.min(len.max(1))) {
-                        hasher.update_multithreaded(part);
-                        keyed.update_multithreaded(part);
+                        crate::throughput::update_multithreaded(&mut hasher, part);
+                        crate::throughput::update_multithreaded(&mut keyed, part);
                     }
                     let what = format!("len {len}, first {first}, pieces of {piece}");
                     assert_eq!(hasher.finalize(), crate::convenience::hash(&input[..len]), "{what}");

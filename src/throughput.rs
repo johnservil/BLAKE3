@@ -12,9 +12,11 @@
 //!   lets the program write only its messages' bytes, so those zeros
 //!   cannot go wrong. Bytes already in place become blocks with no copy
 //!   through [`Block::from_bytes`], and a batch through
-//!   [`Batch::from_blocks`] where its messages fill their blocks. The [`Hasher`] alone takes
-//!   pieces of any length anywhere (it copies short ones into its own
-//!   buffer); an aligned long piece runs fastest.
+//!   [`Batch::from_blocks`] where its messages fill their blocks.
+//!   [`update_multithreaded`] and [`update_each`] alone take pieces of any
+//!   length anywhere, into a [`Hasher`](crate::convenience::Hasher) (which
+//!   copies short ones into its own buffer); an aligned long piece runs
+//!   fastest.
 //! - **Digests go where the program says**: into its slices and places.
 //! - **Every call takes a [`Mode`]**: `Mode::Plain` for the plain hash.
 //!
@@ -24,11 +26,34 @@
 pub use crate::block::{Batch, Block};
 #[cfg(feature = "std")]
 pub use crate::each::{finalize_each, hash_each, hash_each_multithreaded, update_each, update_each_multithreaded};
-pub use crate::incremental::Hasher;
 #[cfg(feature = "std")]
 pub use crate::stream::{Stream, stream};
 
 use crate::{ContextKey, DERIVE_KEY_CONTEXT, Hash, IV, Mode, OUT_LEN};
+
+/// [`Hasher::update`](crate::convenience::Hasher::update), using other CPU
+/// cores where that is faster: the same result, never slower. Pieces of
+/// 512 KiB and more use them, as [`hash_multithreaded`] does; shorter ones
+/// hash on the calling thread. One `Hasher` may take both calls. When
+/// reading the pieces keeps your thread busy, a [`stream`] is faster
+/// ([`Stream::submit_reader`], or [`Stream::submit_with`]): it hashes each
+/// piece while your thread reads the next. The program calls
+/// [`initialize_multithreaded`](crate::initialize_multithreaded) first.
+///
+/// ```
+/// # blake3_servil::initialize_multithreaded(None);
+/// use blake3_servil::{Mode, convenience::Hasher, throughput};
+/// let input = vec![7u8; 3 << 20];
+/// let mut hasher = Hasher::new(Mode::Plain, Some(input.len() as u64));
+/// for piece in input.chunks(64 * 1024) {
+///     throughput::update_multithreaded(&mut hasher, piece);
+/// }
+/// assert_eq!(hasher.finalize(), blake3_servil::convenience::hash(&input));
+/// ```
+#[cfg(feature = "std")]
+pub fn update_multithreaded<'h>(hasher: &'h mut crate::convenience::Hasher, input: &[u8]) -> &'h mut crate::convenience::Hasher {
+    hasher.update_pooled(input)
+}
 
 /// The hash in `mode` of the message of `len` bytes that starts `input`:
 /// a batch of one. The message starts a block, so on a cache line; the
@@ -121,9 +146,9 @@ pub fn hash_many_multithreaded(mode: Mode, batch: &Batch, out: &mut [[u8; OUT_LE
 
 /// [`hash`], using other CPU cores where that is faster: the same
 /// [`Hash`](struct@Hash), never slower. For a message whose bytes are not
-/// in blocks (a mapped file, say), a [`Hasher`]'s
-/// `update_multithreaded` takes any slice, at the same speed on the
-/// i7-12700K from 512 KiB to 1 GiB (about 1% slower at 1 MiB).
+/// in blocks (a mapped file, say), [`update_multithreaded`] into a
+/// [`Hasher`](crate::convenience::Hasher) takes any slice, at the same
+/// speed on the i7-12700K from 512 KiB to 1 GiB (about 1% slower at 1 MiB).
 ///
 /// ```
 /// # blake3_servil::initialize_multithreaded(None);

@@ -13,7 +13,7 @@
 //! let hash1 = blake3_servil::convenience::hash(b"foobarbaz");
 //!
 //! // Hash an input incrementally.
-//! let mut hasher = blake3_servil::throughput::Hasher::new(blake3_servil::Mode::Plain);
+//! let mut hasher = blake3_servil::convenience::Hasher::new(blake3_servil::Mode::Plain, None);
 //! hasher.update(b"foo");
 //! hasher.update(b"bar");
 //! hasher.update(b"baz");
@@ -50,9 +50,10 @@
 //!
 //! - **[`convenience`]**: one call per hash, every feature of BLAKE3 (the
 //!   plain hash, the keyed hash, key derivation, extended output), any
-//!   slice, the result returned. Tuned for a hash now and then, amid other
-//!   work: where it helps, a call fetches its code back into the caches
-//!   before it starts.
+//!   slice, the result returned, and the [`Hasher`]
+//!   for a message fed in pieces. Tuned for a hash now and then, amid
+//!   other work: where it helps, a call fetches its code back into the
+//!   caches before it starts.
 //! - **[`throughput`]**, for power users: every way this crate makes
 //!   hashing fast (other cores, batches, collections, streams), tuned for
 //!   call after call: an occasional call amid other work may run slower
@@ -62,9 +63,11 @@
 //!   alignment is the type's), digests go into the program's places, and
 //!   every call takes a [`Mode`].
 //!
-//! The [`Hasher`], for a message fed in pieces, is both: its first update
-//! is treated as a call now and then (its code fetched first where that
-//! helps), and its later updates as call after call.
+//! The [`Hasher`] runs on the calling thread; its
+//! first update is treated as a call now and then (its code fetched first
+//! where that helps), and its later updates as call after call. The
+//! throughput calls that take it, [`throughput::update_multithreaded`]
+//! and [`throughput::update_each`], are tuned as throughput calls.
 //!
 //! Start with the convenience calls; when a program needs more speed, it
 //! moves to the throughput ones.
@@ -72,7 +75,7 @@
 //! | Your data | Call |
 //! |---|---|
 //! | One message in memory | [`convenience::hash`], or for speed [`throughput::hash_multithreaded`] |
-//! | One message arriving in pieces | [`throughput::Hasher`] |
+//! | One message arriving in pieces | [`convenience::Hasher`], or for speed [`throughput::update_multithreaded`] |
 //! | Many messages of one length, in one buffer | [`throughput::hash_many_multithreaded`] |
 //! | Many messages of different lengths, in memory | [`throughput::hash_each_multithreaded`] |
 //! | Many messages arriving at once (a server's uploads) | [`throughput::update_each`] |
@@ -122,9 +125,9 @@
 //!
 //! - **A [`Hasher`] is about 18 KiB**; box it where that matters.
 //! - **Single-threaded calls allocate nothing**: [`convenience::hash`],
-//!   [`throughput::hash`], [`throughput::hash_many`], [`Hasher::update`]
-//!   and [`Hasher::finalize`], and [`OutputReader`].
-//!   [`Hasher::update_reader`] uses a 1 MiB buffer while it reads past
+//!   [`throughput::hash`], [`throughput::hash_many`], [`Hasher::update`](convenience::Hasher::update)
+//!   and [`Hasher::finalize`](convenience::Hasher::finalize), and [`OutputReader`].
+//!   [`Hasher::update_reader`](convenience::Hasher::update_reader) uses a 1 MiB buffer while it reads past
 //!   64 KiB, and [`throughput::hash_each`] 32 bytes for each chunk of its messages
 //!   of 2 to 15 chunks and up to 128 for each such message, each freed when
 //!   it returns.
@@ -176,7 +179,7 @@
 //! # Cargo Features
 //!
 //! The `std` feature (the only feature enabled by default) enables the
-//! [`Write`] implementation and the [`update_reader`](Hasher::update_reader)
+//! [`Write`] implementation and the [`update_reader`](convenience::Hasher::update_reader)
 //! method for [`Hasher`], and also the [`Read`] and [`Seek`] implementations
 //! for [`OutputReader`].
 //!
@@ -980,7 +983,7 @@ fn hash_all_at_once(input: &[u8], key: &CVWords, chunk_counter: u64, flags: u8, 
 /// ```
 /// blake3_servil::initialize();
 /// let hash = blake3_servil::convenience::hash(b"foo");
-/// # assert_eq!(hash, blake3_servil::throughput::Hasher::new(blake3_servil::Mode::Plain).update(b"foo").finalize());
+/// # assert_eq!(hash, blake3_servil::convenience::Hasher::new(blake3_servil::Mode::Plain, None).update(b"foo").finalize());
 /// ```
 pub fn initialize() {
     self_test::ensure();
@@ -1300,7 +1303,7 @@ mod incremental;
 pub(crate) use incremental::*;
 
 /// An incremental reader for extended output, returned by
-/// [`Hasher::finalize_xof`](struct.Hasher.html#method.finalize_xof).
+/// [`Hasher::finalize_xof`](convenience::Hasher::finalize_xof).
 ///
 /// Shorter BLAKE3 outputs are prefixes of longer ones, and explicitly requesting a short output is
 /// equivalent to truncating the default-length output. Note that this is a difference between
