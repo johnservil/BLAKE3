@@ -360,28 +360,16 @@ impl Message {
     }
 
     /// Stop this message: no digest. Queued work for it is skipped; running
-    /// jobs finish before its buffers return. The slot returns once the
-    /// pool has retired that work.
-    pub(super) fn abort(mut self) -> Aborted {
+    /// jobs finish before its buffers return. The completion resolves, to
+    /// no digest, once that work has retired.
+    pub(super) fn abort(mut self) -> Completion {
         if let Some(room) = self.current.take() {
             room.release();
         }
         let Message { core, id, guard, .. } = self;
         core::mem::forget(guard);
         core.forget(id, true);
-        Aborted { core, id }
-    }
-}
-
-/// An aborted message's slot comes back once its accepted work has retired.
-/// The scope's drain waits for that work; then `retire` gives the slot back.
-pub(super) struct Aborted {
-    core: Arc<Core>,
-    id: Id,
-}
-impl Aborted {
-    pub(super) fn retire(self) {
-        self.core.retire(self.id);
+        Completion { request: core.outputs[id.index].clone().acquire_owned(), core, id, guard: Some(crate::lanes::AbortOnUnwind) }
     }
 }
 
@@ -465,8 +453,8 @@ unsafe fn execute_batch(context: *mut (), platform: Platform) {
     owner.source.finished(1);
 }
 
-/// An ended message's pending result. Await it, or `cancel` it to stop
-/// waiting; either way its slot returns through `retire`.
+/// An ended or aborted message's pending result; its slot returns through
+/// the result's `retire`.
 pub(super) struct Completion {
     request: Acquire<Arc<Pool<Outcome>>, Outcome>,
     core: Arc<Core>,
@@ -491,20 +479,6 @@ impl Future for Completion {
         }
     }
 }
-impl Completion {
-    /// Stop waiting for the result. Accepted work still runs to its end;
-    /// the scope's drain waits for it, then `retire` gives the slot back.
-    pub(super) fn cancel(self: Pin<&mut Self>) -> Aborted {
-        // Sound: request stays pinned through cancel; the guard is taken
-        // and forgotten, so no abort fires on this ordinary path.
-        let this = unsafe { self.get_unchecked_mut() };
-        unsafe { Pin::new_unchecked(&mut this.request) }.cancel();
-        core::mem::forget(this.guard.take().expect("the guard is live until the result transfers or the wait is cancelled"));
-        this.core.forget(this.id, true);
-        Aborted { core: this.core.clone(), id: this.id }
-    }
-}
-
 /// A finished message's digest. `retire` returns its result token and slot.
 pub(super) struct Finished {
     result: OwnedLease<Outcome>,
@@ -512,11 +486,16 @@ pub(super) struct Finished {
     id: Id,
 }
 impl Finished {
-    pub(super) fn hash(&self) -> &Hash {
+    /// The digest, or None for an aborted message.
+    pub(super) fn outcome(&self) -> Option<&Hash> {
         match &*self.result {
-            Outcome::Hashed(hash) => hash,
-            _ => panic!("only successful completion yields a digest"),
+            Outcome::Hashed(hash) => Some(hash),
+            Outcome::Aborted => None,
+            Outcome::Pending => unreachable!("a result token is released only once set"),
         }
+    }
+    pub(super) fn hash(&self) -> &Hash {
+        self.outcome().expect("only successful completion yields a digest")
     }
     pub(super) fn retire(self) {
         self.result.release();
@@ -654,7 +633,7 @@ unsafe fn execute(context: *mut (), platform: Platform) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use core::task::Waker;
 
@@ -672,7 +651,7 @@ mod tests {
     }
 
     /// Run `future` on this thread, parking while its resources are pending.
-    pub(super) fn run<F: Future>(future: F) -> F::Output {
+    pub(in crate::stream) fn run<F: Future>(future: F) -> F::Output {
         let waker = producer_waker();
         let mut cx = Context::from_waker(&waker);
         let mut future = core::pin::pin!(future);
@@ -706,7 +685,7 @@ mod tests {
         }
     }
 
-    pub(super) fn expected(mode: Mode<'_>, input: &[u8]) -> [u8; 32] {
+    pub(in crate::stream) fn expected(mode: Mode<'_>, input: &[u8]) -> [u8; 32] {
         match mode {
             Mode::Plain => *blake3::hash(input).as_bytes(),
             Mode::Keyed(key) => *blake3::keyed_hash(key, input).as_bytes(),
@@ -804,6 +783,8 @@ mod tests {
         gate.started.wait();
         let aborted = message.abort();
         gate.release.wait();
+        let aborted = run(aborted);
+        assert!(aborted.outcome().is_none(), "an aborted message has no digest");
         receiver.drain();
         aborted.retire();
         let mut next = run(receiver.message(None));
@@ -904,34 +885,6 @@ mod tests {
         }));
         std::process::exit(0);
     }
-
-    /// Cancelling a pending completion stops the result wait. The message
-    /// still finishes its accepted work; the slot returns after the drain.
-    #[test]
-    fn cancelling_a_completion_releases_the_message_slot_after_the_drain() {
-        let receiver = receiver(Mode::Plain, 1, 1);
-        let mut message = run(receiver.message(None));
-        let gate = Gate::new();
-        message.hold_next(gate.clone());
-        feed(&mut message, b"held", 4);
-        // A partial final piece is submitted by end().
-        let mut completion = core::pin::pin!(message.end());
-        gate.started.wait();
-        assert!(poll_once(completion.as_mut()).is_pending());
-        let aborted = completion.as_mut().cancel();
-        gate.release.wait();
-        receiver.drain();
-        aborted.retire();
-        let mut next = run(receiver.message(None));
-        // A room taken and left untouched stays with the message.
-        let _ = run(next.input());
-        feed(&mut next, b"next", 4);
-        let finished = run(next.end());
-        assert_eq!(finished.hash().as_bytes(), &expected(Mode::Plain, b"next"));
-        receiver.drain();
-        finished.retire();
-        receiver.close();
-    }
 }
 
 /// The review sketch's receive loop (docs/api-sketch.md on design/stream-api),
@@ -977,7 +930,7 @@ mod sketch {
                 }
                 Err(error) => {
                     // The borrow ends here; abort returns the room.
-                    let aborted = message.abort();
+                    let aborted = run(message.abort());
                     receiver.drain();
                     aborted.retire();
                     return Err(error);

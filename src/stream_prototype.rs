@@ -4,6 +4,8 @@
 
 use super::*;
 
+#[path = "stream/frontend.rs"]
+mod frontend;
 #[path = "stream/receiver.rs"]
 mod receiver;
 

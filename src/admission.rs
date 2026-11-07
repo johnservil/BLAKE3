@@ -207,6 +207,7 @@ impl<P: Deref<Target = Pool<T>> + Unpin, T> Future for Acquire<P, T> {
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 impl<P: Deref<Target = Pool<T>> + Unpin, T> Acquire<P, T> {
     /// Withdraw this request. A pending request leaves the queue; a grant
     /// received since the last poll returns to the pool. A completed
