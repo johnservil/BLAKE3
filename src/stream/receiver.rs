@@ -264,6 +264,9 @@ pub(super) struct Message {
     guard: crate::lanes::AbortOnUnwind,
 }
 
+/// A borrow of the message's current room: it owns nothing, so it may be
+/// dropped like any borrow. The room stays with its message until the
+/// next `input`, `end` or `abort`.
 pub(super) struct Input<'a> {
     message: &'a mut Message,
 }
@@ -280,14 +283,6 @@ impl Input<'_> {
         if message.used == INPUT_BYTES {
             message.submit(false);
         }
-    }
-}
-impl Input<'_> {
-    /// Give an unused room back without committing bytes.
-    pub(super) fn release(self) {
-        let message = &mut *self.message;
-        assert_eq!(message.used, 0, "a room with committed bytes stays with its message");
-        message.current.take().unwrap().release();
     }
 }
 
@@ -677,7 +672,7 @@ mod tests {
     }
 
     /// Run `future` on this thread, parking while its resources are pending.
-    fn run<F: Future>(future: F) -> F::Output {
+    pub(super) fn run<F: Future>(future: F) -> F::Output {
         let waker = producer_waker();
         let mut cx = Context::from_waker(&waker);
         let mut future = core::pin::pin!(future);
@@ -694,7 +689,7 @@ mod tests {
         future.poll(&mut Context::from_waker(&waker))
     }
 
-    fn receiver(mode: Mode<'_>, buffers: usize, messages: usize) -> Receiver {
+    pub(super) fn receiver(mode: Mode<'_>, buffers: usize, messages: usize) -> Receiver {
         crate::initialize_multithreaded(core::num::NonZeroUsize::new(3));
         Receiver::new(mode, buffers, messages)
     }
@@ -711,7 +706,7 @@ mod tests {
         }
     }
 
-    fn expected(mode: Mode<'_>, input: &[u8]) -> [u8; 32] {
+    pub(super) fn expected(mode: Mode<'_>, input: &[u8]) -> [u8; 32] {
         match mode {
             Mode::Plain => *blake3::hash(input).as_bytes(),
             Mode::Keyed(key) => *blake3::keyed_hash(key, input).as_bytes(),
@@ -928,13 +923,88 @@ mod tests {
         receiver.drain();
         aborted.retire();
         let mut next = run(receiver.message(None));
-        // A room taken and given back untouched leaves the budget whole.
-        run(next.input()).release();
+        // A room taken and left untouched stays with the message.
+        let _ = run(next.input());
         feed(&mut next, b"next", 4);
         let finished = run(next.end());
         assert_eq!(finished.hash().as_bytes(), &expected(Mode::Plain, b"next"));
         receiver.drain();
         finished.retire();
+        receiver.close();
+    }
+}
+
+/// The review sketch's receive loop (docs/api-sketch.md on design/stream-api),
+/// run against this engine: an application reader that yields fragments and
+/// says when the message ends, one message hashed across its callbacks, and
+/// the result handed over by value. A change to either side shows up here.
+#[cfg(test)]
+mod sketch {
+    use super::tests::{expected, receiver, run};
+    use super::*;
+
+    /// A reader standing in for a socket: fragments of 1448 B, 4 KiB, 16 KiB
+    /// and 64 KiB in turn, and an error on request at a chosen fragment.
+    struct Reader<'a> {
+        input: &'a [u8],
+        at: usize,
+        turn: usize,
+        fail_at: Option<usize>,
+    }
+    impl Reader<'_> {
+        /// Writes a fragment into `room`: `(bytes_written, message_ended)`.
+        fn read_fragment(&mut self, room: &mut [u8]) -> Result<(usize, bool), &'static str> {
+            if self.fail_at == Some(self.turn) {
+                return Err("connection reset");
+            }
+            let wanted = [1448, 4096, 16 * 1024, 64 * 1024][self.turn % 4];
+            self.turn += 1;
+            let n = wanted.min(room.len()).min(self.input.len() - self.at);
+            room[..n].copy_from_slice(&self.input[self.at..self.at + n]);
+            self.at += n;
+            Ok((n, self.at == self.input.len()))
+        }
+    }
+
+    fn receive(receiver: &Receiver, reader: &mut Reader<'_>) -> Result<Hash, &'static str> {
+        let mut message = run(receiver.message(Some(reader.input.len() as u64)));
+        loop {
+            let mut input = run(message.input());
+            let ended = match reader.read_fragment(input.bytes_mut()) {
+                Ok((written, ended)) => {
+                    input.commit(written);
+                    ended
+                }
+                Err(error) => {
+                    // The borrow ends here; abort returns the room.
+                    let aborted = message.abort();
+                    receiver.drain();
+                    aborted.retire();
+                    return Err(error);
+                }
+            };
+            if ended {
+                let finished = run(message.end());
+                let hash = *finished.hash();
+                receiver.drain();
+                finished.retire();
+                return Ok(hash);
+            }
+        }
+    }
+
+    #[test]
+    fn the_sketchs_receive_loop_runs_on_the_engine() {
+        let receiver = receiver(Mode::Plain, 3, 1);
+        let mut input = vec![0u8; (1 << 20) + 777];
+        crate::test::paint_test_input(&mut input);
+        let hash = receive(&receiver, &mut Reader { input: &input, at: 0, turn: 0, fail_at: None }).unwrap();
+        assert_eq!(hash.as_bytes(), &expected(Mode::Plain, &input));
+        // A reset mid-message aborts it; the next message on the same
+        // receiver completes with the same budget.
+        assert_eq!(receive(&receiver, &mut Reader { input: &input, at: 0, turn: 0, fail_at: Some(5) }), Err("connection reset"));
+        let hash = receive(&receiver, &mut Reader { input: &input[..1000], at: 0, turn: 0, fail_at: None }).unwrap();
+        assert_eq!(hash.as_bytes(), &expected(Mode::Plain, &input[..1000]));
         receiver.close();
     }
 }
