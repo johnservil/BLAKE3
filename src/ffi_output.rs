@@ -89,17 +89,10 @@ pub(crate) fn held_groups(hashers: &mut [Hasher], held: &[usize], platform: Plat
     if held.is_empty() {
         return true;
     }
-    match lanes(platform) {
-        // Sound: the caller supplies its detected platform. Both entries
-        // already pass startup's independent CV/parent/root cases.
-        16 => unsafe { held_groups_at::<16>(hashers, held, platform) },
-        8 => unsafe { held_groups_at::<8>(hashers, held, platform) },
-        _ => return false,
+    let width = lanes(platform);
+    if width == 0 {
+        return false;
     }
-    true
-}
-
-unsafe fn held_groups_at<const W: usize>(hashers: &mut [Hasher], held: &[usize], platform: Platform) {
     const PER: usize = crate::STAGE_LEN / CHUNK_LEN;
     const { assert!(PER == 16) };
     let n = held.len();
@@ -136,12 +129,17 @@ unsafe fn held_groups_at<const W: usize>(hashers: &mut [Hasher], held: &[usize],
                 flags: h.core.chunk_state.flags | crate::PARENT,
             }
         };
-        let full = count / W * W;
-        for base in (0..full).step_by(W) {
-            let inputs = core::array::from_fn(|j| input(base + j));
-            // Sound: W matches the detected ISA. All blocks and keys are
-            // readable; next is disjoint storage with W complete outputs.
-            unsafe { hash_group::<W>(&inputs, &mut next[base..base + W]) };
+        let full = count / width * width;
+        for base in (0..full).step_by(width) {
+            // Sound: width matches the detected ISA. All blocks and keys
+            // are readable; next supplies disjoint complete outputs.
+            if width == 16 {
+                let inputs = core::array::from_fn(|j| input(base + j));
+                unsafe { hash_group::<16>(&inputs, &mut next[base..base + 16]) };
+            } else {
+                let inputs = core::array::from_fn(|j| input(base + j));
+                unsafe { hash_group::<8>(&inputs, &mut next[base..base + 8]) };
+            }
         }
         for (j, out) in next.iter_mut().enumerate().take(count).skip(full) {
             let input = input(j);
@@ -161,6 +159,7 @@ unsafe fn held_groups_at<const W: usize>(hashers: &mut [Hasher], held: &[usize],
         }
         hashers[i].take_held(&result);
     }
+    true
 }
 
 /// Gather a bulk caller's first chunk without serial prefix compression.
