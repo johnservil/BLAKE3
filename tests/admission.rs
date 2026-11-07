@@ -189,3 +189,34 @@ fn capacity_returned_while_cloning_the_notification_is_taken() {
     let granted = ready(request.as_mut(), &mut cx);
     assert_eq!(*granted, 37, "registration rechecks capacity after cloning the waker");
 }
+
+#[test]
+fn an_owned_grant_keeps_the_pool_alive_after_the_original_handle_drops() {
+    let pool = Arc::new(Pool::new(vec![19]));
+    let weak = Arc::downgrade(&pool);
+    let waker = Waker::from(Arc::new(Signal::default()));
+    let mut cx = Context::from_waker(&waker);
+    let mut request = Box::pin(pool.clone().acquire_owned());
+    let granted: admission::OwnedLease<usize> = ready(request.as_mut(), &mut cx);
+    drop(pool);
+    assert!(weak.upgrade().is_some());
+    assert_eq!(*granted, 19);
+    drop(request);
+    drop(granted);
+    assert!(weak.upgrade().is_none(), "the final lease releases pool ownership");
+}
+
+#[test]
+fn owned_and_borrowed_requests_share_one_fifo() {
+    let pool = Arc::new(Pool::new(vec![29]));
+    let mut cx = Context::from_waker(Waker::noop());
+    let held = take(&pool, &mut cx);
+    let mut borrowed = Box::pin(pool.acquire());
+    let mut owned = Box::pin(pool.clone().acquire_owned());
+    assert!(borrowed.as_mut().poll(&mut cx).is_pending());
+    assert!(owned.as_mut().poll(&mut cx).is_pending());
+    drop(held);
+    assert!(owned.as_mut().poll(&mut cx).is_pending(), "ownership form preserves queue order");
+    drop(ready(borrowed.as_mut(), &mut cx));
+    assert_eq!(*ready(owned.as_mut(), &mut cx), 29);
+}

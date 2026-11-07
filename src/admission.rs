@@ -19,6 +19,7 @@ use core::ops::{Deref, DerefMut};
 use core::pin::Pin;
 use core::ptr;
 use core::task::{Context, Poll, Waker};
+use std::sync::Arc;
 
 pub(crate) struct Pool<T> {
     state: Mutex<State<T>>,
@@ -42,21 +43,23 @@ struct Node<T> {
 // only under state. A resource crosses threads only when T permits it.
 unsafe impl<T: Send> Send for State<T> {}
 
-pub(crate) struct Acquire<'a, T> {
-    pool: &'a Pool<T>,
+pub(crate) struct Acquire<P: Deref<Target = Pool<T>> + Unpin, T> {
+    pool: Option<P>,
     node: UnsafeCell<Node<T>>,
-    completed: bool,
     _pin: PhantomPinned,
 }
 
 // Sound: the node is private before its first poll. Once pinned, every
 // access to it uses the pool's mutex, including grant and cancellation.
-unsafe impl<T: Send> Send for Acquire<'_, T> {}
+unsafe impl<P: Deref<Target = Pool<T>> + Unpin + Send, T: Send> Send for Acquire<P, T> {}
 
-pub(crate) struct Lease<'a, T> {
-    pool: &'a Pool<T>,
+pub(crate) struct Resource<P: Deref<Target = Pool<T>> + Unpin, T> {
+    pool: P,
     value: Option<T>,
 }
+
+pub(crate) type Lease<'a, T> = Resource<&'a Pool<T>, T>;
+pub(crate) type OwnedLease<T> = Resource<Arc<Pool<T>>, T>;
 
 impl<T> Pool<T> {
     /// The fixed, nonempty set of resources this pool circulates.
@@ -69,13 +72,14 @@ impl<T> Pool<T> {
         Self { state }
     }
 
-    pub(crate) fn acquire(&self) -> Acquire<'_, T> {
-        Acquire {
-            pool: self,
-            node: UnsafeCell::new(Node { previous: ptr::null_mut(), next: ptr::null_mut(), queued: false, granted: None, waker: None }),
-            completed: false,
-            _pin: PhantomPinned,
-        }
+    pub(crate) fn acquire(&self) -> Acquire<&Self, T> {
+        Acquire::new(self)
+    }
+
+    /// Ownership of this pool follows the buffer through background work.
+    /// Cloning an Arc reserves ownership, without allocating another pool.
+    pub(crate) fn acquire_owned(self: Arc<Self>) -> Acquire<Arc<Self>, T> {
+        Acquire::new(self)
     }
 
     fn give(&self, value: T) {
@@ -96,6 +100,16 @@ impl<T> Pool<T> {
         };
         // Waker code runs outside the mutex, as do clone and drop below.
         wake.wake();
+    }
+}
+
+impl<P: Deref<Target = Pool<T>> + Unpin, T> Acquire<P, T> {
+    fn new(pool: P) -> Self {
+        Self {
+            pool: Some(pool),
+            node: UnsafeCell::new(Node { previous: ptr::null_mut(), next: ptr::null_mut(), queued: false, granted: None, waker: None }),
+            _pin: PhantomPinned,
+        }
     }
 }
 
@@ -136,39 +150,37 @@ impl<T> State<T> {
     }
 }
 
-impl<'a, T> Future for Acquire<'a, T> {
-    type Output = Lease<'a, T>;
+impl<P: Deref<Target = Pool<T>> + Unpin, T> Future for Acquire<P, T> {
+    type Output = Resource<P, T>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         // Sound: neither this projection nor any operation below moves node.
         let this = unsafe { self.get_unchecked_mut() };
-        assert!(!this.completed, "a completed resource request is consumed");
+        let pool = this.pool.as_ref().expect("a completed resource request is consumed");
         let node = this.node.get();
         {
-            let mut state = this.pool.state.lock().unwrap();
+            let mut state = pool.state.lock().unwrap();
             // Sound: all node access uses this mutex, also on the fast path.
             if let Some(value) = unsafe { state.take(node) } {
-                this.completed = true;
                 let old = unsafe { (*node).waker.take() };
                 drop(state);
                 drop(old);
-                return Poll::Ready(Lease { pool: this.pool, value: Some(value) });
+                return Poll::Ready(Resource { pool: this.pool.take().unwrap(), value: Some(value) });
             }
             if unsafe { (*node).waker.as_ref().is_some_and(|w| w.will_wake(cx.waker())) } {
                 return Poll::Pending;
             }
         }
         let new_waker = cx.waker().clone();
-        let mut state = this.pool.state.lock().unwrap();
+        let mut state = pool.state.lock().unwrap();
         // Capacity may have returned while the notification was cloned.
         // Sound: the same mutex protects this recheck and queue insertion.
         if let Some(value) = unsafe { state.take(node) } {
-            this.completed = true;
             let old = unsafe { (*node).waker.take() };
             drop(state);
             drop(old);
             drop(new_waker);
-            return Poll::Ready(Lease { pool: this.pool, value: Some(value) });
+            return Poll::Ready(Resource { pool: this.pool.take().unwrap(), value: Some(value) });
         }
         let old = unsafe {
             if !(*node).queued {
@@ -189,14 +201,12 @@ impl<'a, T> Future for Acquire<'a, T> {
     }
 }
 
-impl<T> Drop for Acquire<'_, T> {
+impl<P: Deref<Target = Pool<T>> + Unpin, T> Drop for Acquire<P, T> {
     fn drop(&mut self) {
-        if self.completed {
-            return;
-        }
+        let Some(pool) = &self.pool else { return };
         let node = self.node.get();
         let (value, wake) = {
-            let mut state = self.pool.state.lock().unwrap();
+            let mut state = pool.state.lock().unwrap();
             // Sound: Drop keeps the node alive until it has been unlinked.
             unsafe {
                 if (*node).queued {
@@ -207,25 +217,25 @@ impl<T> Drop for Acquire<'_, T> {
         };
         drop(wake);
         if let Some(value) = value {
-            self.pool.give(value);
+            pool.give(value);
         }
     }
 }
 
-impl<T> Deref for Lease<'_, T> {
+impl<P: Deref<Target = Pool<T>> + Unpin, T> Deref for Resource<P, T> {
     type Target = T;
     fn deref(&self) -> &T {
         self.value.as_ref().unwrap()
     }
 }
 
-impl<T> DerefMut for Lease<'_, T> {
+impl<P: Deref<Target = Pool<T>> + Unpin, T> DerefMut for Resource<P, T> {
     fn deref_mut(&mut self) -> &mut T {
         self.value.as_mut().unwrap()
     }
 }
 
-impl<T> Drop for Lease<'_, T> {
+impl<P: Deref<Target = Pool<T>> + Unpin, T> Drop for Resource<P, T> {
     fn drop(&mut self) {
         self.pool.give(self.value.take().unwrap());
     }

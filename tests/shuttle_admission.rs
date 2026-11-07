@@ -22,7 +22,7 @@ fn worker_release_races_with_waiter_registration() {
     shuttle::check_pct(
         || {
             let pool = Pool::new(vec![0]);
-            let mut held = block_on(pool.acquire());
+            let mut held: admission::Lease<'_, usize> = block_on(pool.acquire());
             thread::scope(|s| {
                 s.spawn(move || {
                     *held = 42;
@@ -77,6 +77,26 @@ fn cancellation_races_with_a_grant_and_preserves_the_next_request() {
                 assert_eq!(*block_on(next.as_mut()), 11);
             });
             assert_eq!(*block_on(pool.acquire()), 11);
+        },
+        3000,
+        3,
+    );
+}
+
+#[test]
+fn owned_resources_survive_the_original_pool_handle() {
+    shuttle::check_pct(
+        || {
+            let pool = std::sync::Arc::new(Pool::new(vec![31]));
+            let held: admission::OwnedLease<usize> = block_on(pool.clone().acquire_owned());
+            let mut request = std::pin::pin!(pool.clone().acquire_owned());
+            let mut cx = Context::from_waker(std::task::Waker::noop());
+            assert!(request.as_mut().poll(&mut cx).is_pending());
+            drop(pool);
+            thread::scope(|s| {
+                s.spawn(move || drop(held));
+                assert_eq!(*block_on(request.as_mut()), 31);
+            });
         },
         3000,
         3,

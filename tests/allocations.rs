@@ -115,19 +115,19 @@ fn resource_admission_allocates_nothing_when_ready_or_waiting() {
         future::Future,
         task::{Context, Poll},
     };
-    let pool = admission::Pool::new(vec![17]);
+    let pool = std::sync::Arc::new(admission::Pool::new(vec![17]));
     let mut cx = Context::from_waker(std::task::Waker::noop());
     let bytes = allocated(|| {
         for _ in 0..1000 {
             let mut immediate = std::pin::pin!(pool.acquire());
-            let held = match immediate.as_mut().poll(&mut cx) {
+            let held: admission::Lease<'_, usize> = match immediate.as_mut().poll(&mut cx) {
                 Poll::Ready(value) => value,
                 Poll::Pending => panic!("the buffer is free"),
             };
-            let mut waiting = std::pin::pin!(pool.acquire());
+            let mut waiting = std::pin::pin!(pool.clone().acquire_owned());
             assert!(waiting.as_mut().poll(&mut cx).is_pending());
             drop(held);
-            let returned = match waiting.as_mut().poll(&mut cx) {
+            let returned: admission::OwnedLease<usize> = match waiting.as_mut().poll(&mut cx) {
                 Poll::Ready(value) => value,
                 Poll::Pending => panic!("the buffer is reserved"),
             };

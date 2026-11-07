@@ -32,7 +32,7 @@ fn wait_for<F: core::future::Future>(mut future: core::pin::Pin<&mut F>, cx: &mu
 /// the per-message frontend replaces the existing stream frontend.
 #[test]
 fn reserved_buffer_returns_from_an_actual_worker() {
-    use crate::admission::{Lease, Pool};
+    use crate::admission::{OwnedLease, Pool};
     use core::future::Future;
     use core::task::{Context, Poll};
 
@@ -40,16 +40,16 @@ fn reserved_buffer_returns_from_an_actual_worker() {
     let unwinding = crate::lanes::AbortOnUnwind;
     let source = Box::leak(Box::new(crate::lanes::sources::Source::new(2)));
     let slot = source.register().expect("room for the producer's source");
-    let pool = Pool::new(vec![vec![crate::throughput::Block::ZERO; 256].into_boxed_slice()]);
+    let pool = std::sync::Arc::new(Pool::new(vec![vec![crate::throughput::Block::ZERO; 256].into_boxed_slice()]));
     let waker = producer_waker();
     let mut cx = Context::from_waker(&waker);
-    let mut initial = std::pin::pin!(pool.acquire());
+    let mut initial = std::pin::pin!(pool.clone().acquire_owned());
     let Poll::Ready(mut input) = initial.as_mut().poll(&mut cx) else { panic!("the input buffer starts free") };
     crate::test::paint_test_input(crate::throughput::Block::bytes_mut(&mut input));
     let expected = *blake3::hash(crate::throughput::Block::bytes(&input)).as_bytes();
     let address = input.as_ptr();
-    struct Work<'a> {
-        input: UnsafeCell<Option<Lease<'a, Box<[crate::throughput::Block]>>>>,
+    struct Work {
+        input: UnsafeCell<Option<OwnedLease<Box<[crate::throughput::Block]>>>>,
         output: UnsafeCell<Hash>,
         worker: std::sync::Mutex<Option<std::thread::ThreadId>>,
         source: &'static crate::lanes::sources::Source,
@@ -60,7 +60,7 @@ fn reserved_buffer_returns_from_an_actual_worker() {
         // Sound: the source barrier holds this context in place. This
         // worker alone takes the input and writes the output. Its grant
         // publishes those writes to the producer through the pool mutex.
-        let work = unsafe { &*context.cast::<Work<'_>>() };
+        let work = unsafe { &*context.cast::<Work>() };
         let source = work.source;
         work.started.wait();
         work.release.wait();
@@ -82,15 +82,16 @@ fn reserved_buffer_returns_from_an_actual_worker() {
         started: std::sync::Barrier::new(2),
         release: std::sync::Barrier::new(2),
     });
-    let mut next_input = std::pin::pin!(pool.acquire());
+    let mut next_input = std::pin::pin!(pool.clone().acquire_owned());
     assert!(next_input.as_mut().poll(&mut cx).is_pending());
     // Sound: the worker takes work.input after publication. The scope
     // holds Work and Pool until the source has counted this action done.
     let bytes = unsafe { crate::throughput::Block::bytes((*work.input.get()).as_ref().unwrap()) };
     let mut task = Task::of(bytes, 0);
-    task.action = Some((run, (&*work as *const Work<'_>).cast_mut().cast()));
+    task.action = Some((run, (&*work as *const Work).cast_mut().cast()));
     source.publish(task);
     source.wake_for_waiting();
+    drop(pool); // The queued request and worker lease retain pool ownership.
     work.started.wait();
     assert!(next_input.as_mut().poll(&mut cx).is_pending(), "submission returned while the worker is deliberately held");
     work.release.wait();
