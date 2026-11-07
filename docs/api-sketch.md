@@ -171,7 +171,7 @@ The tag is caller data, returned unchanged with its completion. An incremental m
 
 Every lifecycle step is an explicit call: `commit`, `end`, `abort`, `finish`. No handle does that work in `Drop`. Dropping a `Message` or granted `Input` with work accepted, or unwinding through a stream scope, is a broken contract: the process ends at once, since workers may still be reading or writing that memory. This is the rule the current `stream` already follows. A prototype that cleaned up in `Drop` let a panicking producer free a frame a worker was writing; the explicit form removes that path.
 
-Async cancellation therefore means calling `abort()` (or letting `finish` drain), never dropping a future that holds accepted work. A pending `message()` or `input()` request that has received nothing can be dropped before its first poll; once polled and queued, it is withdrawn with `cancel()`.
+Async cancellation of accepted work means calling `abort()` (or letting `finish` drain); dropping a future that holds accepted work ends the process. A pending `message()` or `input()` request holds nothing yet: dropping it, as a timeout or `select!` does, is an ordinary cancellation, and the next waiter is served.
 
 ## Several unfinished messages
 
