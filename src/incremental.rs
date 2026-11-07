@@ -32,13 +32,28 @@ use super::*;
 /// # Ok(())
 /// # }
 /// ```
-#[derive(Clone)]
 pub struct Hasher {
     pub(crate) core: HasherCore,
     /// The message's bytes from its last 16 KiB boundary, gathered while
     /// they arrive in shorter updates: the first `staged`.
     pub(crate) staged: usize,
     pub(crate) stage: [core::mem::MaybeUninit<u8>; STAGE_LEN],
+}
+
+impl Clone for Hasher {
+    #[inline]
+    fn clone(&self) -> Self {
+        Self { core: self.core.clone(), staged: self.staged, stage: self.stage }
+    }
+
+    #[inline]
+    fn clone_from(&mut self, source: &Self) {
+        let prefix = &source.stage[..source.staged];
+        self.core.clone_from(&source.core);
+        self.staged = source.staged;
+        // The unused capacity is overwritten before it becomes input.
+        self.stage[..prefix.len()].copy_from_slice(prefix);
+    }
 }
 
 /// The bytes a Hasher gathers before they hash side by side: 16 chunks,
@@ -589,6 +604,47 @@ mod test {
             h.finalize_xof().fill(&mut out);
             assert_eq!(out, expected);
             assert_eq!(crate::COUNTED.with(|c| c[crate::Counted::StackClone as usize].get()), clones, "xof len={len}");
+        }
+    }
+
+    /// In-place checkpointing overwrites the live stage prefix only. A
+    /// full-capacity copy gives identical digests but changes the canary
+    /// in unused destination storage, making the performance invariant
+    /// deterministic rather than a timing assertion.
+    #[test]
+    #[cfg(feature = "std")]
+    fn clone_from_copies_only_the_live_stage_prefix() {
+        crate::initialize();
+        let input = painted();
+        let key = [0x42u8; 32];
+        let other_key = [0x73u8; 32];
+        for mode in [Mode::Plain, Mode::Keyed(&key), Mode::DeriveKey("in-place prefix checkpoint")] {
+            for len in [0usize, 64, 1024, 1025, 2048, STAGE_LEN - 1, STAGE_LEN, 2 * STAGE_LEN + 17] {
+                let mut source = Hasher::new(mode);
+                for part in input[..len].chunks(17) {
+                    source.update(part);
+                }
+                let staged = source.staged;
+                source.stage[staged..].fill(core::mem::MaybeUninit::new(0xbb));
+                let mut copy = Hasher::new(Mode::Keyed(&other_key));
+                copy.update(&input[..2 * STAGE_LEN]);
+                copy.stage.fill(core::mem::MaybeUninit::new(0xaa));
+                copy.clone_from(&source);
+                let expected = crate::test::official::hash(mode, &input[..len]);
+                assert_eq!(copy.count(), source.count());
+                assert_eq!(*copy.finalize().as_bytes(), expected);
+                assert_eq!(*source.finalize().as_bytes(), expected);
+                assert_eq!(copy.staged_bytes(), source.staged_bytes());
+                // Sound: every unused byte in both fixtures was explicitly
+                // initialized above, including for the full-copy control.
+                assert!(copy.stage[staged..].iter().all(|b| unsafe { b.assume_init() } == 0xaa), "unused stage copied at len={len}");
+                copy.update(&input[len..len + 129]);
+                assert_eq!(*copy.finalize().as_bytes(), crate::test::official::hash(mode, &input[..len + 129]));
+                assert_eq!(*source.finalize().as_bytes(), expected, "checkpoint source is immutable");
+                let mut out = [0u8; 129];
+                copy.finalize_xof().fill(&mut out);
+                assert_eq!(out.as_slice(), crate::test::official::xof(mode, &input[..len + 129], 0, out.len()));
+            }
         }
     }
 
