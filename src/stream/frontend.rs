@@ -86,15 +86,42 @@ impl<'a, T: Copy, F: FnMut(Event<T>)> Stream<'a, T, F> {
         }
     }
 
-    /// Begin a message once a message slot is reserved.
+    /// Begin a message once a message slot is reserved. While it waits, it
+    /// delivers completions that are ready (a slot returns through them), as
+    /// a stream's submission hands places back while it waits for room.
     pub(super) async fn message(&self, tag: T, length_hint: Option<u64>) -> Message<'_, 'a, T, F> {
-        Message { stream: self, inner: self.receiver.message(length_hint).await, tag }
+        Message { stream: self, inner: self.admit(self.receiver.message(length_hint)).await, tag }
     }
 
-    /// Submit a prepared batch once admitted; its digests land in `places`.
+    /// Submit a prepared batch once admitted (delivering completions as
+    /// `message` does while it waits); its digests land in `places`.
     pub(super) async fn submit_batch(&self, batch: &'a Batch<'a>, places: &'a mut [[u8; OUT_LEN]], tag: T) {
-        let completion = self.receiver.submit_batch(batch, places).await;
+        let completion = self.admit(self.receiver.submit_batch(batch, places)).await;
         self.push(Pending::Batch(tag, Box::pin(completion)));
+    }
+
+    /// Await an admission, collecting while it is pending: a slot held by an
+    /// uncollected completion comes back through `collect`, so a wait that
+    /// collected nothing would otherwise never end. Wakes on the admission
+    /// itself and on any completion.
+    async fn admit<R>(&self, admission: impl Future<Output = R>) -> R {
+        let mut admission = core::pin::pin!(admission);
+        core::future::poll_fn(|cx| {
+            loop {
+                if let Poll::Ready(r) = admission.as_mut().poll(cx) {
+                    return Poll::Ready(r);
+                }
+                if self.collect() == 0 {
+                    break;
+                }
+                // Something was delivered: a slot may be free now; poll again.
+            }
+            let mut notify = self.notify.lock().unwrap();
+            notify.flagged = false;
+            notify.waker = Some(cx.waker().clone());
+            Poll::Pending
+        })
+        .await
     }
 
     /// Deliver every completion that is ready, without waiting: how many.
@@ -325,6 +352,64 @@ mod tests {
         first.end();
         stream.finish();
         assert!(matches!(events.borrow()[1], Event::Hashed { tag: 1, hash } if hash.as_bytes() == &expected(Mode::Plain, &long)));
+    }
+
+    /// Many messages interleaved at random, in fragments of random lengths,
+    /// over a tight budget: every digest matches, every slot and buffer
+    /// comes back, with a fixed seed so a failure repeats.
+    #[test]
+    fn interleaved_messages_in_random_fragments_match_official() {
+        use rand::{RngExt, SeedableRng};
+        let events = RefCell::new(Vec::new());
+        let stream = stream(3, 2, &events);
+        let mut rng = rand::rngs::StdRng::seed_from_u64(0x5eed_b3);
+        let mut inputs: Vec<Vec<u8>> = (0..24)
+            .map(|i| {
+                let len = [0, 1, 63, 64, 65, 1000, 16384, 16385, 40000, 100_000][i % 10] + (i / 10) * 7;
+                let mut v = vec![0u8; len];
+                crate::test::paint_test_input(&mut v);
+                v
+            })
+            .collect();
+        let mut open: Vec<(usize, Message<'_, '_, usize, _>, usize)> = Vec::new();
+        let mut next = 0;
+        while next < inputs.len() || !open.is_empty() {
+            if open.len() < 2 && next < inputs.len() {
+                open.push((next, run(stream.message(next, Some(inputs[next].len() as u64))), 0));
+                next += 1;
+                continue;
+            }
+            let k = rng.random_range(0..open.len());
+            let (i, message, at) = &mut open[k];
+            let input = &inputs[*i];
+            if *at == input.len() {
+                let (i, message, _) = open.swap_remove(k);
+                let _ = i;
+                message.end();
+                stream.collect();
+                continue;
+            }
+            let mut room = run(message.input());
+            let n = rng.random_range(1..=room.bytes_mut().len().min(input.len() - *at).max(1));
+            room.bytes_mut()[..n].copy_from_slice(&input[*at..*at + n]);
+            room.commit(n);
+            *at += n;
+        }
+        stream.finish();
+        let mut got: Vec<(usize, [u8; 32])> = events
+            .borrow()
+            .iter()
+            .map(|e| match e {
+                Event::Hashed { tag, hash } => (*tag, *hash.as_bytes()),
+                _ => panic!("every message hashes"),
+            })
+            .collect();
+        got.sort();
+        assert_eq!(got.len(), inputs.len());
+        for (tag, hash) in got {
+            assert_eq!(hash, expected(Mode::Plain, &inputs[tag]), "message {tag}");
+        }
+        inputs.clear();
     }
 
     /// Whole-block storage is borrowed as a batch without a copy.
