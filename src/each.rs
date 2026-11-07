@@ -60,6 +60,8 @@ pub fn hash_each_multithreaded(mode: Mode, items: &[(&[Block], usize)], out: &mu
 /// (one turn of its event loop): never slower than one
 /// [`update`](Hasher::update) each: many messages arriving at once, such
 /// as a server's uploads, each with its own [`Hasher`]. Requires each `i < hashers.len()`.
+/// Finish ready messages together with [`finalize_each`]: bulk updates can
+/// retain short messages' prefix work for SIMD finishing.
 ///
 /// ```
 /// # blake3_servil::initialize();
@@ -88,10 +90,65 @@ pub fn update_each_multithreaded(hashers: &mut [Hasher], pieces: &[(usize, &[u8]
 /// The hash of each message `which` names: `out[k]` is
 /// `hashers[which[k]].finalize()`. Requires `out.len() == which.len()`
 /// and each index `< hashers.len()`.
+/// First-chunk messages gathered by [`update_each`] finish their remaining
+/// prefix blocks together before their final root compression.
 pub fn finalize_each(hashers: &[Hasher], which: &[usize], out: &mut [[u8; OUT_LEN]]) {
     assert_eq!(which.len(), out.len(), "one digest per message named");
+    #[cfg(all(blake3_avx512_ffi, target_os = "linux"))]
+    if which.len() >= 8 {
+        match Platform::detect() {
+            // Sound: each detected platform supplies its group's ISA.
+            Platform::AVX512 => {
+                let full = which.len() / 16 * 16;
+                let (wide, tail) = which.split_at(full);
+                let (wide_out, tail_out) = out.split_at_mut(full);
+                if !wide.is_empty() {
+                    unsafe { finalize_groups::<16>(hashers, wide, wide_out) };
+                }
+                if !tail.is_empty() {
+                    if crate::platform::avx2_detected() {
+                        unsafe { finalize_groups::<8>(hashers, tail, tail_out) };
+                    } else {
+                        unsafe { finalize_groups::<16>(hashers, tail, tail_out) };
+                    }
+                }
+                return;
+            }
+            Platform::AVX2 => {
+                unsafe { finalize_groups::<8>(hashers, which, out) };
+                return;
+            }
+            _ => {}
+        }
+    }
     for (&i, out) in which.iter().zip(out) {
         *out = *hashers[i].finalize().as_bytes();
+    }
+}
+
+#[cfg(all(blake3_avx512_ffi, target_os = "linux"))]
+unsafe fn finalize_groups<const W: usize>(hashers: &[Hasher], which: &[usize], out: &mut [[u8; OUT_LEN]]) {
+    for (which, out) in which.chunks(W).zip(out.chunks_mut(W)) {
+        if which.len() == W {
+            let mut inputs = arrayvec::ArrayVec::<_, W>::new();
+            for &i in which {
+                if let Some(input) = crate::ffi_output::input(&hashers[i]) {
+                    inputs.push(input);
+                } else {
+                    break;
+                }
+            }
+            if inputs.len() == W {
+                unsafe { crate::ffi_output::hash_group::<W>(inputs.as_slice().try_into().unwrap(), out) };
+                continue;
+            }
+            if unsafe { crate::ffi_output::staged_group::<W>(hashers, which.try_into().unwrap(), out) } {
+                continue;
+            }
+        }
+        for (&i, digest) in which.iter().zip(out) {
+            *digest = *hashers[i].finalize().as_bytes();
+        }
     }
 }
 
@@ -103,6 +160,25 @@ pub fn finalize_each(hashers: &[Hasher], which: &[usize], out: &mut [[u8; OUT_LE
 /// their parents in one call. Then the waiting pieces, the same way, until
 /// none is left.
 fn update_turn(hashers: &mut [Hasher], pieces: &[(usize, &[u8])], pooled: bool) {
+    #[cfg(all(blake3_avx512_ffi, target_os = "linux"))]
+    let pieces = if hashers.len() >= 8 {
+        let maximum = crate::ffi_output::lanes(Platform::detect());
+        let width = if crate::platform::avx2_detected() { maximum.min(8) } else { maximum };
+        if width != 0 && hashers.len() >= width {
+            let mut gathered = 0;
+            while gathered < pieces.len() && crate::ffi_output::gather_first(&mut hashers[pieces[gathered].0], pieces[gathered].1) {
+                gathered += 1;
+            }
+            &pieces[gathered..]
+        } else {
+            pieces
+        }
+    } else {
+        pieces
+    };
+    if pieces.is_empty() {
+        return;
+    }
     let mut turn: Vec<(usize, &[u8])> = pieces.to_vec();
     let mut waiting: Vec<(usize, &[u8])> = Vec::new();
     let mut held: Vec<usize> = Vec::new();
@@ -142,14 +218,22 @@ fn update_turn(hashers: &mut [Hasher], pieces: &[(usize, &[u8])], pooled: bool) 
 }
 
 /// Hash the whole groups `held` names, one in each of those hashers'
-/// stages, together where they share a key and flags, and pass each
-/// group's subtree to its hasher's core.
+/// stages, with independent-key parent lanes where available, otherwise
+/// together where keys/flags match. Pass each subtree to its own core.
 #[cfg(feature = "std")]
 fn hash_held(hashers: &mut [Hasher], held: &[usize]) {
     use crate::{BLOCK_LEN, PARENT};
     let Some(&first) = held.first() else { return };
+    crate::counted(crate::Counted::HeldPartition);
     let (key, flags) = (hashers[first].core.key, hashers[first].core.chunk_state.flags);
     let (alike, others): (Vec<usize>, Vec<usize>) = held.iter().partition(|&&i| hashers[i].core.key == key && hashers[i].core.chunk_state.flags == flags);
+    #[cfg(all(blake3_avx512_ffi, target_os = "linux"))]
+    {
+        let platform = hashers[first].core.chunk_state.platform;
+        if !others.is_empty() && crate::ffi_output::held_groups(hashers, held, platform) {
+            return;
+        }
+    }
     let turn = crate::platform::Sme2Turn::take(hashers[first].core.chunk_state.platform, true);
     let platform = turn.platform();
     let n = alike.len();
@@ -680,6 +764,78 @@ mod test {
     fn test_update_each_holds_groups_together() {
         for platform in crate::test::every_platform() {
             holds_groups_together(platform);
+        }
+    }
+
+    /// A held turn with distinct keys and/or modes partitions only once
+    /// where independent parent lanes exist. Reverting to recursive key
+    /// groups preserves every digest but makes this work count fail.
+    #[cfg(all(blake3_avx512_ffi, target_os = "linux"))]
+    #[test]
+    fn test_held_key_groups_take_one_partition_pass() {
+        for platform in crate::test::every_platform() {
+            let width = crate::ffi_output::lanes(platform);
+            if width == 0 {
+                continue;
+            }
+            for n in [2usize, 7, 8, 9, 15, 16, 17, 31, 32, 33] {
+                for mixed in [false, true] {
+                    let keys: Vec<[u8; 32]> = (0..n).map(|i| core::array::from_fn(|j| (i * 37 + j * 11) as u8)).collect();
+                    let modes: Vec<Mode<'_>> = (0..n)
+                        .map(|i| {
+                            if !mixed {
+                                Mode::Keyed(&keys[i])
+                            } else {
+                                match i % 3 {
+                                    0 => Mode::Plain,
+                                    1 => Mode::Keyed(&keys[i]),
+                                    _ => Mode::DeriveKey("held parent lanes"),
+                                }
+                            }
+                        })
+                        .collect();
+                    let offsets: Vec<_> = (0..n).map(|i| (i % 3) * crate::STAGE_LEN).collect();
+                    let data: Vec<Vec<u8>> =
+                        (0..n).map(|i| (0..offsets[i] + crate::STAGE_LEN + 97).map(|j| ((i * 37 + j * 17) % 251) as u8).collect()).collect();
+                    let mut hashers: Vec<_> = (0..n)
+                        .map(|i| {
+                            let mut h = Hasher::new(modes[i]);
+                            h.core.chunk_state.platform = platform;
+                            h.update(&data[i][..offsets[i]]);
+                            h
+                        })
+                        .collect();
+                    crate::COUNTED.with(|c| c[crate::Counted::HeldPartition as usize].set(0));
+                    crate::RAN_ENTRIES.with(|r| r.borrow_mut().clear());
+                    for start in (0..crate::STAGE_LEN).step_by(4096) {
+                        let pieces: Vec<_> = (0..n).map(|i| (i, &data[i][offsets[i] + start..offsets[i] + start + 4096])).collect();
+                        update_each(&mut hashers, &pieces);
+                    }
+                    for i in 0..n {
+                        let end = offsets[i] + crate::STAGE_LEN;
+                        assert_eq!(hashers[i].staged, 0);
+                        assert_eq!(hashers[i].count(), end as u64);
+                        assert_eq!(
+                            *hashers[i].finalize().as_bytes(),
+                            crate::test::official::hash(modes[i], &data[i][..end]),
+                            "{platform:?} n={n} lane={i} mixed={mixed}"
+                        );
+                        hashers[i].update(&data[i][end..]);
+                        assert_eq!(*hashers[i].finalize().as_bytes(), crate::test::official::hash(modes[i], &data[i]));
+                        let mut reader = hashers[i].finalize_xof();
+                        reader.set_position(13);
+                        let mut out = [0u8; 129];
+                        reader.fill(&mut out);
+                        assert_eq!(out.as_slice(), crate::test::official::xof(modes[i], &data[i], 13, out.len()));
+                    }
+                    let partitions = crate::COUNTED.with(|c| c[crate::Counted::HeldPartition as usize].get());
+                    assert_eq!(partitions, 1, "one held partition: {platform:?} n={n} mixed={mixed}");
+                    assert!(
+                        crate::RAN_ENTRIES.with(|r| r.borrow().contains(&(crate::ffi_output::entry(width) as usize))),
+                        "independent parent entry: {platform:?} n={n}"
+                    );
+                }
+            }
         }
     }
 
