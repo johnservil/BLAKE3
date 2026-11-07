@@ -224,15 +224,16 @@ fn update_turn(hashers: &mut [Hasher], pieces: &[(usize, &[u8])], pooled: bool) 
 fn hash_held(hashers: &mut [Hasher], held: &[usize]) {
     use crate::{BLOCK_LEN, PARENT};
     let Some(&first) = held.first() else { return };
+    crate::counted(crate::Counted::HeldPartition);
+    let (key, flags) = (hashers[first].core.key, hashers[first].core.chunk_state.flags);
+    let (alike, others): (Vec<usize>, Vec<usize>) = held.iter().partition(|&&i| hashers[i].core.key == key && hashers[i].core.chunk_state.flags == flags);
     #[cfg(all(blake3_avx512_ffi, target_os = "linux"))]
     {
         let platform = hashers[first].core.chunk_state.platform;
-        if crate::ffi_output::held_groups(hashers, held, platform) {
+        if !others.is_empty() && crate::ffi_output::held_groups(hashers, held, platform) {
             return;
         }
     }
-    let (key, flags) = (hashers[first].core.key, hashers[first].core.chunk_state.flags);
-    let (alike, others): (Vec<usize>, Vec<usize>) = held.iter().partition(|&&i| hashers[i].core.key == key && hashers[i].core.chunk_state.flags == flags);
     let turn = crate::platform::Sme2Turn::take(hashers[first].core.chunk_state.platform, true);
     let platform = turn.platform();
     let n = alike.len();
@@ -763,6 +764,78 @@ mod test {
     fn test_update_each_holds_groups_together() {
         for platform in crate::test::every_platform() {
             holds_groups_together(platform);
+        }
+    }
+
+    /// A held turn with distinct keys and/or modes partitions only once
+    /// where independent parent lanes exist. Reverting to recursive key
+    /// groups preserves every digest but makes this work count fail.
+    #[cfg(all(blake3_avx512_ffi, target_os = "linux"))]
+    #[test]
+    fn test_held_key_groups_take_one_partition_pass() {
+        for platform in crate::test::every_platform() {
+            let width = crate::ffi_output::lanes(platform);
+            if width == 0 {
+                continue;
+            }
+            for n in [2usize, 7, 8, 9, 15, 16, 17, 31, 32, 33] {
+                for mixed in [false, true] {
+                    let keys: Vec<[u8; 32]> = (0..n).map(|i| core::array::from_fn(|j| (i * 37 + j * 11) as u8)).collect();
+                    let modes: Vec<Mode<'_>> = (0..n)
+                        .map(|i| {
+                            if !mixed {
+                                Mode::Keyed(&keys[i])
+                            } else {
+                                match i % 3 {
+                                    0 => Mode::Plain,
+                                    1 => Mode::Keyed(&keys[i]),
+                                    _ => Mode::DeriveKey("held parent lanes"),
+                                }
+                            }
+                        })
+                        .collect();
+                    let offsets: Vec<_> = (0..n).map(|i| (i % 3) * crate::STAGE_LEN).collect();
+                    let data: Vec<Vec<u8>> =
+                        (0..n).map(|i| (0..offsets[i] + crate::STAGE_LEN + 97).map(|j| ((i * 37 + j * 17) % 251) as u8).collect()).collect();
+                    let mut hashers: Vec<_> = (0..n)
+                        .map(|i| {
+                            let mut h = Hasher::new(modes[i]);
+                            h.core.chunk_state.platform = platform;
+                            h.update(&data[i][..offsets[i]]);
+                            h
+                        })
+                        .collect();
+                    crate::COUNTED.with(|c| c[crate::Counted::HeldPartition as usize].set(0));
+                    crate::RAN_ENTRIES.with(|r| r.borrow_mut().clear());
+                    for start in (0..crate::STAGE_LEN).step_by(4096) {
+                        let pieces: Vec<_> = (0..n).map(|i| (i, &data[i][offsets[i] + start..offsets[i] + start + 4096])).collect();
+                        update_each(&mut hashers, &pieces);
+                    }
+                    for i in 0..n {
+                        let end = offsets[i] + crate::STAGE_LEN;
+                        assert_eq!(hashers[i].staged, 0);
+                        assert_eq!(hashers[i].count(), end as u64);
+                        assert_eq!(
+                            *hashers[i].finalize().as_bytes(),
+                            crate::test::official::hash(modes[i], &data[i][..end]),
+                            "{platform:?} n={n} lane={i} mixed={mixed}"
+                        );
+                        hashers[i].update(&data[i][end..]);
+                        assert_eq!(*hashers[i].finalize().as_bytes(), crate::test::official::hash(modes[i], &data[i]));
+                        let mut reader = hashers[i].finalize_xof();
+                        reader.set_position(13);
+                        let mut out = [0u8; 129];
+                        reader.fill(&mut out);
+                        assert_eq!(out.as_slice(), crate::test::official::xof(modes[i], &data[i], 13, out.len()));
+                    }
+                    let partitions = crate::COUNTED.with(|c| c[crate::Counted::HeldPartition as usize].get());
+                    assert_eq!(partitions, 1, "one held partition: {platform:?} n={n} mixed={mixed}");
+                    assert!(
+                        crate::RAN_ENTRIES.with(|r| r.borrow().contains(&(crate::ffi_output::entry(width) as usize))),
+                        "independent parent entry: {platform:?} n={n}"
+                    );
+                }
+            }
         }
     }
 
