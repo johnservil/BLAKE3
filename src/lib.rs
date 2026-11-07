@@ -1330,25 +1330,31 @@ pub(crate) use incremental::*;
 pub struct OutputReader {
     inner: Output,
     position_within_block: u8,
+    cached_block: [u8; BLOCK_LEN],
+    cache_valid: bool,
 }
 
 impl OutputReader {
     fn new(inner: Output) -> Self {
-        Self { inner, position_within_block: 0 }
+        Self { inner, position_within_block: 0, cached_block: [0; BLOCK_LEN], cache_valid: false }
     }
 
     // This helper function handles both the case where the output buffer is
     // shorter than one block, and the case where our position_within_block is
     // non-zero.
     fn fill_one_block(&mut self, buf: &mut &mut [u8]) {
-        let output_block: [u8; BLOCK_LEN] = self.inner.root_output_block();
-        let output_bytes = &output_block[self.position_within_block as usize..];
+        if !self.cache_valid {
+            self.cached_block = self.inner.root_output_block();
+            self.cache_valid = true;
+        }
+        let output_bytes = &self.cached_block[self.position_within_block as usize..];
         let take = cmp::min(buf.len(), output_bytes.len());
         buf[..take].copy_from_slice(&output_bytes[..take]);
         self.position_within_block += take as u8;
         if self.position_within_block == BLOCK_LEN as u8 {
             self.inner.counter += 1;
             self.position_within_block = 0;
+            self.cache_valid = false;
         }
         // Advance the dest buffer. mem::take() is a borrowck workaround.
         *buf = &mut core::mem::take(buf)[take..];
@@ -1358,11 +1364,10 @@ impl OutputReader {
     /// `OutputReader`. This is equivalent to [`Read::read`], except that it
     /// doesn't return a `Result`. Both methods always fill the entire buffer.
     ///
-    /// Note that `OutputReader` doesn't buffer output bytes internally, so
-    /// calling `fill` repeatedly with a short-length or odd-length slice will
-    /// end up performing the same compression multiple times. If you're
-    /// reading output in a loop, prefer a slice length that's a multiple of
-    /// [`BLOCK_LEN`] (64 bytes).
+    /// A partial output block is retained for subsequent short reads, so
+    /// sequential reads don't recompute that block. Whole blocks continue
+    /// through the vectorized output path. For streaming throughput, prefer
+    /// a slice length that's a multiple of [`BLOCK_LEN`] (64 bytes).
     ///
     /// The maximum output size of BLAKE3 is 2<sup>64</sup>-1 bytes. If you try
     /// to extract more than that, for example by seeking near the end and
@@ -1425,6 +1430,7 @@ impl OutputReader {
     pub fn set_position(&mut self, position: u64) {
         self.position_within_block = (position % BLOCK_LEN as u64) as u8;
         self.inner.counter = position / BLOCK_LEN as u64;
+        self.cache_valid = false;
     }
 }
 
@@ -1467,9 +1473,11 @@ impl std::io::Seek for OutputReader {
 impl Zeroize for OutputReader {
     fn zeroize(&mut self) {
         // Destructuring to trigger compile error as a reminder to update this impl.
-        let Self { inner, position_within_block } = self;
+        let Self { inner, position_within_block, cached_block, cache_valid } = self;
 
         inner.zeroize();
         position_within_block.zeroize();
+        cached_block.zeroize();
+        cache_valid.zeroize();
     }
 }
