@@ -4,7 +4,7 @@
 //!
 //! The future holds its own queue node. Pinning keeps that node in place;
 //! cancellation unlinks it under the same mutex that grants resources.
-//! The pool allocates its resource list in new; waiting uses the caller's
+//! The pool initializes its fixed metadata in new. Waiting uses the caller's
 //! future node. It makes no per-request allocation.
 //!
 //! Finish counts completed work; this pool transfers ownership of individual
@@ -62,7 +62,11 @@ impl<T> Pool<T> {
     /// The fixed, nonempty set of resources this pool circulates.
     pub(crate) fn new(resources: Vec<T>) -> Self {
         assert!(!resources.is_empty(), "a resource pool has capacity");
-        Self { state: Mutex::new(State { free: resources, first: ptr::null_mut(), last: ptr::null_mut() }) }
+        let state = Mutex::new(State { free: resources, first: ptr::null_mut(), last: ptr::null_mut() });
+        // Darwin initializes its pthread mutex on first lock (64 bytes).
+        // Charge that setup to construction, before any request can run.
+        drop(state.lock().unwrap());
+        Self { state }
     }
 
     pub(crate) fn acquire(&self) -> Acquire<'_, T> {
