@@ -503,6 +503,10 @@ fn run() -> usize {
         // wrapper checks its bounds, and builds all arguments on the stack.
         checked += unsafe { crate::avx512_32::self_test(&previous) };
     }
+    #[cfg(all(feature = "std", blake3_avx512_ffi, target_os = "linux"))]
+    {
+        checked += crate::ffi_output::self_test(platform);
+    }
     let _ = previous;
     checked
 }
@@ -663,6 +667,14 @@ mod test {
                 assert!(crate::RAN_ENTRIES.with(|r| r.borrow().contains(&(entry as usize))), "startup left out {name}");
             }
             expected + crate::avx512_32::entries().len()
+        } else {
+            expected
+        };
+        #[cfg(all(blake3_avx512_ffi, target_os = "linux"))]
+        let expected = if crate::ffi_output::lanes(Platform::detect_unchecked()) != 0 {
+            let entry = crate::ffi_output::entry(Platform::detect_unchecked()) as usize;
+            assert!(crate::RAN_ENTRIES.with(|r| r.borrow().contains(&entry)), "startup left out batched output compression");
+            expected + 1
         } else {
             expected
         };

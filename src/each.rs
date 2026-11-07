@@ -60,6 +60,8 @@ pub fn hash_each_multithreaded(mode: Mode, items: &[(&[Block], usize)], out: &mu
 /// (one turn of its event loop): never slower than one
 /// [`update`](Hasher::update) each: many messages arriving at once, such
 /// as a server's uploads, each with its own [`Hasher`]. Requires each `i < hashers.len()`.
+/// Finish ready messages together with [`finalize_each`]: bulk updates can
+/// retain short messages' prefix work for SIMD finishing.
 ///
 /// ```
 /// # blake3_servil::initialize();
@@ -88,10 +90,53 @@ pub fn update_each_multithreaded(hashers: &mut [Hasher], pieces: &[(usize, &[u8]
 /// The hash of each message `which` names: `out[k]` is
 /// `hashers[which[k]].finalize()`. Requires `out.len() == which.len()`
 /// and each index `< hashers.len()`.
+/// First-chunk messages gathered by [`update_each`] finish their remaining
+/// prefix blocks together before their final root compression.
 pub fn finalize_each(hashers: &[Hasher], which: &[usize], out: &mut [[u8; OUT_LEN]]) {
     assert_eq!(which.len(), out.len(), "one digest per message named");
+    #[cfg(all(blake3_avx512_ffi, target_os = "linux"))]
+    if which.len() >= 8 {
+        match Platform::detect() {
+            // Sound: each detected platform supplies its group's ISA.
+            Platform::AVX512 if which.len() >= 16 => {
+                unsafe { finalize_groups::<16>(hashers, which, out) };
+                return;
+            }
+            Platform::AVX2 => {
+                unsafe { finalize_groups::<8>(hashers, which, out) };
+                return;
+            }
+            _ => {}
+        }
+    }
     for (&i, out) in which.iter().zip(out) {
         *out = *hashers[i].finalize().as_bytes();
+    }
+}
+
+#[cfg(all(blake3_avx512_ffi, target_os = "linux"))]
+unsafe fn finalize_groups<const W: usize>(hashers: &[Hasher], which: &[usize], out: &mut [[u8; OUT_LEN]]) {
+    for (which, out) in which.chunks(W).zip(out.chunks_mut(W)) {
+        if which.len() == W {
+            let mut inputs = arrayvec::ArrayVec::<_, W>::new();
+            for &i in which {
+                if let Some(input) = crate::ffi_output::input(&hashers[i]) {
+                    inputs.push(input);
+                } else {
+                    break;
+                }
+            }
+            if inputs.len() == W {
+                unsafe { crate::ffi_output::hash_group::<W>(inputs.as_slice().try_into().unwrap(), out) };
+                continue;
+            }
+            if unsafe { crate::ffi_output::staged_group::<W>(hashers, which.try_into().unwrap(), out) } {
+                continue;
+            }
+        }
+        for (&i, digest) in which.iter().zip(out) {
+            *digest = *hashers[i].finalize().as_bytes();
+        }
     }
 }
 
@@ -103,6 +148,24 @@ pub fn finalize_each(hashers: &[Hasher], which: &[usize], out: &mut [[u8; OUT_LE
 /// their parents in one call. Then the waiting pieces, the same way, until
 /// none is left.
 fn update_turn(hashers: &mut [Hasher], pieces: &[(usize, &[u8])], pooled: bool) {
+    #[cfg(all(blake3_avx512_ffi, target_os = "linux"))]
+    let pieces = if hashers.len() >= 8 {
+        let width = crate::ffi_output::lanes(Platform::detect());
+        if width != 0 && hashers.len() >= width {
+            let mut gathered = 0;
+            while gathered < pieces.len() && crate::ffi_output::gather_first(&mut hashers[pieces[gathered].0], pieces[gathered].1) {
+                gathered += 1;
+            }
+            &pieces[gathered..]
+        } else {
+            pieces
+        }
+    } else {
+        pieces
+    };
+    if pieces.is_empty() {
+        return;
+    }
     let mut turn: Vec<(usize, &[u8])> = pieces.to_vec();
     let mut waiting: Vec<(usize, &[u8])> = Vec::new();
     let mut held: Vec<usize> = Vec::new();
