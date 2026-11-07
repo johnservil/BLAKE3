@@ -146,7 +146,7 @@ let read_result = loop {
             }
         }
         Err(error) => {
-            drop(input);
+            input.release(); // Nothing committed: the room goes back.
             message.abort();
             break Err(error);
         }
@@ -166,6 +166,12 @@ The tag is caller data, returned unchanged with its completion. `buffered_bytes`
 `Input::bytes_mut` is a controlled writer into library-owned storage, not a hashing call accepting arbitrary byte slices. Its preparation helpers establish alignment, whole-unit boundaries and the final zero tail. Workers receive immutable prepared input. They hash it in place. A filesystem read or socket receive can fill that storage directly, with no intermediate input buffer.
 
 `message.end()` consumes the write handle and seals its final portion. `abort()` also consumes the handle, produces no digest and returns storage when active jobs release it. `finish().await` consumes the stream and requires all messages ended or aborted. It waits for accepted work and invokes remaining completion handlers on the caller's thread.
+
+### Crash-only lifecycle
+
+Every lifecycle step is an explicit call: `commit`, `release`, `end`, `abort`, `finish`. No handle does that work in `Drop`. Dropping a `Message` or granted `Input` with work accepted, or unwinding through a stream scope, is a broken contract: the process ends at once, since workers may still be reading or writing that memory. This is the rule the current `stream` already follows. A prototype that cleaned up in `Drop` let a panicking producer free a frame a worker was writing; the explicit form removes that path.
+
+Async cancellation therefore means calling `abort()` (or letting `finish` drain), never dropping a future that holds accepted work. A pending `message()` or `input()` request that has received nothing can be dropped before its first poll; once polled and queued, it is withdrawn with `cancel()`.
 
 ## Several unfinished messages
 
@@ -227,7 +233,7 @@ The public C API is convenience-only in this proposal. Prepared bulk inputs, the
 ## Feedback requested
 
 1. Do the retained typed bulk calls and proposed `submit_batch` form cover your ready-work flow? Is `input().await` → write → `commit(n)` clear for incremental production?
-2. **Output ownership and cancellation:** this sketch keeps the contract's caller-provided output places and producer-thread handler. Those places must remain live through completion or the stream's drain boundary. The current contract fails stop if a borrowed-work scope ends prematurely. Does that fit async cancellation, or should the pipeline instead own output slots and return per-message completion leases? That is a design alternative for review, not an additional supported API.
+2. **Output ownership:** this sketch keeps caller-provided output places and a producer-thread handler, under the crash-only lifecycle above (an early end of the scope ends the process). The alternative is pipeline-owned output slots returned through completion handles, which cost a copy or a handle type and remove the borrowed places. Which fits your programs? That is a design alternative for review, not an additional supported API.
 3. Are the byte/message budgets and advisory total-length hint enough to predict and control resource use? An incorrect hint changes neither bytes consumed nor end-of-message behavior.
 4. Which concrete receive/generate workflow would make you choose this pipeline over the convenience Hasher or direct prepared-bulk calls?
 
