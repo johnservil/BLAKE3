@@ -218,12 +218,19 @@ fn update_turn(hashers: &mut [Hasher], pieces: &[(usize, &[u8])], pooled: bool) 
 }
 
 /// Hash the whole groups `held` names, one in each of those hashers'
-/// stages, together where they share a key and flags, and pass each
-/// group's subtree to its hasher's core.
+/// stages, with independent-key parent lanes where available, otherwise
+/// together where keys/flags match. Pass each subtree to its own core.
 #[cfg(feature = "std")]
 fn hash_held(hashers: &mut [Hasher], held: &[usize]) {
     use crate::{BLOCK_LEN, PARENT};
     let Some(&first) = held.first() else { return };
+    #[cfg(all(blake3_avx512_ffi, target_os = "linux"))]
+    {
+        let platform = hashers[first].core.chunk_state.platform;
+        if crate::ffi_output::held_groups(hashers, held, platform) {
+            return;
+        }
+    }
     let (key, flags) = (hashers[first].core.key, hashers[first].core.chunk_state.flags);
     let (alike, others): (Vec<usize>, Vec<usize>) = held.iter().partition(|&&i| hashers[i].core.key == key && hashers[i].core.chunk_state.flags == flags);
     let turn = crate::platform::Sme2Turn::take(hashers[first].core.chunk_state.platform, true);

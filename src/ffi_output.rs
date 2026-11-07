@@ -82,6 +82,87 @@ pub(crate) unsafe fn hash_group<const W: usize>(inputs: &[Input<'_>; W], out: &m
     }
 }
 
+/// Hash complete held stages without grouping by their keys. Leaf calls
+/// already fill their chunk lanes; parents borrow each message's own key
+/// and flags in the existing independent-compression descriptors.
+pub(crate) fn held_groups(hashers: &mut [Hasher], held: &[usize], platform: Platform) -> bool {
+    if held.is_empty() {
+        return true;
+    }
+    match lanes(platform) {
+        // Sound: the caller supplies its detected platform. Both entries
+        // already pass startup's independent CV/parent/root cases.
+        16 => unsafe { held_groups_at::<16>(hashers, held, platform) },
+        8 => unsafe { held_groups_at::<8>(hashers, held, platform) },
+        _ => return false,
+    }
+    true
+}
+
+unsafe fn held_groups_at<const W: usize>(hashers: &mut [Hasher], held: &[usize], platform: Platform) {
+    const PER: usize = crate::STAGE_LEN / CHUNK_LEN;
+    const { assert!(PER == 16) };
+    let n = held.len();
+    let mut level = vec![[0u8; OUT_LEN]; n * PER];
+    let mut next = vec![[0u8; OUT_LEN]; n * PER / 2];
+    let mut halves = vec![[0u8; BLOCK_LEN]; n];
+    for (k, &i) in held.iter().enumerate() {
+        let h = &hashers[i];
+        let (counter, bytes) = h.held_group().expect("a held group");
+        let refs: [&[u8; CHUNK_LEN]; PER] = core::array::from_fn(|j| bytes[j * CHUNK_LEN..(j + 1) * CHUNK_LEN].try_into().unwrap());
+        platform.hash_many(
+            &refs,
+            &h.core.key,
+            counter,
+            crate::IncrementCounter::Yes,
+            h.core.chunk_state.flags,
+            CHUNK_START,
+            CHUNK_END,
+            level[k * PER..(k + 1) * PER].as_flattened_mut(),
+        );
+    }
+    for depth in 0..4 {
+        if depth == 3 {
+            halves.as_flattened_mut().copy_from_slice(level[..2 * n].as_flattened());
+        }
+        let per_message = PER >> (depth + 1);
+        let count = n * per_message;
+        let input = |j: usize| {
+            let h = &hashers[held[j / per_message]];
+            Input {
+                block: level.as_flattened()[j * BLOCK_LEN..(j + 1) * BLOCK_LEN].try_into().unwrap(),
+                cv: &h.core.key,
+                len: BLOCK_LEN as u8,
+                flags: h.core.chunk_state.flags | crate::PARENT,
+            }
+        };
+        let full = count / W * W;
+        for base in (0..full).step_by(W) {
+            let inputs = core::array::from_fn(|j| input(base + j));
+            // Sound: W matches the detected ISA. All blocks and keys are
+            // readable; next is disjoint storage with W complete outputs.
+            unsafe { hash_group::<W>(&inputs, &mut next[base..base + W]) };
+        }
+        for (j, out) in next.iter_mut().enumerate().take(count).skip(full) {
+            let input = input(j);
+            let mut cv = *input.cv;
+            platform.compress_in_place(&mut cv, input.block, input.len, 0, input.flags);
+            *out = crate::hasher::le_bytes(&cv);
+        }
+        core::mem::swap(&mut level, &mut next);
+    }
+    for (k, &i) in held.iter().enumerate() {
+        let (counter, _) = hashers[i].held_group().unwrap();
+        let mut result = [0u8; BLOCK_LEN];
+        if counter == 0 {
+            result = halves[k];
+        } else {
+            result[..OUT_LEN].copy_from_slice(&level[k]);
+        }
+        hashers[i].take_held(&result);
+    }
+}
+
 /// Gather a bulk caller's first chunk without serial prefix compression.
 /// The existing chunk buffer holds its first block; the existing stage holds
 /// the suffix. The next bulk finalization compresses the prefixes together.
