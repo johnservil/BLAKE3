@@ -61,15 +61,19 @@ pub(crate) struct Resource<P: Deref<Target = Pool<T>> + Unpin, T> {
 pub(crate) type Lease<'a, T> = Resource<&'a Pool<T>, T>;
 pub(crate) type OwnedLease<T> = Resource<Arc<Pool<T>>, T>;
 
+/// Initialize platform mutex metadata before the operation's allocation window.
+pub(crate) fn initialized_mutex<T>(value: T) -> Mutex<T> {
+    let mutex = Mutex::new(value);
+    // Darwin initializes its pthread mutex on first lock (64 bytes).
+    drop(mutex.lock().unwrap());
+    mutex
+}
+
 impl<T> Pool<T> {
     /// The fixed, nonempty set of resources this pool circulates.
     pub(crate) fn new(resources: Vec<T>) -> Self {
         assert!(!resources.is_empty(), "a resource pool has capacity");
-        let state = Mutex::new(State { free: resources, first: ptr::null_mut(), last: ptr::null_mut() });
-        // Darwin initializes its pthread mutex on first lock (64 bytes).
-        // Charge that setup to construction, before any request can run.
-        drop(state.lock().unwrap());
-        Self { state }
+        Self { state: initialized_mutex(State { free: resources, first: ptr::null_mut(), last: ptr::null_mut() }) }
     }
 
     pub(crate) fn acquire(&self) -> Acquire<&Self, T> {

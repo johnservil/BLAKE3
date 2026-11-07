@@ -4,6 +4,9 @@
 
 use super::*;
 
+#[path = "stream/receiver.rs"]
+mod receiver;
+
 struct ProducerWake(std::thread::Thread);
 impl std::task::Wake for ProducerWake {
     fn wake(self: std::sync::Arc<Self>) {
