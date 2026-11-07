@@ -124,32 +124,32 @@ Inside an application's async receive routine, `reader.read_fragment(room)` writ
 use blake3_servil::{Hash, Mode, throughput};
 use blake3_servil::throughput::{Completion, Limits};
 
-let mut place = Hash::from_bytes([0; 32]);
 let stream = throughput::Stream::new(
     Mode::Plain,
     Limits { buffered_bytes: 2 << 20, messages: 32 },
     |completion| match completion {
-        Completion::Hashed { tag, places } => println!("{tag}: {}", places[0]),
-        Completion::Aborted { tag, .. } => eprintln!("{tag}: aborted"),
+        Completion::Hashed { tag, hash } => println!("{tag}: {hash}"),
+        Completion::Aborted { tag } => eprintln!("{tag}: aborted"),
     },
 );
 
-let mut message = stream.message(&mut place, 7u64, None).await;
+let mut message = stream.message(7u64, None).await;
 let read_result = loop {
     let mut input = message.input().await;
-    match reader.read_fragment(input.bytes_mut()).await {
+    let ended = match reader.read_fragment(input.bytes_mut()).await {
         Ok((written, ended)) => {
             input.commit(written);
-            if ended {
-                message.end();
-                break Ok(());
-            }
+            ended
         }
         Err(error) => {
-            input.release(); // Nothing committed: the room goes back.
+            // The borrow ends here; abort returns the room.
             message.abort();
             break Err(error);
         }
+    };
+    if ended {
+        message.end();
+        break Ok(());
     }
 };
 
@@ -157,11 +157,11 @@ stream.finish().await;
 read_result?;
 ```
 
-The tag is caller data, returned unchanged with its completion. `buffered_bytes` bounds retained and reserved input, including writable grants. `messages` bounds messages whose output places have yet to return. These limits are stream-wide.
+The tag is caller data, returned unchanged with its completion. An incremental message's digest comes with its completion, by value: the producer lends no output place. `buffered_bytes` bounds retained and reserved input, including writable grants. `messages` bounds messages whose output places have yet to return. These limits are stream-wide.
 
 `message.input().await` grants writable library-owned storage **and its submission capacity**. Available capacity completes immediately. Otherwise the operation registers once and the application handles other events. Space belongs to that request before its waker is notified.
 
-`input.commit(written)` consumes the writable guard. It records the written bytes, submits complete prepared portions and preserves a partial portion for the next callback. It returns without waiting for hashing. A zero-byte commit records no bytes. `end` alone declares the message complete.
+`input.commit(written)` consumes the writable guard. It records the written bytes, submits complete prepared portions and preserves a partial portion for the next callback. It returns without waiting for hashing. A zero-byte commit records no bytes. `end` alone declares the message complete. The `Input` guard owns nothing: dropped unused, its room stays with the message for the next callback.
 
 `Input::bytes_mut` is a controlled writer into library-owned storage, not a hashing call accepting arbitrary byte slices. Its preparation helpers establish alignment, whole-unit boundaries and the final zero tail. Workers receive immutable prepared input. They hash it in place. A filesystem read or socket receive can fill that storage directly, with no intermediate input buffer.
 
@@ -169,7 +169,7 @@ The tag is caller data, returned unchanged with its completion. `buffered_bytes`
 
 ### Crash-only lifecycle
 
-Every lifecycle step is an explicit call: `commit`, `release`, `end`, `abort`, `finish`. No handle does that work in `Drop`. Dropping a `Message` or granted `Input` with work accepted, or unwinding through a stream scope, is a broken contract: the process ends at once, since workers may still be reading or writing that memory. This is the rule the current `stream` already follows. A prototype that cleaned up in `Drop` let a panicking producer free a frame a worker was writing; the explicit form removes that path.
+Every lifecycle step is an explicit call: `commit`, `end`, `abort`, `finish`. No handle does that work in `Drop`. Dropping a `Message` or granted `Input` with work accepted, or unwinding through a stream scope, is a broken contract: the process ends at once, since workers may still be reading or writing that memory. This is the rule the current `stream` already follows. A prototype that cleaned up in `Drop` let a panicking producer free a frame a worker was writing; the explicit form removes that path.
 
 Async cancellation therefore means calling `abort()` (or letting `finish` drain), never dropping a future that holds accepted work. A pending `message()` or `input()` request that has received nothing can be dropped before its first poll; once polled and queued, it is withdrawn with `cancel()`.
 
@@ -178,8 +178,8 @@ Async cancellation therefore means calling `abort()` (or letting `finish` drain)
 One producer owns each stream. Its methods use shared access, so one message's write handle leaves the stream available to other messages.
 
 ```rust
-let mut a = stream.message(&mut place_a, 1u64, None).await;
-let mut b = stream.message(&mut place_b, 2u64, Some(3)).await;
+let mut a = stream.message(1u64, None).await;
+let mut b = stream.message(2u64, Some(3)).await;
 
 let mut input = b.input().await;
 input.bytes_mut()[..3].copy_from_slice(b"abc");
@@ -206,8 +206,8 @@ Stream::submit(&self, blocks: &[Block], len, output_place, tag)
     -> Future<Output = ()>             // Admission, not hash completion.
 Stream::submit_batch(&self, batch: &Batch, output_places, tag)
     -> Future<Output = ()>             // Preserves the batch representation.
-Stream::message(&self, output_place, tag, length_hint)
-    -> Future<Output = Message>
+Stream::message(&self, tag, length_hint)
+    -> Future<Output = Message>      // Its digest arrives with its completion.
 
 Message::input(&mut self) -> Future<Output = Input>
 Input::bytes_mut(&mut self) -> &mut [u8]
@@ -233,7 +233,7 @@ The public C API is convenience-only in this proposal. Prepared bulk inputs, the
 ## Feedback requested
 
 1. Do the retained typed bulk calls and proposed `submit_batch` form cover your ready-work flow? Is `input().await` → write → `commit(n)` clear for incremental production?
-2. **Output ownership:** this sketch keeps caller-provided output places and a producer-thread handler, under the crash-only lifecycle above (an early end of the scope ends the process). The alternative is pipeline-owned output slots returned through completion handles, which cost a copy or a handle type and remove the borrowed places. Which fits your programs? That is a design alternative for review, not an additional supported API.
+2. **Output ownership:** incremental messages hand their digest over by value with the completion (the pipeline owns the result; one 32-byte copy), while batches keep caller-provided digest places under the crash-only lifecycle above. Does that split fit your programs?
 3. Are the byte/message budgets and advisory total-length hint enough to predict and control resource use? An incorrect hint changes neither bytes consumed nor end-of-message behavior.
 4. Which concrete receive/generate workflow would make you choose this pipeline over the convenience Hasher or direct prepared-bulk calls?
 
