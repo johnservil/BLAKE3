@@ -264,6 +264,10 @@ mod finish_sync {
 }
 #[cfg(feature = "std")]
 mod finish;
+// Reservation ownership is being vetted against real workers before the
+// incremental stream exposes it. The released paths retain their layout.
+#[cfg(all(test, feature = "std"))]
+mod admission;
 /// The primitives src/park.rs runs on: the standard library's here, and
 /// Shuttle's in tests/shuttle_park.rs, which compiles that file beside its
 /// own `park_sync`.

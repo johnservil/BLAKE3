@@ -1102,6 +1102,14 @@ pub(crate) mod sources {
             self.finish.finished(n);
         }
 
+        /// The prototype's scope boundary: all published actions finish
+        /// before their producer's borrowed contexts go away.
+        #[cfg(test)]
+        pub(crate) fn drain_actions(&self) {
+            self.finish.own();
+            self.finish.wait(self.finish.published.load(Ordering::SeqCst), || false);
+        }
+
         /// Wait until `finished` reaches `target`: polling for
         /// SPIN_BEFORE_SLEEP, then parked until the worker finishing the
         /// last piece unparks this thread.
@@ -1401,6 +1409,10 @@ pub(crate) const TASK_LEN: usize = 64 * CHUNK_LEN;
 /// their slots, their digests at `out`. Then it counts down `left`; the
 /// stream keeps the bytes, `out`, and `left` in place until `left` is zero.
 pub(crate) struct Task {
+    // Prototype action owns its input lease and completes its handoff. It
+    // runs on this same source/pool; no second worker engine is introduced.
+    #[cfg(test)]
+    pub(crate) action: Option<(unsafe fn(*mut (), Platform), *mut ())>,
     pub(crate) input: *const u8,
     pub(crate) len: usize,
     pub(crate) counter: u64,
@@ -1430,7 +1442,9 @@ pub(crate) struct Member {
 
 const NO_MEMBER: Member = Member { input: core::ptr::null(), len: 0, out: core::ptr::null_mut() };
 
-// Sound: a task's pointers stay valid until its `left` reaches zero (above).
+// Sound: ordinary task pointers stay valid until left reaches zero. A
+// prototype action holds its context through its source completion barrier;
+// it counts completion as its last access, as documented on drain_actions.
 unsafe impl Send for Task {}
 
 impl Task {
@@ -1438,6 +1452,8 @@ impl Task {
     /// destinations still to fill in.
     pub(crate) fn of(input: &[u8], counter: u64) -> Task {
         Task {
+            #[cfg(test)]
+            action: None,
             input: input.as_ptr(),
             len: input.len(),
             counter,
@@ -1462,6 +1478,13 @@ impl Task {
     /// values; for any other, its chaining value (first 32 bytes). Then
     /// count down.
     pub(crate) fn run(self, platform: Platform) {
+        #[cfg(test)]
+        if let Some((run, context)) = self.action {
+            // Sound: the producer holds the action's context through the
+            // source's completion barrier, as it holds ordinary task data.
+            unsafe { run(context, platform) };
+            return;
+        }
         if self.members > 0 {
             self.run_members(platform);
             // Sound: the stream keeps `left` in place until it is zero.

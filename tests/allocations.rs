@@ -101,3 +101,38 @@ fn single_threaded_calls_allocate_as_the_memory_section_says() {
     let bytes = allocated(|| throughput::hash_each(Mode::Plain, &longs, &mut digests));
     assert!(bytes <= 40 * (32 * 5 + 128), "hash_each of 40 messages of 5 chunks: {bytes} B");
 }
+
+// The prototype's actual admission source uses the same counting allocator.
+mod finish_sync {
+    pub use std::sync::Mutex;
+}
+#[path = "../src/admission.rs"]
+mod admission;
+
+#[test]
+fn resource_admission_allocates_nothing_when_ready_or_waiting() {
+    use core::{
+        future::Future,
+        task::{Context, Poll},
+    };
+    let pool = admission::Pool::new(vec![17]);
+    let mut cx = Context::from_waker(std::task::Waker::noop());
+    let bytes = allocated(|| {
+        for _ in 0..1000 {
+            let mut immediate = std::pin::pin!(pool.acquire());
+            let held = match immediate.as_mut().poll(&mut cx) {
+                Poll::Ready(value) => value,
+                Poll::Pending => panic!("the buffer is free"),
+            };
+            let mut waiting = std::pin::pin!(pool.acquire());
+            assert!(waiting.as_mut().poll(&mut cx).is_pending());
+            drop(held);
+            let returned = match waiting.as_mut().poll(&mut cx) {
+                Poll::Ready(value) => value,
+                Poll::Pending => panic!("the buffer is reserved"),
+            };
+            assert_eq!(*returned, 17);
+        }
+    });
+    assert_eq!(bytes, 0, "ready, pending, notification and return use existing storage");
+}

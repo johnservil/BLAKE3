@@ -1039,6 +1039,12 @@ impl<D> Drop for Stream<'_, D> {
     }
 }
 
+// The new ownership path is exercised on this same source and worker pool
+// before its frontend replaces the synchronous submission frontend.
+#[cfg(test)]
+#[path = "stream_prototype.rs"]
+mod prototype;
+
 #[cfg(test)]
 mod test {
     use super::*;

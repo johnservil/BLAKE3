@@ -1,0 +1,228 @@
+//! Reserved resources for the stream's producer: a returned resource goes
+//! straight to the oldest waiter, before its notification. A caller that
+//! resumes owns its resource, independently of what other producers do.
+//!
+//! The future holds its own queue node. Pinning keeps that node in place;
+//! cancellation unlinks it under the same mutex that grants resources.
+//! The pool allocates its resource list in new; waiting uses the caller's
+//! future node. It makes no per-request allocation.
+//!
+//! Finish counts completed work; this pool transfers ownership of individual
+//! resources. The two predicates differ. Both compile their actual source
+//! against Shuttle's primitives for the handshake tests.
+
+use super::finish_sync::Mutex;
+use core::cell::UnsafeCell;
+use core::future::Future;
+use core::marker::PhantomPinned;
+use core::ops::{Deref, DerefMut};
+use core::pin::Pin;
+use core::ptr;
+use core::task::{Context, Poll, Waker};
+
+pub(crate) struct Pool<T> {
+    state: Mutex<State<T>>,
+}
+
+struct State<T> {
+    free: Vec<T>,
+    first: *mut Node<T>,
+    last: *mut Node<T>,
+}
+
+struct Node<T> {
+    previous: *mut Node<T>,
+    next: *mut Node<T>,
+    queued: bool,
+    granted: Option<T>,
+    waker: Option<Waker>,
+}
+
+// Sound: a queued node is pinned, alive through its unlink, and reached
+// only under state. A resource crosses threads only when T permits it.
+unsafe impl<T: Send> Send for State<T> {}
+
+pub(crate) struct Acquire<'a, T> {
+    pool: &'a Pool<T>,
+    node: UnsafeCell<Node<T>>,
+    completed: bool,
+    _pin: PhantomPinned,
+}
+
+// Sound: the node is private before its first poll. Once pinned, every
+// access to it uses the pool's mutex, including grant and cancellation.
+unsafe impl<T: Send> Send for Acquire<'_, T> {}
+
+pub(crate) struct Lease<'a, T> {
+    pool: &'a Pool<T>,
+    value: Option<T>,
+}
+
+impl<T> Pool<T> {
+    /// The fixed, nonempty set of resources this pool circulates.
+    pub(crate) fn new(resources: Vec<T>) -> Self {
+        assert!(!resources.is_empty(), "a resource pool has capacity");
+        Self { state: Mutex::new(State { free: resources, first: ptr::null_mut(), last: ptr::null_mut() }) }
+    }
+
+    pub(crate) fn acquire(&self) -> Acquire<'_, T> {
+        Acquire {
+            pool: self,
+            node: UnsafeCell::new(Node { previous: ptr::null_mut(), next: ptr::null_mut(), queued: false, granted: None, waker: None }),
+            completed: false,
+            _pin: PhantomPinned,
+        }
+    }
+
+    fn give(&self, value: T) {
+        let wake = {
+            let mut state = self.state.lock().unwrap();
+            if state.first.is_null() {
+                state.free.push(value);
+                return;
+            }
+            let first = state.first;
+            // Sound: state owns access to this pinned, queued node. Unlink
+            // and store its grant before exposing the notification.
+            unsafe {
+                state.unlink(first);
+                (*first).granted = Some(value);
+                (*first).waker.take().expect("a queued request has its notification")
+            }
+        };
+        // Waker code runs outside the mutex, as do clone and drop below.
+        wake.wake();
+    }
+}
+
+impl<T> State<T> {
+    /// Caller holds the pool mutex; node is pinned and queued in this state.
+    unsafe fn unlink(&mut self, node: *mut Node<T>) {
+        unsafe {
+            debug_assert!((*node).queued);
+            let (previous, next) = ((*node).previous, (*node).next);
+            if previous.is_null() {
+                self.first = next;
+            } else {
+                (*previous).next = next;
+            }
+            if next.is_null() {
+                self.last = previous;
+            } else {
+                (*next).previous = previous;
+            }
+            (*node).queued = false;
+            (*node).previous = ptr::null_mut();
+            (*node).next = ptr::null_mut();
+        }
+    }
+
+    /// Caller holds the pool mutex; node is pinned and belongs to this request.
+    unsafe fn take(&mut self, node: *mut Node<T>) -> Option<T> {
+        unsafe {
+            if let Some(value) = (*node).granted.take() {
+                return Some(value);
+            }
+            if (*node).queued {
+                return None;
+            }
+        }
+        debug_assert!(self.first.is_null() || self.free.is_empty(), "waiting requests receive returned resources first");
+        self.free.pop()
+    }
+}
+
+impl<'a, T> Future for Acquire<'a, T> {
+    type Output = Lease<'a, T>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        // Sound: neither this projection nor any operation below moves node.
+        let this = unsafe { self.get_unchecked_mut() };
+        assert!(!this.completed, "a completed resource request is consumed");
+        let node = this.node.get();
+        {
+            let mut state = this.pool.state.lock().unwrap();
+            // Sound: all node access uses this mutex, also on the fast path.
+            if let Some(value) = unsafe { state.take(node) } {
+                this.completed = true;
+                let old = unsafe { (*node).waker.take() };
+                drop(state);
+                drop(old);
+                return Poll::Ready(Lease { pool: this.pool, value: Some(value) });
+            }
+            if unsafe { (*node).waker.as_ref().is_some_and(|w| w.will_wake(cx.waker())) } {
+                return Poll::Pending;
+            }
+        }
+        let new_waker = cx.waker().clone();
+        let mut state = this.pool.state.lock().unwrap();
+        // Capacity may have returned while the notification was cloned.
+        // Sound: the same mutex protects this recheck and queue insertion.
+        if let Some(value) = unsafe { state.take(node) } {
+            this.completed = true;
+            let old = unsafe { (*node).waker.take() };
+            drop(state);
+            drop(old);
+            drop(new_waker);
+            return Poll::Ready(Lease { pool: this.pool, value: Some(value) });
+        }
+        let old = unsafe {
+            if !(*node).queued {
+                (*node).previous = state.last;
+                if state.last.is_null() {
+                    state.first = node;
+                } else {
+                    (*state.last).next = node;
+                }
+                state.last = node;
+                (*node).queued = true;
+            }
+            (*node).waker.replace(new_waker)
+        };
+        drop(state);
+        drop(old);
+        Poll::Pending
+    }
+}
+
+impl<T> Drop for Acquire<'_, T> {
+    fn drop(&mut self) {
+        if self.completed {
+            return;
+        }
+        let node = self.node.get();
+        let (value, wake) = {
+            let mut state = self.pool.state.lock().unwrap();
+            // Sound: Drop keeps the node alive until it has been unlinked.
+            unsafe {
+                if (*node).queued {
+                    state.unlink(node);
+                }
+                ((*node).granted.take(), (*node).waker.take())
+            }
+        };
+        drop(wake);
+        if let Some(value) = value {
+            self.pool.give(value);
+        }
+    }
+}
+
+impl<T> Deref for Lease<'_, T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        self.value.as_ref().unwrap()
+    }
+}
+
+impl<T> DerefMut for Lease<'_, T> {
+    fn deref_mut(&mut self) -> &mut T {
+        self.value.as_mut().unwrap()
+    }
+}
+
+impl<T> Drop for Lease<'_, T> {
+    fn drop(&mut self) {
+        self.pool.give(self.value.take().unwrap());
+    }
+}
