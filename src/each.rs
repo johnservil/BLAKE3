@@ -118,8 +118,15 @@ pub fn finalize_each(hashers: &[Hasher], which: &[usize], out: &mut [[u8; OUT_LE
 unsafe fn finalize_groups<const W: usize>(hashers: &[Hasher], which: &[usize], out: &mut [[u8; OUT_LEN]]) {
     for (which, out) in which.chunks(W).zip(out.chunks_mut(W)) {
         if which.len() == W {
-            let inputs: Option<arrayvec::ArrayVec<_, W>> = which.iter().map(|&i| crate::ffi_output::input(&hashers[i])).collect();
-            if let Some(inputs) = inputs {
+            let mut inputs = arrayvec::ArrayVec::<_, W>::new();
+            for &i in which {
+                if let Some(input) = crate::ffi_output::input(&hashers[i]) {
+                    inputs.push(input);
+                } else {
+                    break;
+                }
+            }
+            if inputs.len() == W {
                 unsafe { crate::ffi_output::hash_group::<W>(inputs.as_slice().try_into().unwrap(), out) };
                 continue;
             }
