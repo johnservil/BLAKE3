@@ -672,9 +672,14 @@ mod test {
         };
         #[cfg(all(blake3_avx512_ffi, target_os = "linux"))]
         let expected = if crate::ffi_output::lanes(Platform::detect_unchecked()) != 0 {
-            let entry = crate::ffi_output::entry(Platform::detect_unchecked()) as usize;
-            assert!(crate::RAN_ENTRIES.with(|r| r.borrow().contains(&entry)), "startup left out batched output compression");
-            expected + 1
+            let maximum = crate::ffi_output::lanes(Platform::detect_unchecked());
+            for width in [8, 16] {
+                if width <= maximum && (width == 16 || crate::platform::avx2_detected()) {
+                    let entry = crate::ffi_output::entry(width) as usize;
+                    assert!(crate::RAN_ENTRIES.with(|r| r.borrow().contains(&entry)), "startup left out compression width {width}");
+                }
+            }
+            expected + if maximum == 16 && crate::platform::avx2_detected() { 2 } else { 1 }
         } else {
             expected
         };

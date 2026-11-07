@@ -186,14 +186,17 @@ fn self_test_shape(mut hash: impl FnMut(&[Input<'_>; 16], &mut [[u8; OUT_LEN]]))
 fn check_self_test(answer: u64) {
     assert_eq!(answer, SELF_TEST_EXPECTED, "blake3-servil startup self-test failed: sixteen root outputs");
 }
+unsafe fn hash_eight_groups(inputs: &[Input<'_>; 16], out: &mut [[u8; OUT_LEN]]) {
+    for (inputs, out) in inputs.chunks_exact(8).zip(out.chunks_mut(8)) {
+        unsafe { hash_group::<8>(inputs.try_into().unwrap(), out) };
+    }
+}
 unsafe fn hash_on_platform(platform: Platform, inputs: &[Input<'_>; 16], out: &mut [[u8; OUT_LEN]]) {
     if lanes(platform) == 16 {
         unsafe { hash_group::<16>(inputs, out) };
     } else {
         assert_eq!(lanes(platform), 8);
-        for (inputs, out) in inputs.chunks_exact(8).zip(out.chunks_mut(8)) {
-            unsafe { hash_group::<8>(inputs.try_into().unwrap(), out) };
-        }
+        unsafe { hash_eight_groups(inputs, out) };
     }
 }
 pub(crate) fn self_test(platform: Platform) -> usize {
@@ -203,13 +206,18 @@ pub(crate) fn self_test(platform: Platform) -> usize {
     let answer = self_test_shape(|inputs, out| {
         // Sound: initialize detected this platform before testing its kernels.
         unsafe { hash_on_platform(platform, inputs, out) };
+        if lanes(platform) == 16 && crate::platform::avx2_detected() {
+            let mut eight = [[0u8; OUT_LEN]; 16];
+            unsafe { hash_eight_groups(inputs, &mut eight) };
+            check_self_test(crate::self_test::fold(eight.as_flattened()));
+        }
     });
     check_self_test(answer);
-    1
+    if lanes(platform) == 16 && crate::platform::avx2_detected() { 2 } else { 1 }
 }
 #[cfg(test)]
-pub(crate) fn entry(platform: Platform) -> *const () {
-    if lanes(platform) == 8 { blake3_servil_output8 as *const () } else { blake3_servil_output16 as *const () }
+pub(crate) fn entry(width: usize) -> *const () {
+    if width == 8 { blake3_servil_output8 as *const () } else { blake3_servil_output16 as *const () }
 }
 
 #[cfg(test)]
@@ -260,6 +268,11 @@ mod tests {
                 let mut output = Guarded::new(16 * OUT_LEN, at_end);
                 let guarded_out = output.bytes().as_chunks_mut::<OUT_LEN>().0;
                 unsafe { hash_on_platform(Platform::detect(), descriptors, guarded_out) };
+                let expected = crate::self_test::fold(guarded_out.as_flattened());
+                if crate::platform::avx2_detected() {
+                    unsafe { hash_eight_groups(descriptors, guarded_out) };
+                    assert_eq!(crate::self_test::fold(guarded_out.as_flattened()), expected);
+                }
                 out.copy_from_slice(guarded_out);
             });
             assert_eq!(answer, SELF_TEST_EXPECTED, "guard placement at_end={at_end}");
@@ -274,7 +287,7 @@ mod tests {
     #[test]
     fn incremental_roots_batch_all_modes_and_selected_indices() {
         crate::initialize();
-        for count in [0usize, 1, 7, 8, 9, 15, 16, 17, 31, 32, 65] {
+        for count in [0usize, 1, 7, 8, 9, 15, 16, 17, 23, 24, 25, 31, 32, 65] {
             let mut hashers = Vec::new();
             let mut expected = Vec::new();
             for i in 0..count {
@@ -299,9 +312,17 @@ mod tests {
             crate::each::finalize_each(&hashers, &which, &mut out);
             let wanted: Vec<_> = which.iter().map(|&i| expected[i]).collect();
             assert_eq!(out, wanted);
-            let reached = crate::RAN_ENTRIES.with(|r| r.borrow().contains(&(entry(Platform::detect()) as usize)));
-            let width = lanes(Platform::detect());
-            assert_eq!(reached, width != 0 && count >= width);
+            let maximum = lanes(Platform::detect());
+            for width in [8, 16] {
+                let reached = crate::RAN_ENTRIES.with(|r| r.borrow().contains(&(entry(width) as usize)));
+                let expected = match (maximum, width) {
+                    (16, 16) => count >= 16,
+                    (16, 8) => count % 16 >= 8 && crate::platform::avx2_detected(),
+                    (8, 8) => count >= 8,
+                    _ => false,
+                };
+                assert_eq!(reached, expected, "maximum={maximum} count={count} width={width}");
+            }
             crate::each::finalize_each(&hashers, &which, &mut out);
             assert_eq!(out, wanted, "finalization leaves the input states reusable");
             if count > 0 {
@@ -402,6 +423,8 @@ mod tests {
         crate::RAN_ENTRIES.with(|r| r.borrow_mut().clear());
         crate::each::finalize_each(&hashers, &which, &mut out);
         assert_eq!(out, expected);
-        assert!(!crate::RAN_ENTRIES.with(|r| r.borrow().contains(&(entry(Platform::detect()) as usize))));
+        for width in [8, 16] {
+            assert!(!crate::RAN_ENTRIES.with(|r| r.borrow().contains(&(entry(width) as usize))));
+        }
     }
 }

@@ -98,8 +98,20 @@ pub fn finalize_each(hashers: &[Hasher], which: &[usize], out: &mut [[u8; OUT_LE
     if which.len() >= 8 {
         match Platform::detect() {
             // Sound: each detected platform supplies its group's ISA.
-            Platform::AVX512 if which.len() >= 16 => {
-                unsafe { finalize_groups::<16>(hashers, which, out) };
+            Platform::AVX512 => {
+                let full = which.len() / 16 * 16;
+                let (wide, tail) = which.split_at(full);
+                let (wide_out, tail_out) = out.split_at_mut(full);
+                if !wide.is_empty() {
+                    unsafe { finalize_groups::<16>(hashers, wide, wide_out) };
+                }
+                if !tail.is_empty() {
+                    if crate::platform::avx2_detected() {
+                        unsafe { finalize_groups::<8>(hashers, tail, tail_out) };
+                    } else {
+                        unsafe { finalize_groups::<16>(hashers, tail, tail_out) };
+                    }
+                }
                 return;
             }
             Platform::AVX2 => {
@@ -150,7 +162,8 @@ unsafe fn finalize_groups<const W: usize>(hashers: &[Hasher], which: &[usize], o
 fn update_turn(hashers: &mut [Hasher], pieces: &[(usize, &[u8])], pooled: bool) {
     #[cfg(all(blake3_avx512_ffi, target_os = "linux"))]
     let pieces = if hashers.len() >= 8 {
-        let width = crate::ffi_output::lanes(Platform::detect());
+        let maximum = crate::ffi_output::lanes(Platform::detect());
+        let width = if crate::platform::avx2_detected() { maximum.min(8) } else { maximum };
         if width != 0 && hashers.len() >= width {
             let mut gathered = 0;
             while gathered < pieces.len() && crate::ffi_output::gather_first(&mut hashers[pieces[gathered].0], pieces[gathered].1) {
