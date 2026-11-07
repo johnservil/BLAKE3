@@ -9,6 +9,24 @@ BLAKE3-Servil has two intended interfaces:
 
 The [contract proposal](https://github.com/servil-software-factory/BLAKE3/issues/267) specifies behavior. The [implementation prototype](https://github.com/servil-software-factory/BLAKE3/pull/272) exercises reservations and worker handoff.
 
+## API combinations
+
+Convenience is tuned for occasional hashing amid other work. Throughput is tuned for repeated hashing. Its direct calls offer caller-thread and multithread-capable forms independently of the background pipeline.
+
+| Your work / call family | Tuned for | Caller-thread entry | Workers / background entry |
+|---|---|---|---|
+| Ordinary bytes, one message | Occasional / cold | `convenience::hash`, `hash_with`, `hash_xof` | — |
+| Ordinary bytes arriving in pieces | Occasional / convenient incremental state | `convenience::Hasher` **(proposed move)** | — |
+| Repeated aligned messages | Repeated / warm | `throughput::hash` | `throughput::hash_multithreaded` |
+| Equal-length messages in a `Batch` | Repeated / warm, side-by-side hashing | `throughput::hash_many` | `throughput::hash_many_multithreaded` |
+| Mixed-length collection in `Block`s | Repeated / warm | `throughput::hash_each` | `throughput::hash_each_multithreaded` |
+| Read/generate complete messages, batches, or incremental pieces | Ongoing production overlapped with hashing | — | `throughput::Stream`: typed `submit` / `submit_batch`, or message `input` / `commit` **(proposed forms)** |
+
+- The first row's three functions are in `convenience`. Batching and library-managed parallelism belong to throughput. Its direct calls and prepared types already exist and are retained.
+- Multithread-capable means the call may use workers where that helps. It still completes synchronously. Initialize those entry points with `initialize_multithreaded`.
+- The background stream lets the producer continue while hashing runs. It uses the same initialized worker pool, within its configured budget.
+- The current shared `throughput::Hasher` has hybrid tuning and parallel-update methods. The proposal splits that role into a convenience Hasher and throughput message handles. Grouped incremental Hasher operations need a settled migration path, as discussed below.
+
 ## Prepared inputs stay part of throughput
 
 The throughput interface carries layout guarantees in types:
