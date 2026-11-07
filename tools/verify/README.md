@@ -18,6 +18,7 @@ Commands:
     python3 tools/verify/prove_x86.py [CASE...]         # the x86-64 kernels: compressions, hash_many at fixed counts, xof_many, the chunk root, the partial pass and the wide kernels (390 cases; --representative: 203 of them)
     python3 tools/verify/prove_x86_loop.py              # hash_many at every input count, by induction (51 cases)
     python3 tools/verify/prove_output.py                # 16 independent root outputs, per-lane CV/block/length/flags; four fault controls
+    python3 tools/verify/prove_output8.py               # 8 independent AVX2 CV/root outputs, read-only parameter block; four fault controls
     python3 tools/verify/cross_check_x86.py             # the x86-64 model against the CPU (needs an x86-64 CPU; AVX-512 forms need one with AVX-512)
     sh tools/verify/long-proofs.sh [COMMIT]             # the proofs, the Arm CPU cross-check and the controls together (Isla and the x86 CPU check apart); posts the commit's "long proofs" status, from an earlier run when the proofs' inputs (c/, c2sp/, tools/verify/, the NEON generator) are the same
 
@@ -230,6 +231,12 @@ from the host's memory. `--help` describes the command; with no case list
 it runs the whole matrix, which `cases()` enumerates in one place.
 
 ## Batched root outputs
+
+`prove_output8.py` checks the AVX2 single-block output kernel with eight
+independent CVs, blocks, byte lengths and flags. The 384-byte word-major parameter
+block is read-only; outputs are eight canonical CVs or digests. Its four fault
+controls select the wrong flags or CV, overread a block and omit the last output.
+The generator reuses the existing partial kernel's seven-round emitter.
 
 `prove_output.py` checks the single-block root-output kernel with an independent
 arbitrary CV, block, byte length and flags for each of sixteen lanes. Every lane

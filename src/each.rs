@@ -96,30 +96,40 @@ pub fn finalize_each(hashers: &[Hasher], which: &[usize], out: &mut [[u8; OUT_LE
     assert_eq!(which.len(), out.len(), "one digest per message named");
     #[cfg(all(blake3_avx512_ffi, target_os = "linux"))]
     if which.len() >= 8 {
-        let width = crate::ffi_output::lanes(Platform::detect());
-        if width != 0 && which.len() >= width {
-            for (which, out) in which.chunks(width).zip(out.chunks_mut(width)) {
-                if which.len() == width {
-                    // Sound: detected platform supplies the selected kernel's
-                    // ISA; fixed-width descriptors borrow readable data.
-                    let done = match width {
-                        16 => unsafe { crate::ffi_output::finalize_group::<16>(hashers, which.try_into().unwrap(), out) },
-                        8 => unsafe { crate::ffi_output::finalize_group::<8>(hashers, which.try_into().unwrap(), out) },
-                        _ => unreachable!(),
-                    };
-                    if done {
-                        continue;
-                    }
-                }
-                for (&i, digest) in which.iter().zip(out) {
-                    *digest = *hashers[i].finalize().as_bytes();
-                }
+        match Platform::detect() {
+            // Sound: each detected platform supplies its group's ISA.
+            Platform::AVX512 if which.len() >= 16 => {
+                unsafe { finalize_groups::<16>(hashers, which, out) };
+                return;
             }
-            return;
+            Platform::AVX2 => {
+                unsafe { finalize_groups::<8>(hashers, which, out) };
+                return;
+            }
+            _ => {}
         }
     }
     for (&i, out) in which.iter().zip(out) {
         *out = *hashers[i].finalize().as_bytes();
+    }
+}
+
+#[cfg(all(blake3_avx512_ffi, target_os = "linux"))]
+unsafe fn finalize_groups<const W: usize>(hashers: &[Hasher], which: &[usize], out: &mut [[u8; OUT_LEN]]) {
+    for (which, out) in which.chunks(W).zip(out.chunks_mut(W)) {
+        if which.len() == W {
+            let inputs: Option<arrayvec::ArrayVec<_, W>> = which.iter().map(|&i| crate::ffi_output::input(&hashers[i])).collect();
+            if let Some(inputs) = inputs {
+                unsafe { crate::ffi_output::hash_group::<W>(inputs.as_slice().try_into().unwrap(), out) };
+                continue;
+            }
+            if unsafe { crate::ffi_output::staged_group::<W>(hashers, which.try_into().unwrap(), out) } {
+                continue;
+            }
+        }
+        for (&i, digest) in which.iter().zip(out) {
+            *digest = *hashers[i].finalize().as_bytes();
+        }
     }
 }
 

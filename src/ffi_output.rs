@@ -59,7 +59,7 @@ pub(crate) fn input(hasher: &Hasher) -> Option<Input<'_>> {
 }
 
 /// Requires AVX2 for W=8, AVX-512F+VL for W=16, on Linux. Every descriptor
-/// borrows a readable padded block/CV, length0..64. All counters are zero.
+/// borrows a readable padded block/CV, length 0..64. All counters are zero.
 pub(crate) unsafe fn hash_group<const W: usize>(inputs: &[Input<'_>; W], out: &mut [[u8; OUT_LEN]]) {
     assert_eq!(out.len(), W, "one compression output per lane");
     if W == 16 {
@@ -80,16 +80,6 @@ pub(crate) unsafe fn hash_group<const W: usize>(inputs: &[Input<'_>; W], out: &m
         // and the parameter layout and output size are checked above.
         unsafe { blake3_servil_output8(&p, out.as_mut_ptr().cast()) };
     }
-}
-
-#[inline]
-pub(crate) unsafe fn finalize_group<const W: usize>(hashers: &[Hasher], which: &[usize; W], out: &mut [[u8; OUT_LEN]]) -> bool {
-    let inputs: Option<arrayvec::ArrayVec<_, W>> = which.iter().map(|&i| input(&hashers[i])).collect();
-    if let Some(inputs) = inputs {
-        unsafe { hash_group::<W>(inputs.as_slice().try_into().unwrap(), out) };
-        return true;
-    }
-    unsafe { staged_group::<W>(hashers, which, out) }
 }
 
 /// Gather a bulk caller's first chunk without serial prefix compression.
@@ -114,7 +104,7 @@ pub(crate) fn gather_first(hasher: &mut Hasher, bytes: &[u8]) -> bool {
     true
 }
 
-/// Finalize sixteen first-chunk states whose uncompressed suffixes wait in
+/// Finalize a full SIMD group of first-chunk states whose uncompressed suffixes wait in
 /// their stages. Hashers remain immutable. Finished lanes keep their digest
 /// while longer lanes complete their prefix blocks.
 pub(crate) unsafe fn staged_group<const W: usize>(hashers: &[Hasher], which: &[usize; W], out: &mut [[u8; OUT_LEN]]) -> bool {

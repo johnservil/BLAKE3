@@ -58,5 +58,6 @@ for word in [0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a]:
     print('.long '+', '.join([hex(word)]*8))
 for name, shift in [('rot16',2),('rot8',1)]:
     print(f'.Lout8_{name}:')
-    print('.byte '+', '.join(str(4*(j//4)+(j+shift)%4) for j in range(16))*1+', '+', '.join(str(4*(j//4)+(j+shift)%4) for j in range(16)))
+    mask = [4*(j//4)+(j+shift)%4 for j in range(16)] * 2
+    print('.byte '+', '.join(map(str, mask)))
 print('.section .note.GNU-stack,"",@progbits')
