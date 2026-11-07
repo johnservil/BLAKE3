@@ -87,6 +87,9 @@ fn build_avx512_assembly() {
     // directives, so Linux, the one x86-64 target.
     if env::var("CARGO_CFG_TARGET_OS").unwrap() == "linux" {
         build.file("c/blake3_avx512_32.S");
+        if env::var_os("CARGO_FEATURE_STD").is_some() {
+            build.file("c/blake3_output16.S");
+        }
     }
     // Older versions of Clang require these flags, even for assembly. See
     // https://github.com/BLAKE3-team/BLAKE3/issues/79.
