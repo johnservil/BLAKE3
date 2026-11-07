@@ -569,6 +569,29 @@ mod test {
         input
     }
 
+    #[test]
+    #[cfg(feature = "std")]
+    fn finalization_clones_the_core_only_for_a_pending_stage() {
+        crate::initialize();
+        for len in [0usize, 64, 1024, 2048, STAGE_LEN, 2 * STAGE_LEN] {
+            let bytes = vec![0xacu8; len];
+            let mut h = Hasher::new(Mode::Plain);
+            for part in bytes.chunks(17) {
+                h.update(part);
+            }
+            let expected = crate::test::official::hash(Mode::Plain, &bytes);
+            let clones = (h.staged != 0) as u64;
+            crate::COUNTED.with(|c| c[crate::Counted::StackClone as usize].set(0));
+            assert_eq!(h.finalize().as_bytes(), &expected);
+            assert_eq!(crate::COUNTED.with(|c| c[crate::Counted::StackClone as usize].get()), clones, "canonical len={len}");
+            crate::COUNTED.with(|c| c[crate::Counted::StackClone as usize].set(0));
+            let mut out = [0u8; 32];
+            h.finalize_xof().fill(&mut out);
+            assert_eq!(out, expected);
+            assert_eq!(crate::COUNTED.with(|c| c[crate::Counted::StackClone as usize].get()), clones, "xof len={len}");
+        }
+    }
+
     /// A fresh hasher's first chunk and a whole group from a 16 KiB
     /// boundary go to the core unstaged; shorter updates stage up to the
     /// next boundary, where the stage goes to the core. Staging gives the

@@ -343,12 +343,14 @@ pub(crate) enum Counted {
     RootBlock = 2,
     /// One group of short collection items hashed together by blocks.
     ByBlocksCall = 3,
+    /// A CV-stack clone, including the one inside HasherCore::clone.
+    StackClone = 4,
 }
 
 #[cfg(all(test, feature = "std"))]
 std::thread_local! {
     /// This thread's counts since the test last cleared them, by Counted.
-    pub(crate) static COUNTED: [core::cell::Cell<u64>; 4] = const { [const { core::cell::Cell::new(0) }; 4] };
+    pub(crate) static COUNTED: [core::cell::Cell<u64>; 5] = const { [const { core::cell::Cell::new(0) }; 5] };
 }
 
 /// Count one of `what`: in the tests' record, and nothing in any other
