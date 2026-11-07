@@ -12,7 +12,10 @@ use crate::admission::{Acquire, OwnedLease, Pool, initialized_mutex};
 use crate::incremental::{HasherCore, STAGE_LEN};
 use crate::lanes::{Task, sources::Source};
 use crate::platform::Platform;
-use crate::{CHUNK_LEN, CVWords, Hash, Mode, throughput::Block};
+use crate::{
+    CHUNK_LEN, CVWords, Hash, Mode, OUT_LEN,
+    throughput::{Batch, Block},
+};
 use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll};
@@ -182,6 +185,54 @@ impl Receiver {
         }
     }
 
+    /// Hash a prepared batch in its compact layout, in `place`s (one per
+    /// message). Completes at admission: a message-slot reservation and one
+    /// bounded batch job on the pool. Its result token resolves when workers
+    /// have written every digest. Borrowing keeps the batch and places in
+    /// place until then; the result's lifetime carries that borrow.
+    pub(super) fn submit_batch<'a>(&self, batch: &'a Batch<'a>, places: &'a mut [[u8; OUT_LEN]]) -> impl Future<Output = BatchCompletion<'a>> + 'a {
+        assert_eq!(batch.len(), places.len(), "one place per batch message");
+        let core = self.core.clone();
+        async move {
+            let slot = core.message_slots.clone().acquire_owned().await;
+            let index = *slot;
+            let mut output = core.outputs[index].clone().acquire_owned().await;
+            *output = Outcome::Pending;
+            let id = {
+                let mut state = core.messages[index].lock().unwrap();
+                assert!(state.queue.is_empty() && state.slot.is_none(), "a returned message slot has retired its work");
+                state.generation = state.generation.checked_add(1).expect("message generations fit u64");
+                state.writer_open = false;
+                state.ended = true;
+                state.aborted = false;
+                state.done = false;
+                state.receiver_gone = false;
+                state.slot = Some(slot);
+                state.output = Some(output);
+                Id { index, generation: state.generation }
+            };
+            let job = Box::new(BatchJob {
+                owner: core.clone(),
+                id,
+                input: Block::bytes(batch.blocks()).as_ptr(),
+                input_len: Block::bytes(batch.blocks()).len(),
+                message_len: batch.message_len(),
+                out: places.as_mut_ptr(),
+                count: places.len(),
+            });
+            let context = Box::into_raw(job);
+            let mut task = Task::of(&[], 0);
+            task.action = Some((execute_batch, context.cast()));
+            core.source.publish(task);
+            core.source.wake_for_waiting();
+            BatchCompletion {
+                request: core.outputs[id.index].clone().acquire_owned(),
+                owner: CompletionOwner { core, id, resolved: false },
+                borrow: core::marker::PhantomData,
+            }
+        }
+    }
+
     /// Explicit test scope boundary, using the source's existing finish line.
     pub(super) fn drain(&self) {
         assert!(self.core.messages.iter().all(|s| !s.lock().unwrap().writer_open), "end or abort every message before draining");
@@ -315,6 +366,76 @@ impl Message {
         let request = core.outputs[id.index].clone().acquire_owned();
         Completion { request, owner: CompletionOwner { core, id, resolved: false } }
     }
+}
+
+/// A batch's bounded job: whole prepared messages and their digest places,
+/// borrowed for the completion's lifetime.
+struct BatchJob {
+    owner: Arc<Core>,
+    id: Id,
+    input: *const u8,
+    input_len: usize,
+    message_len: usize,
+    out: *mut [u8; OUT_LEN],
+    count: usize,
+}
+
+/// A batch's result. Dropping it before completion cancels the wait only.
+/// The borrowed batch and places must stay in place until the receiver
+/// drains: a test that panicked before draining let a worker write into a
+/// freed stack frame. The public frontend needs the stream scope's
+/// abort-on-unwind rule, or owned output slots (docs/api-sketch.md, item 2).
+pub(super) struct BatchCompletion<'a> {
+    request: Acquire<Arc<Pool<Outcome>>, Outcome>,
+    owner: CompletionOwner,
+    borrow: core::marker::PhantomData<&'a mut [u8]>,
+}
+impl Future for BatchCompletion<'_> {
+    type Output = BatchFinished;
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<BatchFinished> {
+        // Sound: request stays pinned; the owner is Unpin and changes only
+        // after the result transfers.
+        let this = unsafe { self.get_unchecked_mut() };
+        let request = unsafe { Pin::new_unchecked(&mut this.request) };
+        match request.poll(cx) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(result) => {
+                this.owner.resolved = true;
+                assert!(matches!(*result, Outcome::Hashed(_)), "a batch job completes with its digests written");
+                Poll::Ready(BatchFinished { _result: result, _owner: ResultOwner { core: this.owner.core.clone(), id: this.owner.id } })
+            }
+        }
+    }
+}
+pub(super) struct BatchFinished {
+    _result: OwnedLease<Outcome>,
+    _owner: ResultOwner,
+}
+
+unsafe fn execute_batch(context: *mut (), platform: Platform) {
+    // Sound: the job box was published by submit_batch and is claimed by
+    // this one task. The batch and places outlive the receiver's drain.
+    let job = unsafe { Box::from_raw(context.cast::<BatchJob>()) };
+    let aborted = job.owner.messages[job.id.index].lock().unwrap().aborted;
+    if !aborted {
+        let input = unsafe { core::slice::from_raw_parts(job.input, job.input_len) };
+        let out = unsafe { core::slice::from_raw_parts_mut(job.out, job.count) };
+        crate::many::hash_many_on(input, job.message_len, &job.owner.key, job.owner.flags, out, platform);
+    }
+    let owner = job.owner.clone();
+    let id = job.id;
+    drop(job);
+    {
+        let mut state = owner.messages[id.index].lock().unwrap();
+        assert_eq!(state.generation, id.generation);
+        let mut output = state.output.take().expect("one completion token per batch");
+        *output = if aborted { Outcome::Aborted } else { Outcome::Hashed(Hash::from_bytes([0; 32])) };
+        state.done = true;
+        drop(state);
+        drop(output);
+    }
+    owner.finalize_if_idle(id);
+    owner.source.finished(1);
 }
 
 /// request drops before owner: unregister the result waiter before releasing
@@ -644,6 +765,55 @@ mod tests {
         let finished = run(next.end());
         assert_eq!(finished.hash().as_bytes(), &expected(Mode::Plain, b"after abort"));
         drop(finished);
+        receiver.drain();
+    }
+
+    /// A prepared batch keeps its layout: one admission, one job, every
+    /// digest written before its result resolves; message slots are shared
+    /// with incremental messages.
+    #[test]
+    fn a_prepared_batch_completes_as_one_group_beside_incremental_messages() {
+        let receiver = receiver(Mode::Plain, 2, 2);
+        let mut batch = Batch::new(100, 37);
+        for i in 0..batch.len() {
+            batch.set(i, &[i as u8; 100]);
+        }
+        let mut places = vec![[0u8; OUT_LEN]; batch.len()];
+        let mut message = run(receiver.message(None));
+        let gate = Gate::new();
+        message.hold_next(gate.clone());
+        feed(&mut message, b"incremental", 11);
+        let completion = message.end();
+        gate.started.wait();
+        // Admission first, then completion: every digest is written before
+        // the result resolves.
+        let admitted = run(receiver.submit_batch(&batch, &mut places));
+        drop(run(admitted));
+        for (i, place) in places.iter().enumerate() {
+            assert_eq!(place, &expected(Mode::Plain, &[i as u8; 100]), "message {i}");
+        }
+        gate.release.wait();
+        let finished = run(completion);
+        assert_eq!(finished.hash().as_bytes(), &expected(Mode::Plain, b"incremental"));
+        drop(finished);
+        receiver.drain();
+    }
+
+    /// An empty batch and a whole-block borrowed batch complete too.
+    #[test]
+    fn empty_and_borrowed_batches_complete() {
+        let receiver = receiver(Mode::Plain, 1, 1);
+        let empty = Batch::new(64, 0);
+        let mut no_places: [[u8; OUT_LEN]; 0] = [];
+        drop(run(run(receiver.submit_batch(&empty, &mut no_places))));
+        let mut blocks = vec![Block::ZERO; 8];
+        crate::test::paint_test_input(Block::bytes_mut(&mut blocks));
+        let borrowed = Batch::from_blocks(&blocks, 128);
+        let mut places = [[0u8; OUT_LEN]; 4];
+        drop(run(run(receiver.submit_batch(&borrowed, &mut places))));
+        for (i, place) in places.iter().enumerate() {
+            assert_eq!(place, &expected(Mode::Plain, &Block::bytes(&blocks)[i * 128..][..128]), "message {i}");
+        }
         receiver.drain();
     }
 
