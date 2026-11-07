@@ -964,7 +964,10 @@ pub(crate) mod sources {
         /// worker parked, a worker.
         pub(crate) fn publish(&self, task: Task) {
             let p = self.finish.published.load(Ordering::Relaxed);
-            debug_assert!(p - self.claimed.load(Ordering::Relaxed) < self.ring.len(), "a source's ring holds every task not yet taken");
+            // Every build: a task written over one not yet taken would be
+            // run as garbage (memory mismanagement, at the cost of a load
+            // and a comparison the debug check already made).
+            assert!(p - self.claimed.load(Ordering::Relaxed) < self.ring.len(), "a source's ring holds every task not yet taken");
             // Sound: slot p % len is free (its last task was taken), and
             // only this stream writes it.
             unsafe { (*self.ring[p % self.ring.len()].get()).write(task) };

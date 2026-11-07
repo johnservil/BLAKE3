@@ -121,7 +121,11 @@ impl Receiver {
         let (key, flags) = mode.key_and_flags();
         // Sources persist, as the existing registry requires. The eventual
         // frontend will reuse its storage pool; each test owns one source.
-        let source = Box::leak(Box::new(Source::new(buffers)));
+        // The ring holds every task that can be published before a worker
+        // claims it: a part per input buffer, and a batch job per message
+        // slot (a batch holds no buffer). The Mac's timing found the ring
+        // sized at `buffers` overflowing: a worker read a garbage task.
+        let source = Box::leak(Box::new(Source::new(buffers + messages)));
         let registration = source.register().expect("a source slot for this prototype");
         source.drain_actions(); // Initialize its platform completion metadata.
         let input = (0..buffers).map(|index| Buffer { index, blocks: vec![Block::ZERO; INPUT_BYTES / 64].into_boxed_slice() }).collect();
@@ -674,7 +678,7 @@ pub(super) mod tests {
     }
 
     /// Write `input` through `message` in pieces of up to `piece` bytes.
-    fn feed(message: &mut Message, input: &[u8], piece: usize) {
+    pub(super) fn feed(message: &mut Message, input: &[u8], piece: usize) {
         let mut at = 0;
         while at < input.len() {
             let mut room = run(message.input());
@@ -958,6 +962,43 @@ mod sketch {
         assert_eq!(receive(&receiver, &mut Reader { input: &input, at: 0, turn: 0, fail_at: Some(5) }), Err("connection reset"));
         let hash = receive(&receiver, &mut Reader { input: &input[..1000], at: 0, turn: 0, fail_at: None }).unwrap();
         assert_eq!(hash.as_bytes(), &expected(Mode::Plain, &input[..1000]));
+        receiver.close();
+    }
+}
+
+#[cfg(test)]
+mod ring_bound {
+    use super::*;
+
+    /// Every message slot can hold a batch job beside a full set of parts,
+    /// all published before a worker claims one: the ring holds them all.
+    /// The pool is held so that nothing is claimed while they publish.
+    #[test]
+    fn the_task_ring_holds_a_batch_per_message_beside_every_part() {
+        crate::initialize_multithreaded(core::num::NonZeroUsize::new(2));
+        let (buffers, messages) = (2, 3);
+        let receiver = Receiver::new(Mode::Plain, buffers, messages);
+        let gate = Gate::new();
+        // The worker takes the first part and waits at the gate; every
+        // later task stays published and unclaimed.
+        let mut held = tests::run(receiver.message(None));
+        held.hold_next(gate.clone());
+        tests::feed(&mut held, &[1; INPUT_BYTES], INPUT_BYTES);
+        gate.started.wait();
+        tests::feed(&mut held, &[2; INPUT_BYTES], INPUT_BYTES);
+        let batches: Vec<Batch<'static>> = (0..messages - 1).map(|_| Batch::new(64, 1)).collect();
+        let mut places = vec![[0u8; OUT_LEN]; messages - 1];
+        let mut done = Vec::new();
+        for (batch, place) in batches.iter().zip(places.iter_mut()) {
+            done.push(tests::run(receiver.submit_batch(batch, core::slice::from_mut(place))));
+        }
+        gate.release.wait();
+        for completion in done {
+            tests::run(completion).retire();
+        }
+        let finished = tests::run(held.end());
+        receiver.drain();
+        finished.retire();
         receiver.close();
     }
 }
