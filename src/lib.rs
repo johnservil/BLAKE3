@@ -1382,6 +1382,9 @@ impl OutputReader {
         // If we're partway through a block, try to get to a block boundary.
         if self.position_within_block != 0 {
             self.fill_one_block(&mut buf);
+            if buf.is_empty() {
+                return;
+            }
         }
 
         // The whole blocks at once (xof_many takes none as none), then the
