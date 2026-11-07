@@ -135,7 +135,7 @@ impl Hasher {
     }
 
     /// The bytes gathered in the stage.
-    fn staged_bytes(&self) -> &[u8] {
+    pub(crate) fn staged_bytes(&self) -> &[u8] {
         // Sound: the first `staged` bytes of the stage were written (gather).
         unsafe { core::slice::from_raw_parts(self.stage.as_ptr() as *const u8, self.staged) }
     }
