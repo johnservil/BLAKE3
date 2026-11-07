@@ -1234,11 +1234,15 @@ mod test {
         crate::test::paint_test_input(&mut input);
         gpu_ready(&input);
         let lens = [16 << 20; 4];
-        let (batches, reclaims) = (gpu_batches(), crate::gpu::test::RECLAIMS.load(Ordering::Relaxed));
+        let (batches, reclaims, feeds) = (gpu_batches(), crate::gpu::test::RECLAIMS.load(Ordering::Relaxed), crate::gpu::test::FEEDS.load(Ordering::Relaxed));
         crate::gpu::test::HOLD.store(true, Ordering::Release);
         let got = gpu_stream(Mode::Plain, &input, &lens, usize::MAX, false);
         crate::gpu::test::HOLD.store(false, Ordering::Release);
-        assert!(gpu_batches() > batches, "the GPU took batches");
+        assert!(
+            gpu_batches() > batches,
+            "the GPU took batches; {} feed attempts found a free command (a positive count locates the failure in the source's task claim)",
+            crate::gpu::test::FEEDS.load(Ordering::Relaxed) - feeds
+        );
         assert!(crate::gpu::test::RECLAIMS.load(Ordering::Relaxed) > reclaims, "finish took the held batches back");
         for (i, got) in got.iter().enumerate() {
             assert_eq!(*got, crate::convenience::hash(gpu_message(&input, i, lens[i])), "message {i}");
