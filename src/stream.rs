@@ -841,7 +841,7 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
             // No new GPU batches at the end; and with nothing else to do,
             // the GPU's tasks in flight back to the pool (crate::gpu).
             if self.deliver() == 0 && !self.s.run_waiting() && !self.reclaim_at_finish() {
-                core::hint::spin_loop();
+                self.pause();
             }
         }
     }
@@ -862,8 +862,22 @@ impl<'env, D: FnMut(&'env mut [Hash])> Stream<'env, D> {
     /// pause.
     fn help(&mut self) {
         if self.deliver() == 0 && !self.feed() && !self.s.run_waiting() {
-            core::hint::spin_loop();
+            self.pause();
         }
+    }
+
+    /// The pause in `finish` and `help`, where nothing was handed back,
+    /// fed or run. With no slot, every task this stream hands over is
+    /// hashed on this thread before the call returns (and every caller
+    /// of `help` publishes its open task first), so a pause with nothing
+    /// done can never be woken: a broken invariant, stopped at once
+    /// (BLAKE3 #244; a hang is a failure, never a slow success).
+    fn pause(&self) {
+        assert!(
+            self.slot.is_some(),
+            "a stream with no slot can make no progress: its tasks hash on the calling thread, so nothing it waits for can finish"
+        );
+        core::hint::spin_loop();
     }
 
     /// Give the GPU a batch of the stream's tasks if it may take one now

@@ -20,3 +20,4 @@ src/lanes.rs	replace sources::run_one -> bool with true	1	as on aarch64: times o
 src/lanes.rs	replace splits -> bool with true	1	a hang the test tests/stream_collect_no_workers.rs showed: a stream on one CPU takes a slot and waits for workers that do not exist
 src/lanes.rs	replace worker_main with ()	1	no worker serves: the tests that wait for a worker to run a stream's task or to park wait until the clock; callers' own work stays right (gate16's logs)
 src/lib.rs	replace __all_workers_parked -> bool with false	1	a test-only hook (__all_workers_parked): a no that never turns yes, so the stream tests wait for every worker parked, forever
+src/stream.rs	replace Stream<'env, D>::help with ()	1	a hang the stream tests show: with no help, places in flight are never handed back, and reserve and finish wait for them
