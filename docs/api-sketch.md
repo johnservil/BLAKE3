@@ -193,7 +193,7 @@ a.abort();
 stream.finish().await;
 ```
 
-`ready` notifies the producer about completed work. `collect` invokes handlers for ready completions without waiting. Workers signal readiness and compute hashes. Completion handlers run when the producer collects or finishes.
+`ready` notifies the producer about completed work. `collect` invokes handlers for ready completions without waiting. Workers signal readiness and compute hashes. Completion handlers run on the producer's thread: when it collects or finishes, and while a `message()` or `submit_batch()` call waits for admission (a message slot returns through its completion, so the wait delivers what is ready, as today's stream hands places back while it waits for room).
 
 ## Provisional surface
 
