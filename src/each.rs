@@ -95,27 +95,28 @@ pub fn update_each_multithreaded(hashers: &mut [Hasher], pieces: &[(usize, &[u8]
 pub fn finalize_each(hashers: &[Hasher], which: &[usize], out: &mut [[u8; OUT_LEN]]) {
     assert_eq!(which.len(), out.len(), "one digest per message named");
     #[cfg(all(blake3_avx512_ffi, target_os = "linux"))]
-    if which.len() >= 16 && matches!(Platform::detect(), Platform::AVX512) {
-        for (which, out) in which.chunks(16).zip(out.chunks_mut(16)) {
-            if which.len() == 16 {
-                let inputs: Option<arrayvec::ArrayVec<_, 16>> = which.iter().map(|&i| crate::ffi_output::input(&hashers[i])).collect();
-                if let Some(inputs) = inputs {
-                    // Sound: the detected platform supplies AVX-512F+VL;
-                    // borrowed descriptors keep every block/CV readable.
-                    unsafe { crate::ffi_output::hash_group(inputs.as_slice().try_into().unwrap(), out) };
-                    continue;
+    if which.len() >= 8 {
+        let width = crate::ffi_output::lanes(Platform::detect());
+        if width != 0 && which.len() >= width {
+            for (which, out) in which.chunks(width).zip(out.chunks_mut(width)) {
+                if which.len() == width {
+                    // Sound: detected platform supplies the selected kernel's
+                    // ISA; fixed-width descriptors borrow readable data.
+                    let done = match width {
+                        16 => unsafe { crate::ffi_output::finalize_group::<16>(hashers, which.try_into().unwrap(), out) },
+                        8 => unsafe { crate::ffi_output::finalize_group::<8>(hashers, which.try_into().unwrap(), out) },
+                        _ => unreachable!(),
+                    };
+                    if done {
+                        continue;
+                    }
                 }
-                // Sound: this branch detected the kernel's ISA. Staged first
-                // chunks retain their digest as independently ending lanes.
-                if unsafe { crate::ffi_output::staged_group(hashers, which.try_into().unwrap(), out) } {
-                    continue;
+                for (&i, digest) in which.iter().zip(out) {
+                    *digest = *hashers[i].finalize().as_bytes();
                 }
             }
-            for (&i, digest) in which.iter().zip(out) {
-                *digest = *hashers[i].finalize().as_bytes();
-            }
+            return;
         }
-        return;
     }
     for (&i, out) in which.iter().zip(out) {
         *out = *hashers[i].finalize().as_bytes();
@@ -131,12 +132,17 @@ pub fn finalize_each(hashers: &[Hasher], which: &[usize], out: &mut [[u8; OUT_LE
 /// none is left.
 fn update_turn(hashers: &mut [Hasher], pieces: &[(usize, &[u8])], pooled: bool) {
     #[cfg(all(blake3_avx512_ffi, target_os = "linux"))]
-    let pieces = if hashers.len() >= 16 && matches!(Platform::detect(), Platform::AVX512) {
-        let mut gathered = 0;
-        while gathered < pieces.len() && crate::ffi_output::gather_first(&mut hashers[pieces[gathered].0], pieces[gathered].1) {
-            gathered += 1;
+    let pieces = if hashers.len() >= 8 {
+        let width = crate::ffi_output::lanes(Platform::detect());
+        if width != 0 && hashers.len() >= width {
+            let mut gathered = 0;
+            while gathered < pieces.len() && crate::ffi_output::gather_first(&mut hashers[pieces[gathered].0], pieces[gathered].1) {
+                gathered += 1;
+            }
+            &pieces[gathered..]
+        } else {
+            pieces
         }
-        &pieces[gathered..]
     } else {
         pieces
     };

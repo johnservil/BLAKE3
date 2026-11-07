@@ -89,6 +89,7 @@ fn build_avx512_assembly() {
         build.file("c/blake3_avx512_32.S");
         if env::var_os("CARGO_FEATURE_STD").is_some() {
             build.file("c/blake3_output16.S");
+            build.file("c/blake3_output8.S");
         }
     }
     // Older versions of Clang require these flags, even for assembly. See

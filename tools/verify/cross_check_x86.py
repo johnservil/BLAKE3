@@ -28,7 +28,7 @@ from z3 import BitVecVal
 import x86
 import aarch64
 
-FILES = ("sse41", "avx2", "avx512", "wide", "output")  # wide/output: generated AVX-512 kernels
+FILES = ("sse41", "avx2", "avx512", "wide", "output", "output8")  # wide/output: generated AVX-512 kernels
 
 
 def forms(code):

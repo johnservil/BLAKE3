@@ -671,9 +671,9 @@ mod test {
             expected
         };
         #[cfg(all(blake3_avx512_ffi, target_os = "linux"))]
-        let expected = if matches!(Platform::detect_unchecked(), Platform::AVX512) {
-            let entry = crate::ffi_output::entry() as usize;
-            assert!(crate::RAN_ENTRIES.with(|r| r.borrow().contains(&entry)), "startup left out root output16");
+        let expected = if crate::ffi_output::lanes(Platform::detect_unchecked()) != 0 {
+            let entry = crate::ffi_output::entry(Platform::detect_unchecked()) as usize;
+            assert!(crate::RAN_ENTRIES.with(|r| r.borrow().contains(&entry)), "startup left out batched output compression");
             expected + 1
         } else {
             expected

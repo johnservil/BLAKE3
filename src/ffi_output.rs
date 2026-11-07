@@ -1,4 +1,4 @@
-//! Sixteen independent counter-zero compressions, one full-round compression
+//! Eight or sixteen independent counter-zero compressions, one full-round compression
 //! per lane. Descriptors borrow blocks and CVs; keys, lengths and flags may
 //! differ between lanes. ROOT selects root digests; other blocks produce CVs.
 #[cfg(test)]
@@ -19,8 +19,30 @@ const _: () = {
     assert!(core::mem::offset_of!(Input<'static>, len) == 16);
     assert!(core::mem::offset_of!(Input<'static>, flags) == 17);
 };
+#[repr(C, align(64))]
+struct Params8 {
+    msg: [*const u8; 8],
+    cvs: [[u32; 8]; 8],
+    lens: [u32; 8],
+    flags: [u32; 8],
+}
+const _: () = {
+    assert!(core::mem::size_of::<Params8>() == 384);
+    assert!(core::mem::offset_of!(Params8, cvs) == 64);
+    assert!(core::mem::offset_of!(Params8, lens) == 320);
+    assert!(core::mem::offset_of!(Params8, flags) == 352);
+};
 unsafe extern "C" {
     fn blake3_servil_output16(inputs: *const Input<'_>, out: *mut u8);
+    fn blake3_servil_output8(params: *const Params8, out: *mut u8);
+}
+
+pub(crate) fn lanes(platform: Platform) -> usize {
+    match platform {
+        Platform::AVX512 => 16,
+        Platform::AVX2 => 8,
+        _ => 0,
+    }
 }
 
 /// A whole message still in its first chunk, with no staged suffix or
@@ -36,15 +58,38 @@ pub(crate) fn input(hasher: &Hasher) -> Option<Input<'_>> {
     })
 }
 
-/// Requires AVX-512F+VL on Linux. Each descriptor holds a readable padded
-/// block and CV; its block length is 0..64. Output holds sixteen CVs or root
-/// digests, according to each descriptor's flags. All counters are zero.
-pub(crate) unsafe fn hash_group(inputs: &[Input<'_>; 16], out: &mut [[u8; OUT_LEN]]) {
-    assert_eq!(out.len(), 16, "sixteen compression outputs");
-    crate::ran_kernel(blake3_servil_output16 as *const ());
-    // Sound: caller supplies the ISA; references and fixed descriptor count
-    // provide the readable data, and the checked output holds all stores.
-    unsafe { blake3_servil_output16(inputs.as_ptr(), out.as_mut_ptr().cast()) };
+/// Requires AVX2 for W=8, AVX-512F+VL for W=16, on Linux. Every descriptor
+/// borrows a readable padded block/CV, length0..64. All counters are zero.
+pub(crate) unsafe fn hash_group<const W: usize>(inputs: &[Input<'_>; W], out: &mut [[u8; OUT_LEN]]) {
+    assert_eq!(out.len(), W, "one compression output per lane");
+    if W == 16 {
+        crate::ran_kernel(blake3_servil_output16 as *const ());
+        // Sound: caller supplies the ISA; fixed descriptors and checked
+        // output provide readable inputs and room for every store.
+        unsafe { blake3_servil_output16(inputs.as_ptr(), out.as_mut_ptr().cast()) };
+    } else {
+        assert_eq!(W, 8, "eight or sixteen compression lanes");
+        let p = Params8 {
+            msg: core::array::from_fn(|i| inputs[i].block.as_ptr()),
+            cvs: core::array::from_fn(|w| core::array::from_fn(|i| inputs[i].cv[w])),
+            lens: core::array::from_fn(|i| inputs[i].len as u32),
+            flags: core::array::from_fn(|i| inputs[i].flags as u32),
+        };
+        crate::ran_kernel(blake3_servil_output8 as *const ());
+        // Sound: caller supplies AVX2; all borrowed blocks reach64bytes,
+        // and the parameter layout and output size are checked above.
+        unsafe { blake3_servil_output8(&p, out.as_mut_ptr().cast()) };
+    }
+}
+
+#[inline]
+pub(crate) unsafe fn finalize_group<const W: usize>(hashers: &[Hasher], which: &[usize; W], out: &mut [[u8; OUT_LEN]]) -> bool {
+    let inputs: Option<arrayvec::ArrayVec<_, W>> = which.iter().map(|&i| input(&hashers[i])).collect();
+    if let Some(inputs) = inputs {
+        unsafe { hash_group::<W>(inputs.as_slice().try_into().unwrap(), out) };
+        return true;
+    }
+    unsafe { staged_group::<W>(hashers, which, out) }
 }
 
 /// Gather a bulk caller's first chunk without serial prefix compression.
@@ -72,7 +117,7 @@ pub(crate) fn gather_first(hasher: &mut Hasher, bytes: &[u8]) -> bool {
 /// Finalize sixteen first-chunk states whose uncompressed suffixes wait in
 /// their stages. Hashers remain immutable. Finished lanes keep their digest
 /// while longer lanes complete their prefix blocks.
-pub(crate) unsafe fn staged_group(hashers: &[Hasher], which: &[usize; 16], out: &mut [[u8; OUT_LEN]]) -> bool {
+pub(crate) unsafe fn staged_group<const W: usize>(hashers: &[Hasher], which: &[usize; W], out: &mut [[u8; OUT_LEN]]) -> bool {
     let states = which.map(|i| &hashers[i]);
     if states.iter().any(|h| {
         let c = &h.core.chunk_state;
@@ -85,10 +130,10 @@ pub(crate) unsafe fn staged_group(hashers: &[Hasher], which: &[usize; 16], out: 
     }) {
         return false;
     }
-    let ends: [usize; 16] = core::array::from_fn(|i| (states[i].core.chunk_state.buf_len as usize + states[i].staged).saturating_sub(1) / BLOCK_LEN);
-    let lens: [u8; 16] = core::array::from_fn(|i| (states[i].core.chunk_state.buf_len as usize + states[i].staged - ends[i] * BLOCK_LEN) as u8);
-    let mut tails = [[0u8; BLOCK_LEN]; 16];
-    for i in 0..16 {
+    let ends: [usize; W] = core::array::from_fn(|i| (states[i].core.chunk_state.buf_len as usize + states[i].staged).saturating_sub(1) / BLOCK_LEN);
+    let lens: [u8; W] = core::array::from_fn(|i| (states[i].core.chunk_state.buf_len as usize + states[i].staged - ends[i] * BLOCK_LEN) as u8);
+    let mut tails = [[0u8; BLOCK_LEN]; W];
+    for i in 0..W {
         if states[i].staged == 0 {
             tails[i] = states[i].core.chunk_state.buf;
         } else {
@@ -96,10 +141,10 @@ pub(crate) unsafe fn staged_group(hashers: &[Hasher], which: &[usize; 16], out: 
             tails[i][..lens[i] as usize].copy_from_slice(&states[i].staged_bytes()[start..]);
         }
     }
-    let mut cvs: [[u32; 8]; 16] = core::array::from_fn(|i| states[i].core.chunk_state.cv);
-    let mut values = [[0u8; OUT_LEN]; 16];
+    let mut cvs: [[u32; 8]; W] = core::array::from_fn(|i| states[i].core.chunk_state.cv);
+    let mut values = [[0u8; OUT_LEN]; W];
     for block in 0..=*ends.iter().max().unwrap() {
-        let inputs = core::array::from_fn(|i| {
+        let inputs: [Input<'_>; W] = core::array::from_fn(|i| {
             let last = block >= ends[i];
             let bytes = if last {
                 &tails[i]
@@ -118,7 +163,7 @@ pub(crate) unsafe fn staged_group(hashers: &[Hasher], which: &[usize; 16], out: 
         // Sound: caller supplies AVX-512F+VL; every pointer borrows a readable
         // full block and CV, including the padded final blocks above.
         unsafe { hash_group(&inputs, &mut values) };
-        for i in 0..16 {
+        for i in 0..W {
             if block == ends[i] {
                 out[i] = values[i];
             } else if block < ends[i] {
@@ -151,20 +196,30 @@ fn self_test_shape(mut hash: impl FnMut(&[Input<'_>; 16], &mut [[u8; OUT_LEN]]))
 fn check_self_test(answer: u64) {
     assert_eq!(answer, SELF_TEST_EXPECTED, "blake3-servil startup self-test failed: sixteen root outputs");
 }
+unsafe fn hash_on_platform(platform: Platform, inputs: &[Input<'_>; 16], out: &mut [[u8; OUT_LEN]]) {
+    if lanes(platform) == 16 {
+        unsafe { hash_group::<16>(inputs, out) };
+    } else {
+        assert_eq!(lanes(platform), 8);
+        for (inputs, out) in inputs.chunks_exact(8).zip(out.chunks_mut(8)) {
+            unsafe { hash_group::<8>(inputs.try_into().unwrap(), out) };
+        }
+    }
+}
 pub(crate) fn self_test(platform: Platform) -> usize {
-    if !matches!(platform, Platform::AVX512) {
+    if lanes(platform) == 0 {
         return 0;
     }
     let answer = self_test_shape(|inputs, out| {
         // Sound: initialize detected this platform before testing its kernels.
-        unsafe { hash_group(inputs, out) };
+        unsafe { hash_on_platform(platform, inputs, out) };
     });
     check_self_test(answer);
     1
 }
 #[cfg(test)]
-pub(crate) fn entry() -> *const () {
-    blake3_servil_output16 as *const ()
+pub(crate) fn entry(platform: Platform) -> *const () {
+    if lanes(platform) == 8 { blake3_servil_output8 as *const () } else { blake3_servil_output16 as *const () }
 }
 
 #[cfg(test)]
@@ -181,15 +236,15 @@ mod tests {
             }
         });
         assert_eq!(answer, SELF_TEST_EXPECTED);
-        if matches!(Platform::detect(), Platform::AVX512) {
-            assert_eq!(self_test_shape(|inputs, out| unsafe { hash_group(inputs, out) }), answer);
+        if lanes(Platform::detect()) != 0 {
+            assert_eq!(self_test_shape(|inputs, out| unsafe { hash_on_platform(Platform::detect(), inputs, out) }), answer);
         }
     }
     #[test]
     fn independent_blocks_cvs_descriptors_and_output_against_guard_pages() {
         use crate::test::guard_pages::Guarded;
         crate::initialize();
-        if !matches!(Platform::detect(), Platform::AVX512) {
+        if lanes(Platform::detect()) == 0 {
             return;
         }
         for at_end in [false, true] {
@@ -214,7 +269,7 @@ mod tests {
                 let descriptors = unsafe { &*table_ptr.cast::<[Input<'_>; 16]>() };
                 let mut output = Guarded::new(16 * OUT_LEN, at_end);
                 let guarded_out = output.bytes().as_chunks_mut::<OUT_LEN>().0;
-                unsafe { hash_group(descriptors, guarded_out) };
+                unsafe { hash_on_platform(Platform::detect(), descriptors, guarded_out) };
                 out.copy_from_slice(guarded_out);
             });
             assert_eq!(answer, SELF_TEST_EXPECTED, "guard placement at_end={at_end}");
@@ -229,7 +284,7 @@ mod tests {
     #[test]
     fn incremental_roots_batch_all_modes_and_selected_indices() {
         crate::initialize();
-        for count in [0usize, 1, 15, 16, 17, 31, 32, 65] {
+        for count in [0usize, 1, 7, 8, 9, 15, 16, 17, 31, 32, 65] {
             let mut hashers = Vec::new();
             let mut expected = Vec::new();
             for i in 0..count {
@@ -254,8 +309,9 @@ mod tests {
             crate::each::finalize_each(&hashers, &which, &mut out);
             let wanted: Vec<_> = which.iter().map(|&i| expected[i]).collect();
             assert_eq!(out, wanted);
-            let reached = crate::RAN_ENTRIES.with(|r| r.borrow().contains(&(entry() as usize)));
-            assert_eq!(reached, count >= 16 && matches!(Platform::detect(), Platform::AVX512));
+            let reached = crate::RAN_ENTRIES.with(|r| r.borrow().contains(&(entry(Platform::detect()) as usize)));
+            let width = lanes(Platform::detect());
+            assert_eq!(reached, width != 0 && count >= width);
             crate::each::finalize_each(&hashers, &which, &mut out);
             assert_eq!(out, wanted, "finalization leaves the input states reusable");
             if count > 0 {
@@ -343,7 +399,7 @@ mod tests {
         let mut hashers = Vec::new();
         let mut expected = Vec::new();
         for i in 0..32 {
-            let data = vec![i as u8; if i == 3 || i == 20 { 4097 } else { 129 }];
+            let data = vec![i as u8; if i % 8 == 3 { 4097 } else { 129 }];
             let mut h = Hasher::new(crate::Mode::Plain);
             for piece in data.chunks(23) {
                 h.update(piece);
@@ -356,6 +412,6 @@ mod tests {
         crate::RAN_ENTRIES.with(|r| r.borrow_mut().clear());
         crate::each::finalize_each(&hashers, &which, &mut out);
         assert_eq!(out, expected);
-        assert!(!crate::RAN_ENTRIES.with(|r| r.borrow().contains(&(entry() as usize))));
+        assert!(!crate::RAN_ENTRIES.with(|r| r.borrow().contains(&(entry(Platform::detect()) as usize))));
     }
 }

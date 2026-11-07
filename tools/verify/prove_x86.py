@@ -50,7 +50,7 @@ def assemble(isa):
     obj = os.path.join(d, f"{isa}.o")
     # "chunk_root": the one file holding both chunk-root entries (sse41, avx512);
     # "wide": the generated 32- and 16-input AVX-512 kernels (k32, p32, p16).
-    src = {"wide": "c/blake3_avx512_32.S", "output": "c/blake3_output16.S"}.get(isa, f"c/blake3_{isa}_x86-64_unix.S")
+    src = {"wide": "c/blake3_avx512_32.S", "output": "c/blake3_output16.S", "output8": "c/blake3_output8.S"}.get(isa, f"c/blake3_{isa}_x86-64_unix.S")
     subprocess.run([CLANG, "-c", "--target=x86_64-linux-gnu", os.path.join(ROOT_DIR, src), "-o", obj], check=True)
     so = x86.link(obj)
     OBJS[isa] = so
